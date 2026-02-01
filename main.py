@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 from mizan_grc.models import Risk, Control, ComplianceRequirement, RiskLevel, ControlStatus
 from mizan_grc.grc_manager import GRCManager
-from version import __version__, __application__, __description__
+from mizan_grc.version import __version__, __application__, __description__
 
 
 def main():
