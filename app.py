@@ -16,7 +16,9 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, abort
 
 from dotenv import load_dotenv
-
+print("=" * 80, flush=True)
+print("MIZAN APP LOADED - VERSION 2.0 WITH DEBUG", flush=True)
+print("=" * 80, flush=True)
 # Load environment variables
 load_dotenv()
 
