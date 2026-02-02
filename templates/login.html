@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="login-page">
+    <!-- Animated Background -->
+    <div class="login-bg">
+        <div class="bg-gradient"></div>
+        <div class="bg-pattern"></div>
+    </div>
+    
+    <!-- Theme Toggle (top right) -->
+    <button class="theme-toggle login-theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+        <i class="fas fa-sun"></i>
+    </button>
+    
+    <!-- Login Container -->
+    <div class="login-container">
+        <!-- Brand Header with Logo -->
+        <div class="brand-header">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="brand-logo">
+            <p class="brand-tagline">{{ txt.tagline }}</p>
+            <p class="brand-version">v{{ config.APP_VERSION }}</p>
+        </div>
+        
+        <!-- Welcome Message -->
+        <div class="welcome-box">
+            <h2>{{ txt.welcome }}</h2>
+            <p>{{ txt.welcome_sub }}</p>
+        </div>
+        
+        <!-- Language Toggle -->
+        <div class="lang-toggle">
+            <a href="{{ url_for('login', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">
+                English
+            </a>
+            <a href="{{ url_for('login', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">
+                العربية
+            </a>
+        </div>
+        
+        <!-- Disclaimer -->
+        <div class="disclaimer-box">
+            <div class="disclaimer-content">
+                <div class="disclaimer-icon">⚠️</div>
+                <div class="disclaimer-text">
+                    <p>{{ txt.disclaimer }}</p>
+                    <p class="sensitive-warning"><i class="fas fa-lock"></i> {{ txt.no_sensitive }}</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="alert alert-{{ category }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+        
+        <!-- Auth Tabs -->
+        <div class="auth-tabs">
+            <button class="auth-tab active" data-tab="login">
+                <i class="fas fa-sign-in-alt"></i> {{ txt.login }}
+            </button>
+            <button class="auth-tab" data-tab="register">
+                <i class="fas fa-user-plus"></i> {{ txt.register }}
+            </button>
+        </div>
+        
+        <!-- Login Form -->
+        <div class="auth-form" id="login-form">
+            <form method="POST" action="{{ url_for('login', lang=lang) }}" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="form-group">
+                    <label><i class="fas fa-user"></i> {{ txt.username }}</label>
+                    <input type="text" name="username" placeholder="{{ txt.username }}" required 
+                           pattern="[a-zA-Z0-9_]{3,50}" maxlength="50" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label><i class="fas fa-key"></i> {{ txt.password }}</label>
+                    <input type="password" name="password" placeholder="{{ txt.password }}" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-rocket"></i> {{ txt.login }}
+                </button>
+            </form>
+        </div>
+        
+        <!-- Register Form -->
+        <div class="auth-form hidden" id="register-form">
+            <form method="POST" action="{{ url_for('register') }}" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="form-group">
+                    <label><i class="fas fa-user"></i> {{ txt.username }}</label>
+                    <input type="text" name="username" placeholder="{{ txt.username }}" 
+                           pattern="[a-zA-Z0-9_]{3,50}" minlength="3" maxlength="50" required
+                           title="3-50 characters: letters, numbers, underscore">
+                </div>
+                <div class="form-group">
+                    <label><i class="fas fa-envelope"></i> {{ 'البريد الإلكتروني' if is_rtl else 'Email' }} ({{ 'اختياري' if is_rtl else 'Optional' }})</label>
+                    <input type="email" name="email" placeholder="{{ 'example@email.com' }}" maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label><i class="fas fa-key"></i> {{ txt.password }}</label>
+                    <input type="password" name="password" placeholder="{{ txt.password }}" 
+                           minlength="8" maxlength="100" required id="reg-password"
+                           title="Min 8 chars: uppercase, lowercase, and number required">
+                    <div class="password-strength" id="password-strength"></div>
+                    <small class="password-hint">{{ 'يجب أن تحتوي على: حرف كبير، حرف صغير، ورقم' if is_rtl else 'Must contain: uppercase, lowercase, and number' }}</small>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-magic"></i> {{ txt.register }}
+                </button>
+            </form>
+        </div>
+        
+        <!-- Creator Footer -->
+        <div class="creator-footer">
+            <p class="created-by">{{ txt.created_by }}</p>
+            <p class="creator-name">{{ config.CREATOR_NAME }}</p>
+            <p class="creator-title">{{ config.CREATOR_TITLE }}</p>
+            <p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p>
+        </div>
+    </div>
+</div>
+
+<style>
+.brand-logo {
+    max-width: 280px;
+    height: auto;
+    margin-bottom: 15px;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+}
+.password-hint {
+    display: block;
+    margin-top: 5px;
+    color: #888;
+    font-size: 0.85em;
+}
+.alert {
+    padding: 12px 15px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+    font-size: 0.9em;
+}
+.alert-error { background: rgba(231, 76, 60, 0.2); color: #e74c3c; border: 1px solid #e74c3c; }
+.alert-success { background: rgba(39, 174, 96, 0.2); color: #27ae60; border: 1px solid #27ae60; }
+</style>
+
+<script>
+// Auth tabs switching
+document.querySelectorAll('.auth-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        
+        const tabName = tab.dataset.tab;
+        document.querySelectorAll('.auth-form').forEach(form => form.classList.add('hidden'));
+        document.getElementById(tabName + '-form').classList.remove('hidden');
+    });
+});
+
+// Password strength indicator
+const passwordInput = document.getElementById('reg-password');
+if (passwordInput) {
+    passwordInput.addEventListener('input', (e) => {
+        const password = e.target.value;
+        const strength = document.getElementById('password-strength');
+        let score = 0;
+        let issues = [];
+        
+        if (password.length >= 8) score++; else issues.push('8+ chars');
+        if (/[A-Z]/.test(password)) score++; else issues.push('uppercase');
+        if (/[a-z]/.test(password)) score++; else issues.push('lowercase');
+        if (/[0-9]/.test(password)) score++; else issues.push('number');
+        if (/[^A-Za-z0-9]/.test(password)) score++;
+        
+        const labels = ['Very Weak', 'Weak', 'Fair', 'Good', 'Strong'];
+        const colors = ['#e74c3c', '#e67e22', '#f1c40f', '#27ae60', '#2ecc71'];
+        
+        strength.innerHTML = `
+            <div class="strength-bar" style="width: ${score * 20}%; background: ${colors[score - 1] || '#333'}"></div>
+            <span class="strength-label" style="color: ${colors[score - 1] || '#666'}">${password.length > 0 ? labels[score - 1] || 'Too weak' : ''}</span>
+        `;
+    });
+}
+
+// Form validation before submit
+document.querySelector('#register-form form').addEventListener('submit', (e) => {
+    const password = document.getElementById('reg-password').value;
+    if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+        e.preventDefault();
+        alert('Password must contain uppercase, lowercase, and number');
+    }
+});
+</script>
+{% endblock %}
