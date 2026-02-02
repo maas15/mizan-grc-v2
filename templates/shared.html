@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if is_rtl else 'ltr' }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if error %}{{ txt.document_not_found }}{% elif requires_otp %}{{ txt.otp_required }} - Mizan{% else %}{{ document.title }} - Mizan GRC{% endif %}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #667eea;
+            --secondary: #764ba2;
+            --bg-main: #0f0f23;
+            --bg-card: #1a1a2e;
+            --bg-elevated: #252542;
+            --text-primary: #ffffff;
+            --text-secondary: #a0aec0;
+            --border-color: #2d3748;
+            --success: #48bb78;
+            --danger: #fc8181;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .shared-container { max-width: 900px; margin: 0 auto; padding: 30px 20px; }
+        .shared-header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid var(--border-color); }
+        .brand { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 20px; }
+        .brand-name { font-size: 2rem; font-weight: 700; background: linear-gradient(135deg, var(--primary), var(--secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .shared-badge { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; padding: 8px 20px; border-radius: 30px; font-size: 0.9rem; margin-bottom: 15px; }
+        .secure-badge { background: linear-gradient(135deg, var(--success), #38a169); }
+        .doc-title { font-size: 1.8rem; margin-bottom: 10px; }
+        .doc-meta { display: flex; justify-content: center; gap: 25px; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.9rem; }
+        .doc-meta span { display: flex; align-items: center; gap: 6px; }
+        .doc-meta i { color: var(--primary); }
+        .content-card { background: var(--bg-card); border-radius: 16px; padding: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); margin-bottom: 30px; }
+        
+        /* OTP Styles */
+        .otp-container { max-width: 450px; margin: 50px auto; text-align: center; }
+        .otp-icon { font-size: 4rem; color: var(--primary); margin-bottom: 20px; }
+        .otp-title { font-size: 1.5rem; margin-bottom: 10px; }
+        .otp-subtitle { color: var(--text-secondary); margin-bottom: 30px; }
+        .otp-info { background: var(--bg-elevated); padding: 15px; border-radius: 10px; margin-bottom: 25px; }
+        .otp-info p { margin: 5px 0; color: var(--text-secondary); }
+        .otp-info strong { color: var(--text-primary); }
+        .otp-input-group { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+        .otp-input { width: 50px; height: 60px; text-align: center; font-size: 1.5rem; font-weight: bold; border: 2px solid var(--border-color); border-radius: 10px; background: var(--bg-elevated); color: var(--text-primary); outline: none; transition: all 0.3s; }
+        .otp-input:focus { border-color: var(--primary); box-shadow: 0 0 15px rgba(102, 126, 234, 0.3); }
+        .otp-error { color: var(--danger); margin-bottom: 15px; display: none; }
+        .otp-success { color: var(--success); margin-bottom: 15px; display: none; }
+        .resend-link { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; margin-top: 15px; display: inline-block; }
+        .resend-link:hover { color: var(--primary); }
+        
+        /* Content Styles */
+        .content-body { line-height: 1.8; }
+        .content-body h1, .content-body h2, .content-body h3 { color: var(--text-primary); margin-top: 1.5em; margin-bottom: 0.5em; }
+        .content-body h2 { font-size: 1.4rem; color: var(--primary); border-bottom: 2px solid var(--primary); padding-bottom: 8px; }
+        .content-body h3 { font-size: 1.1rem; color: var(--secondary); }
+        .content-body table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 0.9rem; }
+        .content-body th, .content-body td { padding: 12px 15px; border: 1px solid var(--border-color); }
+        .content-body th { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; }
+        .content-body tr:nth-child(even) { background: var(--bg-elevated); }
+        .content-body ul, .content-body ol { padding-left: 25px; margin: 15px 0; }
+        .content-body li { margin-bottom: 8px; }
+        .content-body p { margin-bottom: 15px; }
+        .content-body strong { color: var(--primary); }
+        
+        .download-section { display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; }
+        .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; border-radius: 10px; font-size: 0.95rem; font-weight: 600; text-decoration: none; cursor: pointer; border: none; transition: all 0.3s ease; }
+        .btn-primary { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4); }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-color); }
+        .btn-danger { background: linear-gradient(135deg, #dc3545, #c82333); color: white; }
+        .footer { text-align: center; padding: 30px; color: var(--text-secondary); font-size: 0.85rem; }
+        .footer a { color: var(--primary); text-decoration: none; }
+        .error-container { text-align: center; padding: 80px 20px; }
+        .error-icon { font-size: 5rem; color: var(--danger); margin-bottom: 20px; }
+        .error-message { font-size: 1.3rem; margin-bottom: 30px; }
+        .hidden { display: none !important; }
+        {% if is_rtl %}body { direction: rtl; text-align: right; }{% endif %}
+        @media (max-width: 768px) {
+            .shared-container { padding: 15px; }
+            .content-card { padding: 20px; }
+            .doc-meta { flex-direction: column; gap: 10px; }
+            .download-section { flex-direction: column; }
+            .btn { width: 100%; justify-content: center; }
+            .otp-input { width: 45px; height: 55px; font-size: 1.3rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="shared-container">
+        {% if error %}
+        <div class="error-container">
+            <div class="brand"><span class="brand-name">MIZAN</span></div>
+            <div class="error-icon"><i class="fas fa-exclamation-circle"></i></div>
+            <h1 class="error-message">{{ error_message }}</h1>
+            <a href="/" class="btn btn-primary"><i class="fas fa-home"></i> {{ 'الرئيسية' if is_rtl else 'Go Home' }}</a>
+        </div>
+        
+        {% elif requires_otp %}
+        <div class="otp-container" id="otp-section">
+            <div class="brand"><span class="brand-name">MIZAN</span></div>
+            <div class="shared-badge secure-badge"><i class="fas fa-shield-alt"></i> {{ txt.get('secure_share', 'Secure Share') }}</div>
+            <div class="otp-icon"><i class="fas fa-lock"></i></div>
+            <h1 class="otp-title">{{ txt.get('otp_required', 'Verification Required') }}</h1>
+            <p class="otp-subtitle">{{ txt.get('enter_otp', 'Enter the 6-digit code sent to your email') }}</p>
+            <div class="otp-info">
+                <p><strong>{{ txt.get('shared_by', 'Shared by') }}:</strong> {{ shared_by }}</p>
+                <p><strong>Document:</strong> {{ doc_title }}</p>
+                <p><i class="fas fa-envelope"></i> {{ recipient_email }}</p>
+            </div>
+            <div class="otp-input-group">
+                <input type="text" class="otp-input" maxlength="1" data-index="0" autofocus>
+                <input type="text" class="otp-input" maxlength="1" data-index="1">
+                <input type="text" class="otp-input" maxlength="1" data-index="2">
+                <input type="text" class="otp-input" maxlength="1" data-index="3">
+                <input type="text" class="otp-input" maxlength="1" data-index="4">
+                <input type="text" class="otp-input" maxlength="1" data-index="5">
+            </div>
+            <p class="otp-error" id="otp-error"><i class="fas fa-times-circle"></i> <span></span></p>
+            <p class="otp-success" id="otp-success"><i class="fas fa-check-circle"></i> {{ txt.get('otp_verified', 'Verified!') }}</p>
+            <button class="btn btn-primary" id="verify-btn" onclick="verifyOTP()"><i class="fas fa-check"></i> {{ txt.get('verify_otp', 'Verify') }}</button>
+            <br><a href="#" class="resend-link" onclick="resendOTP(); return false;"><i class="fas fa-redo"></i> {{ txt.get('resend_otp', 'Resend Code') }}</a>
+        </div>
+        
+        <div id="document-section" class="hidden">
+            <header class="shared-header">
+                <div class="brand"><span class="brand-name">MIZAN</span></div>
+                <div class="shared-badge secure-badge"><i class="fas fa-shield-alt"></i> {{ txt.get('shared_document', 'Shared Document') }}</div>
+                <h1 class="doc-title" id="doc-title"></h1>
+                <div class="doc-meta">
+                    <span><i class="fas fa-layer-group"></i> <span id="doc-domain"></span></span>
+                    <span><i class="fas fa-file-alt"></i> <span id="doc-type"></span></span>
+                    <span><i class="fas fa-user"></i> {{ txt.get('shared_by', 'Shared by') }}: <span id="doc-shared-by"></span></span>
+                    <span><i class="fas fa-eye"></i> <span id="doc-views"></span> {{ txt.get('views', 'Views') }}</span>
+                </div>
+            </header>
+            <div class="content-card"><div class="content-body" id="content-body"></div></div>
+            <div class="download-section">
+                <button class="btn btn-secondary" onclick="downloadContent('txt')"><i class="fas fa-file-alt"></i> TXT</button>
+                <button class="btn btn-primary" onclick="downloadContent('docx')"><i class="fas fa-file-word"></i> Word</button>
+                <button class="btn btn-danger" onclick="downloadContent('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
+            </div>
+        </div>
+        
+        {% else %}
+        <header class="shared-header">
+            <div class="brand"><span class="brand-name">MIZAN</span></div>
+            <div class="shared-badge"><i class="fas fa-share-alt"></i> {{ txt.get('shared_document', 'Shared Document') }}</div>
+            <h1 class="doc-title">{{ document.title }}</h1>
+            <div class="doc-meta">
+                <span><i class="fas fa-layer-group"></i> {{ document.domain }}</span>
+                <span><i class="fas fa-file-alt"></i> {{ document.doc_type|capitalize }}</span>
+                <span><i class="fas fa-user"></i> {{ txt.get('shared_by', 'Shared by') }}: {{ document.shared_by }}</span>
+                <span><i class="fas fa-eye"></i> {{ document.view_count }} {{ txt.get('views', 'Views') }}</span>
+            </div>
+        </header>
+        <div class="content-card"><div class="content-body" id="content-body-public"></div></div>
+        <div class="download-section">
+            <button class="btn btn-secondary" onclick="downloadContent('txt')"><i class="fas fa-file-alt"></i> TXT</button>
+            <button class="btn btn-primary" onclick="downloadContent('docx')"><i class="fas fa-file-word"></i> Word</button>
+            <button class="btn btn-danger" onclick="downloadContent('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
+        </div>
+        {% endif %}
+        
+        <footer class="footer">
+            <p>{{ txt.get('created_by', 'Created by') }} Eng. Mohammad Abbas Alsaadon</p>
+            <p><a href="/">Mizan GRC Platform</a> © 2026</p>
+        </footer>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        const shareId = '{{ share_id }}';
+        const isRtl = {{ 'true' if is_rtl else 'false' }};
+        let rawContent = '';
+        let docLang = 'en';
+        let docTitle = '';
+        
+        {% if not error and not requires_otp %}
+        rawContent = {{ document.content|tojson }};
+        docLang = '{{ document.language if document.language else "en" }}';
+        docTitle = '{{ document.title }}';
+        document.getElementById('content-body-public').innerHTML = marked.parse(rawContent);
+        {% endif %}
+        
+        {% if requires_otp %}
+        const otpInputs = document.querySelectorAll('.otp-input');
+        otpInputs.forEach((input, index) => {
+            input.addEventListener('input', (e) => {
+                if (e.target.value.length === 1 && index < 5) otpInputs[index + 1].focus();
+                if (index === 5 && e.target.value.length === 1) setTimeout(verifyOTP, 100);
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !e.target.value && index > 0) otpInputs[index - 1].focus();
+            });
+            input.addEventListener('paste', (e) => {
+                e.preventDefault();
+                const digits = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+                digits.split('').forEach((d, i) => { if (otpInputs[i]) otpInputs[i].value = d; });
+                if (digits.length === 6) setTimeout(verifyOTP, 100);
+            });
+        });
+        
+        function verifyOTP() {
+            const otp = Array.from(otpInputs).map(i => i.value).join('');
+            if (otp.length !== 6) { showError(isRtl ? 'أدخل الرمز المكون من 6 أرقام' : 'Enter 6-digit code'); return; }
+            const btn = document.getElementById('verify-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            fetch(`/api/share/${shareId}/verify-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ otp }) })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-check"></i> Verify';
+                if (data.success) {
+                    document.getElementById('otp-success').style.display = 'block';
+                    document.getElementById('otp-error').style.display = 'none';
+                    rawContent = data.document.content;
+                    docLang = data.document.language || 'en';
+                    docTitle = data.document.title;
+                    document.getElementById('doc-title').textContent = data.document.title;
+                    document.getElementById('doc-domain').textContent = data.document.domain;
+                    document.getElementById('doc-type').textContent = data.document.doc_type;
+                    document.getElementById('doc-shared-by').textContent = data.document.shared_by;
+                    document.getElementById('doc-views').textContent = data.document.view_count;
+                    document.getElementById('content-body').innerHTML = marked.parse(data.document.content);
+                    setTimeout(() => {
+                        document.getElementById('otp-section').classList.add('hidden');
+                        document.getElementById('document-section').classList.remove('hidden');
+                    }, 1000);
+                } else {
+                    showError(data.expired ? (isRtl ? 'انتهت صلاحية الرمز' : 'Code expired') : (isRtl ? 'رمز غير صحيح' : 'Invalid code'));
+                    otpInputs.forEach(i => i.value = '');
+                    otpInputs[0].focus();
+                }
+            })
+            .catch(() => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Verify'; showError(isRtl ? 'خطأ' : 'Error'); });
+        }
+        
+        function showError(msg) {
+            document.getElementById('otp-error').querySelector('span').textContent = msg;
+            document.getElementById('otp-error').style.display = 'block';
+            document.getElementById('otp-success').style.display = 'none';
+        }
+        
+        function resendOTP() {
+            fetch(`/api/share/${shareId}/resend-otp`, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => alert(data.success ? (isRtl ? 'تم إرسال رمز جديد' : 'New code sent!') : (data.message || 'Failed')));
+        }
+        {% endif %}
+        
+        function downloadContent(fmt) {
+            if (!rawContent) return;
+            const name = (docTitle || 'document').replace(/[^a-zA-Z0-9]/g, '_') + '_' + Date.now();
+            if (fmt === 'txt') {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob([rawContent], { type: 'text/plain; charset=utf-8' }));
+                a.download = name + '.txt';
+                a.click();
+            } else {
+                fetch(`/api/generate-${fmt}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: rawContent, filename: name, language: docLang }) })
+                .then(r => r.blob())
+                .then(blob => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name + '.' + fmt; a.click(); });
+            }
+        }
+    </script>
+</body>
+</html>
