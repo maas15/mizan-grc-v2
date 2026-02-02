@@ -1,0 +1,721 @@
+{% extends "base.html" %}
+
+{% block title %}{{ txt.analytics }} - Mizan GRC{% endblock %}
+
+{% block content %}
+<div class="analytics-container">
+    <header class="analytics-header">
+        <div class="header-content">
+            <a href="{{ url_for('dashboard', lang=lang) }}" class="back-link">
+                <i class="fas fa-arrow-{% if is_rtl %}right{% else %}left{% endif %}"></i>
+                Dashboard
+            </a>
+            <h1><i class="fas fa-chart-line"></i> {{ txt.insights }}</h1>
+        </div>
+        <div class="header-controls">
+            <div class="lang-switch">
+                <a href="{{ url_for('analytics_page', lang='en', sector=selected_sector) }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('analytics_page', lang='ar', sector=selected_sector) }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="fas fa-sun"></i>
+            </button>
+        </div>
+    </header>
+
+    {% if not has_data %}
+    <div class="no-data-message">
+        <i class="fas fa-chart-pie"></i>
+        <h2>{{ txt.no_data }}</h2>
+        <a href="{{ url_for('dashboard', lang=lang) }}" class="btn btn-primary">
+            <i class="fas fa-plus"></i> {% if is_rtl %}ابدأ الآن{% else %}Get Started{% endif %}
+        </a>
+    </div>
+    {% else %}
+    
+    <!-- Analytics Grid -->
+    <div class="analytics-grid">
+        
+        <!-- Compliance Score -->
+        <div class="analytics-card compliance-card">
+            <div class="card-header">
+                <h2><i class="fas fa-check-circle"></i> {{ txt.compliance_score }}</h2>
+            </div>
+            <div class="card-body">
+                <div class="score-gauge">
+                    <svg viewBox="0 0 200 120" class="gauge-svg">
+                        <defs>
+                            <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" style="stop-color:#f5576c"/>
+                                <stop offset="50%" style="stop-color:#f5af19"/>
+                                <stop offset="100%" style="stop-color:#38ef7d"/>
+                            </linearGradient>
+                        </defs>
+                        <!-- Background arc -->
+                        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="var(--bg-elevated)" stroke-width="15" stroke-linecap="round"/>
+                        <!-- Score arc -->
+                        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="url(#gaugeGradient)" stroke-width="15" stroke-linecap="round"
+                              stroke-dasharray="{{ compliance.score * 2.51 }} 251" class="gauge-fill"/>
+                        <!-- Score text -->
+                        <text x="100" y="85" text-anchor="middle" class="gauge-score">{{ compliance.score }}%</text>
+                        <text x="100" y="105" text-anchor="middle" class="gauge-label">{{ txt.compliance_score }}</text>
+                    </svg>
+                </div>
+                <div class="score-breakdown">
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-chess"></i> {{ txt.strategies if txt.strategies else 'Strategies' }}</span>
+                        <span class="breakdown-value">{{ compliance.strategies }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-file-alt"></i> {{ txt.policies if txt.policies else 'Policies' }}</span>
+                        <span class="breakdown-value">{{ compliance.policies }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-clipboard-check"></i> {{ txt.audits if txt.audits else 'Audits' }}</span>
+                        <span class="breakdown-value">{{ compliance.audits }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-exclamation-triangle"></i> {{ txt.risks if txt.risks else 'Risks' }}</span>
+                        <span class="breakdown-value">{{ compliance.risks }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Heatmap -->
+        <div class="analytics-card heatmap-card">
+            <div class="card-header">
+                <h2><i class="fas fa-fire"></i> {{ txt.risk_heatmap }}</h2>
+            </div>
+            <div class="card-body">
+                <div class="heatmap-container">
+                    <div class="heatmap-y-label">{{ txt.likelihood }}</div>
+                    <div class="heatmap-grid">
+                        <div class="heatmap-y-axis">
+                            <span>{{ txt.critical }}</span>
+                            <span>{{ txt.high }}</span>
+                            <span>{{ txt.medium }}</span>
+                            <span>{{ txt.low }}</span>
+                        </div>
+                        <div class="heatmap-cells">
+                            {% for likelihood in ['critical', 'high', 'medium', 'low'] %}
+                            <div class="heatmap-row">
+                                {% for impact in ['low', 'medium', 'high', 'critical'] %}
+                                {% set count = heatmap[likelihood][impact] %}
+                                {% set severity = likelihood ~ '-' ~ impact %}
+                                <div class="heatmap-cell {{ severity }}" data-count="{{ count }}">
+                                    {{ count if count > 0 else '' }}
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endfor %}
+                        </div>
+                        <div class="heatmap-x-axis">
+                            <span>{{ txt.low }}</span>
+                            <span>{{ txt.medium }}</span>
+                            <span>{{ txt.high }}</span>
+                            <span>{{ txt.critical }}</span>
+                        </div>
+                    </div>
+                    <div class="heatmap-x-label">{{ txt.impact }}</div>
+                </div>
+                <div class="heatmap-legend">
+                    <span class="legend-item low-risk">{{ txt.low }}</span>
+                    <span class="legend-item medium-risk">{{ txt.medium }}</span>
+                    <span class="legend-item high-risk">{{ txt.high }}</span>
+                    <span class="legend-item critical-risk">{{ txt.critical }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Maturity Radar -->
+        <div class="analytics-card radar-card">
+            <div class="card-header">
+                <h2><i class="fas fa-spider"></i> {{ txt.maturity_radar }}</h2>
+                <span class="maturity-avg">{{ txt.maturity_level }}: {{ maturity.average }}/5</span>
+            </div>
+            <div class="card-body">
+                <canvas id="maturityRadar" width="300" height="300"></canvas>
+                <div class="maturity-legend">
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.governance }}</span>
+                        <span class="maturity-value">{{ maturity.governance }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.risk_mgmt }}</span>
+                        <span class="maturity-value">{{ maturity.risk_mgmt }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.compliance }}</span>
+                        <span class="maturity-value">{{ maturity.compliance }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.technology }}</span>
+                        <span class="maturity-value">{{ maturity.technology }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.process }}</span>
+                        <span class="maturity-value">{{ maturity.process }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Benchmark Comparison -->
+        <div class="analytics-card benchmark-card">
+            <div class="card-header">
+                <h2><i class="fas fa-balance-scale"></i> {{ txt.benchmark }}</h2>
+                <select id="sector-select" onchange="changeSector(this.value)" class="sector-select">
+                    {% for s in sectors %}
+                    <option value="{{ s.sector }}" {{ 'selected' if s.sector == selected_sector else '' }}>
+                        {{ s.sector_ar if is_rtl else s.sector }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="card-body">
+                {% if benchmark %}
+                <div class="benchmark-source">
+                    <i class="fas fa-book"></i> {{ txt.benchmark_source }}: {{ benchmark.source }} ({{ benchmark.source_year }})
+                </div>
+                <div class="benchmark-table">
+                    <div class="benchmark-row header">
+                        <span class="metric-name">Metric</span>
+                        <span class="metric-yours">{{ txt.your_score }}</span>
+                        <span class="metric-industry">{{ txt.industry_avg }}</span>
+                        <span class="metric-gap">{{ txt.gap }}</span>
+                    </div>
+                    {% for key, metric in benchmark.metrics.items() %}
+                    <div class="benchmark-row">
+                        <span class="metric-name">
+                            {% if key == 'compliance_score' %}{{ txt.compliance_score }}
+                            {% elif key == 'maturity_level' %}{{ txt.maturity_level }}
+                            {% elif key == 'policy_count' %}{{ txt.policies if txt.policies else 'Policies' }}
+                            {% elif key == 'audit_count' %}{{ txt.audits if txt.audits else 'Audits' }}
+                            {% else %}{{ txt.risks if txt.risks else 'Risk Assessments' }}
+                            {% endif %}
+                        </span>
+                        <span class="metric-yours">{{ metric.user }}{% if 'score' in key or 'level' in key %}{% if 'score' in key %}%{% endif %}{% endif %}</span>
+                        <span class="metric-industry">{{ metric.benchmark }}{% if 'score' in key %}%{% endif %}</span>
+                        <span class="metric-gap {{ 'positive' if metric.gap >= 0 else 'negative' }}">
+                            {{ '+' if metric.gap > 0 else '' }}{{ metric.gap }}{% if 'score' in key %}%{% endif %}
+                            <i class="fas fa-{{ 'arrow-up' if metric.gap >= 0 else 'arrow-down' }}"></i>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.analytics-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.analytics-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.header-content h1 {
+    margin: 10px 0 0 0;
+    font-size: 1.8rem;
+    color: var(--text-primary);
+}
+
+.header-content h1 i {
+    color: var(--primary);
+    margin-{% if is_rtl %}left{% else %}right{% endif %}: 10px;
+}
+
+.back-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.lang-switch {
+    display: flex;
+    gap: 5px;
+}
+
+.lang-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    font-weight: 600;
+}
+
+.lang-btn.active {
+    background: var(--primary);
+    color: white;
+}
+
+/* No Data State */
+.no-data-message {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-secondary);
+}
+
+.no-data-message i {
+    font-size: 4rem;
+    margin-bottom: 20px;
+    opacity: 0.3;
+}
+
+.no-data-message h2 {
+    margin-bottom: 20px;
+    color: var(--text-primary);
+}
+
+/* Analytics Grid */
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 25px;
+}
+
+.analytics-card {
+    background: var(--bg-card);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h2 {
+    font-size: 1.1rem;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.card-header h2 i {
+    color: var(--primary);
+}
+
+.card-body {
+    padding: 20px;
+}
+
+/* Compliance Score Gauge */
+.score-gauge {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.gauge-svg {
+    width: 200px;
+    height: 120px;
+}
+
+.gauge-score {
+    font-size: 2rem;
+    font-weight: 700;
+    fill: var(--text-primary);
+}
+
+.gauge-label {
+    font-size: 0.7rem;
+    fill: var(--text-secondary);
+}
+
+.gauge-fill {
+    transition: stroke-dasharray 1s ease;
+}
+
+.score-breakdown {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+}
+
+.breakdown-label {
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.breakdown-label i {
+    color: var(--primary);
+}
+
+.breakdown-value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Risk Heatmap */
+.heatmap-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.heatmap-y-label, .heatmap-x-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.heatmap-y-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    margin-bottom: 10px;
+}
+
+.heatmap-grid {
+    display: flex;
+    gap: 5px;
+}
+
+.heatmap-y-axis {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    padding-right: 10px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.heatmap-cells {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.heatmap-row {
+    display: flex;
+    gap: 3px;
+}
+
+.heatmap-cell {
+    width: 50px;
+    height: 50px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.9rem;
+    transition: transform 0.2s;
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.1);
+    z-index: 10;
+}
+
+/* Heatmap colors based on severity */
+.low-low, .low-medium { background: rgba(56, 239, 125, 0.3); color: #38ef7d; }
+.medium-low, .low-high { background: rgba(245, 175, 25, 0.3); color: #f5af19; }
+.medium-medium, .high-low, .low-critical { background: rgba(245, 175, 25, 0.5); color: #f5af19; }
+.high-medium, .medium-high, .critical-low { background: rgba(245, 87, 108, 0.4); color: #f5576c; }
+.high-high, .critical-medium, .medium-critical { background: rgba(245, 87, 108, 0.6); color: #f5576c; }
+.critical-high, .high-critical, .critical-critical { background: rgba(245, 87, 108, 0.8); color: white; }
+
+.heatmap-x-axis {
+    display: flex;
+    justify-content: space-around;
+    width: 100%;
+    padding-top: 10px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.heatmap-legend {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.legend-item {
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.low-risk { background: rgba(56, 239, 125, 0.3); color: #38ef7d; }
+.medium-risk { background: rgba(245, 175, 25, 0.4); color: #f5af19; }
+.high-risk { background: rgba(245, 87, 108, 0.5); color: #f5576c; }
+.critical-risk { background: rgba(245, 87, 108, 0.8); color: white; }
+
+/* Maturity Radar */
+.radar-card canvas {
+    max-width: 100%;
+    margin: 0 auto;
+    display: block;
+}
+
+.maturity-avg {
+    font-size: 0.85rem;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.maturity-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.maturity-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+}
+
+.maturity-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.maturity-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+/* Benchmark Comparison */
+.sector-select {
+    padding: 8px 15px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.benchmark-source {
+    padding: 10px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    margin-bottom: 15px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.benchmark-source i {
+    color: var(--primary);
+    margin-{% if is_rtl %}left{% else %}right{% endif %}: 8px;
+}
+
+.benchmark-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.benchmark-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    gap: 10px;
+    padding: 12px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    align-items: center;
+}
+
+.benchmark-row.header {
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    color: white;
+    font-weight: 600;
+}
+
+.metric-name {
+    font-weight: 500;
+}
+
+.metric-yours, .metric-industry, .metric-gap {
+    text-align: center;
+}
+
+.metric-gap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-weight: 600;
+}
+
+.metric-gap.positive {
+    color: var(--success);
+}
+
+.metric-gap.negative {
+    color: var(--danger);
+}
+
+/* RTL */
+{% if is_rtl %}
+.analytics-container {
+    direction: rtl;
+    text-align: right;
+}
+
+.heatmap-y-label {
+    transform: rotate(0deg);
+    writing-mode: vertical-lr;
+}
+{% endif %}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .analytics-header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+    
+    .score-breakdown {
+        grid-template-columns: 1fr;
+    }
+    
+    .benchmark-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+    }
+    
+    .benchmark-row.header {
+        display: none;
+    }
+    
+    .heatmap-cell {
+        width: 40px;
+        height: 40px;
+        font-size: 0.8rem;
+    }
+}
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const isRtl = {{ 'true' if is_rtl else 'false' }};
+const lang = '{{ lang }}';
+
+// Maturity Radar Chart
+const maturityData = {
+    governance: {{ maturity.governance }},
+    risk_mgmt: {{ maturity.risk_mgmt }},
+    compliance: {{ maturity.compliance }},
+    technology: {{ maturity.technology }},
+    process: {{ maturity.process }}
+};
+
+const labels = isRtl 
+    ? ['الحوكمة', 'إدارة المخاطر', 'الامتثال', 'التقنية', 'العمليات']
+    : ['Governance', 'Risk Mgmt', 'Compliance', 'Technology', 'Process'];
+
+const ctx = document.getElementById('maturityRadar');
+if (ctx) {
+    new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: isRtl ? 'مستوى النضج' : 'Maturity Level',
+                data: [maturityData.governance, maturityData.risk_mgmt, maturityData.compliance, maturityData.technology, maturityData.process],
+                fill: true,
+                backgroundColor: 'rgba(102, 126, 234, 0.2)',
+                borderColor: '#667eea',
+                pointBackgroundColor: '#667eea',
+                pointBorderColor: '#fff',
+                pointHoverBackgroundColor: '#fff',
+                pointHoverBorderColor: '#667eea',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                r: {
+                    beginAtZero: true,
+                    max: 5,
+                    min: 0,
+                    ticks: {
+                        stepSize: 1,
+                        color: 'var(--text-secondary)'
+                    },
+                    grid: {
+                        color: 'rgba(255,255,255,0.1)'
+                    },
+                    angleLines: {
+                        color: 'rgba(255,255,255,0.1)'
+                    },
+                    pointLabels: {
+                        color: 'var(--text-primary)',
+                        font: {
+                            size: 11
+                        }
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                }
+            }
+        }
+    });
+}
+
+function changeSector(sector) {
+    window.location.href = `/analytics?lang=${lang}&sector=${encodeURIComponent(sector)}`;
+}
+</script>
+{% endblock %}
