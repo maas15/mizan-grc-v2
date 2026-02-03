@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if is_rtl else 'ltr' }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ txt.app_name }} | {{ txt.landing_title }}</title>
+    <meta name="description" content="{{ txt.landing_subtitle }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+Arabic:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --primary-light: #818cf8;
+            --bg: #0a0a1a;
+            --bg-card: #111128;
+            --bg-card-hover: #1a1a3e;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --border: #1e1e3f;
+            --accent-green: #10b981;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-cyan: #06b6d4;
+            --gradient: linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', 'Noto Sans Arabic', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow-x: hidden;
+        }
+
+        /* Animated background */
+        .bg-grid {
+            position: fixed; inset: 0; z-index: 0;
+            background-image: radial-gradient(circle at 1px 1px, rgba(99,102,241,0.08) 1px, transparent 0);
+            background-size: 40px 40px;
+        }
+        .bg-glow {
+            position: fixed; width: 600px; height: 600px; border-radius: 50%;
+            filter: blur(120px); opacity: 0.15; z-index: 0;
+        }
+        .bg-glow-1 { top: -200px; left: -100px; background: var(--primary); }
+        .bg-glow-2 { bottom: -200px; right: -100px; background: var(--accent-cyan); }
+
+        /* Navigation */
+        .landing-nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            padding: 1rem 2rem;
+            display: flex; align-items: center; justify-content: space-between;
+            background: rgba(10,10,26,0.8); backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+        .nav-brand {
+            display: flex; align-items: center; gap: 0.75rem;
+            font-size: 1.5rem; font-weight: 800; text-decoration: none; color: var(--text);
+        }
+        .nav-brand img { height: 40px; border-radius: 8px; }
+        .nav-brand span { background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .nav-actions { display: flex; gap: 0.75rem; align-items: center; }
+        .nav-lang { padding: 0.4rem 0.8rem; border-radius: 6px; background: var(--bg-card); color: var(--text); text-decoration: none; font-size: 0.85rem; border: 1px solid var(--border); transition: all 0.2s; }
+        .nav-lang:hover { border-color: var(--primary); }
+        .nav-lang.active { background: var(--primary); border-color: var(--primary); color: white; }
+        .btn-nav { padding: 0.5rem 1.25rem; border-radius: 8px; font-weight: 600; text-decoration: none; transition: all 0.3s; font-size: 0.9rem; }
+        .btn-nav-outline { color: var(--text); border: 1px solid var(--border); }
+        .btn-nav-outline:hover { border-color: var(--primary); color: var(--primary-light); }
+        .btn-nav-primary { background: var(--primary); color: white; }
+        .btn-nav-primary:hover { background: var(--primary-dark); transform: translateY(-1px); }
+
+        /* Hero */
+        .hero {
+            position: relative; z-index: 1;
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            text-align: center; padding: 8rem 2rem 4rem;
+        }
+        .hero-content { max-width: 800px; }
+        .hero-badge {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 1rem; border-radius: 20px; font-size: 0.85rem;
+            background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
+            color: var(--primary-light); margin-bottom: 1.5rem;
+        }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem); font-weight: 800;
+            line-height: 1.1; margin-bottom: 1.5rem;
+            background: linear-gradient(135deg, #fff 0%, #c7d2fe 50%, #818cf8 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .hero p { font-size: 1.2rem; color: var(--text-muted); max-width: 600px; margin: 0 auto 2.5rem; line-height: 1.7; }
+        .hero-cta { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+        .btn-hero {
+            padding: 0.9rem 2.5rem; border-radius: 12px; font-size: 1.05rem; font-weight: 700;
+            text-decoration: none; transition: all 0.3s; display: inline-flex; align-items: center; gap: 0.5rem;
+        }
+        .btn-hero-primary {
+            background: var(--gradient); color: white;
+            box-shadow: 0 4px 20px rgba(99,102,241,0.4);
+        }
+        .btn-hero-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(99,102,241,0.5); }
+        .btn-hero-outline { color: var(--text); border: 2px solid var(--border); }
+        .btn-hero-outline:hover { border-color: var(--primary); color: var(--primary-light); }
+
+        /* Features */
+        .features {
+            position: relative; z-index: 1;
+            padding: 5rem 2rem; max-width: 1200px; margin: 0 auto;
+        }
+        .section-header { text-align: center; margin-bottom: 3.5rem; }
+        .section-header h2 { font-size: 2.2rem; font-weight: 700; margin-bottom: 0.75rem; }
+        .section-header p { color: var(--text-muted); font-size: 1.1rem; }
+        .features-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature-card {
+            padding: 2rem; border-radius: 16px;
+            background: var(--bg-card); border: 1px solid var(--border);
+            transition: all 0.3s;
+        }
+        .feature-card:hover { border-color: var(--primary); transform: translateY(-4px); box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
+        .feature-icon {
+            width: 50px; height: 50px; border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.3rem; margin-bottom: 1.2rem;
+        }
+        .feature-card:nth-child(1) .feature-icon { background: rgba(99,102,241,0.15); color: var(--primary-light); }
+        .feature-card:nth-child(2) .feature-icon { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+        .feature-card:nth-child(3) .feature-icon { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+        .feature-card:nth-child(4) .feature-icon { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+        .feature-card:nth-child(5) .feature-icon { background: rgba(6,182,212,0.15); color: var(--accent-cyan); }
+        .feature-card:nth-child(6) .feature-icon { background: rgba(139,92,246,0.15); color: var(--accent-purple); }
+        .feature-card h3 { font-size: 1.15rem; margin-bottom: 0.6rem; }
+        .feature-card p { color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; }
+
+        /* How It Works */
+        .how-it-works { position: relative; z-index: 1; padding: 5rem 2rem; max-width: 900px; margin: 0 auto; }
+        .steps { display: flex; flex-direction: column; gap: 2rem; }
+        .step {
+            display: flex; align-items: flex-start; gap: 1.5rem;
+            padding: 1.5rem; border-radius: 16px; background: var(--bg-card); border: 1px solid var(--border);
+        }
+        [dir="rtl"] .step { flex-direction: row-reverse; text-align: right; }
+        .step-num {
+            flex-shrink: 0; width: 48px; height: 48px; border-radius: 12px;
+            background: var(--gradient); color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.3rem; font-weight: 800;
+        }
+        .step h3 { font-size: 1.1rem; margin-bottom: 0.4rem; }
+        .step p { color: var(--text-muted); font-size: 0.95rem; }
+
+        /* Footer CTA */
+        .footer-cta {
+            position: relative; z-index: 1;
+            text-align: center; padding: 5rem 2rem;
+        }
+        .footer-cta h2 { font-size: 2rem; margin-bottom: 0.75rem; }
+        .footer-cta p { color: var(--text-muted); margin-bottom: 2rem; font-size: 1.05rem; }
+        
+        /* Footer */
+        .landing-footer {
+            position: relative; z-index: 1;
+            text-align: center; padding: 2rem;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted); font-size: 0.85rem;
+        }
+
+        @media (max-width: 768px) {
+            .landing-nav { padding: 0.75rem 1rem; }
+            .nav-brand { font-size: 1.2rem; }
+            .hero { padding: 6rem 1.5rem 3rem; }
+            .features-grid { grid-template-columns: 1fr; }
+            .step { flex-direction: column; text-align: center; }
+            [dir="rtl"] .step { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+
+    <!-- Navigation -->
+    <nav class="landing-nav">
+        <a href="/" class="nav-brand">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan">
+            <span>{{ txt.app_name }}</span>
+        </a>
+        <div class="nav-actions">
+            <a href="{{ url_for('index', lang='en') }}" class="nav-lang {{ 'active' if lang == 'en' else '' }}">EN</a>
+            <a href="{{ url_for('index', lang='ar') }}" class="nav-lang {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            <a href="{{ url_for('login', lang=lang) }}" class="btn-nav btn-nav-outline">{{ txt.login }}</a>
+            <a href="{{ url_for('login', lang=lang) }}#register" class="btn-nav btn-nav-primary">{{ txt.register }}</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-content">
+            <div class="hero-badge"><i class="fas fa-bolt"></i> {% if is_rtl %}مدعوم بالذكاء الاصطناعي{% else %}AI-Powered{% endif %}</div>
+            <h1>{{ txt.landing_title }}</h1>
+            <p>{{ txt.landing_subtitle }}</p>
+            <div class="hero-cta">
+                <a href="{{ url_for('login', lang=lang) }}#register" class="btn-hero btn-hero-primary">
+                    {{ txt.landing_cta }} <i class="fas fa-arrow-{{ 'left' if is_rtl else 'right' }}"></i>
+                </a>
+                <a href="{{ url_for('login', lang=lang) }}" class="btn-hero btn-hero-outline">
+                    {{ txt.landing_login }} <i class="fas fa-sign-in-alt"></i>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features">
+        <div class="section-header">
+            <h2>{% if is_rtl %}لماذا ميزان؟{% else %}Why Mizan?{% endif %}</h2>
+            <p>{{ txt.trusted_by }}</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-brain"></i></div>
+                <h3>{{ txt.feature_ai }}</h3>
+                <p>{{ txt.feature_ai_desc }}</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-th-large"></i></div>
+                <h3>{{ txt.feature_domains }}</h3>
+                <p>{{ txt.feature_domains_desc }}</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-language"></i></div>
+                <h3>{{ txt.feature_bilingual }}</h3>
+                <p>{{ txt.feature_bilingual_desc }}</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-file-export"></i></div>
+                <h3>{{ txt.feature_export }}</h3>
+                <p>{{ txt.feature_export_desc }}</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-chart-pie"></i></div>
+                <h3>{{ txt.feature_analytics }}</h3>
+                <p>{{ txt.feature_analytics_desc }}</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-copy"></i></div>
+                <h3>{{ txt.feature_templates }}</h3>
+                <p>{{ txt.feature_templates_desc }}</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="how-it-works">
+        <div class="section-header">
+            <h2>{{ txt.how_it_works }}</h2>
+        </div>
+        <div class="steps">
+            <div class="step">
+                <div class="step-num">1</div>
+                <div><h3>{{ txt.step1_title }}</h3><p>{{ txt.step1_desc }}</p></div>
+            </div>
+            <div class="step">
+                <div class="step-num">2</div>
+                <div><h3>{{ txt.step2_title }}</h3><p>{{ txt.step2_desc }}</p></div>
+            </div>
+            <div class="step">
+                <div class="step-num">3</div>
+                <div><h3>{{ txt.step3_title }}</h3><p>{{ txt.step3_desc }}</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer CTA -->
+    <section class="footer-cta">
+        <h2>{% if is_rtl %}ابدأ رحلتك في الحوكمة اليوم{% else %}Start Your GRC Journey Today{% endif %}</h2>
+        <p>{% if is_rtl %}انضم إلى المتخصصين الذين يستخدمون ميزان{% else %}Join GRC professionals using Mizan{% endif %}</p>
+        <a href="{{ url_for('login', lang=lang) }}#register" class="btn-hero btn-hero-primary">
+            {{ txt.landing_cta }} <i class="fas fa-arrow-{{ 'left' if is_rtl else 'right' }}"></i>
+        </a>
+    </section>
+
+    <!-- Footer -->
+    <footer class="landing-footer">
+        <p>{{ txt.created_by }} {{ config.CREATOR_NAME }} &bull; © {{ config.COPYRIGHT_YEAR }} {{ txt.app_name }}</p>
+    </footer>
+</body>
+</html>
