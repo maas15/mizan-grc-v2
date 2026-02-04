@@ -1,0 +1,2105 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="app-layout {{ 'rtl-layout' if is_rtl else '' }}">
+    <!-- Sidebar -->
+    <aside class="sidebar {{ 'sidebar-right' if is_rtl else 'sidebar-left' }}">
+        <div class="sidebar-brand">
+            <a href="{{ url_for('dashboard', lang=lang) }}">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="sidebar-logo">
+            </a>
+        </div>
+        
+        <div class="sidebar-controls">
+            <div class="sidebar-lang">
+                <a href="{{ url_for('domain_page', domain_name=domain_name, lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('domain_page', domain_name=domain_name, lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="fas fa-sun"></i>
+            </button>
+        </div>
+        
+        <a href="{{ url_for('dashboard', lang=lang) }}" class="back-btn">
+            <i class="fas fa-arrow-{{ 'right' if is_rtl else 'left' }}"></i>
+            {% if is_rtl %}العودة{% else %}Back{% endif %}
+        </a>
+        
+        <!-- Document History Link -->
+        <a href="{{ url_for('document_history', lang=lang) }}" class="history-link">
+            <i class="fas fa-folder-open"></i>
+            {{ txt.my_documents }}
+        </a>
+        
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+                {% if session.get('role') == 'admin' %}
+                <a href="{{ url_for('admin_dashboard') }}" class="admin-link"><i class="fas fa-crown"></i></a>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="ai-status {{ 'connected' if ai_available else 'disconnected' }}">
+            <div class="status-dot"></div>
+            <span>{{ txt.ai_connected if ai_available else txt.ai_disconnected }}</span>
+        </div>
+        
+        <a href="{{ url_for('logout') }}" class="logout-btn">
+            <i class="fas fa-sign-out-alt"></i> {{ txt.logout }}
+        </a>
+        
+        <div class="sidebar-footer">
+            <p class="created-by">{{ txt.created_by }}</p>
+            <p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p>
+            <p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p>
+        </div>
+    </aside>
+    
+    <main class="main-content">
+        <header class="domain-header">
+            <h1>{{ domain_name }}</h1>
+            <!-- Usage Limits Display -->
+            <div class="usage-limits-bar">
+                <div class="usage-item">
+                    <span class="usage-label">{{ 'استراتيجية' if is_rtl else 'Strategy' }}</span>
+                    <span class="usage-count {{ 'limit-reached' if usage_info.strategies.remaining == 0 else '' }}">
+                        {{ usage_info.strategies.used }}/{{ usage_info.strategies.limit }}
+                    </span>
+                </div>
+                <div class="usage-item">
+                    <span class="usage-label">{{ 'سياسات' if is_rtl else 'Policies' }}</span>
+                    <span class="usage-count {{ 'limit-reached' if usage_info.policies.remaining == 0 else '' }}">
+                        {{ usage_info.policies.used }}/{{ usage_info.policies.limit }}
+                    </span>
+                </div>
+                <div class="usage-item">
+                    <span class="usage-label">{{ 'تدقيق' if is_rtl else 'Audits' }}</span>
+                    <span class="usage-count {{ 'limit-reached' if usage_info.audits.remaining == 0 else '' }}">
+                        {{ usage_info.audits.used }}/{{ usage_info.audits.limit }}
+                    </span>
+                </div>
+                <div class="usage-item">
+                    <span class="usage-label">{{ 'مخاطر' if is_rtl else 'Risks' }}</span>
+                    <span class="usage-count {{ 'limit-reached' if usage_info.risks.remaining == 0 else '' }}">
+                        {{ usage_info.risks.used }}/{{ usage_info.risks.limit }}
+                    </span>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Tabs -->
+        <div class="tabs" {% if is_rtl %}style="display: flex; flex-direction: row-reverse;"{% endif %}>
+            {% if is_rtl %}
+            <!-- RTL: Tabs in reverse order -->
+            {% if domain_code == 'erm' %}
+            <button class="tab" data-tab="register" style="flex-direction: row-reverse;">
+                <i class="fas fa-th-list"></i> {% if is_rtl %}سجل المخاطر{% else %}Risk Register{% endif %}
+            </button>
+            {% endif %}
+            <button class="tab" data-tab="risk" style="flex-direction: row-reverse;">
+                <i class="fas fa-exclamation-triangle"></i> {{ txt.tabs[3] }}
+            </button>
+            <button class="tab" data-tab="audit" style="flex-direction: row-reverse;">
+                <i class="fas fa-clipboard-check"></i> {{ txt.tabs[2] }}
+            </button>
+            <button class="tab" data-tab="policy" style="flex-direction: row-reverse;">
+                <i class="fas fa-file-alt"></i> {{ txt.tabs[1] }}
+            </button>
+            <button class="tab active" data-tab="strategy" style="flex-direction: row-reverse;">
+                <i class="fas fa-chess"></i> {{ txt.tabs[0] }}
+            </button>
+            {% else %}
+            <!-- LTR: Normal order -->
+            <button class="tab active" data-tab="strategy">
+                <i class="fas fa-chess"></i> {{ txt.tabs[0] }}
+            </button>
+            <button class="tab" data-tab="policy">
+                <i class="fas fa-file-alt"></i> {{ txt.tabs[1] }}
+            </button>
+            <button class="tab" data-tab="audit">
+                <i class="fas fa-clipboard-check"></i> {{ txt.tabs[2] }}
+            </button>
+            <button class="tab" data-tab="risk">
+                <i class="fas fa-exclamation-triangle"></i> {{ txt.tabs[3] }}
+            </button>
+            {% if domain_code == 'erm' %}
+            <button class="tab" data-tab="register">
+                <i class="fas fa-th-list"></i> {% if is_rtl %}سجل المخاطر{% else %}Risk Register{% endif %}
+            </button>
+            {% endif %}
+            {% endif %}
+        </div>
+        
+        <!-- Strategy Tab -->
+        <div class="tab-content active" id="strategy-tab">
+            <form id="strategy-form" class="grc-form">
+                <input type="hidden" name="domain" value="{{ domain_name }}">
+                <input type="hidden" name="language" value="{{ lang }}">
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>{{ txt.org_name }}</label>
+                        <input type="text" name="org_name" value="{% if is_rtl %}منظمتي{% else %}My Organization{% endif %}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>{{ txt.sector }}</label>
+                        <select name="sector" required>
+                            {% for sector in txt.sectors %}
+                            <option value="{{ sector }}">{{ sector }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>{{ txt.size }}</label>
+                        <select name="size" required>
+                            {% for size in txt.sizes %}
+                            <option value="{{ size }}">{{ size }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>{{ txt.budget }}</label>
+                        <select name="budget" required>
+                            {% for budget in txt.budgets %}
+                            <option value="{{ budget }}">{{ budget }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>{{ txt.frameworks }}</label>
+                    <div class="checkbox-group">
+                        {% for framework in frameworks %}
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="frameworks" value="{{ framework }}">
+                            <span>{{ framework }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                
+                <!-- Current State Assessment - Domain Specific -->
+                <div class="form-section">
+                    <h3 class="form-section-title">
+                        <i class="fas fa-building"></i>
+                        {% if is_rtl %}تقييم الوضع الحالي{% else %}Current State Assessment{% endif %}
+                    </h3>
+                    
+                    <div class="form-group">
+                        <label>{% if is_rtl %}الهيكل التنظيمي الحالي{% else %}Current Organizational Structure{% endif %}</label>
+                        <select name="org_structure">
+                            {% if is_rtl %}
+                            <option value="centralized">مركزي - فريق مركزي</option>
+                            <option value="distributed">موزع - فرق في كل قسم</option>
+                            <option value="hybrid">هجين - مركزي مع منسقين</option>
+                            <option value="outsourced">خارجي - مزود خدمات</option>
+                            <option value="none">لا يوجد هيكل محدد</option>
+                            {% else %}
+                            <option value="centralized">Centralized - Central Team</option>
+                            <option value="distributed">Distributed - Teams in Each Department</option>
+                            <option value="hybrid">Hybrid - Central with Coordinators</option>
+                            <option value="outsourced">Outsourced - Managed Service Provider</option>
+                            <option value="none">No Defined Structure</option>
+                            {% endif %}
+                        </select>
+                    </div>
+                    
+                    <!-- Domain-Specific Technologies -->
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-cogs"></i>
+                            {% if is_rtl %}التقنيات والضوابط المطبقة حالياً{% else %}Currently Implemented Technologies & Controls{% endif %}
+                        </label>
+                        
+                        {% for category, techs in technologies.items() %}
+                        <div class="tech-category">
+                            <h4 class="tech-category-title">{{ category }}</h4>
+                            <div class="checkbox-group tech-group">
+                                {% for tech in techs %}
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="technologies" value="{{ tech }}">
+                                    <span>{{ tech }}</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>{% if is_rtl %}تقنيات إضافية (غير مذكورة أعلاه){% else %}Additional Technologies (not listed above){% endif %}</label>
+                        <textarea name="additional_tech" rows="2" placeholder="{% if is_rtl %}أدخل أي تقنيات أخرى مطبقة...{% else %}Enter any other implemented technologies...{% endif %}"></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>{% if is_rtl %}مستوى النضج الحالي{% else %}Current Maturity Level{% endif %}</label>
+                        <select name="maturity_level">
+                            {% if is_rtl %}
+                            <option value="initial">مبدئي (1) - عمليات غير منظمة</option>
+                            <option value="developing">نامٍ (2) - بعض العمليات موثقة</option>
+                            <option value="defined">محدد (3) - عمليات موحدة</option>
+                            <option value="managed">مُدار (4) - عمليات مقاسة</option>
+                            <option value="optimized">محسّن (5) - تحسين مستمر</option>
+                            {% else %}
+                            <option value="initial">Initial (1) - Ad-hoc processes</option>
+                            <option value="developing">Developing (2) - Some documented</option>
+                            <option value="defined">Defined (3) - Standardized</option>
+                            <option value="managed">Managed (4) - Measured</option>
+                            <option value="optimized">Optimized (5) - Continuous improvement</option>
+                            {% endif %}
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>{{ txt.challenges }}</label>
+                    <textarea name="challenges" rows="3" placeholder="{% if is_rtl %}صف التحديات الرئيسية...{% else %}Describe key challenges...{% endif %}"></textarea>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-magic"></i> {{ txt.generate }}
+                </button>
+            </form>
+            
+            <div id="strategy-output" class="output-container hidden">
+                <div class="output-tabs" {% if is_rtl %}style="display: flex; flex-direction: row-reverse;"{% endif %}>
+                    {% if is_rtl %}
+                    <!-- RTL: Tabs in reverse order so they appear right-to-left -->
+                    <button class="output-tab" data-section="kpis">{{ txt.strategy_sections.kpis }}</button>
+                    <button class="output-tab" data-section="roadmap">{{ txt.strategy_sections.roadmap }}</button>
+                    <button class="output-tab" data-section="pillars">{{ txt.strategy_sections.pillars }}</button>
+                    <button class="output-tab" data-section="gaps">{{ txt.strategy_sections.gaps }}</button>
+                    <button class="output-tab active" data-section="vision">{{ txt.strategy_sections.vision }}</button>
+                    {% else %}
+                    <!-- LTR: Normal order -->
+                    <button class="output-tab active" data-section="vision">{{ txt.strategy_sections.vision }}</button>
+                    <button class="output-tab" data-section="gaps">{{ txt.strategy_sections.gaps }}</button>
+                    <button class="output-tab" data-section="pillars">{{ txt.strategy_sections.pillars }}</button>
+                    <button class="output-tab" data-section="roadmap">{{ txt.strategy_sections.roadmap }}</button>
+                    <button class="output-tab" data-section="kpis">{{ txt.strategy_sections.kpis }}</button>
+                    {% endif %}
+                </div>
+                <div class="output-content" id="strategy-content"></div>
+                <div class="download-buttons" {% if is_rtl %}style="flex-direction: row-reverse;"{% endif %}>
+                    <button class="btn btn-secondary" onclick="downloadStrategy('txt')">
+                        <i class="fas fa-file-alt"></i> TXT
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadStrategy('docx')">
+                        <i class="fas fa-file-word"></i> Word
+                    </button>
+                    <button class="btn btn-danger" onclick="downloadStrategy('pdf')">
+                        <i class="fas fa-file-pdf"></i> PDF
+                    </button>
+                    <button class="btn btn-info" onclick="printDocument('strategy')">
+                        <i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}
+                    </button>
+                </div>
+                <!-- Chat with Document -->
+                <div class="chat-section">
+                    <h4><i class="fas fa-comments"></i> {{ txt.chat_document }}</h4>
+                    <div class="chat-messages" id="strategy-chat-messages"></div>
+                    <div class="chat-input-row">
+                        <input type="text" id="strategy-chat-input" placeholder="{{ txt.ask_question }}" onkeypress="if(event.key==='Enter')sendChat('strategy')">
+                        <button class="btn btn-primary" onclick="sendChat('strategy')">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Policy Tab -->
+        <div class="tab-content hidden" id="policy-tab">
+            <form id="policy-form" class="grc-form">
+                <input type="hidden" name="domain" value="{{ domain_name }}">
+                <input type="hidden" name="language" value="{{ lang }}">
+                
+                <!-- Template Button -->
+                <div class="template-btn-row">
+                    <button type="button" class="btn btn-outline" onclick="openTemplateModal('policy')">
+                        <i class="fas fa-folder-open"></i> {{ txt.use_template }}
+                    </button>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>{{ txt.policy_name }}</label>
+                        <input type="text" name="policy_name" id="policy-name-input" placeholder="{% if is_rtl %}سياسة أمن المعلومات{% else %}Information Security Policy{% endif %}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>{{ txt.policy_framework }}</label>
+                        <select name="framework" id="policy-framework-select" required>
+                            {% for framework in frameworks %}
+                            <option value="{{ framework }}">{{ framework }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-file-alt"></i> {{ txt.generate_policy }}
+                </button>
+            </form>
+            
+            <div id="policy-output" class="output-container hidden">
+                <div class="output-content policy-content" id="policy-content"></div>
+                <div class="download-buttons">
+                    <button class="btn btn-secondary" onclick="downloadPolicy('txt')">
+                        <i class="fas fa-file-alt"></i> TXT
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadPolicy('docx')">
+                        <i class="fas fa-file-word"></i> Word
+                    </button>
+                    <button class="btn btn-danger" onclick="downloadPolicy('pdf')">
+                        <i class="fas fa-file-pdf"></i> PDF
+                    </button>
+                    <button class="btn btn-info" onclick="printDocument('policy')">
+                        <i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}
+                    </button>
+                    <button class="btn btn-warning" onclick="openReviewModal()">
+                        <i class="fas fa-search"></i> {{ txt.review_policy }}
+                    </button>
+                </div>
+                <!-- Policy Review Results -->
+                <div id="policy-review-output" class="review-output hidden">
+                    <h4><i class="fas fa-clipboard-check"></i> {{ txt.review_policy }}</h4>
+                    <div class="review-content" id="policy-review-content"></div>
+                    <div style="margin-top:1rem;display:flex;gap:0.75rem;">
+                        <button class="btn btn-primary" onclick="applyReviewToPolicy()">
+                            <i class="fas fa-magic"></i> {% if is_rtl %}تعديل السياسة حسب نتائج المراجعة{% else %}Modify Policy Based on Review{% endif %}
+                        </button>
+                        <button class="btn btn-secondary" onclick="document.getElementById('policy-review-output').classList.add('hidden')">
+                            <i class="fas fa-times"></i> {% if is_rtl %}إغلاق{% else %}Dismiss{% endif %}
+                        </button>
+                    </div>
+                </div>
+                <!-- Chat with Document -->
+                <div class="chat-section">
+                    <h4><i class="fas fa-comments"></i> {{ txt.chat_document }}</h4>
+                    <div class="chat-messages" id="policy-chat-messages"></div>
+                    <div class="chat-input-row">
+                        <input type="text" id="policy-chat-input" placeholder="{{ txt.ask_question }}" onkeypress="if(event.key==='Enter')sendChat('policy')">
+                        <button class="btn btn-primary" onclick="sendChat('policy')">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Audit Tab -->
+        <div class="tab-content hidden" id="audit-tab">
+            <form id="audit-form" class="grc-form" enctype="multipart/form-data">
+                <input type="hidden" name="domain" value="{{ domain_name }}">
+                <input type="hidden" name="language" value="{{ lang }}">
+                
+                <!-- Template Button -->
+                <div class="template-btn-row">
+                    <button type="button" class="btn btn-outline" onclick="openTemplateModal('audit')">
+                        <i class="fas fa-folder-open"></i> {{ txt.use_template }}
+                    </button>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>{% if is_rtl %}معيار التدقيق{% else %}Audit Standard{% endif %}</label>
+                        <select name="framework" id="audit-framework-select" required>
+                            {% for framework in frameworks %}
+                            <option value="{{ framework }}">{{ framework }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>{% if is_rtl %}نطاق التدقيق{% else %}Audit Scope{% endif %}</label>
+                        <select name="audit_scope" id="audit-scope-select">
+                            {% if is_rtl %}
+                            <option value="full">تدقيق شامل</option>
+                            <option value="controls">تدقيق الضوابط</option>
+                            <option value="compliance">تدقيق الامتثال</option>
+                            {% else %}
+                            <option value="full">Full Audit</option>
+                            <option value="controls">Controls Audit</option>
+                            <option value="compliance">Compliance Audit</option>
+                            {% endif %}
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label><i class="fas fa-upload"></i> {% if is_rtl %}رفع الأدلة (PDF){% else %}Upload Evidence (PDF){% endif %}</label>
+                    <div class="file-upload-area" id="file-upload-area">
+                        <input type="file" name="evidence" id="evidence-file" accept=".pdf" multiple>
+                        <div class="file-upload-content">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <p>{% if is_rtl %}اسحب الملفات أو انقر{% else %}Drag files or click{% endif %}</p>
+                        </div>
+                    </div>
+                    <div id="uploaded-files" class="uploaded-files-list"></div>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-clipboard-check"></i> {% if is_rtl %}إنشاء تقرير التدقيق{% else %}Generate Audit Report{% endif %}
+                </button>
+            </form>
+            
+            <div id="audit-output" class="output-container hidden">
+                <div class="output-content" id="audit-content"></div>
+                <div class="download-buttons">
+                    <button class="btn btn-secondary" onclick="downloadAudit('txt')">
+                        <i class="fas fa-file-alt"></i> TXT
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadAudit('docx')">
+                        <i class="fas fa-file-word"></i> Word
+                    </button>
+                    <button class="btn btn-danger" onclick="downloadAudit('pdf')">
+                        <i class="fas fa-file-pdf"></i> PDF
+                    </button>
+                    <button class="btn btn-info" onclick="printDocument('audit')">
+                        <i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Risk Tab - Enhanced -->
+        <div class="tab-content hidden" id="risk-tab">
+            <form id="risk-form" class="grc-form">
+                <input type="hidden" name="domain" value="{{ domain_name }}">
+                <input type="hidden" name="language" value="{{ lang }}">
+                
+                <!-- Template Button -->
+                <div class="template-btn-row">
+                    <button type="button" class="btn btn-outline" onclick="openTemplateModal('risk')">
+                        <i class="fas fa-folder-open"></i> {{ txt.use_template }}
+                    </button>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>{{ txt.risk_category }}</label>
+                        <select name="category" id="risk-category" required>
+                            {% for cat, scenarios in risk_categories.items() %}
+                            <option value="{{ cat }}">{{ cat }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>{% if is_rtl %}السيناريو{% else %}Scenario{% endif %}</label>
+                        <select name="scenario" id="risk-scenario">
+                            <option value="">{% if is_rtl %}اختر سيناريو...{% else %}Select scenario...{% endif %}</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>{{ txt.asset_name }}</label>
+                    <input type="text" name="asset" id="risk-asset-input" placeholder="{% if is_rtl %}قاعدة بيانات العملاء{% else %}Customer Database{% endif %}" required>
+                </div>
+                
+                <div class="form-group">
+                    <label>{% if is_rtl %}وصف إضافي للتهديد{% else %}Additional Threat Description{% endif %}</label>
+                    <textarea name="threat" id="risk-threat-input" rows="3" placeholder="{% if is_rtl %}صف تفاصيل إضافية عن سيناريو التهديد...{% else %}Describe additional details about the threat scenario...{% endif %}"></textarea>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fas fa-search"></i> {{ txt.analyze_risk }}
+                </button>
+            </form>
+            
+            <div id="risk-output" class="output-container hidden">
+                <div class="output-content" id="risk-content"></div>
+                <div class="download-buttons">
+                    <button class="btn btn-secondary" onclick="downloadRisk('txt')">
+                        <i class="fas fa-file-alt"></i> TXT
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadRisk('docx')">
+                        <i class="fas fa-file-word"></i> Word
+                    </button>
+                    <button class="btn btn-danger" onclick="downloadRisk('pdf')">
+                        <i class="fas fa-file-pdf"></i> PDF
+                    </button>
+                    <button class="btn btn-info" onclick="printDocument('risk')">
+                        <i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        {% if domain_code == 'erm' %}
+        <!-- ERM Risk Register Tab -->
+        <div class="tab-content hidden" id="register-tab">
+            <div class="erm-workspace">
+                <!-- Risk Register Header -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.75rem;">
+                    <h3 style="margin:0;"><i class="fas fa-th-list"></i> {% if is_rtl %}سجل المخاطر المؤسسية{% else %}Enterprise Risk Register{% endif %}</h3>
+                    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                        <button class="btn btn-primary" onclick="openAddRiskModal()">
+                            <i class="fas fa-plus"></i> {% if is_rtl %}إضافة خطر{% else %}Add Risk{% endif %}
+                        </button>
+                        <button class="btn btn-info" onclick="toggleHeatMap()">
+                            <i class="fas fa-fire"></i> {% if is_rtl %}خريطة الحرارة{% else %}Heat Map{% endif %}
+                        </button>
+                        <button class="btn btn-warning" onclick="generateRiskAppetite()">
+                            <i class="fas fa-balance-scale"></i> {% if is_rtl %}شهية المخاطر{% else %}Risk Appetite{% endif %}
+                        </button>
+                        <button class="btn btn-secondary" onclick="exportRiskRegister()">
+                            <i class="fas fa-download"></i> {% if is_rtl %}تصدير{% else %}Export{% endif %}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Risk Heat Map (toggleable) -->
+                <div id="risk-heatmap" class="hidden" style="margin-bottom:1.5rem;background:var(--card-bg);border-radius:12px;padding:1.5rem;border:1px solid var(--border-color);">
+                    <h4 style="margin-top:0;text-align:center;">{% if is_rtl %}خريطة حرارة المخاطر{% else %}Risk Heat Map{% endif %}</h4>
+                    <div id="heatmap-grid" style="display:grid;grid-template-columns:auto repeat(5,1fr);grid-template-rows:repeat(6,auto);gap:2px;max-width:600px;margin:0 auto;font-size:0.8rem;">
+                        <!-- Header row -->
+                        <div style="padding:8px;font-weight:700;text-align:center;"></div>
+                        <div style="padding:8px;font-weight:700;text-align:center;background:#e2e8f0;border-radius:4px;">{% if is_rtl %}نادر{% else %}Rare{% endif %}</div>
+                        <div style="padding:8px;font-weight:700;text-align:center;background:#e2e8f0;border-radius:4px;">{% if is_rtl %}بعيد{% else %}Unlikely{% endif %}</div>
+                        <div style="padding:8px;font-weight:700;text-align:center;background:#e2e8f0;border-radius:4px;">{% if is_rtl %}محتمل{% else %}Possible{% endif %}</div>
+                        <div style="padding:8px;font-weight:700;text-align:center;background:#e2e8f0;border-radius:4px;">{% if is_rtl %}مرجح{% else %}Likely{% endif %}</div>
+                        <div style="padding:8px;font-weight:700;text-align:center;background:#e2e8f0;border-radius:4px;">{% if is_rtl %}شبه مؤكد{% else %}Almost Certain{% endif %}</div>
+                        <!-- Rows: Catastrophic(5), Major(4), Moderate(3), Minor(2), Insignificant(1) -->
+                    </div>
+                    <div id="heatmap-canvas" style="max-width:600px;margin:1rem auto 0;"></div>
+                </div>
+
+                <!-- Summary Stats -->
+                <div id="register-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;margin-bottom:1.5rem;">
+                    <div class="stat-card" style="background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;padding:1rem;border-radius:10px;text-align:center;">
+                        <div style="font-size:1.8rem;font-weight:700;" id="stat-critical">0</div>
+                        <div style="font-size:0.85rem;opacity:0.9;">{% if is_rtl %}حرج{% else %}Critical{% endif %}</div>
+                    </div>
+                    <div class="stat-card" style="background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;padding:1rem;border-radius:10px;text-align:center;">
+                        <div style="font-size:1.8rem;font-weight:700;" id="stat-high">0</div>
+                        <div style="font-size:0.85rem;opacity:0.9;">{% if is_rtl %}عالي{% else %}High{% endif %}</div>
+                    </div>
+                    <div class="stat-card" style="background:linear-gradient(135deg,#eab308,#ca8a04);color:#fff;padding:1rem;border-radius:10px;text-align:center;">
+                        <div style="font-size:1.8rem;font-weight:700;" id="stat-medium">0</div>
+                        <div style="font-size:0.85rem;opacity:0.9;">{% if is_rtl %}متوسط{% else %}Medium{% endif %}</div>
+                    </div>
+                    <div class="stat-card" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:1rem;border-radius:10px;text-align:center;">
+                        <div style="font-size:1.8rem;font-weight:700;" id="stat-low">0</div>
+                        <div style="font-size:0.85rem;opacity:0.9;">{% if is_rtl %}منخفض{% else %}Low{% endif %}</div>
+                    </div>
+                    <div class="stat-card" style="background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;padding:1rem;border-radius:10px;text-align:center;">
+                        <div style="font-size:1.8rem;font-weight:700;" id="stat-total">0</div>
+                        <div style="font-size:0.85rem;opacity:0.9;">{% if is_rtl %}إجمالي{% else %}Total{% endif %}</div>
+                    </div>
+                </div>
+
+                <!-- Risk Register Table -->
+                <div style="overflow-x:auto;background:var(--card-bg);border-radius:12px;border:1px solid var(--border-color);">
+                    <table id="risk-register-table" style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+                        <thead>
+                            <tr style="background:var(--primary-color);color:#fff;">
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">#</th>
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}اسم الخطر{% else %}Risk Name{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}الفئة{% else %}Category{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:center;">{% if is_rtl %}الاحتمالية{% else %}Likelihood{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:center;">{% if is_rtl %}الأثر{% else %}Impact{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:center;">{% if is_rtl %}الدرجة{% else %}Score{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}المالك{% else %}Owner{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}المعالجة{% else %}Treatment{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}الحالة{% else %}Status{% endif %}</th>
+                                <th style="padding:12px 8px;text-align:center;">{% if is_rtl %}إجراءات{% else %}Actions{% endif %}</th>
+                            </tr>
+                        </thead>
+                        <tbody id="risk-register-body">
+                            <tr><td colspan="10" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-info-circle"></i> {% if is_rtl %}لا توجد مخاطر مسجلة. اضغط "إضافة خطر" للبدء.{% else %}No risks registered. Click "Add Risk" to start.{% endif %}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Risk Appetite Output -->
+                <div id="risk-appetite-output" class="hidden" style="margin-top:1.5rem;background:var(--card-bg);border-radius:12px;padding:1.5rem;border:1px solid var(--border-color);">
+                    <h4><i class="fas fa-balance-scale"></i> {% if is_rtl %}بيان شهية المخاطر{% else %}Risk Appetite Statement{% endif %}</h4>
+                    <div id="risk-appetite-content" class="output-content"></div>
+                    <div class="download-buttons" style="margin-top:1rem;">
+                        <button class="btn btn-primary" onclick="downloadRiskAppetite('docx')"><i class="fas fa-file-word"></i> Word</button>
+                        <button class="btn btn-danger" onclick="downloadRiskAppetite('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </main>
+</div>
+
+<div class="loading-overlay hidden" id="loading">
+    <div class="loading-spinner"></div>
+    <p>{{ txt.generating }}</p>
+</div>
+
+<!-- Template Modal -->
+<div class="modal-overlay hidden" id="template-modal">
+    <div class="modal-content template-modal">
+        <div class="modal-header">
+            <h3><i class="fas fa-folder-open"></i> {{ txt.select_template }}</h3>
+            <button class="modal-close" onclick="closeTemplateModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="template-list" id="template-list">
+                <!-- Templates loaded dynamically -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Policy Review Modal -->
+<div class="modal-overlay hidden" id="review-modal">
+    <div class="modal-content template-modal">
+        <div class="modal-header">
+            <h3><i class="fas fa-search"></i> {{ txt.review_policy }}</h3>
+            <button class="modal-close" onclick="closeReviewModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>{{ txt.review_type }}</label>
+                <select id="review-type-select">
+                    <option value="comprehensive">{{ txt.comprehensive_review }}</option>
+                    <option value="compliance">{{ txt.compliance_review }}</option>
+                    <option value="gaps">{{ txt.gap_analysis }}</option>
+                </select>
+            </div>
+            <button class="btn btn-primary btn-block" onclick="startPolicyReview()">
+                <i class="fas fa-play"></i> {{ txt.start_review }}
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Gap Remediation Modal -->
+
+{% if domain_code == 'erm' %}
+<!-- Add Risk Modal -->
+<div class="modal-overlay hidden" id="add-risk-modal">
+    <div class="modal-content template-modal" style="max-width:600px;">
+        <div class="modal-header">
+            <h3><i class="fas fa-plus-circle"></i> {% if is_rtl %}إضافة خطر جديد{% else %}Add New Risk{% endif %}</h3>
+            <button class="modal-close" onclick="closeAddRiskModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
+            <div class="form-group">
+                <label>{% if is_rtl %}اسم الخطر{% else %}Risk Name{% endif %} *</label>
+                <input type="text" id="risk-reg-name" placeholder="{% if is_rtl %}مثال: تسريب البيانات{% else %}e.g. Data Breach{% endif %}" required>
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}الوصف{% else %}Description{% endif %}</label>
+                <textarea id="risk-reg-desc" rows="2" placeholder="{% if is_rtl %}وصف تفصيلي للخطر...{% else %}Detailed risk description...{% endif %}"></textarea>
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}الفئة{% else %}Category{% endif %}</label>
+                <select id="risk-reg-category">
+                    {% if is_rtl %}
+                    <option value="استراتيجي">استراتيجي</option>
+                    <option value="تشغيلي">تشغيلي</option>
+                    <option value="مالي">مالي</option>
+                    <option value="امتثال">امتثال</option>
+                    <option value="تقني">تقني</option>
+                    <option value="سمعة">سمعة</option>
+                    <option value="بيئي">بيئي</option>
+                    <option value="قانوني">قانوني</option>
+                    {% else %}
+                    <option value="Strategic">Strategic</option>
+                    <option value="Operational">Operational</option>
+                    <option value="Financial">Financial</option>
+                    <option value="Compliance">Compliance</option>
+                    <option value="Technology">Technology</option>
+                    <option value="Reputational">Reputational</option>
+                    <option value="Environmental">Environmental</option>
+                    <option value="Legal">Legal</option>
+                    {% endif %}
+                </select>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                <div class="form-group">
+                    <label>{% if is_rtl %}الاحتمالية (1-5){% else %}Likelihood (1-5){% endif %}</label>
+                    <select id="risk-reg-likelihood">
+                        <option value="1">1 - {% if is_rtl %}نادر{% else %}Rare{% endif %}</option>
+                        <option value="2">2 - {% if is_rtl %}بعيد{% else %}Unlikely{% endif %}</option>
+                        <option value="3" selected>3 - {% if is_rtl %}محتمل{% else %}Possible{% endif %}</option>
+                        <option value="4">4 - {% if is_rtl %}مرجح{% else %}Likely{% endif %}</option>
+                        <option value="5">5 - {% if is_rtl %}شبه مؤكد{% else %}Almost Certain{% endif %}</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>{% if is_rtl %}الأثر (1-5){% else %}Impact (1-5){% endif %}</label>
+                    <select id="risk-reg-impact">
+                        <option value="1">1 - {% if is_rtl %}ضئيل{% else %}Insignificant{% endif %}</option>
+                        <option value="2">2 - {% if is_rtl %}طفيف{% else %}Minor{% endif %}</option>
+                        <option value="3" selected>3 - {% if is_rtl %}متوسط{% else %}Moderate{% endif %}</option>
+                        <option value="4">4 - {% if is_rtl %}كبير{% else %}Major{% endif %}</option>
+                        <option value="5">5 - {% if is_rtl %}كارثي{% else %}Catastrophic{% endif %}</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}مالك الخطر{% else %}Risk Owner{% endif %}</label>
+                <input type="text" id="risk-reg-owner" placeholder="{% if is_rtl %}مثال: مدير إدارة المخاطر{% else %}e.g. Chief Risk Officer{% endif %}">
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}استراتيجية المعالجة{% else %}Treatment Strategy{% endif %}</label>
+                <select id="risk-reg-treatment">
+                    {% if is_rtl %}
+                    <option value="تخفيف">تخفيف</option>
+                    <option value="نقل">نقل</option>
+                    <option value="تجنب">تجنب</option>
+                    <option value="قبول">قبول</option>
+                    {% else %}
+                    <option value="Mitigate">Mitigate</option>
+                    <option value="Transfer">Transfer</option>
+                    <option value="Avoid">Avoid</option>
+                    <option value="Accept">Accept</option>
+                    {% endif %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}خطة المعالجة{% else %}Treatment Plan{% endif %}</label>
+                <textarea id="risk-reg-plan" rows="2" placeholder="{% if is_rtl %}صف إجراءات المعالجة...{% else %}Describe treatment actions...{% endif %}"></textarea>
+            </div>
+            <div class="form-group">
+                <label>{% if is_rtl %}الحالة{% else %}Status{% endif %}</label>
+                <select id="risk-reg-status">
+                    {% if is_rtl %}
+                    <option value="مفتوح">مفتوح</option>
+                    <option value="قيد المعالجة">قيد المعالجة</option>
+                    <option value="مغلق">مغلق</option>
+                    <option value="مقبول">مقبول</option>
+                    {% else %}
+                    <option value="Open">Open</option>
+                    <option value="In Treatment">In Treatment</option>
+                    <option value="Closed">Closed</option>
+                    <option value="Accepted">Accepted</option>
+                    {% endif %}
+                </select>
+            </div>
+            <input type="hidden" id="risk-reg-edit-id" value="">
+            <button class="btn btn-primary btn-block" onclick="saveRiskEntry()">
+                <i class="fas fa-save"></i> {% if is_rtl %}حفظ الخطر{% else %}Save Risk{% endif %}
+            </button>
+        </div>
+    </div>
+</div>
+{% endif %}
+<div class="modal-overlay hidden" id="remediation-modal">
+    <div class="modal-content template-modal">
+        <div class="modal-header">
+            <h3><i class="fas fa-tools"></i> {{ txt.gap_remediation }}</h3>
+            <button class="modal-close" onclick="closeRemediationModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>{{ txt.enter_gaps }}</label>
+                <textarea id="gaps-input" rows="5" placeholder="{% if is_rtl %}مثال: عدم وجود سياسة أمنية شاملة{% else %}Example: No comprehensive security policy{% endif %}"></textarea>
+            </div>
+            <button class="btn btn-primary btn-block" onclick="generateRemediationPlan()">
+                <i class="fas fa-cogs"></i> {{ txt.generate_plan }}
+            </button>
+            <div id="remediation-output" class="remediation-output hidden">
+                <h4>{% if is_rtl %}خطة المعالجة{% else %}Remediation Plan{% endif %}</h4>
+                <div id="remediation-content"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Template Button Row */
+.template-btn-row {
+    margin-bottom: 15px;
+}
+
+.btn-outline {
+    background: transparent;
+    border: 2px dashed var(--primary);
+    color: var(--primary);
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn-outline:hover {
+    background: rgba(102, 126, 234, 0.1);
+    border-style: solid;
+}
+
+/* Chat Section */
+.chat-section {
+    margin-top: 20px;
+    padding: 15px;
+    background: var(--bg-elevated);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+}
+
+.chat-section h4 {
+    margin: 0 0 15px 0;
+    color: var(--primary);
+}
+
+.chat-messages {
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+    padding: 10px;
+    background: var(--bg-card);
+    border-radius: 8px;
+    min-height: 60px;
+}
+
+.chat-message {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+}
+
+.chat-message.user {
+    background: var(--primary);
+    color: white;
+    margin-{{ 'right' if is_rtl else 'left' }}: 20%;
+}
+
+.chat-message.assistant {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    margin-{{ 'left' if is_rtl else 'right' }}: 20%;
+}
+
+.chat-input-row {
+    display: flex;
+    gap: 10px;
+}
+
+.chat-input-row input {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+}
+
+.chat-input-row button {
+    padding: 10px 15px;
+}
+
+/* Review Output */
+.review-output {
+    margin-top: 20px;
+    padding: 15px;
+    background: var(--bg-elevated);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+}
+
+.review-output h4 {
+    margin: 0 0 15px 0;
+    color: var(--warning);
+}
+
+.review-content {
+    line-height: 1.6;
+}
+
+/* Remediation Output */
+.remediation-output {
+    margin-top: 20px;
+    padding: 15px;
+    background: var(--bg-card);
+    border-radius: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+#gaps-input {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    resize: vertical;
+}
+
+/* Template Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(5px);
+}
+
+.modal-overlay.hidden {
+    display: none;
+}
+
+.template-modal {
+    background: var(--bg-card);
+    border-radius: 16px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow: hidden;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    color: white;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.5rem;
+    cursor: pointer;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+
+.modal-close:hover {
+    opacity: 1;
+}
+
+.modal-body {
+    padding: 20px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.template-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.template-item {
+    background: var(--bg-elevated);
+    border-radius: 10px;
+    padding: 15px;
+    cursor: pointer;
+    transition: all 0.3s;
+    border: 2px solid transparent;
+}
+
+.template-item:hover {
+    border-color: var(--primary);
+    transform: translateX(5px);
+}
+
+.template-item h4 {
+    margin: 0 0 8px 0;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.template-item h4 i {
+    color: var(--primary);
+}
+
+.template-item p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.template-item .template-meta {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.template-tag {
+    background: rgba(102, 126, 234, 0.2);
+    color: var(--primary);
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+}
+
+.no-templates {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-secondary);
+}
+
+{% if is_rtl %}
+.template-item:hover {
+    transform: translateX(-5px);
+}
+{% endif %}
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+const lang = '{{ lang }}';
+const isRtl = {{ 'true' if is_rtl else 'false' }};
+
+// Current template type
+let currentTemplateType = '';
+const currentDomain = '{{ domain_name }}';
+
+// Template Modal Functions
+function openTemplateModal(type) {
+    currentTemplateType = type;
+    document.getElementById('template-modal').classList.remove('hidden');
+    loadTemplates(type);
+}
+
+function closeTemplateModal() {
+    document.getElementById('template-modal').classList.add('hidden');
+}
+
+async function loadTemplates(type) {
+    const listEl = document.getElementById('template-list');
+    listEl.innerHTML = '<div class="no-templates"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+    
+    try {
+        const res = await fetch('/api/templates/' + type + '?lang=' + lang + '&domain=' + encodeURIComponent(currentDomain));
+        const data = await res.json();
+        
+        if (data.success && Object.keys(data.templates).length > 0) {
+            listEl.innerHTML = '';
+            
+            for (const [name, template] of Object.entries(data.templates)) {
+                const item = document.createElement('div');
+                item.className = 'template-item';
+                item.onclick = () => applyTemplate(type, name, template);
+                
+                let metaHtml = '';
+                if (template.framework) {
+                    metaHtml += '<span class="template-tag">' + template.framework + '</span>';
+                }
+                if (template.controls) {
+                    metaHtml += '<span class="template-tag">' + template.controls + ' controls</span>';
+                }
+                if (template.horizon) {
+                    metaHtml += '<span class="template-tag">' + template.horizon + '</span>';
+                }
+                
+                item.innerHTML = 
+                    '<h4><i class="fas fa-file-alt"></i> ' + name + '</h4>' +
+                    '<p>' + template.description + '</p>' +
+                    (metaHtml ? '<div class="template-meta">' + metaHtml + '</div>' : '');
+                
+                listEl.appendChild(item);
+            }
+        } else {
+            listEl.innerHTML = '<div class="no-templates">' + (isRtl ? 'لا توجد قوالب متاحة' : 'No templates available') + '</div>';
+        }
+    } catch (e) {
+        console.error('Error loading templates:', e);
+        listEl.innerHTML = '<div class="no-templates">Error loading templates</div>';
+    }
+}
+
+function applyTemplate(type, name, template) {
+    if (type === 'policy') {
+        document.getElementById('policy-name-input').value = name;
+        // Try to set framework if matching option exists
+        const frameworkSelect = document.getElementById('policy-framework-select');
+        if (template.framework) {
+            for (let opt of frameworkSelect.options) {
+                if (opt.value.includes(template.framework) || template.framework.includes(opt.value.split(' ')[0])) {
+                    opt.selected = true;
+                    break;
+                }
+            }
+        }
+    } else if (type === 'audit') {
+        const frameworkSelect = document.getElementById('audit-framework-select');
+        if (template.framework) {
+            for (let opt of frameworkSelect.options) {
+                if (opt.value.includes(template.framework) || template.framework.includes(opt.value.split(' ')[0])) {
+                    opt.selected = true;
+                    break;
+                }
+            }
+        }
+    } else if (type === 'risk') {
+        // Set first category from template if available
+        if (template.categories && template.categories.length > 0) {
+            document.getElementById('risk-asset-input').value = name;
+        }
+    }
+    
+    closeTemplateModal();
+    Toast.success(isRtl ? 'تم تطبيق القالب' : 'Template applied');
+}
+
+// Risk categories with scenarios from server
+const riskData = {{ risk_categories | tojson | safe }};
+
+// Populate risk scenarios based on category selection
+const categorySelect = document.getElementById('risk-category');
+const scenarioSelect = document.getElementById('risk-scenario');
+
+function updateScenarios() {
+    const category = categorySelect.value;
+    const scenarios = riskData[category] || [];
+    
+    scenarioSelect.innerHTML = '<option value="">' + (isRtl ? 'اختر سيناريو...' : 'Select scenario...') + '</option>';
+    scenarios.forEach(scenario => {
+        const option = document.createElement('option');
+        option.value = scenario;
+        option.textContent = scenario;
+        scenarioSelect.appendChild(option);
+    });
+}
+
+if (categorySelect) {
+    categorySelect.addEventListener('change', updateScenarios);
+    updateScenarios(); // Initialize on load
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab + '-tab').classList.remove('hidden');
+    });
+});
+
+// Activate tab from URL parameter (e.g. ?tab=policy)
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab');
+    if (tabParam) {
+        const targetTab = document.querySelector('.tab[data-tab="' + tabParam + '"]');
+        const targetContent = document.getElementById(tabParam + '-tab');
+        if (targetTab && targetContent) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+            targetTab.classList.add('active');
+            targetContent.classList.remove('hidden');
+        }
+    }
+})();
+
+document.querySelectorAll('.output-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.output-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        showSection(tab.dataset.section);
+    });
+});
+
+let strategyData = {}, policyData = '', auditData = '', riskData2 = '';
+let currentStrategyContent = '', currentPolicyContent = '', currentAuditContent = '', currentRiskContent = '';
+
+function showSection(section) {
+    document.getElementById('strategy-content').innerHTML = marked.parse(strategyData[section] || '');
+}
+
+function showLoading() { document.getElementById('loading').classList.remove('hidden'); }
+function hideLoading() { document.getElementById('loading').classList.add('hidden'); }
+
+// File Upload - Fixed to prevent click loop
+const fileArea = document.getElementById('file-upload-area');
+const fileInput = document.getElementById('evidence-file');
+if (fileArea && fileInput) {
+    fileArea.addEventListener('click', (e) => {
+        // Only trigger if clicking on the area itself, not the input
+        if (e.target !== fileInput) {
+            fileInput.click();
+        }
+    });
+    fileInput.addEventListener('change', () => {
+        const list = document.getElementById('uploaded-files');
+        if (list && fileInput.files.length > 0) {
+            list.innerHTML = Array.from(fileInput.files).map(f => 
+                `<div class="uploaded-file"><i class="fas fa-file-pdf"></i> ${f.name}</div>`
+            ).join('');
+        }
+    });
+    // Prevent click from bubbling up from input
+    fileInput.addEventListener('click', (e) => e.stopPropagation());
+}
+
+// Strategy Form
+document.getElementById('strategy-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    showLoading();
+    const fd = new FormData(e.target);
+    const data = {
+        domain: fd.get('domain'), language: fd.get('language'), org_name: fd.get('org_name'),
+        sector: fd.get('sector'), size: fd.get('size'), budget: fd.get('budget'),
+        frameworks: fd.getAll('frameworks'), org_structure: fd.get('org_structure'),
+        technologies: fd.getAll('technologies'), 
+        additional_tech: fd.get('additional_tech'),
+        maturity_level: fd.get('maturity_level'),
+        challenges: fd.get('challenges')
+    };
+    // Add additional tech to technologies if provided
+    if (data.additional_tech) {
+        data.technologies.push(data.additional_tech);
+    }
+    try {
+        console.log('Sending strategy request:', data);
+        const res = await fetch('/api/generate-strategy', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+        });
+        console.log('Response status:', res.status);
+        const result = await res.json();
+        console.log('Response data:', result);
+        console.log('DEBUG - Vision section first 200 chars:', result.sections?.vision?.substring(0, 200));
+        if (result.success && result.sections) {
+            strategyData = result.sections;
+            // Build full content for print/download
+            currentStrategyContent = Object.values(result.sections).join('\n\n');
+            document.getElementById('strategy-output').classList.remove('hidden');
+            showSection('vision');
+            Toast.success('{{ "تم إنشاء الاستراتيجية بنجاح" if is_rtl else "Strategy generated successfully" }}');
+        } else {
+            const errorMsg = result.error || 'Unknown error';
+            console.error('Strategy generation failed:', errorMsg);
+            Toast.error('{{ "خطأ في إنشاء الاستراتيجية" if is_rtl else "Error generating strategy" }}: ' + errorMsg);
+        }
+    } catch (e) { 
+        console.error('Strategy error:', e);
+        Toast.error('{{ "خطأ في إنشاء الاستراتيجية" if is_rtl else "Error generating strategy" }}'); 
+    }
+    hideLoading();
+});
+
+// Policy Form
+document.getElementById('policy-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    showLoading();
+    const fd = new FormData(e.target);
+    try {
+        const res = await fetch('/api/generate-policy', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({domain: fd.get('domain'), language: fd.get('language'),
+                policy_name: fd.get('policy_name'), framework: fd.get('framework')})
+        });
+        const result = await res.json();
+        if (result.success) {
+            policyData = result.content;
+            currentPolicyContent = result.content;
+            document.getElementById('policy-content').innerHTML = marked.parse(result.content);
+            document.getElementById('policy-output').classList.remove('hidden');
+        } else {
+            alert(isRtl ? 'خطأ: ' + (result.error || 'فشل في إنشاء السياسة') : 'Error: ' + (result.error || 'Failed to generate policy'));
+        }
+    } catch (e) { 
+        console.error('Policy error:', e);
+        alert(isRtl ? 'خطأ في الاتصال' : 'Connection error'); 
+    }
+    hideLoading();
+});
+
+// Audit Form
+document.getElementById('audit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    showLoading();
+    const fd = new FormData(e.target);
+    try {
+        const res = await fetch('/api/generate-audit', { method: 'POST', body: fd });
+        const result = await res.json();
+        if (result.success) {
+            auditData = result.content;
+            currentAuditContent = result.content;
+            document.getElementById('audit-content').innerHTML = marked.parse(result.content);
+            document.getElementById('audit-output').classList.remove('hidden');
+        } else {
+            alert(isRtl ? 'خطأ: ' + (result.error || 'فشل في إنشاء التدقيق') : 'Error: ' + (result.error || 'Failed to generate audit'));
+        }
+    } catch (e) { 
+        console.error('Audit error:', e);
+        alert(isRtl ? 'خطأ في الاتصال' : 'Connection error'); 
+    }
+    hideLoading();
+});
+
+// Risk Form
+document.getElementById('risk-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    showLoading();
+    const fd = new FormData(e.target);
+    const scenario = fd.get('scenario') || '';
+    const additionalThreat = fd.get('threat') || '';
+    const fullThreat = scenario + (additionalThreat ? '. ' + additionalThreat : '');
+    
+    try {
+        const res = await fetch('/api/analyze-risk', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                domain: fd.get('domain'), 
+                language: fd.get('language'),
+                category: fd.get('category'), 
+                asset: fd.get('asset'), 
+                threat: fullThreat
+            })
+        });
+        const result = await res.json();
+        if (result.success) {
+            riskData2 = result.analysis;
+            currentRiskContent = result.analysis;
+            document.getElementById('risk-content').innerHTML = marked.parse(result.analysis);
+            document.getElementById('risk-output').classList.remove('hidden');
+        }
+    } catch (e) { alert('Error'); }
+    hideLoading();
+});
+
+// Downloads - with correct section order
+function downloadStrategy(fmt) {
+    const sectionOrder = ['vision', 'gaps', 'pillars', 'roadmap', 'kpis', 'confidence'];
+    
+    const title = isRtl ? '# الاستراتيجية\n\n' : '# Strategy Document\n\n';
+    
+    // Build content with proper formatting
+    let orderedContent = '';
+    for (const key of sectionOrder) {
+        if (strategyData[key] && strategyData[key].trim()) {
+            let sectionContent = strategyData[key].trim();
+            
+            // Add section content (fix_formatting in backend should have added ## and ###)
+            orderedContent += sectionContent + '\n\n---\n\n';
+        }
+    }
+    
+    // Remove trailing separator
+    orderedContent = orderedContent.replace(/\n\n---\n\n$/, '');
+    
+    const footer = isRtl 
+        ? '\n\n---\n**تاريخ الإعداد:** ' + new Date().toLocaleDateString('ar-SA') + '\n**المُعد:** فريق الحوكمة والمخاطر والامتثال'
+        : '\n\n---\n**Preparation Date:** ' + new Date().toLocaleDateString('en-US') + '\n**Prepared By:** GRC Team';
+    
+    downloadFile(title + orderedContent + footer, 'strategy', fmt);
+}
+function downloadPolicy(fmt) { downloadFile(policyData, 'policy', fmt); }
+function downloadAudit(fmt) { downloadFile(auditData, 'audit_report', fmt); }
+function downloadRisk(fmt) { downloadFile(riskData2, 'risk_analysis', fmt); }
+
+function downloadFile(content, name, fmt) {
+    console.log('Download requested:', name, fmt);
+    console.log('Content length:', content ? content.length : 0);
+    
+    if (!content || content.trim().length === 0) {
+        alert(isRtl ? 'لا يوجد محتوى للتحميل' : 'No content to download');
+        return;
+    }
+    
+    if (fmt === 'txt') {
+        // Direct text download - no server needed
+        const blob = new Blob([content], {type: 'text/plain; charset=utf-8'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name + '.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+        return;
+    }
+    
+    // PDF or DOCX - use server generation
+    const endpoint = fmt === 'pdf' ? '/api/generate-pdf' : '/api/generate-docx';
+    const ext = fmt === 'pdf' ? '.pdf' : '.docx';
+    
+    console.log('Calling endpoint:', endpoint);
+    
+    // Use XMLHttpRequest for binary download (more reliable than fetch for blobs)
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.responseType = 'blob';
+    
+    xhr.onload = function() {
+        console.log('XHR status:', xhr.status);
+        console.log('XHR response type:', xhr.response ? xhr.response.type : 'null');
+        console.log('XHR response size:', xhr.response ? xhr.response.size : 0);
+        
+        if (xhr.status === 200) {
+            const blob = xhr.response;
+            // Check if response is actually an error (JSON instead of binary)
+            if (blob.type && blob.type.includes('application/json')) {
+                const reader = new FileReader();
+                reader.onload = function() {
+                    console.error('Server returned error:', reader.result);
+                    try {
+                        const err = JSON.parse(reader.result);
+                        alert((isRtl ? 'خطأ: ' : 'Error: ') + (err.error || 'Unknown error'));
+                    } catch(e) {
+                        alert(isRtl ? 'خطأ في إنشاء الملف' : 'Error generating file');
+                    }
+                };
+                reader.readAsText(blob);
+                return;
+            }
+            // Check if we got redirected to login page (HTML response)
+            if (blob.type && blob.type.includes('text/html')) {
+                console.error('Got HTML response - likely session expired');
+                alert(isRtl ? 'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى' : 'Session expired. Please login again.');
+                window.location.href = '/login';
+                return;
+            }
+            if (blob.size < 100) {
+                console.error('Response too small:', blob.size);
+                alert(isRtl ? 'خطأ: ملف فارغ' : 'Error: Empty file');
+                return;
+            }
+            // Success - trigger download
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name + ext;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+            console.log('Download triggered successfully!');
+        } else {
+            console.error('XHR error status:', xhr.status);
+            // Try to read error message
+            const reader = new FileReader();
+            reader.onload = function() {
+                console.error('Error body:', reader.result);
+                alert((isRtl ? 'خطأ ' + xhr.status + ': ' : 'Error ' + xhr.status + ': ') + reader.result.substring(0, 200));
+            };
+            reader.readAsText(xhr.response);
+        }
+    };
+    
+    xhr.onerror = function() {
+        console.error('XHR network error');
+        alert(isRtl ? 'خطأ في الاتصال بالخادم' : 'Network error connecting to server');
+    };
+    
+    xhr.send(JSON.stringify({
+        content: content,
+        filename: name,
+        language: lang
+    }));
+}
+
+// Print Document Function
+function printDocument(type) {
+    let content = '';
+    let title = '';
+    
+    if (type === 'strategy') {
+        content = currentStrategyContent;
+        title = isRtl ? 'الاستراتيجية' : 'Strategy';
+    } else if (type === 'policy') {
+        content = currentPolicyContent;
+        title = isRtl ? 'السياسة' : 'Policy';
+    } else if (type === 'audit') {
+        content = currentAuditContent;
+        title = isRtl ? 'تقرير التدقيق' : 'Audit Report';
+    } else if (type === 'risk') {
+        content = currentRiskContent;
+        title = isRtl ? 'تحليل المخاطر' : 'Risk Analysis';
+    }
+    
+    if (!content) {
+        alert(isRtl ? 'لا يوجد محتوى للطباعة' : 'No content to print');
+        return;
+    }
+    
+    // Create print window
+    const printWindow = window.open('', '_blank');
+    const htmlContent = marked.parse(content);
+    const fontFamily = isRtl ? "'Noto Sans Arabic', 'Arial'" : "'Segoe UI', Arial";
+    const direction = isRtl ? 'rtl' : 'ltr';
+    const textAlign = isRtl ? 'right' : 'left';
+    const tagline = isRtl ? 'الحوكمة • المخاطر • الامتثال' : 'Governance • Risk • Compliance';
+    const footerText = isRtl ? 'تم الإنشاء بواسطة منصة ميزان' : 'Generated by Mizan GRC Platform';
+    const paddingDir = isRtl ? 'right' : 'left';
+    
+    const doc = printWindow.document;
+    doc.open();
+    doc.write('<!DOCTYPE html><html lang="' + lang + '" dir="' + direction + '">');
+    doc.write('<head><meta charset="UTF-8"><title>' + title + ' - Mizan GRC</title>');
+    doc.write('<style>');
+    doc.write('@page { size: A4; margin: 2cm; }');
+    doc.write('* { margin: 0; padding: 0; box-sizing: border-box; }');
+    doc.write('body { font-family: ' + fontFamily + ', sans-serif; font-size: 12pt; line-height: 1.6; color: #333; direction: ' + direction + '; text-align: ' + textAlign + '; }');
+    doc.write('.print-header { text-align: center; padding-bottom: 20px; margin-bottom: 30px; border-bottom: 2px solid #667eea; }');
+    doc.write('.print-logo { font-size: 24pt; font-weight: bold; color: #667eea; margin-bottom: 5px; }');
+    doc.write('.print-tagline { font-size: 10pt; color: #666; }');
+    doc.write('.print-title { font-size: 14pt; margin-top: 10px; color: #333; }');
+    doc.write('h1, h2, h3 { color: #333; margin-top: 20px; margin-bottom: 10px; }');
+    doc.write('h1 { font-size: 18pt; color: #667eea; }');
+    doc.write('h2 { font-size: 14pt; border-bottom: 1px solid #ddd; padding-bottom: 5px; }');
+    doc.write('h3 { font-size: 12pt; }');
+    doc.write('p { margin-bottom: 10px; }');
+    doc.write('table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 10pt; }');
+    doc.write('th, td { border: 1px solid #ddd; padding: 8px; text-align: ' + textAlign + '; }');
+    doc.write('th { background: #667eea; color: white; }');
+    doc.write('tr:nth-child(even) { background: #f9f9f9; }');
+    doc.write('ul, ol { padding-' + paddingDir + ': 20px; margin: 10px 0; }');
+    doc.write('li { margin-bottom: 5px; }');
+    doc.write('.print-footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; text-align: center; font-size: 9pt; color: #666; }');
+    doc.write('</style></head><body>');
+    doc.write('<div class="print-header">');
+    doc.write('<div class="print-logo">MIZAN</div>');
+    doc.write('<div class="print-tagline">' + tagline + '</div>');
+    doc.write('<div class="print-title">' + title + '</div>');
+    doc.write('</div>');
+    doc.write('<div class="print-content">' + htmlContent + '</div>');
+    doc.write('<div class="print-footer">');
+    doc.write('<p>' + footerText + ' | ' + new Date().toLocaleDateString() + '</p>');
+    doc.write('<p>Created by Eng. Mohammad Abbas Alsaadon</p>');
+    doc.write('</div>');
+    doc.write('</body></html>');
+    doc.close();
+    
+    // Trigger print after content loads
+    printWindow.onload = function() {
+        printWindow.print();
+    };
+}
+
+// ============================================================================
+// CHAT WITH DOCUMENT FEATURE
+// ============================================================================
+
+async function sendChat(docType) {
+    const inputId = docType + '-chat-input';
+    const messagesId = docType + '-chat-messages';
+    const input = document.getElementById(inputId);
+    const messagesDiv = document.getElementById(messagesId);
+    const question = input.value.trim();
+    
+    if (!question) return;
+    
+    // Get document content
+    let content = '';
+    if (docType === 'strategy') content = currentStrategyContent;
+    else if (docType === 'policy') content = currentPolicyContent;
+    else if (docType === 'audit') content = currentAuditContent;
+    else if (docType === 'risk') content = currentRiskContent;
+    
+    if (!content) {
+        alert(isRtl ? 'لا يوجد محتوى للمحادثة' : 'No content to chat about');
+        return;
+    }
+    
+    // Add user message
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user';
+    userMsg.textContent = question;
+    messagesDiv.appendChild(userMsg);
+    
+    input.value = '';
+    input.placeholder = isRtl ? 'جارٍ المعالجة...' : 'Processing...';
+    input.disabled = true;
+    
+    try {
+        const res = await fetch('/api/chat-document', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                content: content,
+                question: question,
+                language: lang
+            })
+        });
+        const data = await res.json();
+        
+        const assistantMsg = document.createElement('div');
+        assistantMsg.className = 'chat-message assistant';
+        
+        if (data.success) {
+            assistantMsg.innerHTML = marked.parse(data.response);
+        } else {
+            assistantMsg.textContent = isRtl ? 'حدث خطأ' : 'An error occurred';
+        }
+        messagesDiv.appendChild(assistantMsg);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        
+    } catch (e) {
+        console.error('Chat error:', e);
+    }
+    
+    input.placeholder = isRtl ? 'اطرح سؤالاً عن هذه الوثيقة...' : 'Ask a question about this document...';
+    input.disabled = false;
+    input.focus();
+}
+
+// ============================================================================
+// POLICY REVIEW FEATURE
+// ============================================================================
+
+function openReviewModal() {
+    document.getElementById('review-modal').classList.remove('hidden');
+}
+
+function closeReviewModal() {
+    document.getElementById('review-modal').classList.add('hidden');
+}
+
+async function startPolicyReview() {
+    const reviewType = document.getElementById('review-type-select').value;
+    
+    if (!currentPolicyContent) {
+        alert(isRtl ? 'لا توجد سياسة للمراجعة' : 'No policy to review');
+        return;
+    }
+    
+    closeReviewModal();
+    showLoading();
+    
+    try {
+        const res = await fetch('/api/review-policy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                content: currentPolicyContent,
+                review_type: reviewType,
+                framework: document.getElementById('policy-framework-select').value,
+                language: lang
+            })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            lastPolicyReview = data.review;
+            document.getElementById('policy-review-content').innerHTML = marked.parse(data.review);
+            document.getElementById('policy-review-output').classList.remove('hidden');
+            Toast.success(isRtl ? 'تمت المراجعة بنجاح' : 'Review completed');
+        } else {
+            Toast.error(isRtl ? 'فشلت المراجعة' : 'Review failed');
+        }
+    } catch (e) {
+        console.error('Review error:', e);
+        Toast.error(isRtl ? 'خطأ في الاتصال' : 'Connection error');
+    }
+    
+    hideLoading();
+}
+
+let lastPolicyReview = '';
+
+async function applyReviewToPolicy() {
+    if (!currentPolicyContent) {
+        Toast.error(isRtl ? 'لا توجد سياسة للتعديل' : 'No policy to modify');
+        return;
+    }
+    
+    const reviewContent = document.getElementById('policy-review-content').innerText || lastPolicyReview;
+    if (!reviewContent) {
+        Toast.error(isRtl ? 'لا توجد نتائج مراجعة' : 'No review results to apply');
+        return;
+    }
+    
+    showLoading();
+    
+    try {
+        // Step 1: Start the background task (returns immediately)
+        const res = await fetch('/api/modify-policy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                policy_content: currentPolicyContent.substring(0, 6000),
+                review_content: reviewContent.substring(0, 3000),
+                framework: document.getElementById('policy-framework-select').value,
+                domain: currentDomain,
+                language: lang
+            })
+        });
+        const startData = await res.json();
+        
+        if (!startData.success || !startData.task_id) {
+            Toast.error(startData.error || (isRtl ? 'فشل بدء التعديل' : 'Failed to start modification'));
+            hideLoading();
+            return;
+        }
+        
+        // Step 2: Poll for result every 3 seconds
+        const taskId = startData.task_id;
+        let attempts = 0;
+        const maxAttempts = 60; // 3 minutes max (60 * 3s)
+        
+        const pollInterval = setInterval(async () => {
+            attempts++;
+            try {
+                const pollRes = await fetch(`/api/task-status/${taskId}`);
+                const pollData = await pollRes.json();
+                
+                if (pollData.status === 'done') {
+                    clearInterval(pollInterval);
+                    policyData = pollData.modified_policy;
+                    currentPolicyContent = pollData.modified_policy;
+                    document.getElementById('policy-content').innerHTML = marked.parse(pollData.modified_policy);
+                    document.getElementById('policy-review-output').classList.add('hidden');
+                    Toast.success(isRtl ? 'تم تعديل السياسة بنجاح' : 'Policy modified successfully');
+                    hideLoading();
+                } else if (pollData.status === 'error') {
+                    clearInterval(pollInterval);
+                    Toast.error(pollData.error || (isRtl ? 'فشل تعديل السياسة' : 'Policy modification failed'));
+                    hideLoading();
+                } else if (attempts >= maxAttempts) {
+                    clearInterval(pollInterval);
+                    Toast.error(isRtl ? 'انتهت المهلة الزمنية. يرجى المحاولة مرة أخرى' : 'Request timed out. Please try again.');
+                    hideLoading();
+                }
+                // else status === 'pending', keep polling
+            } catch (pollErr) {
+                // Network error on poll — don't stop, try again next interval
+                console.warn('Poll error (will retry):', pollErr);
+                if (attempts >= maxAttempts) {
+                    clearInterval(pollInterval);
+                    Toast.error(isRtl ? 'خطأ في الاتصال' : 'Connection error');
+                    hideLoading();
+                }
+            }
+        }, 3000);
+        
+    } catch (e) {
+        console.error('Modify policy error:', e);
+        Toast.error(isRtl ? 'خطأ في الاتصال. يرجى المحاولة مرة أخرى' : 'Connection error. Please try again.');
+        hideLoading();
+    }
+}
+
+// ============================================================================
+// GAP REMEDIATION FEATURE
+// ============================================================================
+
+function openRemediationModal() {
+    document.getElementById('remediation-modal').classList.remove('hidden');
+}
+
+function closeRemediationModal() {
+    document.getElementById('remediation-modal').classList.add('hidden');
+}
+
+async function generateRemediationPlan() {
+    const gapsText = document.getElementById('gaps-input').value.trim();
+    
+    if (!gapsText) {
+        alert(isRtl ? 'الرجاء إدخال الفجوات' : 'Please enter gaps');
+        return;
+    }
+    
+    const gaps = gapsText.split('\n').filter(g => g.trim());
+    
+    showLoading();
+    
+    try {
+        const res = await fetch('/api/gap-remediation', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                gaps: gaps,
+                domain: currentDomain,
+                framework: 'ISO 27001',
+                language: lang
+            })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            document.getElementById('remediation-content').innerHTML = marked.parse(data.remediation_plan);
+            document.getElementById('remediation-output').classList.remove('hidden');
+            Toast.success(isRtl ? 'تم إنشاء خطة المعالجة' : 'Remediation plan generated');
+        } else {
+            Toast.error(isRtl ? 'فشل في إنشاء الخطة' : 'Failed to generate plan');
+        }
+    } catch (e) {
+        console.error('Remediation error:', e);
+        Toast.error(isRtl ? 'خطأ في الاتصال' : 'Connection error');
+    }
+    
+    hideLoading();
+}
+
+// ============================================================================
+// ERM RISK REGISTER (only active when domain_code == 'erm')
+// ============================================================================
+{% if domain_code == 'erm' %}
+
+let riskRegisterData = [];
+
+function openAddRiskModal(editId) {
+    if (editId !== undefined) {
+        // Edit mode — pre-fill form
+        const risk = riskRegisterData.find(r => r.id == editId);
+        if (risk) {
+            document.getElementById('risk-reg-name').value = risk.name;
+            document.getElementById('risk-reg-desc').value = risk.description || '';
+            document.getElementById('risk-reg-category').value = risk.category;
+            document.getElementById('risk-reg-likelihood').value = risk.likelihood;
+            document.getElementById('risk-reg-impact').value = risk.impact;
+            document.getElementById('risk-reg-owner').value = risk.owner || '';
+            document.getElementById('risk-reg-treatment').value = risk.treatment;
+            document.getElementById('risk-reg-plan').value = risk.treatment_plan || '';
+            document.getElementById('risk-reg-status').value = risk.status;
+            document.getElementById('risk-reg-edit-id').value = editId;
+        }
+    } else {
+        // New — clear form
+        document.getElementById('risk-reg-name').value = '';
+        document.getElementById('risk-reg-desc').value = '';
+        document.getElementById('risk-reg-likelihood').value = '3';
+        document.getElementById('risk-reg-impact').value = '3';
+        document.getElementById('risk-reg-owner').value = '';
+        document.getElementById('risk-reg-plan').value = '';
+        document.getElementById('risk-reg-edit-id').value = '';
+    }
+    document.getElementById('add-risk-modal').classList.remove('hidden');
+}
+
+function closeAddRiskModal() {
+    document.getElementById('add-risk-modal').classList.add('hidden');
+}
+
+async function saveRiskEntry() {
+    const name = document.getElementById('risk-reg-name').value.trim();
+    if (!name) { Toast.error(isRtl ? 'اسم الخطر مطلوب' : 'Risk name is required'); return; }
+    
+    const editId = document.getElementById('risk-reg-edit-id').value;
+    const payload = {
+        name: name,
+        description: document.getElementById('risk-reg-desc').value.trim(),
+        category: document.getElementById('risk-reg-category').value,
+        likelihood: parseInt(document.getElementById('risk-reg-likelihood').value),
+        impact: parseInt(document.getElementById('risk-reg-impact').value),
+        owner: document.getElementById('risk-reg-owner').value.trim(),
+        treatment: document.getElementById('risk-reg-treatment').value,
+        treatment_plan: document.getElementById('risk-reg-plan').value.trim(),
+        status: document.getElementById('risk-reg-status').value,
+        language: lang
+    };
+    
+    try {
+        let url = '/api/risk-register';
+        let method = 'POST';
+        if (editId) { url += '/' + editId; method = 'PUT'; }
+        
+        const res = await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (data.success) {
+            Toast.success(isRtl ? 'تم الحفظ' : 'Saved');
+            closeAddRiskModal();
+            loadRiskRegister();
+        } else {
+            Toast.error(data.error || 'Error');
+        }
+    } catch (e) {
+        Toast.error(isRtl ? 'خطأ في الاتصال' : 'Connection error');
+    }
+}
+
+async function deleteRiskEntry(id) {
+    if (!confirm(isRtl ? 'هل أنت متأكد من حذف هذا الخطر؟' : 'Delete this risk?')) return;
+    try {
+        const res = await fetch('/api/risk-register/' + id, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) { loadRiskRegister(); Toast.success(isRtl ? 'تم الحذف' : 'Deleted'); }
+    } catch (e) { Toast.error('Error'); }
+}
+
+async function loadRiskRegister() {
+    try {
+        const res = await fetch('/api/risk-register?lang=' + lang);
+        const data = await res.json();
+        if (data.success) {
+            riskRegisterData = data.risks || [];
+            renderRiskRegister();
+            updateRiskStats();
+            if (!document.getElementById('risk-heatmap').classList.contains('hidden')) {
+                renderHeatMap();
+            }
+        }
+    } catch (e) { console.error('Load risk register error:', e); }
+}
+
+function getRiskLevel(score) {
+    if (score >= 20) return { level: isRtl ? 'حرج' : 'Critical', color: '#ef4444', cls: 'critical' };
+    if (score >= 12) return { level: isRtl ? 'عالي' : 'High', color: '#f97316', cls: 'high' };
+    if (score >= 6) return { level: isRtl ? 'متوسط' : 'Medium', color: '#eab308', cls: 'medium' };
+    return { level: isRtl ? 'منخفض' : 'Low', color: '#22c55e', cls: 'low' };
+}
+
+function renderRiskRegister() {
+    const tbody = document.getElementById('risk-register-body');
+    if (!riskRegisterData.length) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-info-circle"></i> ' + (isRtl ? 'لا توجد مخاطر مسجلة.' : 'No risks registered.') + '</td></tr>';
+        return;
+    }
+    
+    // Sort by score descending
+    const sorted = [...riskRegisterData].sort((a,b) => (b.likelihood * b.impact) - (a.likelihood * a.impact));
+    
+    tbody.innerHTML = sorted.map((r, idx) => {
+        const score = r.likelihood * r.impact;
+        const rl = getRiskLevel(score);
+        const statusColors = {'Open':'#3b82f6','مفتوح':'#3b82f6','In Treatment':'#f59e0b','قيد المعالجة':'#f59e0b','Closed':'#22c55e','مغلق':'#22c55e','Accepted':'#6b7280','مقبول':'#6b7280'};
+        const sc = statusColors[r.status] || '#6b7280';
+        return `<tr style="border-bottom:1px solid var(--border-color);">
+            <td style="padding:10px 8px;">${idx+1}</td>
+            <td style="padding:10px 8px;font-weight:600;">${r.name}</td>
+            <td style="padding:10px 8px;">${r.category}</td>
+            <td style="padding:10px 8px;text-align:center;">${r.likelihood}</td>
+            <td style="padding:10px 8px;text-align:center;">${r.impact}</td>
+            <td style="padding:10px 8px;text-align:center;"><span style="background:${rl.color};color:#fff;padding:3px 10px;border-radius:12px;font-weight:700;font-size:0.85rem;">${score}</span></td>
+            <td style="padding:10px 8px;">${r.owner || '-'}</td>
+            <td style="padding:10px 8px;">${r.treatment}</td>
+            <td style="padding:10px 8px;"><span style="background:${sc};color:#fff;padding:3px 10px;border-radius:12px;font-size:0.8rem;">${r.status}</span></td>
+            <td style="padding:10px 8px;text-align:center;white-space:nowrap;">
+                <button onclick="openAddRiskModal(${r.id})" style="background:none;border:none;color:#3b82f6;cursor:pointer;font-size:1rem;padding:4px;" title="Edit"><i class="fas fa-edit"></i></button>
+                <button onclick="deleteRiskEntry(${r.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem;padding:4px;" title="Delete"><i class="fas fa-trash"></i></button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function updateRiskStats() {
+    let critical=0, high=0, medium=0, low=0;
+    riskRegisterData.forEach(r => {
+        const score = r.likelihood * r.impact;
+        if (score >= 20) critical++;
+        else if (score >= 12) high++;
+        else if (score >= 6) medium++;
+        else low++;
+    });
+    document.getElementById('stat-critical').textContent = critical;
+    document.getElementById('stat-high').textContent = high;
+    document.getElementById('stat-medium').textContent = medium;
+    document.getElementById('stat-low').textContent = low;
+    document.getElementById('stat-total').textContent = riskRegisterData.length;
+}
+
+function toggleHeatMap() {
+    const el = document.getElementById('risk-heatmap');
+    el.classList.toggle('hidden');
+    if (!el.classList.contains('hidden')) renderHeatMap();
+}
+
+function renderHeatMap() {
+    const grid = document.getElementById('heatmap-grid');
+    const impactLabels = isRtl 
+        ? ['كارثي','كبير','متوسط','طفيف','ضئيل']
+        : ['Catastrophic','Major','Moderate','Minor','Insignificant'];
+    
+    // Clear previous cells (keep header row = 6 children)
+    while (grid.children.length > 6) grid.removeChild(grid.lastChild);
+    
+    // Build 5x5 grid (rows = impact 5 down to 1, cols = likelihood 1 to 5)
+    for (let impact = 5; impact >= 1; impact--) {
+        // Row label
+        const label = document.createElement('div');
+        label.style.cssText = 'padding:8px;font-weight:600;text-align:center;font-size:0.75rem;display:flex;align-items:center;justify-content:center;';
+        label.textContent = impactLabels[5 - impact];
+        grid.appendChild(label);
+        
+        for (let likelihood = 1; likelihood <= 5; likelihood++) {
+            const score = impact * likelihood;
+            const rl = getRiskLevel(score);
+            const count = riskRegisterData.filter(r => r.likelihood == likelihood && r.impact == impact).length;
+            
+            const cell = document.createElement('div');
+            cell.style.cssText = `background:${rl.color}22;border:2px solid ${rl.color}44;border-radius:6px;padding:8px 4px;text-align:center;min-height:40px;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;`;
+            cell.innerHTML = `<span style="font-size:0.7rem;color:#888;">${score}</span>` + 
+                (count ? `<span style="background:${rl.color};color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75rem;margin-top:2px;">${count}</span>` : '');
+            grid.appendChild(cell);
+        }
+    }
+}
+
+async function generateRiskAppetite() {
+    if (!riskRegisterData.length) {
+        Toast.error(isRtl ? 'أضف مخاطر أولاً' : 'Add risks first');
+        return;
+    }
+    showLoading();
+    try {
+        const res = await fetch('/api/risk-appetite', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ risks: riskRegisterData, language: lang })
+        });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('risk-appetite-content').innerHTML = marked.parse(data.content);
+            document.getElementById('risk-appetite-output').classList.remove('hidden');
+            riskAppetiteContent = data.content;
+            Toast.success(isRtl ? 'تم إنشاء بيان شهية المخاطر' : 'Risk appetite statement generated');
+        } else {
+            Toast.error(data.error || 'Error');
+        }
+    } catch (e) { Toast.error(isRtl ? 'خطأ في الاتصال' : 'Connection error'); }
+    hideLoading();
+}
+
+let riskAppetiteContent = '';
+
+function downloadRiskAppetite(fmt) {
+    if (!riskAppetiteContent) return;
+    downloadFile(riskAppetiteContent, 'risk_appetite_statement', fmt);
+}
+
+function exportRiskRegister() {
+    if (!riskRegisterData.length) {
+        Toast.error(isRtl ? 'لا توجد مخاطر للتصدير' : 'No risks to export');
+        return;
+    }
+    // Build markdown table
+    let md = isRtl ? '# سجل المخاطر المؤسسية\n\n' : '# Enterprise Risk Register\n\n';
+    md += isRtl 
+        ? '| # | الخطر | الفئة | الاحتمالية | الأثر | الدرجة | المالك | المعالجة | الحالة |\n|---|-------|-------|-----------|-------|--------|--------|---------|--------|\n'
+        : '| # | Risk | Category | Likelihood | Impact | Score | Owner | Treatment | Status |\n|---|------|----------|-----------|--------|-------|-------|-----------|--------|\n';
+    
+    const sorted = [...riskRegisterData].sort((a,b) => (b.likelihood*b.impact) - (a.likelihood*a.impact));
+    sorted.forEach((r, i) => {
+        md += `| ${i+1} | ${r.name} | ${r.category} | ${r.likelihood} | ${r.impact} | ${r.likelihood*r.impact} | ${r.owner||'-'} | ${r.treatment} | ${r.status} |\n`;
+    });
+    
+    md += '\n---\n' + (isRtl ? '**تاريخ التصدير:** ' : '**Export Date:** ') + new Date().toLocaleDateString(isRtl ? 'ar-SA' : 'en-US');
+    downloadFile(md, 'risk_register', 'docx');
+}
+
+// Load risk register on tab activation
+document.addEventListener('DOMContentLoaded', function() {
+    const registerTab = document.querySelector('.tab[data-tab="register"]');
+    if (registerTab) {
+        registerTab.addEventListener('click', function() {
+            if (!riskRegisterData.length || riskRegisterData._loaded !== true) {
+                loadRiskRegister();
+                riskRegisterData._loaded = true;
+            }
+        });
+    }
+});
+
+{% endif %}
+</script>
+{% endblock %}
