@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}" dir="{{ 'rtl' if is_rtl else 'ltr' }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ config.APP_NAME }} | {{ txt.tagline }}</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+Arabic:wght@300;400;500;600;700;800&family=Playfair+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    
+    {% if is_rtl %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/rtl.css') }}">
+    {% endif %}
+    
+    <!-- Theme initialization (prevent flash) -->
+    <script>
+        (function() {
+            const theme = localStorage.getItem('mizan-theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+    
+    {% block extra_css %}{% endblock %}
+    
+    <!-- CSRF Token (read by fetch override below) -->
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    
+    <!-- Global CSRF injection — must run before ANY page script -->
+    <script>
+    (function() {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        if (!meta) return;
+        var token = meta.getAttribute('content');
+        
+        // Patch window.fetch — covers all fetch() calls
+        var _fetch = window.fetch;
+        window.fetch = function(url, opts) {
+            opts = opts || {};
+            var method = (opts.method || 'GET').toUpperCase();
+            if (method !== 'GET' && method !== 'HEAD') {
+                if (opts.headers instanceof Headers) {
+                    if (!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', token);
+                } else {
+                    opts.headers = Object.assign({'X-CSRFToken': token}, opts.headers || {});
+                }
+            }
+            return _fetch.call(this, url, opts);
+        };
+        
+        // Patch XMLHttpRequest — covers all XHR calls (downloads, etc.)
+        var _xhrOpen = XMLHttpRequest.prototype.open;
+        var _xhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._csrfMethod = method;
+            return _xhrOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+            if (this._csrfMethod && this._csrfMethod.toUpperCase() !== 'GET' && this._csrfMethod.toUpperCase() !== 'HEAD') {
+                try { this.setRequestHeader('X-CSRFToken', token); } catch(e) {}
+            }
+            return _xhrSend.apply(this, arguments);
+        };
+    })();
+    </script>
+</head>
+<body class="{{ 'rtl' if is_rtl else 'ltr' }}">
+    {% block content %}{% endblock %}
+    
+    <!-- Main JS (includes toggleTheme, Toast, Utils) -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
