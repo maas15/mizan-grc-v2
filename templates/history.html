@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block extra_css %}
+<style>
+.history-wrap{max-width:1100px;margin:0 auto;padding:1.5rem 1rem}
+.history-header{display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.history-header h1{font-size:1.3rem;font-weight:700;color:var(--text-primary,#e2e8f0);margin:0}
+.history-header h1 i{color:var(--accent,#6366f1);margin-right:0.4rem}
+
+/* Summary stats */
+.hist-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.7rem;margin-bottom:1.5rem}
+.hist-stat{background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:10px;padding:0.8rem;text-align:center}
+.hist-stat .val{font-size:1.5rem;font-weight:800;color:var(--text-primary,#e2e8f0);line-height:1}
+.hist-stat .lbl{font-size:0.7rem;color:var(--text-secondary,#94a3b8);margin-top:0.2rem;text-transform:uppercase}
+
+/* Tabs */
+.hist-tabs{display:flex;gap:4px;background:var(--bg-card,rgba(255,255,255,0.03));border-radius:10px;padding:4px;margin-bottom:1.2rem;overflow-x:auto}
+.hist-tab{padding:0.5rem 0.9rem;border:none;background:transparent;color:var(--text-secondary,#94a3b8);font-size:0.82rem;font-weight:600;border-radius:8px;cursor:pointer;transition:all .2s;white-space:nowrap;display:flex;align-items:center;gap:0.3rem}
+.hist-tab.active{background:var(--accent,#6366f1);color:#fff}
+.hist-tab:hover:not(.active){background:rgba(255,255,255,0.05)}
+
+/* Filters */
+.hist-filters{display:flex;gap:0.4rem;margin-bottom:1rem;flex-wrap:wrap}
+.hf{padding:0.3rem 0.7rem;border-radius:7px;border:1px solid var(--border-color,rgba(255,255,255,0.1));background:transparent;color:var(--text-secondary,#94a3b8);font-size:0.75rem;cursor:pointer;transition:all .2s}
+.hf.active{background:var(--accent,#6366f1);color:#fff;border-color:transparent}
+
+/* Document cards */
+.doc-list{display:flex;flex-direction:column;gap:0.4rem}
+.doc-item{display:flex;align-items:center;gap:0.8rem;padding:0.7rem 0.9rem;background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:10px;transition:all .15s;cursor:pointer}
+.doc-item:hover{border-color:var(--accent,#6366f1);transform:translateX(2px)}
+.doc-type-badge{padding:0.2rem 0.6rem;border-radius:6px;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;flex-shrink:0}
+.badge-strategy{background:rgba(139,92,246,0.15);color:#a78bfa}
+.badge-policy{background:rgba(59,130,246,0.15);color:#60a5fa}
+.badge-audit{background:rgba(34,197,94,0.15);color:#4ade80}
+.badge-risk{background:rgba(239,68,68,0.15);color:#f87171}
+.doc-info{flex:1;min-width:0}
+.doc-info .title{font-size:0.85rem;font-weight:600;color:var(--text-primary,#e2e8f0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.doc-info .meta{font-size:0.72rem;color:var(--text-secondary,#94a3b8);margin-top:0.15rem;display:flex;gap:0.6rem;flex-wrap:wrap}
+.doc-info .meta i{width:12px;text-align:center}
+.doc-actions{display:flex;gap:0.3rem;flex-shrink:0}
+.doc-actions button{background:none;border:1px solid var(--border-color,rgba(255,255,255,0.08));border-radius:6px;padding:0.3rem 0.5rem;color:var(--text-secondary,#94a3b8);font-size:0.72rem;cursor:pointer;transition:all .2s}
+.doc-actions button:hover{border-color:var(--accent);color:var(--accent)}
+.doc-actions .btn-del:hover{border-color:#ef4444;color:#ef4444}
+
+/* Timeline */
+.timeline{position:relative;padding-left:2rem}
+.timeline::before{content:'';position:absolute;left:0.65rem;top:0;bottom:0;width:2px;background:var(--border-color,rgba(255,255,255,0.08))}
+.tl-item{position:relative;padding:0.6rem 0;display:flex;align-items:flex-start;gap:0.7rem}
+.tl-dot{position:absolute;left:-1.35rem;top:0.85rem;width:10px;height:10px;border-radius:50%;border:2px solid var(--bg-main,#0d1b2a);z-index:1}
+.tl-gen{background:#a78bfa}
+.tl-exp{background:#60a5fa}
+.tl-edit{background:#fbbf24}
+.tl-sync{background:#4ade80}
+.tl-def{background:#94a3b8}
+.tl-content{flex:1;min-width:0}
+.tl-content .action{font-size:0.82rem;font-weight:600;color:var(--text-primary,#e2e8f0)}
+.tl-content .detail{font-size:0.72rem;color:var(--text-secondary,#94a3b8);margin-top:0.1rem;word-break:break-word}
+.tl-content .time{font-size:0.68rem;color:var(--text-muted,#64748b);margin-top:0.15rem}
+.tl-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;flex-shrink:0}
+.tl-icon-gen{background:rgba(139,92,246,0.15);color:#a78bfa}
+.tl-icon-exp{background:rgba(59,130,246,0.15);color:#60a5fa}
+.tl-icon-edit{background:rgba(245,158,11,0.15);color:#fbbf24}
+.tl-icon-sync{background:rgba(34,197,94,0.15);color:#4ade80}
+.tl-icon-def{background:rgba(148,163,184,0.1);color:#94a3b8}
+
+.panel{display:none}
+.panel.active{display:block}
+.empty-state{text-align:center;padding:2rem;color:var(--text-secondary,#94a3b8);font-size:0.85rem}
+.empty-state i{display:block;font-size:2rem;margin-bottom:0.5rem;opacity:0.4}
+
+/* Print button */
+.btn-print{background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.1));border-radius:8px;padding:0.4rem 0.8rem;color:var(--text-secondary,#94a3b8);font-size:0.78rem;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:0.3rem}
+.btn-print:hover{border-color:var(--accent);color:var(--accent)}
+</style>
+{% endblock %}
+
+{% block content %}
+{% include "sidebar_partial.html" ignore missing %}
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="brand"><span class="brand-icon">⚖️</span><span class="brand-text">{{ txt.app_name }}</span></div>
+            <div class="sidebar-lang">
+                <a href="{{ url_for('document_history', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('document_history', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+        </div>
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="{{ url_for('profile_page', lang=lang) }}" class="sidebar-link"><i class="fas fa-user-cog"></i> {{ txt.profile }}</a>
+            <a href="{{ url_for('document_history', lang=lang) }}" class="sidebar-link active"><i class="fas fa-folder-open"></i> {{ txt.my_documents }}</a>
+        </nav>
+        <a href="{{ url_for('logout') }}" class="logout-btn"><i class="fas fa-sign-out-alt"></i> {{ txt.logout }}</a>
+    </aside>
+
+<div class="main-content">
+<div class="history-wrap">
+    <!-- Header -->
+    <div class="history-header">
+        <h1><i class="fas fa-folder-open"></i> {% if is_rtl %}سجل الوثائق والأنشطة{% else %}Documents & Activity Log{% endif %}</h1>
+        <div style="margin-inline-start:auto;display:flex;gap:0.4rem">
+            <button class="btn-print" onclick="exportHistoryCSV()"><i class="fas fa-file-csv"></i> CSV</button>
+            <button class="btn-print" onclick="window.print()"><i class="fas fa-print"></i></button>
+        </div>
+    </div>
+
+    <!-- Summary Stats -->
+    <div class="hist-stats">
+        <div class="hist-stat"><div class="val">{{ total_count }}</div><div class="lbl">{% if is_rtl %}الوثائق{% else %}Documents{% endif %}</div></div>
+        <div class="hist-stat"><div class="val">{{ audit_logs|length }}</div><div class="lbl">{% if is_rtl %}الأنشطة{% else %}Activities{% endif %}</div></div>
+        <div class="hist-stat"><div class="val">{{ action_counts.get('generate', 0) if action_counts else 0 }}</div><div class="lbl">{% if is_rtl %}إنشاء{% else %}Generated{% endif %}</div></div>
+        <div class="hist-stat"><div class="val">{{ action_counts.get('export', 0) if action_counts else 0 }}</div><div class="lbl">{% if is_rtl %}تصدير{% else %}Exports{% endif %}</div></div>
+        <div class="hist-stat"><div class="val">{{ domains|length }}</div><div class="lbl">{% if is_rtl %}المجالات{% else %}Domains{% endif %}</div></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="hist-tabs" id="histTabs">
+        <button class="hist-tab active" data-tab="documents"><i class="fas fa-file-alt"></i> {% if is_rtl %}الوثائق{% else %}Documents{% endif %} ({{ total_count }})</button>
+        <button class="hist-tab" data-tab="timeline"><i class="fas fa-stream"></i> {% if is_rtl %}الخط الزمني{% else %}Timeline{% endif %} ({{ audit_logs|length }})</button>
+    </div>
+
+    <!-- ═══ DOCUMENTS PANEL ═══ -->
+    <div class="panel active" id="panel-documents">
+        <div class="hist-filters" id="docFilters">
+            <button class="hf active" data-filter="all">{% if is_rtl %}الكل{% else %}All{% endif %}</button>
+            <button class="hf" data-filter="strategy">{% if is_rtl %}استراتيجية{% else %}Strategy{% endif %}</button>
+            <button class="hf" data-filter="policy">{% if is_rtl %}سياسة{% else %}Policy{% endif %}</button>
+            <button class="hf" data-filter="audit">{% if is_rtl %}تدقيق{% else %}Audit{% endif %}</button>
+            <button class="hf" data-filter="risk">{% if is_rtl %}مخاطر{% else %}Risk{% endif %}</button>
+        </div>
+        <div class="doc-list" id="docList">
+        {% if documents %}
+        {% for doc in documents %}
+        <div class="doc-item" data-type="{{ doc.type }}" data-domain="{{ doc.domain }}" onclick="viewDocument('{{ doc.type }}', {{ doc.id }})">
+            <span class="doc-type-badge badge-{{ doc.type }}">{{ doc.type_label }}</span>
+            <div class="doc-info">
+                <div class="title">{{ doc.title }}</div>
+                <div class="meta">
+                    <span><i class="fas fa-layer-group"></i> {{ doc.domain }}</span>
+                    {% if doc.subtitle %}<span><i class="fas fa-tag"></i> {{ doc.subtitle }}</span>{% endif %}
+                    <span><i class="fas fa-calendar"></i> {{ doc.created_at[:16] if doc.created_at else '—' }}</span>
+                    <span><i class="fas fa-globe"></i> {{ doc.language|upper }}</span>
+                </div>
+            </div>
+            <div class="doc-actions" onclick="event.stopPropagation()">
+                <button onclick="viewDocument('{{ doc.type }}', {{ doc.id }})" title="View"><i class="fas fa-eye"></i></button>
+                <button onclick="deleteDocument('{{ doc.type }}', {{ doc.id }}, this)" class="btn-del" title="Delete"><i class="fas fa-trash"></i></button>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty-state"><i class="fas fa-folder-open"></i>{% if is_rtl %}لا توجد وثائق بعد{% else %}No documents yet{% endif %}</div>
+        {% endif %}
+        </div>
+    </div>
+
+    <!-- ═══ TIMELINE PANEL ═══ -->
+    <div class="panel" id="panel-timeline">
+        {% if audit_logs %}
+        <div class="timeline">
+        {% for log in audit_logs %}
+        {% set act = log.action or '' %}
+        {% set is_gen = 'generate' in act %}
+        {% set is_exp = 'export' in act %}
+        {% set is_edit = 'edit' in act or 'update' in act %}
+        {% set is_sync = 'pipe' in act or 'sync' in act %}
+        <div class="tl-item">
+            <div class="tl-dot {{ 'tl-gen' if is_gen else 'tl-exp' if is_exp else 'tl-edit' if is_edit else 'tl-sync' if is_sync else 'tl-def' }}"></div>
+            <div class="tl-icon {{ 'tl-icon-gen' if is_gen else 'tl-icon-exp' if is_exp else 'tl-icon-edit' if is_edit else 'tl-icon-sync' if is_sync else 'tl-icon-def' }}">
+                <i class="fas {{ 'fa-magic' if is_gen else 'fa-download' if is_exp else 'fa-edit' if is_edit else 'fa-sync' if is_sync else 'fa-circle' }}"></i>
+            </div>
+            <div class="tl-content">
+                <div class="action">{{ act | replace('_', ' ') | title }}</div>
+                {% if log.metadata %}<div class="detail">{{ log.metadata[:120] }}</div>{% endif %}
+                <div class="time"><i class="far fa-clock"></i> {{ log.created_at }}</div>
+            </div>
+        </div>
+        {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state"><i class="fas fa-stream"></i>{% if is_rtl %}لا توجد أنشطة مسجلة{% else %}No activities recorded{% endif %}</div>
+        {% endif %}
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+/* Tab switching */
+document.querySelectorAll('.hist-tab').forEach(function(tab){
+    tab.addEventListener('click',function(){
+        document.querySelectorAll('.hist-tab').forEach(function(t){t.classList.remove('active')});
+        document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});
+        this.classList.add('active');
+        document.getElementById('panel-'+this.dataset.tab).classList.add('active');
+    });
+});
+/* Document type filters */
+document.querySelectorAll('#docFilters .hf').forEach(function(btn){
+    btn.addEventListener('click',function(){
+        document.querySelectorAll('#docFilters .hf').forEach(function(b){b.classList.remove('active')});
+        this.classList.add('active');
+        var f = this.dataset.filter;
+        document.querySelectorAll('.doc-item').forEach(function(item){
+            item.style.display = (f==='all'||item.dataset.type===f)?'flex':'none';
+        });
+    });
+});
+/* View document */
+function viewDocument(type, id){
+    fetch('/api/document/'+type+'/'+id).then(function(r){return r.json()}).then(function(d){
+        if(d.success){
+            var w = window.open('','','width=900,height=700');
+            w.document.write('<html><head><title>'+type+' #'+id+'</title>');
+            w.document.write('<style>body{font-family:Arial,sans-serif;padding:30px;max-width:800px;margin:0 auto;color:#1e293b}h1,h2,h3{color:#1e293b}table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #e2e8f0;padding:8px}th{background:#f1f5f9}</style>');
+            w.document.write('</head><body>');
+            var content = d.content || d.data?.content || 'No content';
+            // Basic markdown rendering
+            content = content.replace(/## (.+)/g,'<h2>$1</h2>').replace(/### (.+)/g,'<h3>$1</h3>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+            w.document.write(content);
+            w.document.write('</body></html>');
+            w.document.close();
+        }
+    }).catch(function(e){console.error(e)});
+}
+/* Delete document */
+function deleteDocument(type, id, btn){
+    if(!confirm('Delete this document?')) return;
+    fetch('/api/document/'+type+'/'+id,{method:'DELETE'}).then(function(r){return r.json()}).then(function(d){
+        if(d.success){
+            var item = btn.closest('.doc-item');
+            if(item) item.style.display='none';
+        }
+    });
+}
+/* Export CSV */
+function exportHistoryCSV(){
+    var rows=[['Type','Title','Domain','Date','Language']];
+    document.querySelectorAll('.doc-item').forEach(function(d){
+        var type=d.dataset.type||'';
+        var title=d.querySelector('.title')?d.querySelector('.title').textContent.trim().replace(/"/g,'""'):'';
+        var domain=d.dataset.domain||'';
+        var meta=d.querySelector('.meta');
+        var spans=meta?meta.querySelectorAll('span'):[];
+        var date=spans.length>=3?spans[2].textContent.trim():'';
+        var lang=spans.length>=4?spans[3].textContent.trim():'';
+        rows.push(['"'+type+'"','"'+title+'"','"'+domain+'"','"'+date+'"','"'+lang+'"']);
+    });
+    var csv=rows.map(function(r){return r.join(',')}).join('\n');
+    var blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='document_history.csv';a.click();
+}
+</script>
+{% endblock %}
