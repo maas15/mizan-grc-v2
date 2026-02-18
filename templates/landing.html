@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-page {{ 'rtl' if is_rtl else '' }}">
+    <div class="login-bg"><div class="bg-gradient"></div><div class="bg-pattern"></div></div>
+    <div class="login-theme-toggle"><button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button></div>
+
+    <div class="login-container" style="max-width:560px;">
+        <!-- Brand -->
+        <div class="brand-header">
+            <div class="brand-icon">⚖️</div>
+            <div class="brand-name">{{ txt.app_name }}</div>
+            <div class="brand-tagline">{{ txt.tagline }}</div>
+            <div class="brand-version">v{{ config.APP_VERSION }}</div>
+        </div>
+
+        <!-- Language Toggle -->
+        <div class="lang-toggle">
+            <a href="/?lang=en" class="lang-btn {{ 'active' if lang == 'en' else '' }}">English</a>
+            <a href="/?lang=ar" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">العربية</a>
+        </div>
+
+        <!-- Welcome -->
+        <div class="welcome-box">
+            <h2>{{ txt.welcome }}</h2>
+            <p>{{ txt.welcome_sub }}</p>
+        </div>
+
+        <!-- Features Grid -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px;">
+            <div style="padding:14px;background:rgba(102,126,234,0.08);border-radius:12px;text-align:center;">
+                <i class="fas fa-chess" style="font-size:24px;color:var(--primary);margin-bottom:6px;display:block;"></i>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{% if is_rtl %}الاستراتيجيات{% else %}Strategy{% endif %}</div>
+                <div style="font-size:11px;color:var(--text-muted);">{% if is_rtl %}توليد بالذكاء الاصطناعي{% else %}AI-Powered Generation{% endif %}</div>
+            </div>
+            <div style="padding:14px;background:rgba(118,75,162,0.08);border-radius:12px;text-align:center;">
+                <i class="fas fa-file-alt" style="font-size:24px;color:var(--secondary);margin-bottom:6px;display:block;"></i>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{% if is_rtl %}السياسات{% else %}Policies{% endif %}</div>
+                <div style="font-size:11px;color:var(--text-muted);">{% if is_rtl %}مختبر السياسات{% else %}Policy Lab{% endif %}</div>
+            </div>
+            <div style="padding:14px;background:rgba(245,158,11,0.08);border-radius:12px;text-align:center;">
+                <i class="fas fa-clipboard-check" style="font-size:24px;color:#f59e0b;margin-bottom:6px;display:block;"></i>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{% if is_rtl %}التدقيق{% else %}Audit{% endif %}</div>
+                <div style="font-size:11px;color:var(--text-muted);">{% if is_rtl %}تقارير الامتثال{% else %}Compliance Reports{% endif %}</div>
+            </div>
+            <div style="padding:14px;background:rgba(239,68,68,0.08);border-radius:12px;text-align:center;">
+                <i class="fas fa-exclamation-triangle" style="font-size:24px;color:#ef4444;margin-bottom:6px;display:block;"></i>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">{% if is_rtl %}المخاطر{% else %}Risk Radar{% endif %}</div>
+                <div style="font-size:11px;color:var(--text-muted);">{% if is_rtl %}تحليل المخاطر{% else %}Risk Analysis{% endif %}</div>
+            </div>
+        </div>
+
+        <!-- Disclaimer -->
+        <div class="disclaimer-box">
+            <div class="disclaimer-content">
+                <div class="disclaimer-icon">🔒</div>
+                <div class="disclaimer-text">
+                    <p>{{ txt.disclaimer }}</p>
+                    <p class="sensitive-warning"><i class="fas fa-shield-alt"></i> {{ txt.no_sensitive }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- CTA -->
+        <a href="{{ url_for('login', lang=lang) }}" class="btn btn-primary btn-block" style="font-size:17px;padding:16px;">
+            <i class="fas fa-rocket"></i> {% if is_rtl %}ابدأ الآن{% else %}Get Started{% endif %}
+        </a>
+
+        <!-- Footer -->
+        <div class="creator-footer" style="margin-top:24px;">
+            <p class="created-by">{{ txt.created_by }}</p>
+            <p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p>
+            <p class="copyright">© {{ config.COPYRIGHT_YEAR }} {{ config.APP_NAME }} v{{ config.APP_VERSION }}</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

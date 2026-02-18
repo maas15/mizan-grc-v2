@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-page {{ 'rtl' if is_rtl else '' }}">
+    <div class="login-bg"><div class="bg-gradient"></div><div class="bg-pattern"></div></div>
+    <div class="login-theme-toggle"><button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button></div>
+
+    <div class="login-container">
+        <!-- Brand -->
+        <div class="brand-header">
+            <div class="brand-icon">⚖️</div>
+            <div class="brand-name">{{ txt.app_name }}</div>
+            <div class="brand-tagline">{{ txt.tagline }}</div>
+        </div>
+
+        <!-- Language Toggle -->
+        <div class="lang-toggle">
+            <a href="{{ url_for('login', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">English</a>
+            <a href="{{ url_for('login', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">العربية</a>
+        </div>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="alert {{ 'alert-error' if category == 'error' else 'alert-success' }}">
+            <i class="fas {{ 'fa-exclamation-circle' if category == 'error' else 'fa-check-circle' }}"></i> {{ message }}
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        <!-- Welcome -->
+        <div class="welcome-box">
+            <h2>{{ txt.welcome }}</h2>
+            <p>{{ txt.welcome_sub }}</p>
+        </div>
+
+        <!-- Disclaimer -->
+        <div class="disclaimer-box">
+            <div class="disclaimer-content">
+                <div class="disclaimer-icon">🔒</div>
+                <div class="disclaimer-text">
+                    <p>{{ txt.disclaimer }}</p>
+                    <p class="sensitive-warning"><i class="fas fa-shield-alt"></i> {{ txt.no_sensitive }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auth Tabs -->
+        <div class="auth-tabs">
+            <button class="auth-tab active" onclick="showAuthTab('login', this)" id="tab-login">
+                <i class="fas fa-sign-in-alt"></i> {{ txt.login }}
+            </button>
+            <button class="auth-tab" onclick="showAuthTab('register', this)" id="tab-register">
+                <i class="fas fa-user-plus"></i> {{ txt.register }}
+            </button>
+        </div>
+
+        <!-- Login Form -->
+        <form id="login-form" class="auth-form" method="POST" action="{{ url_for('login', lang=lang) }}">
+            <div class="form-group">
+                <label><i class="fas fa-user"></i> {{ txt.username }}</label>
+                <input type="text" name="username" placeholder="{{ txt.username }}" required autocomplete="username" maxlength="50">
+            </div>
+            <div class="form-group">
+                <label><i class="fas fa-lock"></i> {{ txt.password }}</label>
+                <input type="password" name="password" placeholder="{{ txt.password }}" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">
+                <i class="fas fa-sign-in-alt"></i> {{ txt.login }}
+            </button>
+        </form>
+
+        <!-- Register Form (hidden by default) -->
+        <form id="register-form" class="auth-form" method="POST" action="{{ url_for('register') }}" style="display:none;">
+            <div class="form-group">
+                <label><i class="fas fa-user"></i> {{ txt.username }}</label>
+                <input type="text" name="username" placeholder="{% if is_rtl %}اسم المستخدم (3-50 حرف){% else %}Username (3-50 characters){% endif %}" required autocomplete="username" maxlength="50" pattern="[a-zA-Z0-9_]{3,50}">
+            </div>
+            <div class="form-group">
+                <label><i class="fas fa-envelope"></i> {% if is_rtl %}البريد الإلكتروني{% else %}Email{% endif %}</label>
+                <input type="email" name="email" placeholder="{% if is_rtl %}البريد الإلكتروني (اختياري){% else %}Email (optional){% endif %}" autocomplete="email">
+            </div>
+            <div class="form-group">
+                <label><i class="fas fa-lock"></i> {{ txt.password }}</label>
+                <input type="password" name="password" id="reg-password" placeholder="{% if is_rtl %}كلمة المرور (8 أحرف على الأقل){% else %}Password (min 8 characters){% endif %}" required autocomplete="new-password" minlength="8">
+                <div class="password-strength" id="pw-strength" style="display:none;">
+                    <div style="flex:1;height:4px;background:var(--bg-elevated);border-radius:2px;overflow:hidden;">
+                        <div class="strength-bar" id="pw-bar" style="width:0%;height:100%;"></div>
+                    </div>
+                    <span class="strength-label" id="pw-label"></span>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">
+                <i class="fas fa-user-plus"></i> {{ txt.register }}
+            </button>
+        </form>
+
+        <!-- Footer -->
+        <div class="creator-footer">
+            <p class="created-by">{{ txt.created_by }}</p>
+            <p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p>
+            <p class="copyright">© {{ config.COPYRIGHT_YEAR }} {{ config.APP_NAME }} v{{ config.APP_VERSION }}</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showAuthTab(tab, btn) {
+    document.querySelectorAll('.auth-tab').forEach(function(t){ t.classList.remove('active'); });
+    btn.classList.add('active');
+    document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+    document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+}
+
+// Password strength indicator
+var regPw = document.getElementById('reg-password');
+if (regPw) {
+    regPw.addEventListener('input', function() {
+        var v = this.value;
+        var el = document.getElementById('pw-strength');
+        var bar = document.getElementById('pw-bar');
+        var label = document.getElementById('pw-label');
+        if (!v) { el.style.display = 'none'; return; }
+        el.style.display = 'flex';
+        var score = 0;
+        if (v.length >= 8) score++;
+        if (v.length >= 12) score++;
+        if (/[A-Z]/.test(v)) score++;
+        if (/[0-9]/.test(v)) score++;
+        if (/[^A-Za-z0-9]/.test(v)) score++;
+        var pct = Math.min(score * 20, 100);
+        var colors = ['#ef4444','#f97316','#eab308','#22c55e','#22c55e'];
+        var labels = {{ "['ضعيف','مقبول','متوسط','قوي','ممتاز']" if is_rtl else "['Weak','Fair','Medium','Strong','Excellent']" }};
+        bar.style.width = pct + '%';
+        bar.style.background = colors[Math.min(score,4)];
+        label.textContent = labels[Math.min(score,4)];
+        label.style.color = colors[Math.min(score,4)];
+    });
+}
+
+// Auto-switch to register tab if flash message contains "register" context
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% for category, message in messages %}
+{% if 'Username' in message or 'email' in message or 'Password' in message or 'Registration' in message or 'Account created' in message %}
+document.addEventListener('DOMContentLoaded', function() {
+    showAuthTab('{% if "Account created" in message %}login{% else %}register{% endif %}', document.getElementById('tab-{% if "Account created" in message %}login{% else %}register{% endif %}'));
+});
+{% endif %}
+{% endfor %}
+{% endwith %}
+</script>
+{% endblock %}
