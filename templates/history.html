@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="app-layout {{ 'rtl-layout' if is_rtl else '' }}">
+    <aside class="sidebar {{ 'sidebar-right' if is_rtl else 'sidebar-left' }}">
+        <div class="sidebar-brand"><a href="{{ url_for('dashboard', lang=lang) }}"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="sidebar-logo"></a></div>
+        <div class="sidebar-controls">
+            <div class="sidebar-lang">
+                <a href="{{ url_for('document_history', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('document_history', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+        </div>
+        <a href="{{ url_for('dashboard', lang=lang) }}" class="back-btn"><i class="fas fa-arrow-{{ 'right' if is_rtl else 'left' }}"></i> {% if is_rtl %}العودة{% else %}Back{% endif %}</a>
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+            </div>
+        </div>
+        <a href="{{ url_for('logout') }}" class="logout-btn"><i class="fas fa-sign-out-alt"></i> {{ txt.logout }}</a>
+        <div class="sidebar-footer"><p class="created-by">{{ txt.created_by }}</p><p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p><p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p></div>
+    </aside>
+    <main class="main-content">
+        <header class="domain-header">
+            <h1><i class="fas fa-folder-open"></i> {% if is_rtl %}مستنداتي{% else %}My Documents{% endif %}</h1>
+            <p style="color:var(--text-secondary);font-size:0.9rem;">{% if is_rtl %}{{ total_count }} مستند{% else %}{{ total_count }} document(s){% endif %}</p>
+        </header>
+
+        <!-- Filter Bar -->
+        <div style="display:flex;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap;align-items:center;">
+            <button class="doc-filter-btn active" onclick="filterDocs('all',this)">{% if is_rtl %}الكل{% else %}All{% endif %} <span class="doc-count" id="cnt-all">{{ total_count }}</span></button>
+            <button class="doc-filter-btn" onclick="filterDocs('strategy',this)"><i class="fas fa-chess"></i> {% if is_rtl %}استراتيجيات{% else %}Strategies{% endif %} <span class="doc-count" id="cnt-strategy">0</span></button>
+            <button class="doc-filter-btn" onclick="filterDocs('policy',this)"><i class="fas fa-file-alt"></i> {% if is_rtl %}سياسات{% else %}Policies{% endif %} <span class="doc-count" id="cnt-policy">0</span></button>
+            <button class="doc-filter-btn" onclick="filterDocs('audit',this)"><i class="fas fa-clipboard-check"></i> {% if is_rtl %}تدقيقات{% else %}Audits{% endif %} <span class="doc-count" id="cnt-audit">0</span></button>
+            <button class="doc-filter-btn" onclick="filterDocs('risk',this)"><i class="fas fa-exclamation-triangle"></i> {% if is_rtl %}مخاطر{% else %}Risks{% endif %} <span class="doc-count" id="cnt-risk">0</span></button>
+            <select id="domain-filter" onchange="filterDocs(activeDocFilter)" style="padding:6px 12px;border-radius:8px;border:1px solid var(--border-color);font-size:0.85rem;background:var(--bg-card);color:var(--text-primary);margin-inline-start:auto;">
+                <option value="">{% if is_rtl %}جميع النطاقات{% else %}All Domains{% endif %}</option>
+                {% for d in domains %}
+                <option value="{{ d }}">{{ d }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Documents Table -->
+        <div style="overflow-x:auto;background:var(--bg-card);border-radius:12px;border:1px solid var(--border-color);">
+            <table id="docs-table" style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+                <thead><tr style="background:var(--primary-color,#667eea);color:#fff;">
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">#</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}النوع{% else %}Type{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}العنوان{% else %}Title{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}النطاق{% else %}Domain{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}اللغة{% else %}Lang{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};">{% if is_rtl %}التاريخ{% else %}Date{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:center;">{% if is_rtl %}إجراءات{% else %}Actions{% endif %}</th>
+                </tr></thead>
+                <tbody id="docs-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Document Preview Modal -->
+        <div id="doc-preview-modal" class="hidden" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem;">
+            <div style="background:var(--bg-card);border-radius:16px;width:90%;max-width:900px;max-height:90vh;display:flex;flex-direction:column;border:1px solid var(--border-color);">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:1rem 1.5rem;border-bottom:1px solid var(--border-color);">
+                    <h3 id="preview-title" style="margin:0;font-size:1.1rem;"></h3>
+                    <div style="display:flex;gap:0.5rem;align-items:center;">
+                        <button class="btn btn-primary" onclick="downloadPreview('docx')" style="padding:5px 12px;font-size:0.82rem;"><i class="fas fa-file-word"></i> Word</button>
+                        <button class="btn btn-danger" onclick="downloadPreview('pdf')" style="padding:5px 12px;font-size:0.82rem;"><i class="fas fa-file-pdf"></i> PDF</button>
+                        <button onclick="closePreview()" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:1.3rem;padding:4px 8px;"><i class="fas fa-times"></i></button>
+                    </div>
+                </div>
+                <div id="preview-content" class="output-content" style="padding:1.5rem;overflow-y:auto;flex:1;"></div>
+            </div>
+        </div>
+    </main>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+const isRtl = {{ 'true' if is_rtl else 'false' }};
+const lang = '{{ lang }}';
+const allDocs = {{ documents | tojson | safe }};
+let activeDocFilter = 'all';
+let previewContent = '';
+let previewName = '';
+
+const typeIcons = {strategy:'fa-chess',policy:'fa-file-alt',audit:'fa-clipboard-check',risk:'fa-exclamation-triangle'};
+const typeColors = {strategy:'#667eea',policy:'#22c55e',audit:'#f59e0b',risk:'#ef4444'};
+const typeLabels = isRtl ? {strategy:'استراتيجية',policy:'سياسة',audit:'تدقيق',risk:'مخاطر'} : {strategy:'Strategy',policy:'Policy',audit:'Audit',risk:'Risk'};
+
+// Count by type
+var counts = {all:allDocs.length, strategy:0, policy:0, audit:0, risk:0};
+allDocs.forEach(function(d){ counts[d.type] = (counts[d.type]||0) + 1; });
+Object.keys(counts).forEach(function(k){ var el = document.getElementById('cnt-'+k); if(el) el.textContent = counts[k]; });
+
+function filterDocs(type, btn) {
+    activeDocFilter = type;
+    document.querySelectorAll('.doc-filter-btn').forEach(function(b){ b.classList.remove('active'); });
+    if(btn) btn.classList.add('active');
+    renderDocs();
+}
+
+function renderDocs() {
+    var domainFilter = document.getElementById('domain-filter').value;
+    var filtered = allDocs.filter(function(d) {
+        if (activeDocFilter !== 'all' && d.type !== activeDocFilter) return false;
+        if (domainFilter && d.domain !== domainFilter) return false;
+        return true;
+    });
+    var tbody = document.getElementById('docs-body');
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-secondary);"><i class="fas fa-inbox"></i> ' + (isRtl ? 'لا توجد مستندات' : 'No documents found') + '</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filtered.map(function(d, idx) {
+        var date = d.created_at ? d.created_at.substring(0, 10) : '—';
+        var langLabel = d.language === 'ar' ? 'العربية' : 'English';
+        return '<tr style="border-bottom:1px solid var(--border-color);transition:background 0.15s;" onmouseenter="this.style.background=\'rgba(102,126,234,0.04)\'" onmouseleave="this.style.background=\'transparent\'">'
+            + '<td style="padding:10px 12px;">' + (idx + 1) + '</td>'
+            + '<td style="padding:10px 12px;"><span style="display:inline-flex;align-items:center;gap:6px;"><i class="fas ' + (typeIcons[d.type]||'fa-file') + '" style="color:' + (typeColors[d.type]||'#667eea') + ';"></i> ' + (typeLabels[d.type]||d.type) + '</span></td>'
+            + '<td style="padding:10px 12px;font-weight:600;">' + (d.title || '—') + (d.subtitle ? '<div style="font-size:0.78rem;color:var(--text-secondary);font-weight:400;">' + d.subtitle + '</div>' : '') + '</td>'
+            + '<td style="padding:10px 12px;font-size:0.85rem;">' + (d.domain || '—') + '</td>'
+            + '<td style="padding:10px 12px;font-size:0.85rem;">' + langLabel + '</td>'
+            + '<td style="padding:10px 12px;font-size:0.85rem;">' + date + '</td>'
+            + '<td style="padding:10px 12px;text-align:center;">'
+            + '<button onclick="viewDoc(\'' + d.type + '\',' + d.id + ',\'' + (d.title||'').replace(/'/g,"\\'") + '\')" style="background:none;border:none;color:#667eea;cursor:pointer;padding:4px 8px;" title="' + (isRtl?'عرض':'View') + '"><i class="fas fa-eye"></i></button>'
+            + '<button onclick="deleteDoc(\'' + d.type + '\',' + d.id + ')" style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;" title="' + (isRtl?'حذف':'Delete') + '"><i class="fas fa-trash"></i></button>'
+            + '</td></tr>';
+    }).join('');
+}
+
+async function viewDoc(type, id, title) {
+    try {
+        var res = await fetch('/api/document/' + type + '/' + id);
+        var data = await res.json();
+        if (data.success) {
+            previewContent = data.content;
+            previewName = type + '_' + id;
+            document.getElementById('preview-title').textContent = title || (typeLabels[type] + ' #' + id);
+            document.getElementById('preview-content').innerHTML = marked.parse(data.content || '');
+            document.getElementById('doc-preview-modal').classList.remove('hidden');
+            document.getElementById('doc-preview-modal').style.display = 'flex';
+        } else {
+            alert(data.error || 'Error');
+        }
+    } catch(e) {
+        alert(isRtl ? 'خطأ في تحميل المستند' : 'Error loading document');
+    }
+}
+
+function closePreview() {
+    document.getElementById('doc-preview-modal').classList.add('hidden');
+    document.getElementById('doc-preview-modal').style.display = 'none';
+}
+
+function downloadPreview(fmt) {
+    if (!previewContent) return;
+    if (fmt === 'txt') {
+        var blob = new Blob([previewContent], {type: 'text/plain; charset=utf-8'});
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = previewName + '.txt';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a); return;
+    }
+    var endpoint = fmt === 'pdf' ? '/api/generate-pdf' : '/api/generate-docx';
+    fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:previewContent, filename:previewName, language:lang})})
+    .then(function(res) {
+        if (!res.ok) return res.text().then(function(t) { try { var j=JSON.parse(t); alert(j.error||'Error'); } catch(e) { alert('Error: ' + res.status); } return null; });
+        return res.blob();
+    })
+    .then(function(b) {
+        if (!b) return;
+        var url = URL.createObjectURL(b);
+        var a = document.createElement('a'); a.href = url; a.download = previewName + '.' + fmt;
+        document.body.appendChild(a); a.click(); setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    })
+    .catch(function() { alert(isRtl ? 'خطأ في التحميل' : 'Download error'); });
+}
+
+async function deleteDoc(type, id) {
+    if (!confirm(isRtl ? 'حذف هذا المستند؟' : 'Delete this document?')) return;
+    try {
+        var res = await fetch('/api/document/' + type + '/' + id, {method: 'DELETE'});
+        var data = await res.json();
+        if (data.success) {
+            // Remove from local array and re-render
+            for (var i = allDocs.length - 1; i >= 0; i--) {
+                if (allDocs[i].type === type && allDocs[i].id === id) { allDocs.splice(i, 1); break; }
+            }
+            counts = {all:allDocs.length, strategy:0, policy:0, audit:0, risk:0};
+            allDocs.forEach(function(d){ counts[d.type] = (counts[d.type]||0) + 1; });
+            Object.keys(counts).forEach(function(k){ var el = document.getElementById('cnt-'+k); if(el) el.textContent = counts[k]; });
+            renderDocs();
+        }
+    } catch(e) {}
+}
+
+// Close modal on backdrop click
+document.getElementById('doc-preview-modal').addEventListener('click', function(e) {
+    if (e.target === this) closePreview();
+});
+
+document.addEventListener('DOMContentLoaded', function() { renderDocs(); });
+</script>
+<style>
+.doc-filter-btn { background:var(--bg-elevated);border:1px solid var(--border-color);padding:6px 14px;border-radius:20px;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);display:inline-flex;align-items:center;gap:6px;transition:all 0.2s; }
+.doc-filter-btn:hover { color:var(--text-primary);border-color:var(--primary,#667eea); }
+.doc-filter-btn.active { background:var(--primary,#667eea);color:#fff;border-color:var(--primary,#667eea); }
+.doc-count { background:rgba(255,255,255,0.2);padding:1px 7px;border-radius:10px;font-size:0.75rem;font-weight:600; }
+.doc-filter-btn:not(.active) .doc-count { background:var(--bg-card);color:var(--text-muted); }
+</style>
+{% endblock %}
