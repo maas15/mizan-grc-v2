@@ -1,0 +1,568 @@
+{% extends "base.html" %}
+{% block extra_css %}
+<style>
+/* ── Profile Command Center ── */
+.profile-wrap{max-width:1100px;margin:0 auto;padding:1.5rem 1rem}
+.profile-header{display:flex;align-items:center;gap:1.2rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.profile-avatar{width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:1.5rem;color:#fff;font-weight:700;flex-shrink:0}
+.profile-info h1{font-size:1.3rem;font-weight:700;color:var(--text-primary,#e2e8f0);margin:0}
+.profile-info p{font-size:0.8rem;color:var(--text-secondary,#94a3b8);margin:0.15rem 0 0}
+.profile-role{display:inline-block;padding:0.15rem 0.6rem;border-radius:6px;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em}
+.role-admin{background:rgba(239,68,68,0.15);color:#f87171}
+.role-user{background:rgba(99,102,241,0.15);color:#818cf8}
+
+/* Tabs */
+.cmd-tabs{display:flex;gap:4px;background:var(--bg-card,rgba(255,255,255,0.03));border-radius:12px;padding:4px;margin-bottom:1.5rem;overflow-x:auto}
+.cmd-tab{padding:0.55rem 1rem;border:none;background:transparent;color:var(--text-secondary,#94a3b8);font-size:0.82rem;font-weight:600;border-radius:9px;cursor:pointer;transition:all .2s;white-space:nowrap;display:flex;align-items:center;gap:0.4rem}
+.cmd-tab.active{background:var(--accent,#6366f1);color:#fff}
+.cmd-tab:hover:not(.active){color:var(--text-primary,#e2e8f0);background:rgba(255,255,255,0.05)}
+[data-theme="light"] .cmd-tab:hover:not(.active){background:rgba(0,0,0,0.04)}
+.cmd-tab .badge{background:rgba(255,255,255,0.2);padding:0.1rem 0.4rem;border-radius:5px;font-size:0.68rem;min-width:18px;text-align:center}
+.cmd-tab.active .badge{background:rgba(255,255,255,0.25)}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* Stat cards */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.8rem;margin-bottom:1.5rem}
+.stat-card{background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:12px;padding:1rem;text-align:center}
+.stat-card .val{font-size:1.8rem;font-weight:800;color:var(--text-primary,#e2e8f0);line-height:1}
+.stat-card .lbl{font-size:0.72rem;color:var(--text-secondary,#94a3b8);margin-top:0.3rem;text-transform:uppercase;letter-spacing:0.03em}
+.stat-card .icon-bg{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin:0 auto 0.5rem;font-size:1rem}
+.ib-purple{background:rgba(139,92,246,0.15);color:#a78bfa}
+.ib-blue{background:rgba(59,130,246,0.15);color:#60a5fa}
+.ib-green{background:rgba(34,197,94,0.15);color:#4ade80}
+.ib-amber{background:rgba(245,158,11,0.15);color:#fbbf24}
+.ib-red{background:rgba(239,68,68,0.15);color:#f87171}
+
+/* Domain breakdown */
+.domain-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:12px;overflow:hidden;margin-bottom:1.5rem}
+.domain-table th{background:var(--bg-elevated,#1a2541);padding:0.6rem 0.8rem;font-size:0.72rem;font-weight:700;text-transform:uppercase;color:var(--text-secondary,#94a3b8);text-align:start;letter-spacing:0.03em}
+[data-theme="light"] .domain-table th{background:#f1f5f9}
+.domain-table td{padding:0.55rem 0.8rem;font-size:0.82rem;color:var(--text-primary,#e2e8f0);border-top:1px solid var(--border-color,rgba(255,255,255,0.04))}
+.domain-table tr:hover td{background:rgba(99,102,241,0.04)}
+
+/* Token quota bar */
+.quota-wrap{margin-bottom:1.5rem}
+.quota-bar{height:8px;background:var(--bg-elevated,#1a2541);border-radius:4px;overflow:hidden}
+.quota-fill{height:100%;border-radius:4px;transition:width .5s}
+.quota-meta{display:flex;justify-content:space-between;font-size:0.72rem;color:var(--text-secondary,#94a3b8);margin-top:0.3rem}
+
+/* ── Tasks Panel ── */
+.task-filters{display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap}
+.task-filters .tf{padding:0.35rem 0.8rem;border-radius:8px;border:1px solid var(--border-color,rgba(255,255,255,0.1));background:transparent;color:var(--text-secondary,#94a3b8);font-size:0.78rem;cursor:pointer;transition:all .2s}
+.task-filters .tf.active{background:var(--accent,#6366f1);color:#fff;border-color:transparent}
+.task-item{display:flex;align-items:flex-start;gap:0.7rem;padding:0.7rem 0.8rem;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.04));transition:background .15s}
+.task-item:hover{background:rgba(99,102,241,0.04)}
+.task-item:last-child{border-bottom:none}
+.task-status-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:0.35rem}
+.dot-todo{background:#f59e0b}
+.dot-in_progress{background:#3b82f6}
+.dot-done{background:#22c55e}
+.task-body{flex:1;min-width:0}
+.task-body .title{font-size:0.85rem;font-weight:600;color:var(--text-primary,#e2e8f0);word-break:break-word}
+.task-body .meta{font-size:0.7rem;color:var(--text-muted,#64748b);margin-top:0.2rem;display:flex;gap:0.6rem;flex-wrap:wrap}
+.task-body .meta span{display:flex;align-items:center;gap:0.25rem}
+.task-actions select{padding:0.25rem 0.4rem;border-radius:6px;border:1px solid var(--border-color,rgba(255,255,255,0.1));background:var(--bg-elevated,#1e293b);color:var(--text-primary,#e2e8f0);font-size:0.72rem;cursor:pointer}
+.task-actions select option{background:var(--bg-elevated,#1e293b);color:var(--text-primary,#e2e8f0)}
+[data-theme="light"] .task-actions select{background:#f8fafc;color:#1e293b;border-color:#cbd5e1}
+[data-theme="light"] .task-actions select option{background:#fff;color:#1e293b}
+
+/* ── Risk Register Panel ── */
+.risk-item{padding:0.7rem 0.8rem;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.04));display:flex;align-items:flex-start;gap:0.7rem}
+.risk-score{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.85rem;font-weight:700;flex-shrink:0;color:#fff}
+.rs-high{background:#ef4444}
+.rs-medium{background:#f59e0b}
+.rs-low{background:#22c55e}
+.risk-body{flex:1;min-width:0}
+.risk-body .title{font-size:0.85rem;font-weight:600;color:var(--text-primary,#e2e8f0)}
+.risk-body .meta{font-size:0.7rem;color:var(--text-muted,#64748b);margin-top:0.2rem}
+
+/* ── Activity Timeline ── */
+.activity-item{display:flex;gap:0.7rem;padding:0.55rem 0;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.03))}
+.activity-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:0.7rem}
+.ai-gen{background:rgba(99,102,241,0.15);color:#818cf8}
+.ai-exp{background:rgba(34,197,94,0.15);color:#4ade80}
+.ai-edit{background:rgba(245,158,11,0.15);color:#fbbf24}
+.ai-def{background:rgba(148,163,184,0.15);color:#94a3b8}
+.activity-text{flex:1;font-size:0.8rem;color:var(--text-primary,#e2e8f0)}
+.activity-text .time{font-size:0.68rem;color:var(--text-muted,#64748b);display:block;margin-top:0.1rem}
+
+/* ── Settings Panel ── */
+.settings-section{background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:12px;padding:1.2rem;margin-bottom:1rem}
+.settings-section h3{font-size:0.95rem;font-weight:700;color:var(--text-primary,#e2e8f0);margin:0 0 0.8rem;display:flex;align-items:center;gap:0.4rem}
+.settings-section .form-row{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.8rem}
+@media(max-width:600px){.settings-section .form-row{grid-template-columns:1fr}}
+.settings-section label{font-size:0.78rem;font-weight:600;color:var(--text-secondary,#94a3b8);display:block;margin-bottom:0.3rem}
+.settings-section input,.settings-section select{width:100%;padding:0.55rem 0.7rem;border-radius:9px;border:1px solid var(--border-color,rgba(255,255,255,0.1));background:var(--bg-elevated,#1e293b);color:var(--text-primary,#e2e8f0);font-size:0.85rem;box-sizing:border-box}
+.settings-section select option{background:var(--bg-elevated,#1e293b);color:var(--text-primary,#e2e8f0)}
+[data-theme="light"] .settings-section input,[data-theme="light"] .settings-section select{background:#f8fafc;border-color:#cbd5e1;color:#1e293b}
+[data-theme="light"] .settings-section select option{background:#fff;color:#1e293b}
+.btn-settings{padding:0.55rem 1.2rem;border:none;border-radius:9px;font-size:0.82rem;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-save{background:var(--accent,#6366f1);color:#fff}
+.btn-save:hover{opacity:0.9;transform:translateY(-1px)}
+.btn-print{background:rgba(255,255,255,0.08);color:var(--text-primary,#e2e8f0);border:1px solid var(--border-color,rgba(255,255,255,0.1))}
+[data-theme="light"] .btn-print{background:#f1f5f9;color:#334155;border-color:#cbd5e1}
+
+.panel-card{background:var(--bg-card,rgba(255,255,255,0.03));border:1px solid var(--border-color,rgba(255,255,255,0.06));border-radius:12px;overflow:hidden;margin-bottom:1rem}
+.panel-card-header{padding:0.7rem 0.8rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.04))}
+.panel-card-header h3{font-size:0.9rem;font-weight:700;color:var(--text-primary,#e2e8f0);margin:0;display:flex;align-items:center;gap:0.4rem}
+.empty-state{text-align:center;padding:2rem 1rem;color:var(--text-muted,#64748b);font-size:0.85rem}
+.empty-state i{font-size:2rem;margin-bottom:0.5rem;display:block;opacity:0.4}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="app-layout {{ 'rtl-layout' if is_rtl else '' }}">
+    <!-- Sidebar -->
+    <aside class="sidebar {{ 'sidebar-right' if is_rtl else 'sidebar-left' }}">
+        <div class="sidebar-brand"><a href="{{ url_for('dashboard', lang=lang) }}"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="sidebar-logo"></a></div>
+        <div class="sidebar-controls">
+            <div class="sidebar-lang">
+                <a href="{{ url_for('profile_page', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('profile_page', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+        </div>
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+                {% if session.get('role') == 'admin' %}<a href="{{ url_for('admin_dashboard') }}" class="admin-link"><i class="fas fa-crown"></i></a>{% endif %}
+            </div>
+        </div>
+        <div class="ai-status {{ 'connected' if ai_available else 'disconnected' }}"><div class="status-dot"></div><span>{{ txt.ai_connected if ai_available else txt.ai_disconnected }}</span></div>
+        <nav class="sidebar-nav">
+            <a href="{{ url_for('profile_page', lang=lang) }}" class="sidebar-link active"><i class="fas fa-user-cog"></i> {{ txt.profile }}</a>
+            <a href="{{ url_for('document_history', lang=lang) }}" class="sidebar-link"><i class="fas fa-folder-open"></i> {{ txt.my_documents }}</a>
+        </nav>
+        <a href="{{ url_for('logout') }}" class="logout-btn"><i class="fas fa-sign-out-alt"></i> {{ txt.logout }}</a>
+        <div class="sidebar-footer"><p class="created-by">{{ txt.created_by }}</p><p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p><p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p></div>
+    </aside>
+<div class="main-content">
+<div class="profile-wrap">
+    <!-- Header -->
+    <div class="profile-header">
+        <div class="profile-avatar">{{ username[0]|upper if username else 'U' }}</div>
+        <div class="profile-info">
+            <h1>{{ username }}
+                <span class="profile-role {{ 'role-admin' if user.role == 'admin' else 'role-user' }}">{{ user.role or 'user' }}</span>
+            </h1>
+            <p>{{ user.email or (txt.no_email if is_rtl else 'No email set') }} · {% if is_rtl %}عضو منذ{% else %}Member since{% endif %} {{ user.created_at[:10] if user.created_at else '—' }}</p>
+        </div>
+        <div style="margin-inline-start:auto;display:flex;gap:0.5rem">
+            <button class="btn-settings btn-print" onclick="window.print()"><i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}</button>
+        </div>
+    </div>
+
+    <!-- Command Tabs -->
+    <div class="cmd-tabs" id="cmdTabs">
+        <button class="cmd-tab active" data-tab="overview"><i class="fas fa-chart-pie"></i> {% if is_rtl %}نظرة عامة{% else %}Overview{% endif %}</button>
+        <button class="cmd-tab" data-tab="tasks"><i class="fas fa-tasks"></i> {% if is_rtl %}المهام{% else %}Tasks{% endif %} <span class="badge">{{ task_stats.total }}</span></button>
+        <button class="cmd-tab" data-tab="risks"><i class="fas fa-exclamation-triangle"></i> {% if is_rtl %}سجل المخاطر{% else %}Risk Register{% endif %} <span class="badge">{{ user_risks|length }}</span></button>
+        <button class="cmd-tab" data-tab="kpis"><i class="fas fa-chart-line"></i> {% if is_rtl %}المؤشرات{% else %}KPIs{% endif %} <span class="badge">{{ user_kpis|length if user_kpis else 0 }}</span></button>
+        <button class="cmd-tab" data-tab="activity"><i class="fas fa-history"></i> {% if is_rtl %}النشاط{% else %}Activity{% endif %}</button>
+        <button class="cmd-tab" data-tab="settings"><i class="fas fa-cog"></i> {% if is_rtl %}الإعدادات{% else %}Settings{% endif %}</button>
+    </div>
+
+    <!-- ═══ OVERVIEW TAB ═══ -->
+    <div class="tab-panel active" id="tab-overview">
+        <div class="stat-grid">
+            <div class="stat-card"><div class="icon-bg ib-purple"><i class="fas fa-file-alt"></i></div><div class="val">{{ total_docs }}</div><div class="lbl">{% if is_rtl %}إجمالي الوثائق{% else %}Total Documents{% endif %}</div></div>
+            <div class="stat-card"><div class="icon-bg ib-blue"><i class="fas fa-tasks"></i></div><div class="val">{{ task_stats.total }}</div><div class="lbl">{% if is_rtl %}المهام{% else %}Tasks{% endif %}</div></div>
+            <div class="stat-card"><div class="icon-bg ib-green"><i class="fas fa-check-circle"></i></div><div class="val">{{ task_stats.done }}</div><div class="lbl">{% if is_rtl %}مكتمل{% else %}Completed{% endif %}</div></div>
+            <div class="stat-card"><div class="icon-bg ib-amber"><i class="fas fa-exclamation-triangle"></i></div><div class="val">{{ user_risks|length }}</div><div class="lbl">{% if is_rtl %}المخاطر{% else %}Risks{% endif %}</div></div>
+        </div>
+
+        <!-- Token Quota -->
+        {% set pct = ((token_usage / token_limit) * 100) if token_limit > 0 else 0 %}
+        <div class="quota-wrap">
+            <div style="font-size:0.82rem;font-weight:600;color:var(--text-primary,#e2e8f0);margin-bottom:0.3rem"><i class="fas fa-coins"></i> {% if is_rtl %}حصة الرموز{% else %}Token Quota{% endif %}</div>
+            <div class="quota-bar"><div class="quota-fill" style="width:{{ pct|round(1) }}%;background:{{ '#ef4444' if pct > 90 else '#f59e0b' if pct > 70 else '#22c55e' }}"></div></div>
+            <div class="quota-meta"><span>{{ '{:,}'.format(token_usage) }} / {{ '{:,}'.format(token_limit) }}</span><span>{{ pct|round(1) }}%</span></div>
+        </div>
+
+        <!-- Domain Breakdown -->
+        {% if domain_stats %}
+        <table class="domain-table">
+            <thead><tr>
+                <th>{% if is_rtl %}المجال{% else %}Domain{% endif %}</th>
+                <th>{% if is_rtl %}استراتيجيات{% else %}Strategies{% endif %}</th>
+                <th>{% if is_rtl %}سياسات{% else %}Policies{% endif %}</th>
+                <th>{% if is_rtl %}تدقيق{% else %}Audits{% endif %}</th>
+                <th>{% if is_rtl %}مخاطر{% else %}Risks{% endif %}</th>
+                <th>{% if is_rtl %}المجموع{% else %}Total{% endif %}</th>
+            </tr></thead>
+            <tbody>
+            {% for domain, st in domain_stats.items() %}
+            <tr>
+                <td style="font-weight:600">{{ domain }}</td>
+                <td>{{ st.strategies }}/{{ st.strategy_limit }}</td>
+                <td>{{ st.policies }}/{{ st.policy_limit }}</td>
+                <td>{{ st.audits }}/{{ st.audit_limit }}</td>
+                <td>{{ st.risks }}/{{ st.risk_limit }}</td>
+                <td style="font-weight:700">{{ st.total }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <!-- ═══ TASKS TAB ═══ -->
+    <div class="tab-panel" id="tab-tasks">
+        <div class="task-filters">
+            <button class="tf active" data-filter="all">{% if is_rtl %}الكل{% else %}All{% endif %} ({{ task_stats.total }})</button>
+            <button class="tf" data-filter="todo">{% if is_rtl %}للتنفيذ{% else %}To Do{% endif %} ({{ task_stats.todo }})</button>
+            <button class="tf" data-filter="in_progress">{% if is_rtl %}قيد التنفيذ{% else %}In Progress{% endif %} ({{ task_stats.in_progress }})</button>
+            <button class="tf" data-filter="done">{% if is_rtl %}مكتمل{% else %}Done{% endif %} ({{ task_stats.done }})</button>
+        </div>
+        <div class="panel-card">
+            <div id="taskList">
+            {% if user_tasks %}
+            {% for task in user_tasks %}
+            <div class="task-item" data-status="{{ task.status }}">
+                <div class="task-status-dot dot-{{ task.status }}"></div>
+                <div class="task-body">
+                    <div class="title">{{ task.title }}</div>
+                    <div class="meta">
+                        <span><i class="fas fa-layer-group"></i> {{ task.domain }}</span>
+                        <span><i class="fas fa-tag"></i> {{ task.category }}</span>
+                        {% if task.priority %}<span><i class="fas fa-flag"></i> {{ task.priority }}</span>{% endif %}
+                    </div>
+                </div>
+                <div class="task-actions">
+                    <select onchange="updateTaskStatus({{ task.id }}, this.value)">
+                        <option value="todo" {{ 'selected' if task.status == 'todo' else '' }}>{% if is_rtl %}للتنفيذ{% else %}To Do{% endif %}</option>
+                        <option value="in_progress" {{ 'selected' if task.status == 'in_progress' else '' }}>{% if is_rtl %}قيد التنفيذ{% else %}In Progress{% endif %}</option>
+                        <option value="done" {{ 'selected' if task.status == 'done' else '' }}>{% if is_rtl %}مكتمل{% else %}Done{% endif %}</option>
+                    </select>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="empty-state"><i class="fas fa-tasks"></i>{% if is_rtl %}لا توجد مهام بعد{% else %}No tasks yet{% endif %}</div>
+            {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ RISK REGISTER TAB ═══ -->
+    <div class="tab-panel" id="tab-risks">
+        <div class="panel-card">
+            <div class="panel-card-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> {% if is_rtl %}سجل المخاطر الموحد{% else %}Unified Risk Register{% endif %}</h3>
+                <button class="btn-settings btn-print" onclick="printRiskRegister()" style="padding:0.35rem 0.8rem;font-size:0.75rem"><i class="fas fa-print"></i> {% if is_rtl %}طباعة{% else %}Print{% endif %}</button>
+            </div>
+            {% if user_risks %}
+            {% for risk in user_risks %}
+            <div class="risk-item" data-risk-id="{{ risk.id }}">
+                <div class="risk-score {{ 'rs-high' if (risk.risk_score or 0) >= 4 else 'rs-medium' if (risk.risk_score or 0) >= 2 else 'rs-low' }}">{{ risk.risk_score or '?' }}</div>
+                <div class="risk-body">
+                    <div class="title">{{ risk.risk_name }}</div>
+                    <div class="meta">
+                        <span><i class="fas fa-layer-group"></i> {{ risk.domain }}</span> ·
+                        <span>{{ risk.likelihood or '—' }} / {{ risk.impact or '—' }}</span> ·
+                        <span class="risk-status-label">{{ risk.status or 'open' }}</span>
+                    </div>
+                </div>
+                <div class="task-actions">
+                    <select onchange="updateRiskStatus({{ risk.id }}, this.value)" style="font-size:0.72rem">
+                        <option value="open" {{ 'selected' if (risk.status or 'open') == 'open' else '' }}>{% if is_rtl %}مفتوح{% else %}Open{% endif %}</option>
+                        <option value="mitigating" {{ 'selected' if risk.status == 'mitigating' else '' }}>{% if is_rtl %}قيد المعالجة{% else %}Mitigating{% endif %}</option>
+                        <option value="closed" {{ 'selected' if risk.status == 'closed' else '' }}>{% if is_rtl %}مغلق{% else %}Closed{% endif %}</option>
+                    </select>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="empty-state"><i class="fas fa-shield-alt"></i>{% if is_rtl %}لا توجد مخاطر مسجلة{% else %}No risks registered{% endif %}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ═══ KPIs TAB ═══ -->
+    <div class="tab-panel" id="tab-kpis">
+        <div class="panel-card">
+            <div class="panel-card-header">
+                <h3><i class="fas fa-chart-line"></i> {% if is_rtl %}مؤشرات الأداء الرئيسية{% else %}Key Performance Indicators{% endif %}</h3>
+                <button class="btn-settings btn-print" onclick="printKPIs()" style="padding:0.35rem 0.8rem;font-size:0.75rem"><i class="fas fa-print"></i></button>
+            </div>
+            {% if user_kpis %}
+            <div class="kpi-grid" style="padding:0.5rem 0.8rem">
+                {% for kpi in user_kpis %}
+                <div class="kpi-item" style="display:flex;align-items:flex-start;gap:0.7rem;padding:0.7rem 0;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.04))">
+                    <div class="kpi-indicator" style="width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:0.35rem;background:{{ '#22c55e' if kpi.status == 'achieved' else '#3b82f6' if kpi.status == 'tracking' else '#f59e0b' }}"></div>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-size:0.85rem;font-weight:600;color:var(--text-primary,#e2e8f0)">{{ kpi.name }}</div>
+                        <div style="font-size:0.75rem;color:var(--text-secondary,#94a3b8);margin-top:0.2rem">
+                            <span><i class="fas fa-layer-group"></i> {{ kpi.domain }}</span> ·
+                            <span><i class="fas fa-bullseye"></i> {{ kpi.target_value or 'TBD' }}</span> ·
+                            <span><i class="fas fa-clock"></i> {{ kpi.timeframe or 'TBD' }}</span>
+                        </div>
+                    </div>
+                    <div style="font-size:0.72rem">
+                        <select onchange="updateKPIStatus({{ kpi.id }}, this.value)" style="font-size:0.72rem;padding:0.2rem 0.4rem;border-radius:6px;border:1px solid var(--border-color,rgba(255,255,255,0.1));background:var(--bg-card,rgba(255,255,255,0.03));color:var(--text-primary,#e2e8f0)">
+                            <option value="pending" {{ 'selected' if kpi.status == 'pending' else '' }}>{% if is_rtl %}معلق{% else %}Pending{% endif %}</option>
+                            <option value="tracking" {{ 'selected' if kpi.status == 'tracking' else '' }}>{% if is_rtl %}قيد القياس{% else %}Tracking{% endif %}</option>
+                            <option value="achieved" {{ 'selected' if kpi.status == 'achieved' else '' }}>{% if is_rtl %}محقق{% else %}Achieved{% endif %}</option>
+                        </select>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state"><i class="fas fa-chart-line"></i>{% if is_rtl %}لا توجد مؤشرات بعد. ستتم مزامنتها تلقائياً عند إنشاء استراتيجية{% else %}No KPIs yet. They auto-sync when you generate a strategy{% endif %}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ═══ ACTIVITY TAB ═══ -->
+    <div class="tab-panel" id="tab-activity">
+        <div class="panel-card">
+            <div class="panel-card-header">
+                <h3><i class="fas fa-history"></i> {% if is_rtl %}سجل النشاط{% else %}Activity Log{% endif %}</h3>
+                <div style="display:flex;gap:0.4rem">
+                    <button class="btn-settings btn-print" onclick="printActivityLog()" style="padding:0.35rem 0.8rem;font-size:0.75rem"><i class="fas fa-print"></i></button>
+                    <button class="btn-settings btn-print" onclick="exportActivityCSV()" style="padding:0.35rem 0.8rem;font-size:0.75rem"><i class="fas fa-file-csv"></i></button>
+                </div>
+            </div>
+            <div style="padding:0.5rem 0.8rem">
+            {% if user_audit %}
+            {% for log in user_audit %}
+            {% set act = log.action or '' %}
+            <div class="activity-item">
+                <div class="activity-icon {{ 'ai-gen' if 'generate' in act else 'ai-exp' if 'export' in act else 'ai-edit' if 'edit' in act or 'update' in act or 'pipe' in act else 'ai-def' }}">
+                    <i class="fas {{ 'fa-magic' if 'generate' in act else 'fa-download' if 'export' in act else 'fa-edit' if 'edit' in act or 'update' in act else 'fa-sync' if 'pipe' in act or 'sync' in act else 'fa-circle' }}"></i>
+                </div>
+                <div class="activity-text">
+                    {{ act | replace('_', ' ') | title }}
+                    {% if log.metadata %}<span style="color:var(--text-muted);font-size:0.72rem"> — {{ log.metadata[:80] }}</span>{% endif %}
+                    <span class="time">{{ log.created_at }}</span>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="empty-state"><i class="fas fa-history"></i>{% if is_rtl %}لا توجد أنشطة مسجلة{% else %}No activity recorded{% endif %}</div>
+            {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ SETTINGS TAB ═══ -->
+    <div class="tab-panel" id="tab-settings">
+        <!-- Password Change -->
+        <div class="settings-section">
+            <h3><i class="fas fa-key"></i> {% if is_rtl %}تغيير كلمة المرور{% else %}Change Password{% endif %}</h3>
+            <form method="POST" action="{{ url_for('change_password') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="settings-section form-row" style="border:none;padding:0;margin:0">
+                    <div><label>{% if is_rtl %}كلمة المرور الحالية{% else %}Current Password{% endif %}</label><input type="password" name="current_password" required></div>
+                    <div><label>{% if is_rtl %}كلمة المرور الجديدة{% else %}New Password{% endif %}</label><input type="password" name="new_password" required minlength="8"></div>
+                </div>
+                <div style="margin-top:0.5rem"><label>{% if is_rtl %}تأكيد كلمة المرور{% else %}Confirm Password{% endif %}</label><input type="password" name="confirm_password" required minlength="8" style="max-width:50%"></div>
+                <button type="submit" class="btn-settings btn-save" style="margin-top:0.8rem"><i class="fas fa-save"></i> {% if is_rtl %}حفظ{% else %}Save{% endif %}</button>
+            </form>
+        </div>
+
+        <!-- Logo Upload -->
+        <div class="settings-section">
+            <h3><i class="fas fa-image"></i> {% if is_rtl %}شعار المنظمة{% else %}Organization Logo{% endif %}</h3>
+            <p style="font-size:0.78rem;color:var(--text-secondary,#94a3b8);margin-bottom:0.8rem">{% if is_rtl %}يظهر في الوثائق المصدرة (DOCX, PDF){% else %}Appears in exported documents (DOCX, PDF){% endif %}</p>
+            <div style="display:flex;align-items:center;gap:1rem">
+                {% if user.logo_path %}
+                <img src="{{ url_for('static', filename='uploads/' + user.logo_path.split('/')[-1]) }}" style="max-height:48px;border-radius:8px;border:1px solid var(--border-color)" onerror="this.style.display='none'">
+                <button onclick="deleteLogo()" class="btn-settings btn-print" style="padding:0.35rem 0.8rem;font-size:0.75rem"><i class="fas fa-trash"></i> {% if is_rtl %}حذف{% else %}Remove{% endif %}</button>
+                {% endif %}
+                <label class="btn-settings btn-save" style="cursor:pointer;margin:0">
+                    <i class="fas fa-upload"></i> {% if is_rtl %}رفع شعار{% else %}Upload Logo{% endif %}
+                    <input type="file" accept="image/*" onchange="uploadLogo(this)" style="display:none">
+                </label>
+            </div>
+        </div>
+
+        <!-- AI Preferences -->
+        <div class="settings-section">
+            <h3><i class="fas fa-robot"></i> {% if is_rtl %}تفضيلات الذكاء الاصطناعي{% else %}AI Provider Preferences{% endif %}</h3>
+            <form method="POST" action="{{ url_for('save_ai_preferences') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="form-row">
+                    <div>
+                        <label>{% if is_rtl %}مزود الإنشاء{% else %}Generation Provider{% endif %}</label>
+                        <select name="ai_provider_generate">
+                            <option value="auto" {{ 'selected' if ai_pref_generate == 'auto' else '' }}>Auto ({% if is_rtl %}تلقائي{% else %}Best Available{% endif %})</option>
+                            <option value="claude" {{ 'selected' if ai_pref_generate == 'claude' else '' }}>Claude (Anthropic)</option>
+                            <option value="gpt" {{ 'selected' if ai_pref_generate == 'gpt' else '' }}>GPT-4 (OpenAI)</option>
+                            <option value="gemini" {{ 'selected' if ai_pref_generate == 'gemini' else '' }}>Gemini (Google)</option>
+                            <option value="groq" {{ 'selected' if ai_pref_generate == 'groq' else '' }}>Groq (Llama)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>{% if is_rtl %}مزود المراجعة{% else %}Review Provider{% endif %}</label>
+                        <select name="ai_provider_review">
+                            <option value="auto" {{ 'selected' if ai_pref_review == 'auto' else '' }}>Auto</option>
+                            <option value="claude" {{ 'selected' if ai_pref_review == 'claude' else '' }}>Claude (Anthropic)</option>
+                            <option value="gpt" {{ 'selected' if ai_pref_review == 'gpt' else '' }}>GPT-4 (OpenAI)</option>
+                            <option value="gemini" {{ 'selected' if ai_pref_review == 'gemini' else '' }}>Gemini (Google)</option>
+                            <option value="groq" {{ 'selected' if ai_pref_review == 'groq' else '' }}>Groq (Llama)</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn-settings btn-save" style="margin-top:0.5rem"><i class="fas fa-save"></i> {% if is_rtl %}حفظ التفضيلات{% else %}Save Preferences{% endif %}</button>
+            </form>
+        </div>
+    </div>
+</div>
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Tab switching
+document.querySelectorAll('.cmd-tab').forEach(function(tab){
+    tab.addEventListener('click', function(){
+        document.querySelectorAll('.cmd-tab').forEach(function(t){t.classList.remove('active')});
+        document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active')});
+        this.classList.add('active');
+        document.getElementById('tab-'+this.dataset.tab).classList.add('active');
+    });
+});
+// Task filter
+document.querySelectorAll('.task-filters .tf').forEach(function(btn){
+    btn.addEventListener('click', function(){
+        document.querySelectorAll('.task-filters .tf').forEach(function(b){b.classList.remove('active')});
+        this.classList.add('active');
+        var f = this.dataset.filter;
+        document.querySelectorAll('.task-item').forEach(function(item){
+            item.style.display = (f === 'all' || item.dataset.status === f) ? 'flex' : 'none';
+        });
+    });
+});
+// Task status update
+function updateTaskStatus(taskId, newStatus) {
+    fetch('/api/tasks/' + taskId, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: newStatus})
+    }).then(function(r){ return r.json(); }).then(function(d){
+        if(d.success){
+            var item = document.querySelector('.task-item select[onchange*="'+taskId+'"]');
+            if(item){
+                var row = item.closest('.task-item');
+                row.dataset.status = newStatus;
+                var dot = row.querySelector('.task-status-dot');
+                dot.className = 'task-status-dot dot-' + newStatus;
+            }
+        }
+    });
+}
+// Risk status update
+function updateRiskStatus(riskId, newStatus) {
+    fetch('/api/risk-register/' + riskId, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: newStatus})
+    }).then(function(r){ return r.json(); }).then(function(d){
+        if(d.success){
+            var row = document.querySelector('[data-risk-id="'+riskId+'"]');
+            if(row){
+                var label = row.querySelector('.risk-status-label');
+                if(label) label.textContent = newStatus;
+            }
+        }
+    });
+}
+// KPI status update
+function updateKPIStatus(kpiId, newStatus) {
+    fetch('/api/kpis/' + kpiId, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: newStatus})
+    }).then(function(r){ return r.json(); }).then(function(d){
+        if(d.success){
+            var item = document.querySelector('[onchange*="updateKPIStatus('+kpiId+'"]');
+            if(item){
+                var dot = item.closest('.kpi-item').querySelector('.kpi-indicator');
+                if(dot) dot.style.background = newStatus === 'achieved' ? '#22c55e' : newStatus === 'tracking' ? '#3b82f6' : '#f59e0b';
+            }
+        }
+    });
+}
+// Print KPIs
+function printKPIs() {
+    var panel = document.getElementById('tab-kpis');
+    var w = window.open('','','width=800,height=600');
+    w.document.write('<html><head><title>KPIs</title><style>body{font-family:Arial,sans-serif;padding:20px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #ccc;padding:8px;text-align:left}th{background:#4472C4;color:#fff}</style></head><body>');
+    w.document.write('<h1>Key Performance Indicators</h1><table><tr><th>KPI</th><th>Domain</th><th>Target</th><th>Timeframe</th><th>Status</th></tr>');
+    panel.querySelectorAll('.kpi-item').forEach(function(k){
+        var name = k.querySelector('div[style*="font-weight:600"]');
+        var meta = k.querySelector('div[style*="font-size:0.75rem"]');
+        var sel = k.querySelector('select');
+        w.document.write('<tr><td>'+(name?name.textContent.trim():'')+'</td><td colspan="4">'+(meta?meta.textContent.trim():'')+'</td></tr>');
+    });
+    w.document.write('</table></body></html>');
+    w.document.close(); w.print();
+}
+// Print risk register
+function printRiskRegister() {
+    var panel = document.getElementById('tab-risks');
+    var w = window.open('','','width=800,height=600');
+    w.document.write('<html><head><title>Risk Register</title><style>body{font-family:Arial,sans-serif;padding:20px}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #ccc;padding:8px;text-align:left}th{background:#4472C4;color:#fff}</style></head><body>');
+    w.document.write('<h1>Unified Risk Register</h1><table><tr><th>Score</th><th>Risk</th><th>Domain</th><th>L/I</th><th>Status</th></tr>');
+    panel.querySelectorAll('.risk-item').forEach(function(r){
+        var score = r.querySelector('.risk-score') ? r.querySelector('.risk-score').textContent.trim() : '';
+        var title = r.querySelector('.risk-body .title') ? r.querySelector('.risk-body .title').textContent.trim() : '';
+        var meta = r.querySelector('.risk-body .meta') ? r.querySelector('.risk-body .meta').textContent.trim() : '';
+        w.document.write('<tr><td>'+score+'</td><td>'+title+'</td><td colspan="3">'+meta+'</td></tr>');
+    });
+    w.document.write('</table></body></html>');
+    w.document.close(); w.print();
+}
+// Print activity log
+function printActivityLog() {
+    var panel = document.getElementById('tab-activity');
+    var w = window.open('','','width=800,height=600');
+    w.document.write('<html><head><title>Activity Log</title><style>body{font-family:Arial,sans-serif;padding:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px;text-align:left;font-size:13px}th{background:#4472C4;color:#fff}</style></head><body>');
+    w.document.write('<h1>Activity Log</h1><table><tr><th>Action</th><th>Details</th><th>Time</th></tr>');
+    panel.querySelectorAll('.activity-item').forEach(function(a){
+        var text = a.querySelector('.activity-text') ? a.querySelector('.activity-text').childNodes[0].textContent.trim() : '';
+        var time = a.querySelector('.time') ? a.querySelector('.time').textContent.trim() : '';
+        w.document.write('<tr><td>'+text+'</td><td></td><td>'+time+'</td></tr>');
+    });
+    w.document.write('</table></body></html>');
+    w.document.close(); w.print();
+}
+// Export activity as CSV
+function exportActivityCSV() {
+    var rows = [['Action','Time']];
+    document.querySelectorAll('#tab-activity .activity-item').forEach(function(a){
+        var text = a.querySelector('.activity-text') ? a.querySelector('.activity-text').childNodes[0].textContent.trim().replace(/"/g,'""') : '';
+        var time = a.querySelector('.time') ? a.querySelector('.time').textContent.trim() : '';
+        rows.push(['"'+text+'"','"'+time+'"']);
+    });
+    var csv = rows.map(function(r){return r.join(',')}).join('\n');
+    var blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'activity_log.csv';
+    a.click();
+}
+// Logo upload
+function uploadLogo(input) {
+    if(!input.files[0]) return;
+    var fd = new FormData();
+    fd.append('logo', input.files[0]);
+    fetch('/api/user/logo', {method:'POST', body:fd}).then(function(r){return r.json()}).then(function(d){
+        if(d.success) location.reload();
+        else alert(d.error || 'Upload failed');
+    });
+}
+function deleteLogo() {
+    if(!confirm('Delete logo?')) return;
+    fetch('/api/user/logo', {method:'DELETE'}).then(function(r){return r.json()}).then(function(d){
+        if(d.success) location.reload();
+    });
+}
+</script>
+{% endblock %}
