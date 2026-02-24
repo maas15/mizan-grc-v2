@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="app-layout {{ 'rtl-layout' if is_rtl else '' }}">
+    <aside class="sidebar {{ 'sidebar-right' if is_rtl else 'sidebar-left' }}">
+        <div class="sidebar-brand"><a href="{{ url_for('dashboard', lang=lang) }}"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="sidebar-logo"></a></div>
+        <div class="sidebar-controls">
+            <div class="sidebar-lang">
+                <a href="{{ url_for('dashboard', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('dashboard', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+        </div>
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+                {% if session.get('role') == 'admin' %}<a href="{{ url_for('admin_dashboard') }}" class="admin-link"><i class="fas fa-crown"></i></a>{% endif %}
+            </div>
+        </div>
+        <div class="ai-status {{ 'connected' if ai_available else 'disconnected' }}"><div class="status-dot"></div><span>{{ txt.ai_connected if ai_available else txt.ai_disconnected }}</span></div>
+        <nav class="sidebar-nav">
+            <a href="{{ url_for('profile_page', lang=lang) }}" class="sidebar-link"><i class="fas fa-user-cog"></i> {{ txt.profile }}</a>
+            <a href="{{ url_for('document_history', lang=lang) }}" class="sidebar-link"><i class="fas fa-folder-open"></i> {{ txt.my_documents }}</a>
+        </nav>
+        <!-- FIX 3: GRC Domains in sidebar -->
+        <div class="sidebar-domains">
+            <div class="sidebar-domains-title"><i class="fas fa-th-large"></i> {% if is_rtl %}النطاقات{% else %}Domains{% endif %}</div>
+            {% set domain_icons = {'Cyber Security':'fa-shield-alt','Data Management':'fa-database','Artificial Intelligence':'fa-brain','Digital Transformation':'fa-rocket','Global Standards':'fa-globe','Enterprise Risk Management':'fa-exclamation-triangle','الأمن السيبراني':'fa-shield-alt','إدارة البيانات':'fa-database','الذكاء الاصطناعي':'fa-brain','التحول الرقمي':'fa-rocket','المعايير العالمية':'fa-globe','إدارة المخاطر المؤسسية':'fa-exclamation-triangle'} %}
+            {% for domain in domains %}
+            <a href="{{ url_for('domain_page', domain_name=domain, lang=lang) }}" class="sidebar-domain-link"><i class="fas {{ domain_icons.get(domain, 'fa-cubes') }}"></i> {{ domain }}</a>
+            {% endfor %}
+        </div>
+        <a href="{{ url_for('logout') }}" class="logout-btn"><i class="fas fa-sign-out-alt"></i> {{ txt.logout }}</a>
+        <div class="sidebar-footer"><p class="created-by">{{ txt.created_by }}</p><p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p><p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p></div>
+    </aside>
+
+    <main class="main-content">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div>
+                <h1>{{ txt.app_name }}</h1>
+                <p class="header-sub">{{ txt.tagline }}</p>
+            </div>
+        </header>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-icon"><i class="fas fa-chess"></i></div><div class="stat-value">{{ stats.strategies }}</div><div class="stat-label">{% if is_rtl %}استراتيجيات{% else %}Strategies{% endif %}</div></div>
+            <div class="stat-card"><div class="stat-icon"><i class="fas fa-file-alt"></i></div><div class="stat-value">{{ stats.policies }}</div><div class="stat-label">{% if is_rtl %}سياسات{% else %}Policies{% endif %}</div></div>
+            <div class="stat-card"><div class="stat-icon"><i class="fas fa-clipboard-check"></i></div><div class="stat-value">{{ stats.audits }}</div><div class="stat-label">{% if is_rtl %}تدقيقات{% else %}Audits{% endif %}</div></div>
+            <div class="stat-card"><div class="stat-icon"><i class="fas fa-exclamation-triangle"></i></div><div class="stat-value">{{ stats.risks }}</div><div class="stat-label">{% if is_rtl %}مخاطر{% else %}Risks{% endif %}</div></div>
+            <div class="stat-card"><div class="stat-icon"><i class="fas fa-layer-group"></i></div><div class="stat-value">{{ active_domains }}</div><div class="stat-label">{% if is_rtl %}نطاقات نشطة{% else %}Active Domains{% endif %}</div></div>
+        </div>
+
+        <!-- FIX 3: Domain Cards REMOVED from here — now in sidebar -->
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- UNIFIED RISK REGISTER (moved from profile)     -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <div style="margin-top:2.5rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2rem;flex-wrap:wrap;gap:0.75rem;">
+                <h2 class="section-title" style="margin-bottom:0;"><i class="fas fa-th-list"></i> {% if is_rtl %}سجل المخاطر الموحد{% else %}Unified Risk Register{% endif %}</h2>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                    <select id="dash-rr-domain" onchange="filterDashboardRR()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border-color);font-size:0.85rem;background:var(--bg-card);color:var(--text-primary);">
+                        <option value="">{% if is_rtl %}جميع النطاقات{% else %}All Domains{% endif %}</option>
+                        {% for d in domains %}
+                        <option value="{{ d }}">{{ d }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-info" onclick="toggleDashHeatMap()" style="padding:6px 14px;font-size:0.85rem;"><i class="fas fa-fire"></i> {% if is_rtl %}خريطة الحرارة{% else %}Heat Map{% endif %}</button>
+                </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div id="dash-rr-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.75rem;margin-bottom:1rem;">
+                <div style="background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-stat-critical">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}حرج{% else %}Critical{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-stat-high">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}عالي{% else %}High{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#eab308,#ca8a04);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-stat-medium">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}متوسط{% else %}Medium{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-stat-low">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}منخفض{% else %}Low{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-stat-total">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}إجمالي{% else %}Total{% endif %}</div></div>
+            </div>
+
+            <!-- Heat Map (hidden) -->
+            <div id="dash-heatmap" class="hidden" style="margin-bottom:1.2rem;background:var(--bg-card);border-radius:12px;padding:1.2rem;border:1px solid var(--border-color);">
+                <h4 style="margin-top:0;text-align:center;font-size:0.95rem;">{% if is_rtl %}خريطة حرارة المخاطر{% else %}Risk Heat Map{% endif %}</h4>
+                <div id="dash-heatmap-grid" style="display:grid;grid-template-columns:auto repeat(5,1fr);grid-template-rows:repeat(6,auto);gap:2px;max-width:550px;margin:0 auto;font-size:0.78rem;">
+                    <div style="padding:6px;font-weight:700;text-align:center;"></div>
+                    <div style="padding:6px;font-weight:700;text-align:center;background:var(--bg-elevated);border-radius:4px;">{% if is_rtl %}نادر{% else %}Rare{% endif %}</div>
+                    <div style="padding:6px;font-weight:700;text-align:center;background:var(--bg-elevated);border-radius:4px;">{% if is_rtl %}بعيد{% else %}Unlikely{% endif %}</div>
+                    <div style="padding:6px;font-weight:700;text-align:center;background:var(--bg-elevated);border-radius:4px;">{% if is_rtl %}محتمل{% else %}Possible{% endif %}</div>
+                    <div style="padding:6px;font-weight:700;text-align:center;background:var(--bg-elevated);border-radius:4px;">{% if is_rtl %}مرجح{% else %}Likely{% endif %}</div>
+                    <div style="padding:6px;font-weight:700;text-align:center;background:var(--bg-elevated);border-radius:4px;">{% if is_rtl %}شبه مؤكد{% else %}Almost Certain{% endif %}</div>
+                </div>
+            </div>
+
+            <!-- Risk Register Table -->
+            <div style="overflow-x:auto;background:var(--bg-card);border-radius:12px;border:1px solid var(--border-color);">
+                <table id="dash-rr-table" style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                    <thead><tr style="background:var(--primary-color,#667eea);color:#fff;">
+                        <th style="padding:10px 8px;">#</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}الخطر{% else %}Risk{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}النطاق{% else %}Domain{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}الفئة{% else %}Category{% endif %}</th>
+                        <th style="padding:10px 8px;text-align:center;">{% if is_rtl %}الاحتمالية{% else %}L{% endif %}</th>
+                        <th style="padding:10px 8px;text-align:center;">{% if is_rtl %}الأثر{% else %}I{% endif %}</th>
+                        <th style="padding:10px 8px;text-align:center;">{% if is_rtl %}الدرجة{% else %}Score{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}المعالجة{% else %}Treatment{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}الحالة{% else %}Status{% endif %}</th>
+                    </tr></thead>
+                    <tbody id="dash-rr-body">
+                        <tr><td colspan="9" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-info-circle"></i> {% if is_rtl %}لا توجد مخاطر مسجلة. سيتم إضافتها تلقائياً عند تحليل المخاطر في أي نطاق.{% else %}No risks registered yet. They will be auto-added when you run risk analysis in any domain.{% endif %}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- UNIFIED TASKS REGISTER                         -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <div style="margin-top:2.5rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2rem;flex-wrap:wrap;gap:0.75rem;">
+                <h2 class="section-title" style="margin-bottom:0;"><i class="fas fa-tasks"></i> {% if is_rtl %}سجل المهام الموحد{% else %}Unified Tasks Register{% endif %}</h2>
+                <select id="dash-task-domain" onchange="filterDashTasks()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border-color);font-size:0.85rem;background:var(--bg-card);color:var(--text-primary);">
+                    <option value="">{% if is_rtl %}جميع النطاقات{% else %}All Domains{% endif %}</option>
+                    {% for d in domains %}
+                    <option value="{{ d }}">{{ d }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Task Stats -->
+            <div id="dash-task-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.75rem;margin-bottom:1rem;">
+                <div style="background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-task-total">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}إجمالي{% else %}Total{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-task-todo">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}للعمل{% else %}To Do{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-task-inprog">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}جاري{% else %}In Progress{% endif %}</div></div>
+                <div style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;padding:0.8rem;border-radius:10px;text-align:center;"><div style="font-size:1.5rem;font-weight:700;" id="dash-task-done">0</div><div style="font-size:0.8rem;opacity:0.9;">{% if is_rtl %}مكتمل{% else %}Done{% endif %}</div></div>
+            </div>
+
+            <!-- Category Sub-tabs -->
+            <div style="display:flex;gap:0.3rem;margin-bottom:1rem;flex-wrap:wrap;border-bottom:1px solid var(--border-color);padding-bottom:0;">
+                <button class="dash-task-cat active" data-cat="all" onclick="switchDashTaskCat(this)">{% if is_rtl %}الكل{% else %}All{% endif %} <span class="dtc-badge" id="dtc-all">0</span></button>
+                <button class="dash-task-cat" data-cat="strategic_initiative" onclick="switchDashTaskCat(this)"><i class="fas fa-lightbulb"></i> {% if is_rtl %}المبادرات{% else %}Initiatives{% endif %} <span class="dtc-badge" id="dtc-strategic_initiative">0</span></button>
+                <button class="dash-task-cat" data-cat="implementation" onclick="switchDashTaskCat(this)"><i class="fas fa-project-diagram"></i> {% if is_rtl %}المشاريع{% else %}Projects{% endif %} <span class="dtc-badge" id="dtc-implementation">0</span></button>
+                <button class="dash-task-cat" data-cat="kpi" onclick="switchDashTaskCat(this)"><i class="fas fa-chart-line"></i> {% if is_rtl %}المؤشرات{% else %}KPIs{% endif %} <span class="dtc-badge" id="dtc-kpi">0</span></button>
+                <button class="dash-task-cat" data-cat="gap_mitigation" onclick="switchDashTaskCat(this)"><i class="fas fa-tools"></i> {% if is_rtl %}الفجوات{% else %}Gaps{% endif %} <span class="dtc-badge" id="dtc-gap_mitigation">0</span></button>
+                <button class="dash-task-cat" data-cat="risk_mitigation" onclick="switchDashTaskCat(this)"><i class="fas fa-shield-alt"></i> {% if is_rtl %}المخاطر{% else %}Risks{% endif %} <span class="dtc-badge" id="dtc-risk_mitigation">0</span></button>
+            </div>
+
+            <!-- Tasks Table -->
+            <div style="overflow-x:auto;background:var(--bg-card);border-radius:12px;border:1px solid var(--border-color);">
+                <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                    <thead><tr style="background:var(--primary-color,#667eea);color:#fff;">
+                        <th style="padding:10px 8px;">#</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}المهمة{% else %}Task{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}النطاق{% else %}Domain{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}الأولوية{% else %}Priority{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}الحالة{% else %}Status{% endif %}</th>
+                        <th style="padding:10px 8px;">{% if is_rtl %}المصدر{% else %}Source{% endif %}</th>
+                    </tr></thead>
+                    <tbody id="dash-task-body">
+                        <tr><td colspan="6" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-info-circle"></i> {% if is_rtl %}لا توجد مهام. سيتم إضافتها تلقائياً عند توليد الاستراتيجيات والمخاطر.{% else %}No tasks yet. They are auto-added when you generate strategies and risk analyses.{% endif %}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Recent Documents -->
+        {% if recent_docs %}
+        <div style="margin-top:2.5rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2rem;">
+                <h2 class="section-title" style="margin-bottom:0;"><i class="fas fa-clock"></i> {% if is_rtl %}آخر المستندات{% else %}Recent Documents{% endif %}</h2>
+                <a href="{{ url_for('document_history', lang=lang) }}" style="color:var(--primary,#667eea);font-size:0.85rem;text-decoration:none;"><i class="fas fa-folder-open"></i> {% if is_rtl %}عرض الكل{% else %}View All{% endif %}</a>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem;">
+                {% for doc in recent_docs %}
+                <a href="{{ url_for('domain_page', domain_name=doc.domain, lang=lang) }}?tab={{ doc.type if doc.type != 'risk' else 'risk' }}" style="text-decoration:none;color:inherit;background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:1rem;display:flex;align-items:center;gap:0.8rem;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--primary,#667eea)';this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.08)'" onmouseout="this.style.borderColor='var(--border-color)';this.style.transform='none';this.style.boxShadow='none'">
+                    <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,{% if doc.type == 'strategy' %}#667eea,#764ba2{% elif doc.type == 'policy' %}#22c55e,#16a34a{% elif doc.type == 'audit' %}#f59e0b,#d97706{% else %}#ef4444,#dc2626{% endif %});display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                        <i class="fas {% if doc.type == 'strategy' %}fa-chess{% elif doc.type == 'policy' %}fa-file-alt{% elif doc.type == 'audit' %}fa-clipboard-check{% else %}fa-exclamation-triangle{% endif %}" style="color:#fff;font-size:0.9rem;"></i>
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:0.9rem;">{{ doc.type|capitalize }}</div>
+                        <div style="font-size:0.78rem;color:var(--text-secondary);">{{ doc.domain }} · {{ doc.created_at[:10] if doc.created_at else '' }}</div>
+                    </div>
+                    <i class="fas fa-arrow-{{ 'left' if is_rtl else 'right' }}" style="color:var(--text-muted);font-size:0.8rem;"></i>
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Disclaimer -->
+        <div style="margin-top:2rem;padding:1rem;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px solid var(--border-color);text-align:center;">
+            <p style="margin:0;font-size:0.8rem;color:var(--text-secondary);"><i class="fas fa-info-circle"></i> {{ txt.disclaimer }}</p>
+        </div>
+    </main>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const isRtl = {{ 'true' if is_rtl else 'false' }};
+const lang = '{{ lang }}';
+
+/* ═══ FIX 4: Bilingual domain matching ═══ */
+var domainMap={'Cyber Security':'الأمن السيبراني','Data Management':'إدارة البيانات','Artificial Intelligence':'الذكاء الاصطناعي','Digital Transformation':'التحول الرقمي','Global Standards':'المعايير العالمية','Enterprise Risk Management':'إدارة المخاطر المؤسسية'};
+var domainMapR={};for(var k in domainMap)domainMapR[domainMap[k]]=k;
+function domainMatch(stored,selected){if(!selected)return true;if(!stored)return false;if(stored===selected)return true;if(domainMap[stored]===selected||domainMapR[stored]===selected)return true;if(stored.toLowerCase()===selected.toLowerCase())return true;return false}
+
+/* ═══ Dashboard Risk Register ═══ */
+let dashRRData = {{ risk_register | tojson | safe }};
+
+function getRiskLevel(score){
+    if(score>=20)return{level:isRtl?'حرج':'Critical',color:'#ef4444'};
+    if(score>=12)return{level:isRtl?'عالي':'High',color:'#f97316'};
+    if(score>=6)return{level:isRtl?'متوسط':'Medium',color:'#eab308'};
+    return{level:isRtl?'منخفض':'Low',color:'#22c55e'};
+}
+
+function renderDashRR(data){
+    var tb=document.getElementById('dash-rr-body');
+    if(!data.length){
+        tb.innerHTML='<tr><td colspan="9" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-info-circle"></i> '+(isRtl?'لا توجد مخاطر':'No risks registered')+'</td></tr>';
+    } else {
+        tb.innerHTML=data.map(function(r,idx){
+            var score=r.likelihood*r.impact;
+            var rl=getRiskLevel(score);
+            var sc={'Open':'#3b82f6','مفتوح':'#3b82f6','In Treatment':'#f59e0b','قيد المعالجة':'#f59e0b','Closed':'#22c55e','مغلق':'#22c55e','Accepted':'#6b7280','مقبول':'#6b7280'}[r.status]||'#6b7280';
+            return '<tr style="border-bottom:1px solid var(--border-color)"><td style="padding:8px">'+(idx+1)+'</td><td style="padding:8px;font-weight:600">'+r.name+'</td><td style="padding:8px;font-size:.82rem">'+(r.domain||'—')+'</td><td style="padding:8px">'+r.category+'</td><td style="padding:8px;text-align:center">'+r.likelihood+'</td><td style="padding:8px;text-align:center">'+r.impact+'</td><td style="padding:8px;text-align:center"><span style="background:'+rl.color+';color:#fff;padding:2px 8px;border-radius:10px;font-weight:700;font-size:.8rem">'+score+'</span></td><td style="padding:8px">'+r.treatment+'</td><td style="padding:8px"><span style="background:'+sc+';color:#fff;padding:2px 8px;border-radius:10px;font-size:.78rem">'+r.status+'</span></td></tr>';
+        }).join('');
+    }
+    var c=0,h=0,m=0,l=0;
+    data.forEach(function(r){var s=r.likelihood*r.impact;if(s>=20)c++;else if(s>=12)h++;else if(s>=6)m++;else l++});
+    document.getElementById('dash-stat-critical').textContent=c;
+    document.getElementById('dash-stat-high').textContent=h;
+    document.getElementById('dash-stat-medium').textContent=m;
+    document.getElementById('dash-stat-low').textContent=l;
+    document.getElementById('dash-stat-total').textContent=data.length;
+}
+
+/* FIX 4: Use domainMatch instead of strict === */
+function filterDashboardRR(){
+    var sel=document.getElementById('dash-rr-domain').value;
+    var filtered=sel?dashRRData.filter(function(r){return domainMatch(r.domain,sel)}):dashRRData;
+    renderDashRR(filtered);
+    if(!document.getElementById('dash-heatmap').classList.contains('hidden'))renderDashHeatMap(filtered);
+}
+
+function toggleDashHeatMap(){
+    var el=document.getElementById('dash-heatmap');
+    el.classList.toggle('hidden');
+    if(!el.classList.contains('hidden')){
+        var sel=document.getElementById('dash-rr-domain').value;
+        var data=sel?dashRRData.filter(function(r){return domainMatch(r.domain,sel)}):dashRRData;
+        renderDashHeatMap(data);
+    }
+}
+
+function renderDashHeatMap(data){
+    var grid=document.getElementById('dash-heatmap-grid');
+    var labels=isRtl?['كارثي','كبير','متوسط','طفيف','ضئيل']:['Catastrophic','Major','Moderate','Minor','Insignificant'];
+    while(grid.children.length>6)grid.removeChild(grid.lastChild);
+    for(var impact=5;impact>=1;impact--){
+        var lb=document.createElement('div');
+        lb.style.cssText='padding:6px;font-weight:600;text-align:center;font-size:.72rem;display:flex;align-items:center;justify-content:center';
+        lb.textContent=labels[5-impact];grid.appendChild(lb);
+        for(var lk=1;lk<=5;lk++){
+            var score=impact*lk;var rl=getRiskLevel(score);
+            var cnt=data.filter(function(r){return r.likelihood==lk&&r.impact==impact}).length;
+            var cell=document.createElement('div');
+            cell.style.cssText='background:'+rl.color+'22;border:2px solid '+rl.color+'44;border-radius:6px;padding:6px 3px;text-align:center;min-height:36px;display:flex;flex-direction:column;align-items:center;justify-content:center';
+            cell.innerHTML='<span style="font-size:.68rem;color:#888">'+score+'</span>'+(cnt?'<span style="background:'+rl.color+';color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.7rem;margin-top:1px">'+cnt+'</span>':'');
+            grid.appendChild(cell);
+        }
+    }
+}
+
+async function refreshDashRR(){
+    try{
+        var res=await fetch('/api/risk-register?lang='+lang);
+        var data=await res.json();
+        if(data.success){dashRRData=data.risks||[];filterDashboardRR()}
+    }catch(e){}
+}
+
+document.addEventListener('DOMContentLoaded',function(){
+    renderDashRR(dashRRData);
+    setTimeout(refreshDashRR, 500);
+    renderDashTasks(dashTasksData);
+    setTimeout(refreshDashTasks, 600);
+});
+
+/* ═══ Dashboard Tasks Register ═══ */
+let dashTasksData = {{ dashboard_tasks | tojson | safe }};
+let activeDashTaskCat = 'all';
+
+const priorityColors = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#22c55e'};
+const statusColors = {todo:'#3b82f6',in_progress:'#f59e0b',done:'#22c55e',blocked:'#ef4444'};
+const statusLabels = isRtl ? {todo:'للعمل',in_progress:'جاري',done:'مكتمل',blocked:'محظور'} : {todo:'To Do',in_progress:'In Progress',done:'Done',blocked:'Blocked'};
+const catLabels = isRtl ? {strategic_initiative:'مبادرة',implementation:'مشروع',kpi:'مؤشر',gap_mitigation:'فجوة',risk_mitigation:'مخاطر'} : {strategic_initiative:'Initiative',implementation:'Project',kpi:'KPI',gap_mitigation:'Gap',risk_mitigation:'Risk'};
+
+function renderDashTasks(data) {
+    var tb = document.getElementById('dash-task-body');
+    var cc = {all:data.length};
+    var todo=0,inp=0,done=0;
+    data.forEach(function(t) {
+        var c = t.category || 'implementation';
+        cc[c] = (cc[c]||0)+1;
+        if(t.status==='todo')todo++;
+        else if(t.status==='in_progress')inp++;
+        else if(t.status==='done')done++;
+    });
+    ['all','strategic_initiative','implementation','kpi','gap_mitigation','risk_mitigation'].forEach(function(k) {
+        var el = document.getElementById('dtc-'+k);
+        if(el) el.textContent = cc[k]||0;
+    });
+    document.getElementById('dash-task-total').textContent = data.length;
+    document.getElementById('dash-task-todo').textContent = todo;
+    document.getElementById('dash-task-inprog').textContent = inp;
+    document.getElementById('dash-task-done').textContent = done;
+
+    var filtered = activeDashTaskCat === 'all' ? data : data.filter(function(t){return (t.category||'implementation')===activeDashTaskCat});
+    if(!filtered.length) {
+        tb.innerHTML='<tr><td colspan="6" style="text-align:center;padding:2rem;color:#888;"><i class="fas fa-inbox"></i> '+(isRtl?'لا توجد مهام':'No tasks')+'</td></tr>';
+        return;
+    }
+    tb.innerHTML = filtered.map(function(t,idx) {
+        var pc = priorityColors[t.priority]||'#6b7280';
+        var sc = statusColors[t.status]||'#6b7280';
+        var sl = statusLabels[t.status]||t.status;
+        var cl = catLabels[t.category]||t.category;
+        var src = t.source_type && t.source_type!=='manual' ? '<span style="background:rgba(99,102,241,0.15);color:#818cf8;padding:2px 8px;border-radius:10px;font-size:0.72rem;"><i class="fas fa-robot"></i> AI</span>' : '<span style="color:var(--text-muted);font-size:0.78rem;">Manual</span>';
+        return '<tr style="border-bottom:1px solid var(--border-color)"><td style="padding:8px">'+(idx+1)+'</td><td style="padding:8px"><div style="font-weight:600;font-size:0.88rem;">'+t.title+'</div>'+(t.description?'<div style="font-size:0.78rem;color:var(--text-secondary);max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+t.description.substring(0,80)+'</div>':'')+'</td><td style="padding:8px;font-size:0.82rem;">'+(t.domain||'—')+'</td><td style="padding:8px;text-align:center;"><span style="background:'+pc+';color:#fff;padding:2px 8px;border-radius:10px;font-size:0.78rem;font-weight:600;">'+t.priority+'</span></td><td style="padding:8px;text-align:center;"><span style="background:'+sc+';color:#fff;padding:2px 8px;border-radius:10px;font-size:0.78rem;">'+sl+'</span></td><td style="padding:8px;text-align:center;">'+src+'</td></tr>';
+    }).join('');
+}
+
+/* FIX 4: Use domainMatch instead of strict === */
+function filterDashTasks() {
+    var sel = document.getElementById('dash-task-domain').value;
+    var filtered = sel ? dashTasksData.filter(function(t){return domainMatch(t.domain,sel)}) : dashTasksData;
+    renderDashTasks(filtered);
+}
+
+function switchDashTaskCat(btn) {
+    document.querySelectorAll('.dash-task-cat').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active');
+    activeDashTaskCat = btn.dataset.cat;
+    filterDashTasks();
+}
+
+async function refreshDashTasks() {
+    try {
+        var res = await fetch('/api/tasks/by-category');
+        var data = await res.json();
+        if(data.success){dashTasksData=data.tasks||[];filterDashTasks()}
+    }catch(e){}
+}
+</script>
+<style>
+/* FIX 3: Sidebar domains styling */
+.sidebar-domains{padding:0 0.8rem;margin-bottom:1rem;}
+.sidebar-domains-title{font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);padding:0.5rem 0.6rem 0.4rem;margin-bottom:0.2rem;}
+.sidebar-domain-link{display:flex;align-items:center;gap:0.6rem;padding:0.55rem 0.6rem;border-radius:8px;color:var(--text-secondary);text-decoration:none;font-size:0.82rem;transition:all 0.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sidebar-domain-link:hover{background:rgba(99,102,241,0.1);color:var(--primary,#667eea);}
+.sidebar-domain-link i{width:16px;text-align:center;font-size:0.78rem;flex-shrink:0;}
+.dash-task-cat{background:none;border:none;padding:0.6rem 1rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);border-bottom:2px solid transparent;transition:all 0.2s;display:inline-flex;align-items:center;gap:0.4rem}
+.dash-task-cat:hover{color:var(--text-primary);background:rgba(99,102,241,0.05)}
+.dash-task-cat.active{color:var(--primary,#667eea);border-bottom:2px solid var(--primary,#667eea);font-weight:600}
+.dtc-badge{background:var(--bg-elevated);color:var(--text-muted);padding:1px 7px;border-radius:10px;font-size:0.72rem;font-weight:600}
+.dash-task-cat.active .dtc-badge{background:var(--primary,#667eea);color:#fff}
+</style>
+{% endblock %}
