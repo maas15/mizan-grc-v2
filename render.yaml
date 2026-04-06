@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: mizan-grc
+    runtime: python
+    buildCommand: |
+      apt-get update && apt-get install -y fonts-noto-core fonts-noto-extra fonts-freefont-ttf || true
+      pip install -r requirements.txt
+    startCommand: gunicorn -c gunicorn_config.py app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: AI_PROVIDER
+        value: "auto"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
