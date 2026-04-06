@@ -1,0 +1,1254 @@
+{% extends "base.html" %}
+
+{% block title %}{{ txt.analytics }} - Mizan GRC{% endblock %}
+
+{% block content %}
+<div class="analytics-container">
+    <header class="analytics-header">
+        <div class="header-content">
+            <a href="{{ url_for('dashboard', lang=lang) }}" class="back-link">
+                <i class="fas fa-arrow-{% if is_rtl %}right{% else %}left{% endif %}"></i>
+                Dashboard
+            </a>
+            <h1><i class="fas fa-chart-line"></i> {{ txt.insights }}</h1>
+        </div>
+        <div class="header-controls">
+            <div class="export-buttons">
+                <button class="btn btn-sm btn-success" onclick="exportToExcel('analytics')" title="Export Analytics">
+                    <i class="fas fa-file-excel"></i> Excel
+                </button>
+                <button class="btn btn-sm btn-info" onclick="printAnalytics()" title="Print">
+                    <i class="fas fa-print"></i>
+                </button>
+            </div>
+            <div class="lang-switch">
+                <a href="{{ url_for('analytics_page', lang='en', sector=selected_sector) }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('analytics_page', lang='ar', sector=selected_sector) }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="fas fa-sun"></i>
+            </button>
+        </div>
+    </header>
+
+    {% if not has_data %}
+    <div class="no-data-message">
+        <i class="fas fa-chart-pie"></i>
+        <h2>{{ txt.no_data }}</h2>
+        <a href="{{ url_for('dashboard', lang=lang) }}" class="btn btn-primary">
+            <i class="fas fa-plus"></i> {% if is_rtl %}ابدأ الآن{% else %}Get Started{% endif %}
+        </a>
+    </div>
+    {% else %}
+    
+    <!-- Analytics Grid -->
+    <div class="analytics-grid">
+        
+        <!-- Compliance Score -->
+        <div class="analytics-card compliance-card">
+            <div class="card-header">
+                <h2><i class="fas fa-check-circle"></i> {{ txt.compliance_score }}</h2>
+            </div>
+            <div class="card-body">
+                <div class="score-gauge">
+                    <svg viewBox="0 0 200 120" class="gauge-svg">
+                        <defs>
+                            <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" style="stop-color:#f5576c"/>
+                                <stop offset="50%" style="stop-color:#f5af19"/>
+                                <stop offset="100%" style="stop-color:#38ef7d"/>
+                            </linearGradient>
+                        </defs>
+                        <!-- Background arc -->
+                        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="var(--bg-elevated)" stroke-width="15" stroke-linecap="round"/>
+                        <!-- Score arc -->
+                        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="url(#gaugeGradient)" stroke-width="15" stroke-linecap="round"
+                              stroke-dasharray="{{ compliance.score * 2.51 }} 251" class="gauge-fill"/>
+                        <!-- Score text -->
+                        <text x="100" y="85" text-anchor="middle" class="gauge-score">{{ compliance.score }}%</text>
+                        <text x="100" y="105" text-anchor="middle" class="gauge-label">{{ txt.compliance_score }}</text>
+                    </svg>
+                </div>
+                <div class="score-breakdown">
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-chess"></i> {{ txt.strategies if txt.strategies else 'Strategies' }}</span>
+                        <span class="breakdown-value">{{ compliance.strategies }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-file-alt"></i> {{ txt.policies if txt.policies else 'Policies' }}</span>
+                        <span class="breakdown-value">{{ compliance.policies }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-clipboard-check"></i> {{ txt.audits if txt.audits else 'Audits' }}</span>
+                        <span class="breakdown-value">{{ compliance.audits }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                        <span class="breakdown-label"><i class="fas fa-exclamation-triangle"></i> {{ txt.risks if txt.risks else 'Risks' }}</span>
+                        <span class="breakdown-value">{{ compliance.risks }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Heatmap -->
+        <div class="analytics-card heatmap-card">
+            <div class="card-header">
+                <h2><i class="fas fa-fire"></i> {{ txt.risk_heatmap }}</h2>
+            </div>
+            <div class="card-body">
+                <div class="heatmap-container">
+                    <div class="heatmap-y-label">{{ txt.likelihood }}</div>
+                    <div class="heatmap-grid">
+                        <div class="heatmap-y-axis">
+                            <span>{{ txt.critical }}</span>
+                            <span>{{ txt.high }}</span>
+                            <span>{{ txt.medium }}</span>
+                            <span>{{ txt.low }}</span>
+                        </div>
+                        <div class="heatmap-cells">
+                            {% for likelihood in ['critical', 'high', 'medium', 'low'] %}
+                            <div class="heatmap-row">
+                                {% for impact in ['low', 'medium', 'high', 'critical'] %}
+                                {% set count = heatmap[likelihood][impact] %}
+                                {% set severity = likelihood ~ '-' ~ impact %}
+                                <div class="heatmap-cell {{ severity }}" data-count="{{ count }}">
+                                    {{ count if count > 0 else '' }}
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endfor %}
+                        </div>
+                        <div class="heatmap-x-axis">
+                            <span>{{ txt.low }}</span>
+                            <span>{{ txt.medium }}</span>
+                            <span>{{ txt.high }}</span>
+                            <span>{{ txt.critical }}</span>
+                        </div>
+                    </div>
+                    <div class="heatmap-x-label">{{ txt.impact }}</div>
+                </div>
+                <div class="heatmap-legend">
+                    <span class="legend-item low-risk">{{ txt.low }}</span>
+                    <span class="legend-item medium-risk">{{ txt.medium }}</span>
+                    <span class="legend-item high-risk">{{ txt.high }}</span>
+                    <span class="legend-item critical-risk">{{ txt.critical }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Maturity Radar -->
+        <div class="analytics-card radar-card">
+            <div class="card-header">
+                <h2><i class="fas fa-spider"></i> {{ txt.maturity_radar }}</h2>
+                <span class="maturity-avg">{{ txt.maturity_level }}: {{ maturity.average }}/5</span>
+            </div>
+            <div class="card-body">
+                <canvas id="maturityRadar" width="300" height="300"></canvas>
+                <div class="maturity-legend">
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.governance }}</span>
+                        <span class="maturity-value">{{ maturity.governance }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.risk_mgmt }}</span>
+                        <span class="maturity-value">{{ maturity.risk_mgmt }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.compliance }}</span>
+                        <span class="maturity-value">{{ maturity.compliance }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.technology }}</span>
+                        <span class="maturity-value">{{ maturity.technology }}</span>
+                    </div>
+                    <div class="maturity-item">
+                        <span class="maturity-label">{{ txt.process }}</span>
+                        <span class="maturity-value">{{ maturity.process }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Benchmark Comparison -->
+        <div class="analytics-card benchmark-card">
+            <div class="card-header">
+                <h2><i class="fas fa-balance-scale"></i> {{ txt.benchmark }}</h2>
+                <select id="sector-select" onchange="changeSector(this.value)" class="sector-select">
+                    {% for s in sectors %}
+                    <option value="{{ s.sector }}" {{ 'selected' if s.sector == selected_sector else '' }}>
+                        {{ s.sector_ar if is_rtl else s.sector }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="card-body">
+                {% if benchmark %}
+                <div class="benchmark-source">
+                    <i class="fas fa-book"></i> {{ txt.benchmark_source }}: {{ benchmark.source }} ({{ benchmark.source_year }})
+                </div>
+                <div class="benchmark-table">
+                    <div class="benchmark-row header">
+                        <span class="metric-name">Metric</span>
+                        <span class="metric-yours">{{ txt.your_score }}</span>
+                        <span class="metric-industry">{{ txt.industry_avg }}</span>
+                        <span class="metric-gap">{{ txt.gap }}</span>
+                    </div>
+                    {% for key, metric in benchmark.metrics.items() %}
+                    <div class="benchmark-row">
+                        <span class="metric-name">
+                            {% if key == 'compliance_score' %}{{ txt.compliance_score }}
+                            {% elif key == 'maturity_level' %}{{ txt.maturity_level }}
+                            {% elif key == 'policy_count' %}{{ txt.policies if txt.policies else 'Policies' }}
+                            {% elif key == 'audit_count' %}{{ txt.audits if txt.audits else 'Audits' }}
+                            {% else %}{{ txt.risks if txt.risks else 'Risk Assessments' }}
+                            {% endif %}
+                        </span>
+                        <span class="metric-yours">{{ metric.user }}{% if 'score' in key or 'level' in key %}{% if 'score' in key %}%{% endif %}{% endif %}</span>
+                        <span class="metric-industry">{{ metric.benchmark }}{% if 'score' in key %}%{% endif %}</span>
+                        <span class="metric-gap {{ 'positive' if metric.gap >= 0 else 'negative' }}">
+                            {{ '+' if metric.gap > 0 else '' }}{{ metric.gap }}{% if 'score' in key %}%{% endif %}
+                            <i class="fas fa-{{ 'arrow-up' if metric.gap >= 0 else 'arrow-down' }}"></i>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Domain Compliance Radar -->
+        <div class="analytics-card domain-radar-card">
+            <div class="card-header">
+                <h2><i class="fas fa-chart-pie"></i> {% if is_rtl %}امتثال المجالات{% else %}Domain Compliance{% endif %}</h2>
+            </div>
+            <div class="card-body">
+                <canvas id="domainRadar" width="300" height="300"></canvas>
+                <div class="domain-legend">
+                    {% for code, data in domain_compliance.items() %}
+                    <div class="domain-item">
+                        <span class="domain-label">
+                            {% if code == 'cyber' %}{% if is_rtl %}الأمن السيبراني{% else %}Cyber Security{% endif %}
+                            {% elif code == 'data' %}{% if is_rtl %}إدارة البيانات{% else %}Data Management{% endif %}
+                            {% elif code == 'ai' %}{% if is_rtl %}الذكاء الاصطناعي{% else %}AI Governance{% endif %}
+                            {% elif code == 'dt' %}{% if is_rtl %}التحول الرقمي{% else %}Digital Transformation{% endif %}
+                            {% elif code == 'global' %}{% if is_rtl %}المعايير العالمية{% else %}Global Standards{% endif %}
+                            {% elif code == 'erm' %}{% if is_rtl %}إدارة المخاطر{% else %}Risk Management{% endif %}
+                            {% endif %}
+                        </span>
+                        <span class="domain-value {{ 'high-score' if data.score >= 70 else 'medium-score' if data.score >= 40 else 'low-score' }}">{{ data.score }}%</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Framework Coverage -->
+        <div class="analytics-card framework-card">
+            <div class="card-header">
+                <h2><i class="fas fa-layer-group"></i> {% if is_rtl %}تغطية الأطر التنظيمية{% else %}Framework Coverage{% endif %}</h2>
+            </div>
+            <div class="card-body">
+                <div class="framework-grid">
+                    {% for cat, data in framework_coverage.items() %}
+                    <div class="framework-category">
+                        <div class="framework-header">
+                            <span class="cat-name">
+                                {% if cat == 'cyber' %}<i class="fas fa-shield-alt"></i> {% if is_rtl %}الأمن السيبراني{% else %}Cyber{% endif %}
+                                {% elif cat == 'data' %}<i class="fas fa-database"></i> {% if is_rtl %}البيانات{% else %}Data{% endif %}
+                                {% elif cat == 'ai' %}<i class="fas fa-robot"></i> {% if is_rtl %}الذكاء الاصطناعي{% else %}AI{% endif %}
+                                {% elif cat == 'global' %}<i class="fas fa-globe"></i> {% if is_rtl %}المعايير{% else %}Standards{% endif %}
+                                {% elif cat == 'erm' %}<i class="fas fa-exclamation-triangle"></i> {% if is_rtl %}المخاطر{% else %}Risk{% endif %}
+                                {% endif %}
+                            </span>
+                            <span class="cat-percent {{ 'high-score' if data.percentage >= 50 else 'low-score' }}">{{ data.percentage }}%</span>
+                        </div>
+                        <div class="framework-bar">
+                            <div class="framework-fill" style="width: {{ data.percentage }}%"></div>
+                        </div>
+                        <div class="framework-list">
+                            {% for fw in data.frameworks[:4] %}
+                            <span class="fw-item {{ 'covered' if fw in data.covered_list else 'not-covered' }}">
+                                <i class="fas {{ 'fa-check' if fw in data.covered_list else 'fa-times' }}"></i> {{ fw }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Compliance Trend Chart -->
+        <div class="analytics-card trend-card">
+            <div class="card-header">
+                <h2><i class="fas fa-chart-line"></i> {% if is_rtl %}اتجاه الامتثال{% else %}Compliance Trend{% endif %}</h2>
+                <span class="trend-period">{% if is_rtl %}آخر 30 يوم{% else %}Last 30 Days{% endif %}</span>
+            </div>
+            <div class="card-body">
+                {% if compliance_trend|length > 1 %}
+                <canvas id="trendChart" width="500" height="200"></canvas>
+                {% else %}
+                <div class="no-trend-data">
+                    <i class="fas fa-info-circle"></i>
+                    <p>{% if is_rtl %}سيتم عرض بيانات الاتجاه بعد عدة أيام من الاستخدام{% else %}Trend data will be displayed after a few days of usage{% endif %}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Gap Analysis & Recommendations -->
+        <div class="analytics-card recommendations-card full-width">
+            <div class="card-header">
+                <h2><i class="fas fa-lightbulb"></i> {% if is_rtl %}تحليل الفجوات والتوصيات{% else %}Gap Analysis & Recommendations{% endif %}</h2>
+            </div>
+            <div class="card-body">
+                {% if recommendations %}
+                <div class="recommendations-list">
+                    {% for rec in recommendations %}
+                    <div class="recommendation-item priority-{{ rec.priority }}">
+                        <div class="rec-priority">
+                            <span class="priority-badge {{ rec.priority }}">
+                                {% if rec.priority == 'critical' %}{% if is_rtl %}حرج{% else %}Critical{% endif %}
+                                {% elif rec.priority == 'high' %}{% if is_rtl %}عالي{% else %}High{% endif %}
+                                {% elif rec.priority == 'medium' %}{% if is_rtl %}متوسط{% else %}Medium{% endif %}
+                                {% else %}{% if is_rtl %}منخفض{% else %}Low{% endif %}{% endif %}
+                            </span>
+                        </div>
+                        <div class="rec-content">
+                            <div class="rec-area">{{ rec.area }}</div>
+                            <div class="rec-issue"><i class="fas fa-exclamation-circle"></i> {{ rec.issue }}</div>
+                            <div class="rec-action"><i class="fas fa-arrow-right"></i> {{ rec.action }}</div>
+                            <div class="rec-impact"><i class="fas fa-chart-line"></i> {{ rec.impact }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="no-recommendations">
+                    <i class="fas fa-trophy"></i>
+                    <p>{% if is_rtl %}عمل ممتاز! لا توجد فجوات حرجة.{% else %}Great work! No critical gaps identified.{% endif %}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.analytics-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.analytics-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.header-content h1 {
+    margin: 10px 0 0 0;
+    font-size: 1.8rem;
+    color: var(--text-primary);
+}
+
+.header-content h1 i {
+    color: var(--primary);
+    margin-{% if is_rtl %}left{% else %}right{% endif %}: 10px;
+}
+
+.back-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.lang-switch {
+    display: flex;
+    gap: 5px;
+}
+
+.lang-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    font-weight: 600;
+}
+
+.lang-btn.active {
+    background: var(--primary);
+    color: white;
+}
+
+/* No Data State */
+.no-data-message {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-secondary);
+}
+
+.no-data-message i {
+    font-size: 4rem;
+    margin-bottom: 20px;
+    opacity: 0.3;
+}
+
+.no-data-message h2 {
+    margin-bottom: 20px;
+    color: var(--text-primary);
+}
+
+/* Analytics Grid */
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 25px;
+}
+
+.analytics-card {
+    background: var(--bg-card);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h2 {
+    font-size: 1.1rem;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.card-header h2 i {
+    color: var(--primary);
+}
+
+.card-body {
+    padding: 20px;
+}
+
+/* Compliance Score Gauge */
+.score-gauge {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.gauge-svg {
+    width: 200px;
+    height: 120px;
+}
+
+.gauge-score {
+    font-size: 2rem;
+    font-weight: 700;
+    fill: var(--text-primary);
+}
+
+.gauge-label {
+    font-size: 0.7rem;
+    fill: var(--text-secondary);
+}
+
+.gauge-fill {
+    transition: stroke-dasharray 1s ease;
+}
+
+.score-breakdown {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+}
+
+.breakdown-label {
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.breakdown-label i {
+    color: var(--primary);
+}
+
+.breakdown-value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Risk Heatmap */
+.heatmap-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.heatmap-y-label, .heatmap-x-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.heatmap-y-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    margin-bottom: 10px;
+}
+
+.heatmap-grid {
+    display: flex;
+    gap: 5px;
+}
+
+.heatmap-y-axis {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    padding-right: 10px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.heatmap-cells {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.heatmap-row {
+    display: flex;
+    gap: 3px;
+}
+
+.heatmap-cell {
+    width: 50px;
+    height: 50px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.9rem;
+    transition: transform 0.2s;
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.1);
+    z-index: 10;
+}
+
+/* Heatmap colors based on severity */
+.low-low, .low-medium { background: rgba(56, 239, 125, 0.3); color: #38ef7d; }
+.medium-low, .low-high { background: rgba(245, 175, 25, 0.3); color: #f5af19; }
+.medium-medium, .high-low, .low-critical { background: rgba(245, 175, 25, 0.5); color: #f5af19; }
+.high-medium, .medium-high, .critical-low { background: rgba(245, 87, 108, 0.4); color: #f5576c; }
+.high-high, .critical-medium, .medium-critical { background: rgba(245, 87, 108, 0.6); color: #f5576c; }
+.critical-high, .high-critical, .critical-critical { background: rgba(245, 87, 108, 0.8); color: white; }
+
+.heatmap-x-axis {
+    display: flex;
+    justify-content: space-around;
+    width: 100%;
+    padding-top: 10px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.heatmap-legend {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.legend-item {
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.low-risk { background: rgba(56, 239, 125, 0.3); color: #38ef7d; }
+.medium-risk { background: rgba(245, 175, 25, 0.4); color: #f5af19; }
+.high-risk { background: rgba(245, 87, 108, 0.5); color: #f5576c; }
+.critical-risk { background: rgba(245, 87, 108, 0.8); color: white; }
+
+/* Maturity Radar */
+.radar-card canvas {
+    max-width: 100%;
+    margin: 0 auto;
+    display: block;
+}
+
+.maturity-avg {
+    font-size: 0.85rem;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.maturity-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.maturity-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+}
+
+.maturity-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.maturity-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+/* Benchmark Comparison */
+.sector-select {
+    padding: 8px 15px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.benchmark-source {
+    padding: 10px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    margin-bottom: 15px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.benchmark-source i {
+    color: var(--primary);
+    margin-{% if is_rtl %}left{% else %}right{% endif %}: 8px;
+}
+
+.benchmark-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.benchmark-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    gap: 10px;
+    padding: 12px 15px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    align-items: center;
+}
+
+.benchmark-row.header {
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    color: white;
+    font-weight: 600;
+}
+
+.metric-name {
+    font-weight: 500;
+}
+
+.metric-yours, .metric-industry, .metric-gap {
+    text-align: center;
+}
+
+.metric-gap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-weight: 600;
+}
+
+.metric-gap.positive {
+    color: var(--success);
+}
+
+.metric-gap.negative {
+    color: var(--danger);
+}
+
+/* RTL */
+{% if is_rtl %}
+.analytics-container {
+    direction: rtl;
+    text-align: right;
+}
+
+.heatmap-y-label {
+    transform: rotate(0deg);
+    writing-mode: vertical-lr;
+}
+{% endif %}
+
+/* Domain Radar Card */
+.domain-radar-card .domain-legend {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-top: 15px;
+}
+
+.domain-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+
+.domain-value {
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 12px;
+}
+
+.domain-value.high-score { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+.domain-value.medium-score { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+.domain-value.low-score { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+
+/* Framework Coverage */
+.framework-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 15px;
+}
+
+.framework-category {
+    background: var(--bg-elevated);
+    border-radius: 10px;
+    padding: 12px;
+}
+
+.framework-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.cat-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cat-name i { color: var(--primary); }
+
+.cat-percent {
+    font-weight: 700;
+    font-size: 0.85rem;
+}
+
+.cat-percent.high-score { color: #22c55e; }
+.cat-percent.low-score { color: #ef4444; }
+
+.framework-bar {
+    height: 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.framework-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea, #764ba2);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+
+.framework-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.fw-item {
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.fw-item.covered { color: #22c55e; }
+.fw-item.not-covered { color: var(--text-muted); opacity: 0.6; }
+
+/* Trend Chart */
+.trend-card {
+    grid-column: span 2;
+}
+
+.trend-period {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    background: var(--bg-elevated);
+    padding: 4px 10px;
+    border-radius: 12px;
+}
+
+.no-trend-data {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+}
+
+.no-trend-data i {
+    font-size: 2rem;
+    margin-bottom: 10px;
+    opacity: 0.5;
+}
+
+/* Recommendations */
+.recommendations-card.full-width {
+    grid-column: 1 / -1;
+}
+
+.recommendations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.recommendation-item {
+    display: flex;
+    gap: 15px;
+    padding: 15px;
+    background: var(--bg-elevated);
+    border-radius: 10px;
+    border-{% if is_rtl %}right{% else %}left{% endif %}: 4px solid;
+}
+
+.recommendation-item.priority-critical { border-color: #ef4444; }
+.recommendation-item.priority-high { border-color: #f59e0b; }
+.recommendation-item.priority-medium { border-color: #3b82f6; }
+.recommendation-item.priority-low { border-color: #94a3b8; }
+
+.rec-priority {
+    flex-shrink: 0;
+}
+
+.priority-badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.priority-badge.critical { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+.priority-badge.high { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+.priority-badge.medium { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
+.priority-badge.low { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
+
+.rec-content {
+    flex: 1;
+}
+
+.rec-area {
+    font-weight: 700;
+    font-size: 1rem;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+
+.rec-issue {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin-bottom: 6px;
+}
+
+.rec-issue i { color: #f59e0b; margin-{% if is_rtl %}left{% else %}right{% endif %}: 5px; }
+
+.rec-action {
+    color: var(--primary);
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+}
+
+.rec-action i { margin-{% if is_rtl %}left{% else %}right{% endif %}: 5px; }
+
+.rec-impact {
+    font-size: 0.8rem;
+    color: #22c55e;
+}
+
+.rec-impact i { margin-{% if is_rtl %}left{% else %}right{% endif %}: 5px; }
+
+.no-recommendations {
+    text-align: center;
+    padding: 40px;
+    color: #22c55e;
+}
+
+.no-recommendations i {
+    font-size: 3rem;
+    margin-bottom: 15px;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .trend-card {
+        grid-column: span 1;
+    }
+}
+
+@media (max-width: 768px) {
+    .analytics-header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+    
+    .score-breakdown {
+        grid-template-columns: 1fr;
+    }
+    
+    .benchmark-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+    }
+    
+    .benchmark-row.header {
+        display: none;
+    }
+    
+    .heatmap-cell {
+        width: 40px;
+        height: 40px;
+        font-size: 0.8rem;
+    }
+}
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const isRtl = {{ 'true' if is_rtl else 'false' }};
+const lang = '{{ lang }}';
+
+// Maturity Radar Chart
+const maturityData = {
+    governance: {{ maturity.governance }},
+    risk_mgmt: {{ maturity.risk_mgmt }},
+    compliance: {{ maturity.compliance }},
+    technology: {{ maturity.technology }},
+    process: {{ maturity.process }}
+};
+
+const labels = isRtl 
+    ? ['الحوكمة', 'إدارة المخاطر', 'الامتثال', 'التقنية', 'العمليات']
+    : ['Governance', 'Risk Mgmt', 'Compliance', 'Technology', 'Process'];
+
+const ctx = document.getElementById('maturityRadar');
+if (ctx) {
+    new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: isRtl ? 'مستوى النضج' : 'Maturity Level',
+                data: [maturityData.governance, maturityData.risk_mgmt, maturityData.compliance, maturityData.technology, maturityData.process],
+                fill: true,
+                backgroundColor: 'rgba(102, 126, 234, 0.2)',
+                borderColor: '#667eea',
+                pointBackgroundColor: '#667eea',
+                pointBorderColor: '#fff',
+                pointHoverBackgroundColor: '#fff',
+                pointHoverBorderColor: '#667eea',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                r: {
+                    beginAtZero: true,
+                    max: 5,
+                    min: 0,
+                    ticks: {
+                        stepSize: 1,
+                        color: 'var(--text-secondary)'
+                    },
+                    grid: {
+                        color: 'rgba(255,255,255,0.1)'
+                    },
+                    angleLines: {
+                        color: 'rgba(255,255,255,0.1)'
+                    },
+                    pointLabels: {
+                        color: 'var(--text-primary)',
+                        font: {
+                            size: 11
+                        }
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                }
+            }
+        }
+    });
+}
+
+function changeSector(sector) {
+    window.location.href = `/analytics?lang=${lang}&sector=${encodeURIComponent(sector)}`;
+}
+
+// Export to Excel
+function exportToExcel(type) {
+    fetch('/api/generate-excel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+            type: type,
+            filename: 'mizan_' + type + '_' + new Date().toISOString().slice(0,10)
+        })
+    })
+    .then(response => response.blob())
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'mizan_' + type + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+    })
+    .catch(err => {
+        console.error('Export error:', err);
+        alert(isRtl ? 'خطأ في التصدير' : 'Export error');
+    });
+}
+
+// Print Analytics
+function printAnalytics() {
+    window.print();
+}
+
+// Domain Compliance Radar Chart
+const domainData = {
+    cyber: {{ domain_compliance.cyber.score if domain_compliance.cyber else 0 }},
+    data: {{ domain_compliance.data.score if domain_compliance.data else 0 }},
+    ai: {{ domain_compliance.ai.score if domain_compliance.ai else 0 }},
+    dt: {{ domain_compliance.dt.score if domain_compliance.dt else 0 }},
+    global: {{ domain_compliance.global.score if domain_compliance.global else 0 }},
+    erm: {{ domain_compliance.erm.score if domain_compliance.erm else 0 }}
+};
+
+const domainLabels = isRtl 
+    ? ['الأمن السيبراني', 'إدارة البيانات', 'الذكاء الاصطناعي', 'التحول الرقمي', 'المعايير العالمية', 'إدارة المخاطر']
+    : ['Cyber Security', 'Data Management', 'AI Governance', 'Digital Transform', 'Global Standards', 'Risk Management'];
+
+const domainCtx = document.getElementById('domainRadar');
+if (domainCtx) {
+    new Chart(domainCtx, {
+        type: 'radar',
+        data: {
+            labels: domainLabels,
+            datasets: [{
+                label: isRtl ? 'نسبة الامتثال' : 'Compliance %',
+                data: [domainData.cyber, domainData.data, domainData.ai, domainData.dt, domainData.global, domainData.erm],
+                fill: true,
+                backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                borderColor: '#22c55e',
+                pointBackgroundColor: '#22c55e',
+                pointBorderColor: '#fff',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                r: {
+                    beginAtZero: true,
+                    max: 100,
+                    min: 0,
+                    ticks: {
+                        stepSize: 20,
+                        color: 'var(--text-secondary)',
+                        callback: function(value) { return value + '%'; }
+                    },
+                    grid: { color: 'rgba(255,255,255,0.1)' },
+                    pointLabels: { color: 'var(--text-primary)', font: { size: 11 } }
+                }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+// Compliance Trend Chart
+{% if compliance_trend|length > 1 %}
+const trendData = {{ compliance_trend | tojson }};
+const trendCtx = document.getElementById('trendChart');
+if (trendCtx && trendData.length > 1) {
+    new Chart(trendCtx, {
+        type: 'line',
+        data: {
+            labels: trendData.map(d => d.date),
+            datasets: [{
+                label: isRtl ? 'درجة الامتثال' : 'Compliance Score',
+                data: trendData.map(d => d.score),
+                borderColor: '#667eea',
+                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: '#667eea'
+            }, {
+                label: isRtl ? 'مستوى النضج' : 'Maturity Level',
+                data: trendData.map(d => d.maturity_avg * 20),
+                borderColor: '#22c55e',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                fill: false,
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: '#22c55e'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    ticks: { color: 'var(--text-secondary)', callback: v => v + '%' },
+                    grid: { color: 'rgba(255,255,255,0.05)' }
+                },
+                x: {
+                    ticks: { color: 'var(--text-secondary)', maxRotation: 45 },
+                    grid: { display: false }
+                }
+            },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { color: 'var(--text-primary)', usePointStyle: true }
+                }
+            }
+        }
+    });
+}
+{% endif %}
+</script>
+
+<style>
+/* Export buttons */
+.export-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #28a745, #20c997);
+    color: white;
+}
+
+/* Print styles */
+@media print {
+    .analytics-header,
+    .header-controls,
+    .export-buttons,
+    .back-link,
+    .lang-switch,
+    .theme-toggle,
+    .sector-select {
+        display: none !important;
+    }
+    
+    .analytics-container {
+        padding: 0;
+        max-width: 100%;
+    }
+    
+    .analytics-grid {
+        display: block;
+    }
+    
+    .analytics-card {
+        break-inside: avoid;
+        margin-bottom: 20px;
+        box-shadow: none;
+        border: 1px solid #ddd;
+    }
+    
+    body {
+        background: white !important;
+        color: black !important;
+    }
+    
+    .card-header {
+        background: #f5f5f5 !important;
+    }
+}
+</style>
+{% endblock %}
