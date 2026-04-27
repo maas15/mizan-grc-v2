@@ -15401,8 +15401,12 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
         _ts_re.IGNORECASE | _ts_re.MULTILINE,
     )
+    # Must be identical to the tf_re in count_valid_objective_rows so
+    # that `len(existing_rows)` == count_valid_objective_rows() and the
+    # early-return gate never fires while the audit gate still fails.
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|أشهر|شهر|شهراً|سنوات|سنة)'
+        r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
         r'|(?:within|خلال)\s+\d+',
         _ts_re.IGNORECASE,
     )
@@ -18322,6 +18326,22 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 if _so_hdr:
                     sections['vision'] = (
                         _v_text[:_so_hdr.start()].rstrip() + '\n')
+                else:
+                    # Fallback: AI may have omitted the ### Strategic
+                    # Objectives sub-heading and placed the table
+                    # directly. Clear from the table header so the
+                    # synth rebuilds from scratch.
+                    _tbl_hdr_fc = _ts_re.search(
+                        r'^\|\s*#\s*\|'
+                        r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+                        r'|الأهداف)\s*\|',
+                        _v_text,
+                        _ts_re.IGNORECASE | _ts_re.MULTILINE,
+                    )
+                    if _tbl_hdr_fc:
+                        sections['vision'] = (
+                            _v_text[:_tbl_hdr_fc.start()].rstrip()
+                            + '\n')
             try:
                 synthesize_objectives_depth(
                     sections, lang, domain=domain, fw_short=fw_short,
