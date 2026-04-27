@@ -17882,21 +17882,41 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
             out.append(p)
         return out
 
-    # Apply dedup + ordinal rewrite in order
+    # Apply dedup on picked first (preserved already passed strict
+    # gate so they don't need dedup against each other).
     picked = _dedup_by_desc(picked, is_ar)
-    picked = _normalize_pillar_titles(picked, is_ar)
+
+    # ── UNIFIED ORDINAL NORMALIZATION ────────────────────────────
+    # Build a single ordered list of every pillar that will appear
+    # in the rebuilt section (preserved AI pillars first, then
+    # synthesized picks) and renumber the whole list sequentially.
+    # Without this, `preserved` pillars keep their original AI
+    # ordinals (e.g. "Pillar 1: ...", "Pillar 2: ...") while
+    # `picked` gets re-numbered starting at 1 — producing duplicate
+    # `Pillar N` / `الركيزة N` headings in the rebuilt section
+    # (e.g. two "Pillar 1", two "Pillar 2"). Duplicate headings
+    # violate the "no duplicate pillar headings/families" contract
+    # and make the rebuild non-deterministic. Renumbering the
+    # combined list guarantees unique sequential ordinals across
+    # preserved + picked, so every counted pillar is canonically
+    # addressable and the strict-gate recognition path sees one
+    # well-formed pillar per heading.
+    unified = []
+    for _t, _b in preserved:
+        unified.append({'title': _t, '__preserved_body__': _b.strip()})
+    for _p in picked:
+        unified.append(_p)
+    unified = _normalize_pillar_titles(unified, is_ar)
 
     if is_ar:
         out = ['## 2. الركائز الاستراتيجية', '']
-        if preserved:
-            for t, b in preserved:
-                out.append('### ' + t)
-                out.append('')
-                out.append(b.strip())
-                out.append('')
-        for p in picked:
+        for p in unified:
             out.append('### ' + p['title'])
             out.append('')
+            if '__preserved_body__' in p:
+                out.append(p['__preserved_body__'])
+                out.append('')
+                continue
             out.append(p['narrative'])
             out.append('')
             out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
@@ -17907,15 +17927,13 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
             summary['synthesized_titles'].append(p['title'])
     else:
         out = ['## 2. Strategic Pillars', '']
-        if preserved:
-            for t, b in preserved:
-                out.append('### ' + t)
-                out.append('')
-                out.append(b.strip())
-                out.append('')
-        for p in picked:
+        for p in unified:
             out.append('### ' + p['title'])
             out.append('')
+            if '__preserved_body__' in p:
+                out.append(p['__preserved_body__'])
+                out.append('')
+                continue
             out.append(p['narrative'])
             out.append('')
             out.append('| # | Initiative | Description | Expected Deliverable |')
