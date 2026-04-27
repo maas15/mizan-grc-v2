@@ -13665,12 +13665,13 @@ def count_valid_objective_rows(vision_text):
     )
     # Singular forms (month/year/week/day) are already covered by the
     # plural-or-singular alternatives (months?/years?/weeks?/days?).
-    # Keeping them separate would add redundant alternation branches that
-    # a NFA engine may explore unnecessarily on digit-heavy strings.
+    # Bound the leading digit group to \d{1,6} (any real timeframe fits
+    # within 6 digits) so the NFA does not need to try all O(n) split
+    # points when the input contains a long run of digit characters.
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|days?'
+        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+',
+        r'|(?:within|خلال)\s+\d{1,6}',
         _ts_re.IGNORECASE,
     )
     valid = 0
@@ -15410,10 +15411,13 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
     # early-return gate never fires while the audit gate still fails.
     # Singular forms (month/year/week/day) are already covered by the
     # plural-or-singular alternatives (months?/years?/weeks?/days?).
+    # Bound the leading digit group to \d{1,6} (any real timeframe fits
+    # within 6 digits) so the NFA does not need to try all O(n) split
+    # points when the input contains a long run of digit characters.
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|days?'
+        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+',
+        r'|(?:within|خلال)\s+\d{1,6}',
         _ts_re.IGNORECASE,
     )
     existing_rows = []  # list of cell-lists (without #)
