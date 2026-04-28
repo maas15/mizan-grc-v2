@@ -8589,7 +8589,9 @@ def _sections_to_json(sections, domain='', lang='en', title=''):
     def parse_table(lines, section_text=''):
         headers, rows = [], []
         for ln in lines:
-            ln = ln.strip()
+            # Strip trace comment tags before splitting by | so embedded |chars
+            # in trace tags don't create phantom cells or wrong column counts.
+            ln = re.sub(r'<!--\s*trace:[^>]*-->', '', ln, flags=re.IGNORECASE).strip()
             if not ln.startswith('|'):
                 continue
             if re.match(r'^\|[\s\-:|]+\|$', ln):
@@ -13610,6 +13612,21 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
 # ────────────────────────────────────────────────────────────────────────────
 import re as _ts_re
 
+# Trace-comment strip regex — defined here (before any counting function) so
+# _strip_trace_comments is available throughout this module.  Uses a linear-
+# time pattern: [^>]* (greedy, excludes ">") avoids nested-quantifier ReDoS.
+_TRACE_STRIP_RE = _ts_re.compile(r'<!--\s*trace:[^>]*-->', _ts_re.IGNORECASE)
+
+
+def _strip_trace_comments(text):
+    """Remove all HTML trace comment tags from text.
+    Must be applied before any display, export, or validation path so that
+    trace tags (which contain | characters) do not corrupt cell-splitting
+    in pipe-table parsers or leak into user-facing output.
+    """
+    return _TRACE_STRIP_RE.sub('', text or '')
+
+
 _TS_PLACEHOLDER_TOKENS = (
     '—', '-', 'TBD', 'To be defined', 'To be determined',
     'يُحدد لاحقاً', 'يحدد لاحقا', 'يحدد لاحقاً', 'TBA',
@@ -13658,7 +13675,10 @@ def _ts_table_rows(text, header_re):
     out = []
     in_tbl = False
     for ln in text.split('\n'):
-        s = ln.strip()
+        # Strip trace comments BEFORE splitting by | so embedded |chars in
+        # trace tags (e.g. <!-- trace:section=obj|src=diag --> ) don't
+        # corrupt the cell count and cause row validation failures.
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
         if not in_tbl:
             if header_re.match(s):
                 in_tbl = True
@@ -13691,10 +13711,15 @@ def count_valid_objective_rows(vision_text):
         r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
         _ts_re.IGNORECASE,
     )
+    # Singular forms (month/year/week/day) are already covered by the
+    # plural-or-singular alternatives (months?/years?/weeks?/days?).
+    # Bound the leading digit group to \d{1,6} (any real timeframe fits
+    # within 6 digits) so the NFA does not need to try all O(n) split
+    # points when the input contains a long run of digit characters.
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
+        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+\d{1,6}'
         r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
@@ -14818,7 +14843,7 @@ def _count_substantive_pillars(pillars_text):
             continue
         has_tbl_row = False
         for ln in body.splitlines():
-            s = ln.strip()
+            s = _TRACE_STRIP_RE.sub('', ln).strip()
             if (s.startswith('|') and s.endswith('|') and
                     not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
                 cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
@@ -14858,7 +14883,7 @@ def _count_substantive_roadmap_rows(roadmap_text):
     n = 0
     in_tbl = False
     for ln in roadmap_text.split('\n'):
-        s = ln.strip()
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
         if not (s.startswith('|') and s.endswith('|')):
             in_tbl = False
             continue
@@ -15432,10 +15457,18 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
         _ts_re.IGNORECASE | _ts_re.MULTILINE,
     )
+    # Must be identical to the tf_re in count_valid_objective_rows so
+    # that `len(existing_rows)` == count_valid_objective_rows() and the
+    # early-return gate never fires while the audit gate still fails.
+    # Singular forms (month/year/week/day) are already covered by the
+    # plural-or-singular alternatives (months?/years?/weeks?/days?).
+    # Bound the leading digit group to \d{1,6} (any real timeframe fits
+    # within 6 digits) so the NFA does not need to try all O(n) split
+    # points when the input contains a long run of digit characters.
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
+        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+\d{1,6}'
         r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
@@ -18370,6 +18403,22 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 if _so_hdr:
                     sections['vision'] = (
                         _v_text[:_so_hdr.start()].rstrip() + '\n')
+                else:
+                    # Fallback: AI may have omitted the ### Strategic
+                    # Objectives sub-heading and placed the table
+                    # directly. Clear from the table header so the
+                    # synth rebuilds from scratch.
+                    _tbl_hdr_fc = _ts_re.search(
+                        r'^\|\s*#\s*\|'
+                        r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+                        r'|الأهداف)\s*\|',
+                        _v_text,
+                        _ts_re.IGNORECASE | _ts_re.MULTILINE,
+                    )
+                    if _tbl_hdr_fc:
+                        sections['vision'] = (
+                            _v_text[:_tbl_hdr_fc.start()].rstrip()
+                            + '\n')
             try:
                 synthesize_objectives_depth(
                     sections, lang, domain=domain, fw_short=fw_short,
@@ -33008,6 +33057,11 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     # Preprocessing (same as before)
     import re as re_docx
 
+    # Strip trace comment tags early so they never appear in exported output.
+    # Trace tags contain | characters that would break pipe-table cell splitting
+    # if not removed before any markdown/table parsing.
+    content = re_docx.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_docx.IGNORECASE)
+
     is_arabic = lang == 'ar'
     doc = Document()
     
@@ -33196,7 +33250,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         expected_cols = 0
         
         while idx < len(lines):
-            ln = lines[idx].strip()
+            ln = re_docx.sub(r'<!--\s*trace:[^>]*-->', '', lines[idx], flags=re_docx.IGNORECASE).strip()
             if ln.startswith('|') and ln.endswith('|'):
                 if '---' in ln or ':-' in ln or '-:' in ln:
                     idx += 1
@@ -34911,10 +34965,19 @@ def api_generate_pdf():
             c.setFillColor(_W)
             # PASS-14: Arabic bold for Arabic classification banner.
             c.setFont(arabic_font_bold if is_arabic else 'Helvetica-Bold', 7.5)
-            c.drawCentredString(pw / 2, 13,
-                'CONFIDENTIAL  \u2014  FOR INTERNAL USE ONLY'
-                if not is_arabic else
-                '\u0633\u0631\u064a  \u2014  \u0644\u0644\u0627\u0633\u062a\u062e\u062f\u0627\u0645 \u0627\u0644\u062f\u0627\u062e\u0644\u064a \u0641\u0642\u0637')
+            # Apply reshape+bidi for Arabic so the text is not visually reversed.
+            # Without this, the raw Unicode string renders in LTR order, producing
+            # "طقف يلخادلا مادختسالل — يرس" instead of "سري — للاستخدام الداخلي فقط".
+            _banner_text = 'CONFIDENTIAL  \u2014  FOR INTERNAL USE ONLY'
+            if is_arabic:
+                _ar_banner = '\u0633\u0631\u064a  \u2014  \u0644\u0644\u0627\u0633\u062a\u062e\u062f\u0627\u0645 \u0627\u0644\u062f\u0627\u062e\u0644\u064a \u0641\u0642\u0637'
+                try:
+                    import arabic_reshaper as _ar_bn
+                    from bidi.algorithm import get_display as _gd_bn
+                    _banner_text = _gd_bn(_ar_bn.reshape(_ar_banner))
+                except Exception:
+                    _banner_text = _ar_banner
+            c.drawCentredString(pw / 2, 13, _banner_text)
 
             c.restoreState()
 
@@ -35036,6 +35099,9 @@ def api_generate_pdf():
         # Parse markdown content
         # CRITICAL: Run same cleanup as DOCX path
         import re as re_pdf
+        # Strip trace comment tags before any further processing so they never
+        # appear in the exported PDF and so embedded | chars don't break tables.
+        content = re_pdf.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_pdf.IGNORECASE)
         try:
             content = ensure_markdown_formatting(content)
         except Exception as fmt_err:

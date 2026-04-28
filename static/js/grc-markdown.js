@@ -5,6 +5,13 @@
 function grcMarkdownToHTML(md){
   if(!md)return '';
 
+  // ── Step 0: strip trace comment tags ─────────────────────────────────────
+  // Trace tags (<!-- trace:section=...|src=... -->) must never appear in
+  // preview HTML. They also contain | characters that break pipe-table
+  // cell-splitting if left in place. Strip them unconditionally before
+  // any other processing.
+  md = md.replace(/<!--\s*trace:[^>]*-->/gi, '');
+
   // ── Step 1: cleanup helpers (same as server-side) ────────────────────────
   // PRE-PIPE-FENCE: ensure every pipe-table block is preceded by a blank line.
   // Without this, a paragraph ending immediately before a | row (zero blank lines)
