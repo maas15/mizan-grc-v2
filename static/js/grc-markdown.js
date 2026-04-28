@@ -10,7 +10,7 @@ function grcMarkdownToHTML(md){
   // preview HTML. They also contain | characters that break pipe-table
   // cell-splitting if left in place. Strip them unconditionally before
   // any other processing.
-  md = md.replace(/<!--\s*trace:\s*[^>]*?-->/gi, '');
+  md = md.replace(/<!--\s*trace:[^>]*-->/gi, '');
 
   // ── Step 1: cleanup helpers (same as server-side) ────────────────────────
   // PRE-PIPE-FENCE: ensure every pipe-table block is preceded by a blank line.

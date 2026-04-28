@@ -8585,7 +8585,7 @@ def _sections_to_json(sections, domain='', lang='en', title=''):
         for ln in lines:
             # Strip trace comment tags before splitting by | so embedded |chars
             # in trace tags don't create phantom cells or wrong column counts.
-            ln = re.sub(r'<!--\s*trace:\s*[^>]*?-->', '', ln, flags=re.IGNORECASE).strip()
+            ln = re.sub(r'<!--\s*trace:[^>]*-->', '', ln, flags=re.IGNORECASE).strip()
             if not ln.startswith('|'):
                 continue
             if re.match(r'^\|[\s\-:|]+\|$', ln):
@@ -13606,6 +13606,21 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
 # ────────────────────────────────────────────────────────────────────────────
 import re as _ts_re
 
+# Trace-comment strip regex — defined here (before any counting function) so
+# _strip_trace_comments is available throughout this module.  Uses a linear-
+# time pattern: [^>]* (greedy, excludes ">") avoids nested-quantifier ReDoS.
+_TRACE_STRIP_RE = _ts_re.compile(r'<!--\s*trace:[^>]*-->', _ts_re.IGNORECASE)
+
+
+def _strip_trace_comments(text):
+    """Remove all HTML trace comment tags from text.
+    Must be applied before any display, export, or validation path so that
+    trace tags (which contain | characters) do not corrupt cell-splitting
+    in pipe-table parsers or leak into user-facing output.
+    """
+    return _TRACE_STRIP_RE.sub('', text or '')
+
+
 _TS_PLACEHOLDER_TOKENS = (
     '—', '-', 'TBD', 'To be defined', 'To be determined',
     'يُحدد لاحقاً', 'يحدد لاحقا', 'يحدد لاحقاً', 'TBA',
@@ -13637,7 +13652,7 @@ def _ts_table_rows(text, header_re):
         # Strip trace comments BEFORE splitting by | so embedded |chars in
         # trace tags (e.g. <!-- trace:section=obj|src=diag --> ) don't
         # corrupt the cell count and cause row validation failures.
-        s = _TRACE_TAG_RE.sub('', ln).strip()
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
         if not in_tbl:
             if header_re.match(s):
                 in_tbl = True
@@ -14798,7 +14813,7 @@ def _count_substantive_pillars(pillars_text):
             continue
         has_tbl_row = False
         for ln in body.splitlines():
-            s = _TRACE_TAG_RE.sub('', ln).strip()
+            s = _TRACE_STRIP_RE.sub('', ln).strip()
             if (s.startswith('|') and s.endswith('|') and
                     not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
                 cells = [c.strip() for c in s.split('|')[1:-1]]
@@ -14838,7 +14853,7 @@ def _count_substantive_roadmap_rows(roadmap_text):
     n = 0
     in_tbl = False
     for ln in roadmap_text.split('\n'):
-        s = _TRACE_TAG_RE.sub('', ln).strip()
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
         if not (s.startswith('|') and s.endswith('|')):
             in_tbl = False
             continue
@@ -19489,15 +19504,6 @@ _TRACE_TAG_RE = _ts_re.compile(
     r'<!--\s*trace:\s*([^-][^>]*?)\s*-->',
     _ts_re.IGNORECASE,
 )
-
-
-def _strip_trace_comments(text):
-    """Remove all HTML trace comment tags from text.
-    Must be applied before any display, export, or validation path so that
-    trace tags (which contain | characters) do not corrupt cell-splitting
-    in pipe-table parsers or leak into user-facing output.
-    """
-    return _TRACE_TAG_RE.sub('', text or '')
 
 
 def make_trace_tag(section, src, key, link=None):
@@ -32995,7 +33001,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     # Strip trace comment tags early so they never appear in exported output.
     # Trace tags contain | characters that would break pipe-table cell splitting
     # if not removed before any markdown/table parsing.
-    content = re_docx.sub(r'<!--\s*trace:\s*[^>]*?-->', '', content or '', flags=re_docx.IGNORECASE)
+    content = re_docx.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_docx.IGNORECASE)
 
     is_arabic = lang == 'ar'
     doc = Document()
@@ -33185,7 +33191,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         expected_cols = 0
         
         while idx < len(lines):
-            ln = re_docx.sub(r'<!--\s*trace:\s*[^>]*?-->', '', lines[idx], flags=re_docx.IGNORECASE).strip()
+            ln = re_docx.sub(r'<!--\s*trace:[^>]*-->', '', lines[idx], flags=re_docx.IGNORECASE).strip()
             if ln.startswith('|') and ln.endswith('|'):
                 if '---' in ln or ':-' in ln or '-:' in ln:
                     idx += 1
@@ -35022,7 +35028,7 @@ def api_generate_pdf():
         import re as re_pdf
         # Strip trace comment tags before any further processing so they never
         # appear in the exported PDF and so embedded | chars don't break tables.
-        content = re_pdf.sub(r'<!--\s*trace:\s*[^>]*?-->', '', content or '', flags=re_pdf.IGNORECASE)
+        content = re_pdf.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_pdf.IGNORECASE)
         try:
             content = ensure_markdown_formatting(content)
         except Exception as fmt_err:
