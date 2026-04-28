@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="robots" content="noindex, nofollow">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Admin Dashboard - {{ config.APP_NAME }}</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -155,7 +156,7 @@
         <!-- Header -->
         <div class="header">
             <div style="display: flex; align-items: center;">
-                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Mizan Logo" class="logo">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="logo">
                 <div>
                     <h1>🛡️ Admin Dashboard</h1>
                     <small style="color: #888;">{{ config.APP_NAME }} GRC Platform</small>
@@ -326,11 +327,13 @@
                         <td>
                             {% if user.role != 'admin' %}
                             <form action="{{ url_for('toggle_user', user_id=user.id) }}" method="POST" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="action-btn toggle">
                                     {{ '🚫' if user.is_active else '✅' }}
                                 </button>
                             </form>
                             <form action="{{ url_for('delete_user', user_id=user.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Delete this user?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="action-btn delete">🗑️</button>
                             </form>
                             {% else %}
@@ -470,6 +473,25 @@
                 })
                 .catch(err => console.error('Stats refresh failed:', err));
         }, 60000);
+
+        // ── CSRF: inject X-CSRFToken header into all POST fetch() calls ──
+        (function() {
+            var _csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            var _csrfToken = _csrfMeta ? _csrfMeta.getAttribute('content') : '';
+            if (!_csrfToken) return;
+            var _origFetch = window.fetch;
+            window.fetch = function(url, opts) {
+                opts = opts || {};
+                if (opts.method && opts.method.toUpperCase() === 'POST') {
+                    if (opts.headers instanceof Headers) {
+                        if (!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+                    } else {
+                        opts.headers = Object.assign({'X-CSRFToken': _csrfToken}, opts.headers || {});
+                    }
+                }
+                return _origFetch(url, opts);
+            };
+        })();
     </script>
 </body>
 </html>
