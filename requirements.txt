@@ -35,8 +35,5 @@ PyPDF2>=3.0.0
 # Excel Export
 openpyxl>=3.1.0
 
-# Security
-bcrypt>=4.1.0
-
 # Utilities
 requests>=2.31.0

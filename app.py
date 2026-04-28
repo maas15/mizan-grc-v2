@@ -418,7 +418,7 @@ class Config:
     CREATOR_NAME_AR = "المهندس: محمد بن عباس السعدون"
     CREATOR_TITLE = "Consultant/Expert"
     COPYRIGHT_YEAR = "2026"
-    DB_PATH = "mizan.db"
+    DB_PATH = os.getenv('DATABASE_PATH', 'mizan.db')
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
     GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
@@ -621,6 +621,9 @@ def get_db():
     if '_database' not in g:
         g._database = sqlite3.connect(config.DB_PATH)
         g._database.row_factory = sqlite3.Row
+        g._database.execute("PRAGMA busy_timeout = 5000")
+        g._database.execute("PRAGMA foreign_keys = ON")
+        g._database.execute("PRAGMA journal_mode = WAL")
     return g._database
 
 @app.teardown_appcontext
@@ -635,6 +638,9 @@ def get_db_direct():
     Caller MUST use: with closing(get_db_direct()) as conn: ..."""
     conn = sqlite3.connect(config.DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 def hash_password(password):
@@ -13610,6 +13616,26 @@ _TS_PLACEHOLDER_TOKENS = (
     'placeholder', '[insert', 'add here',
 )
 
+# Matches <!-- trace:... --> annotation comments inserted by apply_traceability_tags.
+# Defined early so _strip_trace_comments is available to all table-row parsers below.
+# Pattern uses the canonical ReDoS-safe HTML-comment form: [^-]|-(?!->) instead
+# of [^>]*? to avoid polynomial backtracking on malformed/unclosed comments.
+_TS_TRACE_COMMENT_RE = _ts_re.compile(
+    r'<!--\s*trace:(?:[^-]|-(?!->))*-->',
+    _ts_re.IGNORECASE,
+)
+
+
+def _strip_trace_comments(text):
+    """Remove <!-- trace:... --> comments from a Markdown table row before
+    splitting on '|'.  Trace comments may contain '|' as a field delimiter
+    (legacy) or ';' (current), and either form creates phantom table columns
+    when the row is split naively.  Stripping them first keeps cell counts
+    correct without weakening any content validation.
+    """
+    return _TS_TRACE_COMMENT_RE.sub('', text or '')
+
+
 def _ts_is_placeholder(cell):
     """True when a table cell value is a placeholder."""
     if cell is None:
@@ -13646,7 +13672,9 @@ def _ts_table_rows(text, header_re):
             continue
         if _ts_re.match(r'^\|[\s\-:|]+\|$', s):
             continue  # separator
-        cells = [c.strip() for c in s.split('|')[1:-1]]
+        # Strip trace comments before splitting so pipe characters inside
+        # <!-- trace:... --> do not create phantom table columns.
+        cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
         if cells:
             out.append(cells)
     return out
@@ -13666,7 +13694,9 @@ def count_valid_objective_rows(vision_text):
     tf_re = _ts_re.compile(
         r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+',
+        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
     )
     valid = 0
@@ -14791,7 +14821,7 @@ def _count_substantive_pillars(pillars_text):
             s = ln.strip()
             if (s.startswith('|') and s.endswith('|') and
                     not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
-                cells = [c.strip() for c in s.split('|')[1:-1]]
+                cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
                 if len(cells) >= 3 and sum(
                     1 for c in cells[1:] if not _ts_is_placeholder(c)
                 ) >= 2:
@@ -14834,7 +14864,8 @@ def _count_substantive_roadmap_rows(roadmap_text):
             continue
         if _ts_re.match(r'^\|[\s\-:|]+\|$', s):
             continue
-        cells = [c.strip() for c in s.split('|')[1:-1]]
+        # Strip trace comments so pipe chars inside them don't create phantom columns.
+        cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
         header_hits = sum(1 for c in cells if header_tokens.search(c or ''))
         if header_hits >= 2 and not in_tbl:
             in_tbl = True
@@ -15402,8 +15433,11 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         _ts_re.IGNORECASE | _ts_re.MULTILINE,
     )
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|أشهر|شهر|شهراً|سنوات|سنة)'
-        r'|(?:within|خلال)\s+\d+',
+        r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
+        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
     )
     existing_rows = []  # list of cell-lists (without #)
@@ -17868,48 +17902,58 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
             out.append(p)
         return out
 
-    # Apply dedup + ordinal rewrite in order
+    # Apply dedup + ordinal rewrite in order.
+    # KEY FIX (root-cause): preserved pillar titles may be non-canonical
+    # (e.g., AI-generated headings like "### Governance Strategy" that lack
+    # the "Pillar N:" / "الركيزة N:" prefix). _PILLAR_HEADING_RE_GLOBAL —
+    # used by _final_strategy_audit and the pre-save integrity gate — ONLY
+    # matches canonical prefixes; when at least one canonical heading is
+    # already present the fallback to ###\s+ does NOT fire, so non-canonical
+    # preserved headings are invisible to the audit. This causes the gate to
+    # see fewer than 3 valid pillars even though the synth built 3.
+    # Fix: wrap preserved (title, body) pairs into dicts so they can be
+    # processed by _normalize_pillar_titles together with picked, giving ALL
+    # pillars a canonical "Pillar N:" / "الركيزة N:" heading before output.
+    _preserved_dicts = [{'title': t, '_body': b} for t, b in preserved]
     picked = _dedup_by_desc(picked, is_ar)
-    picked = _normalize_pillar_titles(picked, is_ar)
+    # Normalize ALL pillars (preserved + picked) sequentially so every heading
+    # in the output section matches _PILLAR_HEADING_RE_GLOBAL.
+    _all_pillars = _normalize_pillar_titles(_preserved_dicts + picked, is_ar)
 
     if is_ar:
         out = ['## 2. الركائز الاستراتيجية', '']
-        if preserved:
-            for t, b in preserved:
-                out.append('### ' + t)
-                out.append('')
-                out.append(b.strip())
-                out.append('')
-        for p in picked:
+        for p in _all_pillars:
             out.append('### ' + p['title'])
             out.append('')
-            out.append(p['narrative'])
+            if '_body' in p:
+                # Preserved pillar: emit the original AI body verbatim
+                # (already contains a substantive initiative table).
+                out.append(p['_body'].strip())
+            else:
+                out.append(p['narrative'])
+                out.append('')
+                out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
+                out.append('|---|---------|-------|----------------|')
+                init = p['initiative']
+                out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
+                summary['synthesized_titles'].append(p['title'])
             out.append('')
-            out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
-            out.append('|---|---------|-------|----------------|')
-            init = p['initiative']
-            out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
-            out.append('')
-            summary['synthesized_titles'].append(p['title'])
     else:
         out = ['## 2. Strategic Pillars', '']
-        if preserved:
-            for t, b in preserved:
-                out.append('### ' + t)
-                out.append('')
-                out.append(b.strip())
-                out.append('')
-        for p in picked:
+        for p in _all_pillars:
             out.append('### ' + p['title'])
             out.append('')
-            out.append(p['narrative'])
+            if '_body' in p:
+                out.append(p['_body'].strip())
+            else:
+                out.append(p['narrative'])
+                out.append('')
+                out.append('| # | Initiative | Description | Expected Deliverable |')
+                out.append('|---|-----------|-------------|---------------------|')
+                init = p['initiative']
+                out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
+                summary['synthesized_titles'].append(p['title'])
             out.append('')
-            out.append('| # | Initiative | Description | Expected Deliverable |')
-            out.append('|---|-----------|-------------|---------------------|')
-            init = p['initiative']
-            out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
-            out.append('')
-            summary['synthesized_titles'].append(p['title'])
 
     sections['pillars'] = '\n'.join(out).rstrip() + '\n'
     summary['rebuilt'] = True
@@ -18184,12 +18228,16 @@ def _final_strategy_audit(sections, lang, doc_subtype=None):
     # via `_pillar_has_substantive_initiative` so audit + gate agree.
     pillars_text = sections.get('pillars', '') or ''
     _pill_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(pillars_text))
-    if not _pill_matches:
-        # Fallback to ANY ### heading so non-canonical pillar titles
-        # (matching the count_substantive_pillars widening) are also
-        # checked for substantive initiative.
-        _pill_matches = list(_ts_re.finditer(
-            r'^###\s+[^\n]+$', pillars_text, _ts_re.MULTILINE))
+    _pill_all_h3 = list(_ts_re.finditer(
+        r'^###[^#\n][^\n]*$', pillars_text, _ts_re.MULTILINE))
+    # Use the wider set whenever it finds MORE headings than the canonical
+    # pattern. This catches non-canonical AI pillar titles that the canonical
+    # regex misses but that carry legitimate initiative tables. Previously
+    # the fallback only fired when canonical matches was ZERO — meaning a
+    # section with 1 canonical + 2 non-canonical headings would only audit
+    # the 1 canonical one and mis-count the total as 1 (below threshold).
+    if len(_pill_all_h3) > len(_pill_matches):
+        _pill_matches = _pill_all_h3
     n_pill = 0
     for _i, _m in enumerate(_pill_matches):
         _bs = _m.end()
@@ -18344,10 +18392,11 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             _pillars_text_before = sections.get('pillars', '') or ''
             _p_matches_b = list(
                 _PILLAR_HEADING_RE_GLOBAL.finditer(_pillars_text_before))
-            if not _p_matches_b:
-                _p_matches_b = list(_ts_re.finditer(
-                    r'^###\s+[^\n]+$', _pillars_text_before,
-                    _ts_re.MULTILINE))
+            _p_all_h3_b = list(_ts_re.finditer(
+                r'^###[^#\n][^\n]*$', _pillars_text_before,
+                _ts_re.MULTILINE))
+            if len(_p_all_h3_b) > len(_p_matches_b):
+                _p_matches_b = _p_all_h3_b
             _p_before = sum(
                 1 for i, m in enumerate(_p_matches_b)
                 if _pillar_has_substantive_initiative(
@@ -18378,10 +18427,11 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 _pillars_text_after = sections.get('pillars', '') or ''
                 _p_matches_a = list(_PILLAR_HEADING_RE_GLOBAL.finditer(
                     _pillars_text_after))
-                if not _p_matches_a:
-                    _p_matches_a = list(_ts_re.finditer(
-                        r'^###\s+[^\n]+$', _pillars_text_after,
-                        _ts_re.MULTILINE))
+                _p_all_h3_a = list(_ts_re.finditer(
+                    r'^###[^#\n][^\n]*$', _pillars_text_after,
+                    _ts_re.MULTILINE))
+                if len(_p_all_h3_a) > len(_p_matches_a):
+                    _p_matches_a = _p_all_h3_a
                 _p_after = sum(
                     1 for i, m in enumerate(_p_matches_a)
                     if _pillar_has_substantive_initiative(
@@ -18481,10 +18531,11 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             log['final_defects'] = []
             log['progress'] = (len(post) < prev_defect_count)
             break
-        if len(post) >= prev_defect_count:
-            # No progress this cycle — further iterations are unlikely
-            # to help. Bail with the consolidated blocker set so the
-            # caller can emit ONE 422 instead of looping forever.
+        if len(post) >= prev_defect_count and _it >= 1:
+            # No progress after at least two repair cycles (iteration 0
+            # attempts preserve-and-top-up; iteration ≥ 1 force-clears
+            # pillars/vision for a clean rebuild). Bail only after the
+            # force-clear path has had a chance to fire.
             log['final_defects'] = [(s, t, c, m) for s, t, c, m in post]
             log['progress'] = False
             break
@@ -19433,25 +19484,37 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
 # ────────────────────────────────────────────────────────────────────────────
 
 _TRACE_TAG_RE = _ts_re.compile(
-    r'<!--\s*trace:\s*([^-][^>]*?)\s*-->',
+    r'<!--\s*trace:\s*((?:[^-]|-(?!->))+?)\s*-->',
     _ts_re.IGNORECASE,
 )
 
 
 def make_trace_tag(section, src, key, link=None):
-    """Return a single-line HTML comment tag, safe for pipe-table rows."""
+    """Return a single-line HTML comment tag safe for Markdown pipe-table rows.
+
+    Fields are joined with ';' so that the comment contains no '|' characters
+    and cannot create phantom table columns when a row is split on '|'.
+    Legacy tags that used '|' as a separator are still readable by
+    parse_trace_tag(), which accepts both delimiters.
+    """
     parts = [f'section={section}', f'src={src}', f'key={key}']
     if link:
         parts.append(f'link={link}')
-    return f'<!-- trace:{"|".join(parts)} -->'
+    return f'<!-- trace:{";".join(parts)} -->'
 
 
 def parse_trace_tag(tag_text):
-    """Parse `trace:k=v|k=v|...` body into dict. Returns None on malformed."""
+    """Parse ``trace:k=v;k=v;...`` body into dict.
+
+    Accepts both the current semicolon-delimited format and the legacy
+    pipe-delimited format for backward compatibility.  Returns None on
+    malformed input (missing 'section' or 'src' field).
+    """
     if not tag_text:
         return None
     out = {}
-    for pair in tag_text.split('|'):
+    # Split on either ';' (new) or '|' (legacy) to support both formats.
+    for pair in _ts_re.split(r'[;|]', tag_text):
         pair = pair.strip()
         if '=' not in pair:
             continue
@@ -19552,7 +19615,7 @@ def _build_section_row_index(sections):
                 continue
             # Data row. Use row counter since `#` col may not match display.
             row_n += 1
-            cells = [c.strip() for c in s.split('|')[1:-1]]
+            cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
             descriptive = ' '.join(cells[1:]) if len(cells) >= 2 else s
             index[name].append((row_n, descriptive.lower()))
     return index
@@ -19733,7 +19796,9 @@ def apply_traceability_tags(sections, diag_model):
                 continue
 
             row_counter += 1
-            cells = [c.strip() for c in s.split('|')[1:-1]]
+            # Strip any existing trace comments before splitting (idempotency:
+            # the row already has a tag from a prior run — avoid double-counting).
+            cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
             descriptive = ' '.join(cells[1:]) if len(cells) >= 2 else s
             src_tag, theme_key = _classify_row(descriptive)
             link_suffix = _resolve_link(section_key, theme_key, descriptive)
@@ -22473,6 +22538,13 @@ Write EXACTLY these two subsections for {org_name} ({domain} / {fw_short}) — n
 @login_required
 def api_generate_strategy():
     """Generate strategy via AI."""
+    _rl_ok, _rl_retry = check_generation_rate_limit('strategy')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many generation requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
     import sys
     print("=" * 60, flush=True)
     print("STRATEGY GENERATION STARTED", flush=True)
@@ -29054,9 +29126,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                         # pass, which this loop catches.
                         _pill_matches = list(
                             _PILLAR_HEADING_RE_GLOBAL.finditer(_pill_text))
-                        if not _pill_matches:
-                            _pill_matches = list(_ts_re.finditer(
-                                r'^###\s+[^\n]+$', _pill_text, _ts_re.MULTILINE))
+                        _pill_all_h3 = list(_ts_re.finditer(
+                            r'^###[^#\n][^\n]*$', _pill_text, _ts_re.MULTILINE))
+                        if len(_pill_all_h3) > len(_pill_matches):
+                            _pill_matches = _pill_all_h3
                         _per_pillar_init_counts = []
                         _pillars_missing_initiative = []
                         for _i, _m in enumerate(_pill_matches):
@@ -32587,6 +32660,14 @@ def api_generate_pdf_async():
     Avoids Render's 30-second inactivity proxy timeout."""
     import uuid, threading, tempfile
 
+    _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many export requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
+
     try:
         data = request.get_json(force=True) or {}
     except Exception:
@@ -34019,6 +34100,13 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
 @login_required
 def api_generate_docx():
     """Generate Word document from content."""
+    _rl_ok, _rl_retry = check_generation_rate_limit('docx_export')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many export requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
     from io import BytesIO
     import re
 
@@ -34118,6 +34206,13 @@ def api_generate_docx():
 @login_required
 def api_generate_pdf():
     """Generate PDF document from content with Arabic support."""
+    _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many export requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
     from io import BytesIO
     import os
     import glob
@@ -36153,6 +36248,13 @@ def set_language(lang):
 @login_required
 def api_generate_excel():
     """Generate Excel file from data."""
+    _rl_ok, _rl_retry = check_generation_rate_limit('excel_export')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many export requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -40274,6 +40376,15 @@ def _build_audit_prompt(data, user_id):
 def api_generate_audit_async():
     """Start async audit generation. Reads file uploads synchronously, then spawns worker."""
     import uuid as _uuid_aa
+
+    _rl_ok, _rl_retry = check_generation_rate_limit('audit')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many generation requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
+
     domain      = request.form.get('domain', 'Cyber Security')
     framework   = request.form.get('framework', 'NCA ECC')
     lang        = request.form.get('language', 'en')
@@ -40571,6 +40682,14 @@ def api_generate_risk_async():
     import uuid as _uuid_ra
     data   = request.json or {}
     domain = data.get('domain', 'Cyber Security')
+
+    _rl_ok, _rl_retry = check_generation_rate_limit('risk')
+    if not _rl_ok:
+        return jsonify({
+            'success': False,
+            'error': 'Too many generation requests. Please wait a moment and try again.',
+            'retry_after': _rl_retry,
+        }), 429
 
     can_gen, used, limit = check_usage_limit(session['user_id'], 'risks', domain)
     if not can_gen:

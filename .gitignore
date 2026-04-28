@@ -14,6 +14,9 @@ build/
 venv/
 ENV/
 
+# Secrets
+.secret_key
+
 # Database
 *.db
 *.sqlite
@@ -30,3 +33,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Upload directories (user content — not source)
+static/avatars/
+static/logos/

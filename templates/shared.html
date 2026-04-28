@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% if error %}{{ txt.document_not_found }}{% elif requires_otp %}{{ txt.otp_required }} - Mizan{% else %}{{ document.title }} - Mizan GRC{% endif %}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -176,6 +177,25 @@
     
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
+        // ── CSRF: inject X-CSRFToken header into all POST fetch() calls ──────
+        (function() {
+            var _csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            var _csrfToken = _csrfMeta ? _csrfMeta.getAttribute('content') : '';
+            if (!_csrfToken) return;
+            var _origFetch = window.fetch;
+            window.fetch = function(url, opts) {
+                opts = opts || {};
+                if (opts.method && opts.method.toUpperCase() === 'POST') {
+                    if (opts.headers instanceof Headers) {
+                        if (!opts.headers.has('X-CSRFToken')) opts.headers.set('X-CSRFToken', _csrfToken);
+                    } else {
+                        opts.headers = Object.assign({'X-CSRFToken': _csrfToken}, opts.headers || {});
+                    }
+                }
+                return _origFetch(url, opts);
+            };
+        })();
+
         const shareId = '{{ share_id }}';
         const isRtl = {{ 'true' if is_rtl else 'false' }};
         let rawContent = '';
