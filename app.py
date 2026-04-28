@@ -8583,7 +8583,9 @@ def _sections_to_json(sections, domain='', lang='en', title=''):
     def parse_table(lines, section_text=''):
         headers, rows = [], []
         for ln in lines:
-            ln = ln.strip()
+            # Strip trace comment tags before splitting by | so embedded |chars
+            # in trace tags don't create phantom cells or wrong column counts.
+            ln = re.sub(r'<!--\s*trace:\s*[^>]*?-->', '', ln, flags=re.IGNORECASE).strip()
             if not ln.startswith('|'):
                 continue
             if re.match(r'^\|[\s\-:|]+\|$', ln):
@@ -13632,7 +13634,10 @@ def _ts_table_rows(text, header_re):
     out = []
     in_tbl = False
     for ln in text.split('\n'):
-        s = ln.strip()
+        # Strip trace comments BEFORE splitting by | so embedded |chars in
+        # trace tags (e.g. <!-- trace:section=obj|src=diag --> ) don't
+        # corrupt the cell count and cause row validation failures.
+        s = _TRACE_TAG_RE.sub('', ln).strip()
         if not in_tbl:
             if header_re.match(s):
                 in_tbl = True
@@ -14793,7 +14798,7 @@ def _count_substantive_pillars(pillars_text):
             continue
         has_tbl_row = False
         for ln in body.splitlines():
-            s = ln.strip()
+            s = _TRACE_TAG_RE.sub('', ln).strip()
             if (s.startswith('|') and s.endswith('|') and
                     not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
                 cells = [c.strip() for c in s.split('|')[1:-1]]
@@ -14833,7 +14838,7 @@ def _count_substantive_roadmap_rows(roadmap_text):
     n = 0
     in_tbl = False
     for ln in roadmap_text.split('\n'):
-        s = ln.strip()
+        s = _TRACE_TAG_RE.sub('', ln).strip()
         if not (s.startswith('|') and s.endswith('|')):
             in_tbl = False
             continue
@@ -19486,6 +19491,15 @@ _TRACE_TAG_RE = _ts_re.compile(
 )
 
 
+def _strip_trace_comments(text):
+    """Remove all HTML trace comment tags from text.
+    Must be applied before any display, export, or validation path so that
+    trace tags (which contain | characters) do not corrupt cell-splitting
+    in pipe-table parsers or leak into user-facing output.
+    """
+    return _TRACE_TAG_RE.sub('', text or '')
+
+
 def make_trace_tag(section, src, key, link=None):
     """Return a single-line HTML comment tag, safe for pipe-table rows."""
     parts = [f'section={section}', f'src={src}', f'key={key}']
@@ -19495,11 +19509,14 @@ def make_trace_tag(section, src, key, link=None):
 
 
 def parse_trace_tag(tag_text):
-    """Parse `trace:k=v|k=v|...` body into dict. Returns None on malformed."""
+    """Parse `trace:k=v|k=v|...` or `trace:k=v;k=v;...` body into dict.
+    Supports both `|` and `;` as key=value pair separators for backward
+    compatibility. Returns None on malformed input.
+    """
     if not tag_text:
         return None
     out = {}
-    for pair in tag_text.split('|'):
+    for pair in _ts_re.split(r'[|;]', tag_text):
         pair = pair.strip()
         if '=' not in pair:
             continue
@@ -32975,6 +32992,11 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     # Preprocessing (same as before)
     import re as re_docx
 
+    # Strip trace comment tags early so they never appear in exported output.
+    # Trace tags contain | characters that would break pipe-table cell splitting
+    # if not removed before any markdown/table parsing.
+    content = re_docx.sub(r'<!--\s*trace:\s*[^>]*?-->', '', content or '', flags=re_docx.IGNORECASE)
+
     is_arabic = lang == 'ar'
     doc = Document()
     
@@ -33163,7 +33185,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         expected_cols = 0
         
         while idx < len(lines):
-            ln = lines[idx].strip()
+            ln = re_docx.sub(r'<!--\s*trace:\s*[^>]*?-->', '', lines[idx], flags=re_docx.IGNORECASE).strip()
             if ln.startswith('|') and ln.endswith('|'):
                 if '---' in ln or ':-' in ln or '-:' in ln:
                     idx += 1
@@ -34864,10 +34886,19 @@ def api_generate_pdf():
             c.setFillColor(_W)
             # PASS-14: Arabic bold for Arabic classification banner.
             c.setFont(arabic_font_bold if is_arabic else 'Helvetica-Bold', 7.5)
-            c.drawCentredString(pw / 2, 13,
-                'CONFIDENTIAL  \u2014  FOR INTERNAL USE ONLY'
-                if not is_arabic else
-                '\u0633\u0631\u064a  \u2014  \u0644\u0644\u0627\u0633\u062a\u062e\u062f\u0627\u0645 \u0627\u0644\u062f\u0627\u062e\u0644\u064a \u0641\u0642\u0637')
+            # Apply reshape+bidi for Arabic so the text is not visually reversed.
+            # Without this, the raw Unicode string renders in LTR order, producing
+            # "طقف يلخادلا مادختسالل — يرس" instead of "سري — للاستخدام الداخلي فقط".
+            _banner_text = 'CONFIDENTIAL  \u2014  FOR INTERNAL USE ONLY'
+            if is_arabic:
+                _ar_banner = '\u0633\u0631\u064a  \u2014  \u0644\u0644\u0627\u0633\u062a\u062e\u062f\u0627\u0645 \u0627\u0644\u062f\u0627\u062e\u0644\u064a \u0641\u0642\u0637'
+                try:
+                    import arabic_reshaper as _ar_bn
+                    from bidi.algorithm import get_display as _gd_bn
+                    _banner_text = _gd_bn(_ar_bn.reshape(_ar_banner))
+                except Exception:
+                    _banner_text = _ar_banner
+            c.drawCentredString(pw / 2, 13, _banner_text)
 
             c.restoreState()
 
@@ -34989,6 +35020,9 @@ def api_generate_pdf():
         # Parse markdown content
         # CRITICAL: Run same cleanup as DOCX path
         import re as re_pdf
+        # Strip trace comment tags before any further processing so they never
+        # appear in the exported PDF and so embedded | chars don't break tables.
+        content = re_pdf.sub(r'<!--\s*trace:\s*[^>]*?-->', '', content or '', flags=re_pdf.IGNORECASE)
         try:
             content = ensure_markdown_formatting(content)
         except Exception as fmt_err:

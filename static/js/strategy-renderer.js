@@ -563,7 +563,11 @@
 
     // Check for insufficient row count (< 2 real rows for major tables)
     var realRows = rows.filter(function(r) { return !isPlaceholderRow(r); });
-    if (headers.length >= 4 && realRows.length < 2 && rows.length > 0) {
+    // Pillar initiative tables legitimately contain one initiative per pillar —
+    // exclude them from the "only 1 substantive row" warning so individual
+    // pillar blocks don't trigger false quality alerts.
+    if (headers.length >= 4 && realRows.length < 2 && rows.length > 0 &&
+        schema !== 'pillar-initiatives') {
       qualityIssues.push(isRtl ? 'الجدول يحتوي على صف واحد فقط' : 'Table has only 1 substantive row');
     }
 
