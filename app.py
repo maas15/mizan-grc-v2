@@ -18201,7 +18201,7 @@ def _final_strategy_audit(sections, lang, doc_subtype=None):
     pillars_text = sections.get('pillars', '') or ''
     _pill_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(pillars_text))
     _pill_all_h3 = list(_ts_re.finditer(
-        r'^###\s+[^\n]+$', pillars_text, _ts_re.MULTILINE))
+        r'^###[^#\n][^\n]*$', pillars_text, _ts_re.MULTILINE))
     # Use the wider set whenever it finds MORE headings than the canonical
     # pattern. This catches non-canonical AI pillar titles that the canonical
     # regex misses but that carry legitimate initiative tables. Previously
@@ -18365,7 +18365,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             _p_matches_b = list(
                 _PILLAR_HEADING_RE_GLOBAL.finditer(_pillars_text_before))
             _p_all_h3_b = list(_ts_re.finditer(
-                r'^###\s+[^\n]+$', _pillars_text_before,
+                r'^###[^#\n][^\n]*$', _pillars_text_before,
                 _ts_re.MULTILINE))
             if len(_p_all_h3_b) > len(_p_matches_b):
                 _p_matches_b = _p_all_h3_b
@@ -18400,7 +18400,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 _p_matches_a = list(_PILLAR_HEADING_RE_GLOBAL.finditer(
                     _pillars_text_after))
                 _p_all_h3_a = list(_ts_re.finditer(
-                    r'^###\s+[^\n]+$', _pillars_text_after,
+                    r'^###[^#\n][^\n]*$', _pillars_text_after,
                     _ts_re.MULTILINE))
                 if len(_p_all_h3_a) > len(_p_matches_a):
                     _p_matches_a = _p_all_h3_a
@@ -29085,7 +29085,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                         _pill_matches = list(
                             _PILLAR_HEADING_RE_GLOBAL.finditer(_pill_text))
                         _pill_all_h3 = list(_ts_re.finditer(
-                            r'^###\s+[^\n]+$', _pill_text, _ts_re.MULTILINE))
+                            r'^###[^#\n][^\n]*$', _pill_text, _ts_re.MULTILINE))
                         if len(_pill_all_h3) > len(_pill_matches):
                             _pill_matches = _pill_all_h3
                         _per_pillar_init_counts = []
