@@ -13616,6 +13616,24 @@ _TS_PLACEHOLDER_TOKENS = (
     'placeholder', '[insert', 'add here',
 )
 
+# Matches <!-- trace:... --> annotation comments inserted by apply_traceability_tags.
+# Defined early so _strip_trace_comments is available to all table-row parsers below.
+_TS_TRACE_COMMENT_RE = _ts_re.compile(
+    r'<!--\s*trace:[^>]*?-->',
+    _ts_re.IGNORECASE,
+)
+
+
+def _strip_trace_comments(text):
+    """Remove <!-- trace:... --> comments from a Markdown table row before
+    splitting on '|'.  Trace comments may contain '|' as a field delimiter
+    (legacy) or ';' (current), and either form creates phantom table columns
+    when the row is split naively.  Stripping them first keeps cell counts
+    correct without weakening any content validation.
+    """
+    return _TS_TRACE_COMMENT_RE.sub('', text or '')
+
+
 def _ts_is_placeholder(cell):
     """True when a table cell value is a placeholder."""
     if cell is None:
@@ -13652,7 +13670,9 @@ def _ts_table_rows(text, header_re):
             continue
         if _ts_re.match(r'^\|[\s\-:|]+\|$', s):
             continue  # separator
-        cells = [c.strip() for c in s.split('|')[1:-1]]
+        # Strip trace comments before splitting so pipe characters inside
+        # <!-- trace:... --> do not create phantom table columns.
+        cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
         if cells:
             out.append(cells)
     return out
@@ -13672,7 +13692,9 @@ def count_valid_objective_rows(vision_text):
     tf_re = _ts_re.compile(
         r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
         r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d+',
+        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
     )
     valid = 0
@@ -14797,7 +14819,7 @@ def _count_substantive_pillars(pillars_text):
             s = ln.strip()
             if (s.startswith('|') and s.endswith('|') and
                     not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
-                cells = [c.strip() for c in s.split('|')[1:-1]]
+                cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
                 if len(cells) >= 3 and sum(
                     1 for c in cells[1:] if not _ts_is_placeholder(c)
                 ) >= 2:
@@ -14840,7 +14862,8 @@ def _count_substantive_roadmap_rows(roadmap_text):
             continue
         if _ts_re.match(r'^\|[\s\-:|]+\|$', s):
             continue
-        cells = [c.strip() for c in s.split('|')[1:-1]]
+        # Strip trace comments so pipe chars inside them don't create phantom columns.
+        cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
         header_hits = sum(1 for c in cells if header_tokens.search(c or ''))
         if header_hits >= 2 and not in_tbl:
             in_tbl = True
@@ -15408,8 +15431,11 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         _ts_re.IGNORECASE | _ts_re.MULTILINE,
     )
     tf_re = _ts_re.compile(
-        r'\d+\s*(?:months?|years?|weeks?|أشهر|شهر|شهراً|سنوات|سنة)'
-        r'|(?:within|خلال)\s+\d+',
+        r'\d+\s*(?:months?|years?|weeks?|days?|month|year|week|day'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
+        r'|(?:within|خلال)\s+\d+'
+        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
+        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
         _ts_re.IGNORECASE,
     )
     existing_rows = []  # list of cell-lists (without #)
@@ -19462,19 +19488,31 @@ _TRACE_TAG_RE = _ts_re.compile(
 
 
 def make_trace_tag(section, src, key, link=None):
-    """Return a single-line HTML comment tag, safe for pipe-table rows."""
+    """Return a single-line HTML comment tag safe for Markdown pipe-table rows.
+
+    Fields are joined with ';' so that the comment contains no '|' characters
+    and cannot create phantom table columns when a row is split on '|'.
+    Legacy tags that used '|' as a separator are still readable by
+    parse_trace_tag(), which accepts both delimiters.
+    """
     parts = [f'section={section}', f'src={src}', f'key={key}']
     if link:
         parts.append(f'link={link}')
-    return f'<!-- trace:{"|".join(parts)} -->'
+    return f'<!-- trace:{";".join(parts)} -->'
 
 
 def parse_trace_tag(tag_text):
-    """Parse `trace:k=v|k=v|...` body into dict. Returns None on malformed."""
+    """Parse ``trace:k=v;k=v;...`` body into dict.
+
+    Accepts both the current semicolon-delimited format and the legacy
+    pipe-delimited format for backward compatibility.  Returns None on
+    malformed input (missing 'section' or 'src' field).
+    """
     if not tag_text:
         return None
     out = {}
-    for pair in tag_text.split('|'):
+    # Split on either ';' (new) or '|' (legacy) to support both formats.
+    for pair in _ts_re.split(r'[;|]', tag_text):
         pair = pair.strip()
         if '=' not in pair:
             continue
@@ -19575,7 +19613,7 @@ def _build_section_row_index(sections):
                 continue
             # Data row. Use row counter since `#` col may not match display.
             row_n += 1
-            cells = [c.strip() for c in s.split('|')[1:-1]]
+            cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
             descriptive = ' '.join(cells[1:]) if len(cells) >= 2 else s
             index[name].append((row_n, descriptive.lower()))
     return index
@@ -19756,7 +19794,9 @@ def apply_traceability_tags(sections, diag_model):
                 continue
 
             row_counter += 1
-            cells = [c.strip() for c in s.split('|')[1:-1]]
+            # Strip any existing trace comments before splitting (idempotency:
+            # the row already has a tag from a prior run — avoid double-counting).
+            cells = [c.strip() for c in _strip_trace_comments(s).split('|')[1:-1]]
             descriptive = ' '.join(cells[1:]) if len(cells) >= 2 else s
             src_tag, theme_key = _classify_row(descriptive)
             link_suffix = _resolve_link(section_key, theme_key, descriptive)
