@@ -13618,8 +13618,10 @@ _TS_PLACEHOLDER_TOKENS = (
 
 # Matches <!-- trace:... --> annotation comments inserted by apply_traceability_tags.
 # Defined early so _strip_trace_comments is available to all table-row parsers below.
+# Pattern uses the canonical ReDoS-safe HTML-comment form: [^-]|-(?!->) instead
+# of [^>]*? to avoid polynomial backtracking on malformed/unclosed comments.
 _TS_TRACE_COMMENT_RE = _ts_re.compile(
-    r'<!--\s*trace:[^>]*?-->',
+    r'<!--\s*trace:(?:[^-]|-(?!->))*-->',
     _ts_re.IGNORECASE,
 )
 
@@ -19482,7 +19484,7 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
 # ────────────────────────────────────────────────────────────────────────────
 
 _TRACE_TAG_RE = _ts_re.compile(
-    r'<!--\s*trace:\s*([^-][^>]*?)\s*-->',
+    r'<!--\s*trace:\s*((?:[^-]|-(?!->))+?)\s*-->',
     _ts_re.IGNORECASE,
 )
 
