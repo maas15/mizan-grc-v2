@@ -22676,9 +22676,10 @@ def repair_confidence_risk_section(
                'risk_rows_added': 0, 'score_added': False}
 
     # ── Step 0: Ensure canonical top-level heading and confidence score ──
+    # Bounded repetitions prevent ReDoS on adversarial whitespace runs.
     score_re = _ts_re.compile(
-        r'(?:\*\*)?(?:Confidence\s+Score|درجة\s+الثقة)(?:\*\*)?\s*:?\s*'
-        r'(?:\*\*)?\s*\d{1,3}\s*%',
+        r'(?:\*\*)?(?:Confidence[ \t]{0,10}Score|درجة[ \t]{0,10}الثقة)(?:\*\*)?'
+        r'[ \t]{0,10}:?[ \t]{0,10}(?:\*\*)?[ \t]{0,10}\d{1,3}[ \t]{0,5}%',
         _ts_re.IGNORECASE,
     )
     if not conf.strip():

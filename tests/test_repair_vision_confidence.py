@@ -27,6 +27,8 @@ Run:
 import sys
 import os
 import re
+import importlib.util
+import py_compile
 import unittest
 
 # ---------------------------------------------------------------------------
@@ -46,7 +48,6 @@ _USING_REAL_APP = False
 _APP = None
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    import importlib.util
     spec = importlib.util.spec_from_file_location(
         'app', os.path.join(os.path.dirname(__file__), '..', 'app.py')
     )
@@ -561,7 +562,6 @@ class TestPyCompile(unittest.TestCase):
     """python -m py_compile app.py must pass."""
 
     def test_app_py_compiles(self):
-        import py_compile
         app_path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
         try:
             py_compile.compile(app_path, doraise=True)
