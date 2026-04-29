@@ -15190,7 +15190,7 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
         _pill_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(_pillars_text))
         if not _pill_matches:
             _pill_matches = list(_ts_re.finditer(
-                r'^###\s+[^\n]+$', _pillars_text, _ts_re.MULTILINE,
+                r'^###\s+[^\n]+', _pillars_text, _ts_re.MULTILINE,
             ))
         _thin_pillars = []
         for _idx, _pm in enumerate(_pill_matches):
@@ -21859,7 +21859,7 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
         pillar_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(pillars_text))
         if not pillar_matches:
             pillar_matches = list(_ts_re.finditer(
-                r'^###\s+[^\n]+$', pillars_text, _ts_re.MULTILINE,
+                r'^###\s+[^\n]+', pillars_text, _ts_re.MULTILINE,
             ))
         if pillar_matches:
             parts = []

@@ -29,7 +29,7 @@ import unittest
 # ---------------------------------------------------------------------------
 os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key')
-os.environ.setdefault('DATABASE_URL', 'sqlite:////tmp/test_depth.db')
+os.environ.setdefault('DATABASE_URL', 'sqlite:///tmp/test_depth.db')
 os.environ.setdefault('OPENAI_API_KEY', 'dummy')
 os.environ.setdefault('ANTHROPIC_API_KEY', 'dummy')
 os.environ.setdefault('GOOGLE_API_KEY', 'dummy')
@@ -234,12 +234,18 @@ class TestPillarInitiativeDepth(unittest.TestCase):
             '| 2 | سياسات وإجراءات | إعداد السياسات | حزمة السياسات |\n'
             '| 3 | سجل الضوابط | توثيق الضوابط | سجل الامتثال |',
         )
-        before = _count_initiative_rows(_parse_pillars(sections['pillars'])[0][1])
+        parsed_before = _parse_pillars(sections['pillars'])
+        self.assertGreater(len(parsed_before), 0,
+                           'Expected at least one pillar in test data')
+        before = _count_initiative_rows(parsed_before[0][1])
         _APP.enforce_technical_strategy_depth(
             sections, lang='ar',
             domain='Cyber Security', fw_short='NCA ECC',
         )
-        after = _count_initiative_rows(_parse_pillars(sections['pillars'])[0][1])
+        parsed_after = _parse_pillars(sections['pillars'])
+        self.assertGreater(len(parsed_after), 0,
+                           'Expected at least one pillar after enrichment')
+        after = _count_initiative_rows(parsed_after[0][1])
         self.assertEqual(before, after,
                          f'Already-rich pillar should not change: {before} → {after}')
 
