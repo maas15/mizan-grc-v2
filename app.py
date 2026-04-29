@@ -22648,9 +22648,12 @@ def validate_section_context_alignment(sections, lang):
             # but the HEADING says gap analysis, that's fine (already repaired above).
             # But if gaps section starts with environment context paragraphs BEFORE
             # the gap table, log it.
-            gap_table_re = _ts_re.compile(
-                r'^\|[^\n]*(?:الفجوة|Gap)[^\n]*\|', _ts_re.MULTILINE)
-            if gaps_text.strip() and not gap_table_re.search(gaps_text):
+            # Check each line individually to avoid ReDoS-prone regex alternation.
+            has_gap_table_row = any(
+                ln.startswith('|') and ('الفجوة' in ln or 'Gap' in ln)
+                for ln in gaps_text.splitlines()
+            )
+            if gaps_text.strip() and not has_gap_table_row:
                 # gaps section has no gap table at all — check if it's really env content
                 env_keywords = ['التهديدات', 'البيئة التنظيمية', 'السياق التنظيمي',
                                  'الامتثال التنظيمي', 'هيئة الاتصالات']
