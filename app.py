@@ -14546,7 +14546,7 @@ def build_diagnostic_model(data, lang='en', diagnostic_gaps=None,
     if isinstance(challenges, list):
         challenges = '; '.join(str(c) for c in challenges if c)
     challenges = str(challenges).strip()
-    generation_mode = (data.get('generation_mode') or 'drafting').strip()
+    generation_mode = (data.get('generation_mode') or 'consulting').strip()
     domain = (data.get('domain') or '').strip()
 
     # Derived flags — the prompt explicitly calls out the "no defined
@@ -15007,12 +15007,18 @@ def _check_environment_topic_coverage(env_text):
     }
 
 
-def validate_environment_richness(sections, lang):
+def validate_environment_richness(sections, lang, generation_mode='consulting'):
     """Environment / Threat Context must be a real standalone section with
     narrative paragraphs and either a structured table or a structured
     bullet block, AND must cover all three required categories
     (regulatory + threat + business). Prompt clause A.3 + B3.1.
+
+    In consulting/assurance mode the environment paragraph count bar is
+    raised to 3 (one per category — regulatory, threat, business — each
+    substantive enough for board-level consumption).
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_env_paras = max(_RICHNESS_MIN_ENV_PARAS, 3) if _is_consulting_grade else _RICHNESS_MIN_ENV_PARAS
     defects = []
     env = sections.get('environment', '') or ''
     if not env.strip():
@@ -15023,10 +15029,10 @@ def validate_environment_richness(sections, lang):
     has_tbl = _env_has_structured_table(env)
     n_bullets = _count_env_bullets(env)
     has_structured_block = has_tbl or n_bullets >= _RICHNESS_MIN_ENV_BULLETS
-    if n_paras < _RICHNESS_MIN_ENV_PARAS:
+    if n_paras < _min_env_paras:
         defects.append((
             'environment_paragraphs_insufficient',
-            f'{n_paras}/{_RICHNESS_MIN_ENV_PARAS} substantive paragraphs',
+            f'{n_paras}/{_min_env_paras} substantive paragraphs',
         ))
     if not has_structured_block:
         defects.append((
@@ -15045,10 +15051,13 @@ def validate_environment_richness(sections, lang):
     return defects
 
 
-def validate_roadmap_richness(sections, lang):
+def validate_roadmap_richness(sections, lang, generation_mode='consulting'):
     """Roadmap must be a real execution roadmap with ≥ 4 substantive rows
-    across any schema. Prompt clause A.5.
+    across any schema. In consulting/assurance mode the bar is raised to
+    ≥ 8 rows (covering 3 phases × ≥ 2–3 activities each). Prompt clause A.5.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_roadmap = max(_RICHNESS_MIN_ROADMAP_ROWS, 8) if _is_consulting_grade else _RICHNESS_MIN_ROADMAP_ROWS
     defects = []
     roadmap = sections.get('roadmap', '') or ''
     if not roadmap.strip():
@@ -15056,20 +15065,24 @@ def validate_roadmap_richness(sections, lang):
                         'Roadmap section is empty'))
         return defects
     n = _count_substantive_roadmap_rows(roadmap)
-    if n < _RICHNESS_MIN_ROADMAP_ROWS:
+    if n < _min_roadmap:
         defects.append((
             'roadmap_rows_insufficient_for_richness',
-            f'{n}/{_RICHNESS_MIN_ROADMAP_ROWS} substantive roadmap activities',
+            f'{n}/{_min_roadmap} substantive roadmap activities',
         ))
     return defects
 
 
-def validate_kpi_richness(sections, lang):
+def validate_kpi_richness(sections, lang, generation_mode='consulting'):
     """KPI section must have ≥ 4 substantive KPI rows AND 1:1 guide
-    coverage. Prompt clause A.6 / B3.3 — "each KPI must include: name,
+    coverage. In consulting/assurance mode the bar is raised to ≥ 6 KPIs
+    (Big-4 scorecards carry 8–12; 6 is the floor for a single-domain
+    strategy). Prompt clause A.6 / B3.3 — "each KPI must include: name,
     target, formula, justification, timeframe". Uses the STRICT counter
     that requires all 5 data cells non-placeholder.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_kpis = max(_RICHNESS_MIN_KPI_ROWS, 6) if _is_consulting_grade else _RICHNESS_MIN_KPI_ROWS
     defects = []
     kpis = sections.get('kpis', '') or ''
     if not kpis.strip():
@@ -15078,10 +15091,10 @@ def validate_kpi_richness(sections, lang):
         return defects
     n_kpis   = count_substantive_kpis_strict(kpis)
     n_guides = count_kpi_guides(kpis)
-    if n_kpis < _RICHNESS_MIN_KPI_ROWS:
+    if n_kpis < _min_kpis:
         defects.append((
             'kpi_rows_insufficient_for_richness',
-            f'{n_kpis}/{_RICHNESS_MIN_KPI_ROWS} strictly-substantive KPI rows '
+            f'{n_kpis}/{_min_kpis} strictly-substantive KPI rows '
             f'(each must have description, target, formula, justification, timeframe)',
         ))
     if n_kpis > 0 and n_guides < n_kpis:
@@ -15092,7 +15105,7 @@ def validate_kpi_richness(sections, lang):
     return defects
 
 
-def validate_confidence_richness(sections, lang):
+def validate_confidence_richness(sections, lang, generation_mode='consulting'):
     """Confidence section must have ≥ 4 critical success factors AND ≥ 4
     risk rows with non-placeholder mitigation. Per prompt clause B3.4
     the richness contract ALSO requires:
@@ -15100,7 +15113,14 @@ def validate_confidence_richness(sections, lang):
         "درجة الثقة: 75%")
       - score justification present (inline paragraph OR "Score
         Justification" / "مبررات التقييم" heading followed by prose)
+
+    Gap 7 — Consulting/assurance mode additionally requires a maturity
+    trajectory statement: the current maturity level (numeric or label)
+    AND a 12–24 month target projection must appear in the section.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_csf  = max(_RICHNESS_MIN_CSF_ROWS, 5) if _is_consulting_grade else _RICHNESS_MIN_CSF_ROWS
+    _min_risk = max(_RICHNESS_MIN_RISK_ROWS, 5) if _is_consulting_grade else _RICHNESS_MIN_RISK_ROWS
     defects = []
     conf = sections.get('confidence', '') or ''
     if not conf.strip():
@@ -15142,26 +15162,65 @@ def validate_confidence_richness(sections, lang):
 
     n_csf = _count_csf_rows(conf)
     n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
+    if n_csf < _min_csf:
         defects.append((
             'confidence_csf_insufficient',
-            f'{n_csf}/{_RICHNESS_MIN_CSF_ROWS} critical success factors',
+            f'{n_csf}/{_min_csf} critical success factors',
         ))
-    if n_risks < _RICHNESS_MIN_RISK_ROWS:
+    if n_risks < _min_risk:
         defects.append((
             'confidence_risks_insufficient',
-            f'{n_risks}/{_RICHNESS_MIN_RISK_ROWS} risk rows with mitigation',
+            f'{n_risks}/{_min_risk} risk rows with mitigation',
         ))
+
+    # Gap 7: consulting/assurance mode — maturity trajectory check.
+    # Big-4 confidence sections always state current maturity level AND a
+    # 12–24 month target projection (e.g., "Level 1.8 → Level 3.2 within
+    # 18 months" or "initial → managed maturity within 24 months").
+    if _is_consulting_grade:
+        _maturity_current_re = _ts_re.compile(
+            r'(?:current\s+maturity|maturity\s+level|current\s+level'
+            r'|مستوى\s+النضج\s+الحالي|النضج\s+الحالي|المستوى\s+الحالي'
+            r'|initial|developing|defined|managed|optimized'
+            r'|ابتدائي|تطويري|محدد|مُدار|محسّن)',
+            _ts_re.IGNORECASE,
+        )
+        _maturity_target_re = _ts_re.compile(
+            r'(?:target\s+maturity|target\s+level|within\s+1[2-9]\s*months?'
+            r'|within\s+2[0-4]\s*months?|by\s+(?:month|year)'
+            r'|مستوى\s+النضج\s+المستهدف|المستوى\s+المستهدف'
+            r'|خلال\s+1[2-9]\s+شهر|خلال\s+2[0-4]\s+شهر)',
+            _ts_re.IGNORECASE,
+        )
+        has_current_maturity = bool(_maturity_current_re.search(conf))
+        has_target_maturity  = bool(_maturity_target_re.search(conf))
+        if not has_current_maturity:
+            defects.append((
+                'confidence_maturity_current_missing',
+                'Confidence section lacks a current-maturity-level statement '
+                '(required for consulting-grade deliverable)',
+            ))
+        if not has_target_maturity:
+            defects.append((
+                'confidence_maturity_trajectory_missing',
+                'Confidence section lacks a 12–24 month maturity target projection '
+                '(required for consulting-grade deliverable)',
+            ))
     return defects
 
 
-def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None):
+def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
+                                               generation_mode='consulting'):
     """Orchestrator for semantic richness of the final Technical Strategy
     payload. Runs per-section richness validators and aggregates defects.
 
     Does NOT run for board-level executive summaries — those have their
     own dedicated schema validator. Returns a list of (tag, detail)
     tuples. Empty list = clean.
+
+    generation_mode adjusts the richness bar:
+      consulting / assurance → higher minimums (Big-4 grade)
+      drafting               → base minimums
 
     Name preserved from prompt clause D even though the check is applied
     bilingually; Arabic is the primary risk surface, but the richness bar
@@ -15171,6 +15230,7 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
         return []
     defects = []
     is_ar = (lang == 'ar')
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
 
     # ── Canonical heading checks ─────────────────────────────────────────────
     if is_ar:
@@ -15323,18 +15383,21 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
                     'Risk register table has no mitigation plan column',
                 ))
 
-    # ── Higher SO-row bar (4 rather than the 3 used by structural check) ─────
+    # ── Higher SO-row bar (4 base; 6 for consulting/assurance) ──────────────
+    _min_so = _RICHNESS_MIN_SO_ROWS if not _is_consulting_grade else max(_RICHNESS_MIN_SO_ROWS, 6)
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
-    if n_so < _RICHNESS_MIN_SO_ROWS:
+    if n_so < _min_so:
         defects.append((
             'so_rows_insufficient_for_richness',
-            f'{n_so}/{_RICHNESS_MIN_SO_ROWS} valid SO rows',
+            f'{n_so}/{_min_so} valid SO rows',
         ))
+    # ── Pillar minimum: 3 base; 4 for consulting/assurance ───────────────────
+    _min_pillars = _RICHNESS_MIN_PILLARS if not _is_consulting_grade else max(_RICHNESS_MIN_PILLARS, 4)
     n_pill = _count_substantive_pillars(sections.get('pillars', '') or '')
-    if n_pill < _RICHNESS_MIN_PILLARS:
+    if n_pill < _min_pillars:
         defects.append((
             'pillars_insufficient_for_richness',
-            f'{n_pill}/{_RICHNESS_MIN_PILLARS} substantive pillars',
+            f'{n_pill}/{_min_pillars} substantive pillars',
         ))
     # Check that every substantive pillar has ≥ 3 initiative rows
     # (consulting-grade depth requirement).
@@ -15361,16 +15424,55 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
                 f'pillars with <{_RICHNESS_MIN_PILLAR_INITIATIVES} initiatives: '
                 + ', '.join(_thin_pillars),
             ))
+        # Gap 4: consulting-mode pillar narrative check.
+        # Every pillar must have ≥ 1 non-table paragraph of ≥ 100 chars
+        # BEFORE its initiative table — the consultative narrative that
+        # explains strategic logic, root causes, and framework linkage.
+        if _is_consulting_grade:
+            _narrative_missing = []
+            for _idx, _pm in enumerate(_pill_matches):
+                _pend = (_pill_matches[_idx + 1].start()
+                         if _idx + 1 < len(_pill_matches)
+                         else len(_pillars_text))
+                _pbody = _pillars_text[_pm.end():_pend]
+                # Collect text before the first pipe-table line
+                _pre_table_lines = []
+                for _ln in _pbody.splitlines():
+                    _s = _ln.strip()
+                    if _s.startswith('|') and _s.endswith('|'):
+                        break
+                    _pre_table_lines.append(_ln)
+                _pre_table_text = '\n'.join(_pre_table_lines)
+                _n_narrative = _count_substantive_paragraphs(
+                    _pre_table_text, min_chars=100)
+                if _n_narrative == 0:
+                    _pname = _ts_re.sub(
+                        r'^###\s+', '',
+                        _pillars_text[_pm.start():_pm.end()],
+                    ).strip()
+                    _narrative_missing.append(f'"{_pname}"')
+            if _narrative_missing:
+                defects.append((
+                    'pillar_narrative_missing',
+                    'pillars lacking a consultative narrative paragraph (≥100 chars) '
+                    'before the initiative table: ' + ', '.join(_narrative_missing),
+                ))
     n_gap = count_substantive_gaps(sections.get('gaps', '') or '')
-    if n_gap < _RICHNESS_MIN_GAP_ROWS:
+    # Gap rows: 2 base; 5 for consulting/assurance (Big 4 gap analyses have ≥5)
+    _min_gaps = _RICHNESS_MIN_GAP_ROWS if not _is_consulting_grade else max(_RICHNESS_MIN_GAP_ROWS, 5)
+    if n_gap < _min_gaps:
         defects.append((
             'gap_rows_insufficient_for_richness',
-            f'{n_gap}/{_RICHNESS_MIN_GAP_ROWS} substantive gap rows',
+            f'{n_gap}/{_min_gaps} substantive gap rows',
         ))
-    defects.extend(validate_environment_richness(sections, lang))
-    defects.extend(validate_roadmap_richness(sections, lang))
-    defects.extend(validate_kpi_richness(sections, lang))
-    defects.extend(validate_confidence_richness(sections, lang))
+    defects.extend(validate_environment_richness(sections, lang,
+                                                  generation_mode=generation_mode))
+    defects.extend(validate_roadmap_richness(sections, lang,
+                                              generation_mode=generation_mode))
+    defects.extend(validate_kpi_richness(sections, lang,
+                                          generation_mode=generation_mode))
+    defects.extend(validate_confidence_richness(sections, lang,
+                                                 generation_mode=generation_mode))
     return defects
 
 
@@ -15569,6 +15671,42 @@ def synthesize_environment_context(sections, lang, domain='Cyber Security',
     summary['categories_covered'] = ['regulatory', 'threat', 'business']
     summary['generation_mode'] = generation_mode
     summary['maturity'] = maturity
+
+    # Gap 3: consulting-mode — inject a 5-column sector-specific threat matrix
+    # (Actor → Attack Vector → Likelihood → Impact → Current Control) so the
+    # environment section matches Big-4 threat-context deliverables. The matrix
+    # is only appended when the mode is consulting/assurance AND no existing
+    # threat matrix header is already present (idempotent).
+    _is_consulting_env = str(generation_mode).lower() in ('consulting', 'assurance')
+    _has_threat_matrix = (
+        'Threat Actor' in env or 'جهة التهديد' in env
+        or 'Attack Vector' in env or 'ناقل الهجوم' in env
+    )
+    if _is_consulting_env and not _has_threat_matrix:
+        if is_ar:
+            threat_matrix = (
+                "\n\n**مصفوفة التهديدات القطاعية:**\n\n"
+                "| جهة التهديد | ناقل الهجوم | الاحتمالية | التأثير | الضابط الحالي |\n"
+                "|-------------|------------|------------|---------|----------------|\n"
+                f"| مجموعات التهديد المتقدمة (APT) | التصيد الموجّه واستغلال الثغرات | عالية | حرج | {fw_short} — الكشف والاستجابة |\n"
+                f"| برامج الفدية المنظّمة | استغلال بيانات اعتماد مسرّبة | عالية | حرج | عزل الشبكة + النسخ الاحتياطي |\n"
+                f"| مخاطر سلسلة الإمداد الرقمية | اختراق طرف ثالث موثوق | متوسطة | عالٍ | إدارة مخاطر الموردين ({fw_short}) |\n"
+                f"| التهديد الداخلي (قصد أو إهمال) | سوء استخدام الصلاحيات المميزة | منخفضة–متوسطة | عالٍ | PAM + مراقبة السلوك |\n"
+                f"| الهجمات على البنية التحتية الحيوية | هجمات DDoS وحقن التهديدات | متوسطة | عالٍ | أنظمة مكافحة DDoS والتصفية |\n"
+            )
+        else:
+            threat_matrix = (
+                "\n\n**Sector Threat Matrix:**\n\n"
+                "| Threat Actor | Attack Vector | Likelihood | Impact | Current Control |\n"
+                "|--------------|---------------|------------|--------|-----------------|\n"
+                f"| Advanced Persistent Threat (APT) groups | Spear-phishing + zero-day exploitation | High | Critical | {fw_short} detection & response controls |\n"
+                f"| Organised ransomware affiliates | Credential theft via dark-web leaks | High | Critical | Network segmentation + backup recovery |\n"
+                f"| Digital supply-chain attackers | Trusted third-party compromise | Medium | High | Third-party risk management ({fw_short}) |\n"
+                f"| Insider threat (malicious or negligent) | Privileged access abuse | Low–Medium | High | PAM controls + behavioural monitoring |\n"
+                f"| Critical-infrastructure attackers | DDoS + OT/IT boundary exploitation | Medium | High | Anti-DDoS + network filtering |\n"
+            )
+        env = env.rstrip() + threat_matrix
+        summary['threat_matrix_added'] = True
 
     if not has_structured_block:
         if is_ar:
@@ -16077,130 +16215,252 @@ def synthesize_roadmap_depth(sections, lang, domain='Cyber Security',
     # If count already meets minimum AND no priority injection is needed,
     # short-circuit.
     _mode_lc = str(generation_mode).lower()
+    _is_consulting_roadmap = _mode_lc in ('consulting', 'assurance')
     needed_floor = _RICHNESS_MIN_ROADMAP_ROWS
     if _mode_lc == 'consulting':
-        needed_floor += 1
+        needed_floor += 2   # Gap 5: raise consulting floor (was +1)
     elif _mode_lc == 'assurance':
-        needed_floor += 2
+        needed_floor += 3   # assurance gets even more depth
     if (current >= needed_floor and not priority_slots
             and not diagnostic_gaps):
         return 0
 
-    # Priority-row bank — diagnostic-themed, mentioning org + domain + fw
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                f'رئيس {org_name}',
-                'الشهر 1 إلى الشهر 3',
-                (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
-                 f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
-            ),
-            'awareness': (
-                f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                'الموارد البشرية',
-                'الشهر 2 إلى الشهر 9',
-                'مسار تدريبي معتمد + سجل الاجتياز الدوري',
-            ),
-            'incident_response': (
-                f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                f'عمليات {domain}',
-                'الشهر 2 إلى الشهر 6',
-                (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
-                 f'لحوادث {domain}'),
-            ),
-            'staffing': (
-                f'بناء الكفاءات المتخصصة في {domain}',
-                'الموارد البشرية + التدريب',
-                'الشهر 3 إلى الشهر 12',
-                'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
-            ),
-            'suppliers': (
-                f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                f'إدارة {domain}',
-                'الشهر 4 إلى الشهر 10',
-                f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
-            ),
-            'compliance': (
-                f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                'الحوكمة والامتثال',
-                'الشهر 3 إلى الشهر 9',
-                'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
-            ),
-            'continuity': (
-                f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                f'إدارة {domain} وتقنية المعلومات',
-                'الشهر 4 إلى الشهر 12',
-                ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
-                 'مستودع نسخ احتياطي منتظم'),
-            ),
-            'monitoring': (
-                f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                f'عمليات {domain}',
-                'الشهر 2 إلى الشهر 8',
-                ('لوحات مراقبة حية + تغطية رصد كاملة + '
-                 'إجراءات استجابة مرتبطة'),
-            ),
-            'technology_gap': (
-                f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                f'تقنية المعلومات و{domain}',
-                'الشهر 1 إلى الشهر 9',
-                ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
-                 'مع أدلة التشغيل'),
-            ),
-        }
+    # Gap 5: consulting/assurance mode uses specific named roles (CISO, DPO,
+    # etc.) and quantified deliverables (≥ X% of Y classified, etc.) rather
+    # than generic "Team" owners and "Approved document" deliverables.
+    if _is_consulting_roadmap:
+        if is_ar:
+            priority_bank = {
+                'structural': (
+                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
+                    f'المدير التنفيذي / CISO',
+                    'الشهر 1 إلى الشهر 3',
+                    (f'ميثاق لجنة حوكمة معتمد + مصفوفة RACI كاملة لأدوار {domain} '
+                     f'+ تعيين CISO رسمياً — يغلق فجوة الهيكل البنيوي ({fw_short})'),
+                ),
+                'awareness': (
+                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
+                    'مسؤول الموارد البشرية + CISO',
+                    'الشهر 2 إلى الشهر 9',
+                    f'≥ 90% من الكوادر يجتازون التدريب + ≤ 5% معدل الوقوع بالتصيد',
+                ),
+                'incident_response': (
+                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
+                    'CISO + مسؤول SOC',
+                    'الشهر 2 إلى الشهر 6',
+                    (f'SOC عامل 24/7 (MTTD ≤ 60 دق) + SIEM منتج + '
+                     f'كتيب الاستجابة معتمد وفق {fw_short}'),
+                ),
+                'staffing': (
+                    f'بناء الكفاءات المتخصصة في {domain}',
+                    'مسؤول الموارد البشرية',
+                    'الشهر 3 إلى الشهر 12',
+                    '≥ 80% من الشواغر المتخصصة مشغولة + خطط تطوير مهني موثقة',
+                ),
+                'suppliers': (
+                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
+                    'مسؤول مخاطر الأطراف الثالثة (TPRM) / DPO',
+                    'الشهر 4 إلى الشهر 10',
+                    f'100% من الموردين الحرجين مُقيَّمون وفق {fw_short} + نماذج تعاقدية معتمدة',
+                ),
+                'compliance': (
+                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
+                    'مسؤول الحوكمة والمخاطر والامتثال (GRC)',
+                    'الشهر 3 إلى الشهر 9',
+                    '100% من الضوابط الحرجة موثقة بأدلة تدقيق + تقارير ربعية للإدارة العليا',
+                ),
+                'continuity': (
+                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
+                    'مسؤول الاستمرارية التشغيلية + مدير تقنية المعلومات',
+                    'الشهر 4 إلى الشهر 12',
+                    ('خطة BCP/DR معتمدة + ≥ 2 اختبار تعافٍ سنوي + '
+                     '100% تغطية الأصول الحيوية بنسخ احتياطية مُختبَرة'),
+                ),
+                'monitoring': (
+                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
+                    'CISO + مهندس المراقبة الأمنية',
+                    'الشهر 2 إلى الشهر 8',
+                    ('≥ 95% تغطية الأصول الحيوية بالرصد الآني + '
+                     f'لوحات مراقبة تشغيلية وفق {fw_short}'),
+                ),
+                'technology_gap': (
+                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
+                    'مدير تقنية المعلومات + CISO',
+                    'الشهر 1 إلى الشهر 9',
+                    ('SIEM/EDR/IAM/Backup منتجة ومدمجة + '
+                     f'أدلة تشغيل موثقة وفق {fw_short}'),
+                ),
+            }
+        else:
+            priority_bank = {
+                'structural': (
+                    f'Establish formal {domain} governance structure for {org_name}',
+                    'CEO / CISO', 'Months 1-3',
+                    (f'Approved governance committee charter + full RACI matrix '
+                     f'for {domain} roles + formal CISO appointment — '
+                     f'satisfies {fw_short} governance domain'),
+                ),
+                'awareness': (
+                    f'{domain} awareness & security training programme for {org_name} staff',
+                    'CISO / HR Director', 'Months 2-9',
+                    f'≥ 90% of staff pass annual training; ≤ 5% phishing simulation click-rate',
+                ),
+                'incident_response': (
+                    f'Establish SOC and {domain} detection/response capability',
+                    'CISO / SOC Manager', 'Months 2-6',
+                    (f'24/7 SOC operational (MTTD ≤ 60 min; MTTR ≤ 4 hrs) + '
+                     f'production SIEM + approved {fw_short}-compliant IR runbook'),
+                ),
+                'staffing': (
+                    f'Build {domain} specialist workforce at {org_name}',
+                    'HR Director', 'Months 3-12',
+                    f'≥ 80% of specialist {domain} roles filled + documented development plans',
+                ),
+                'suppliers': (
+                    f'Launch third-party risk management programme at {org_name}',
+                    'TPRM Lead / DPO', 'Months 4-10',
+                    f'100% of critical suppliers assessed per {fw_short} controls + approved contract templates',
+                ),
+                'compliance': (
+                    f'Build {fw_short} compliance-evidence system',
+                    'GRC Director', 'Months 3-9',
+                    f'100% of critical controls documented with audit evidence + quarterly executive reporting',
+                ),
+                'continuity': (
+                    f'Activate business continuity & DR framework at {org_name}',
+                    'COO / IT Director', 'Months 4-12',
+                    ('Approved BCP/DR plan + ≥ 2 recovery tests per year + '
+                     '100% of critical assets covered by tested backup procedures'),
+                ),
+                'monitoring': (
+                    f'Build continuous monitoring capability for {domain} assets',
+                    'CISO / Security Architect', 'Months 2-8',
+                    (f'≥ 95% of critical assets under real-time monitoring + '
+                     f'operational dashboards aligned to {fw_short}'),
+                ),
+                'technology_gap': (
+                    f'Acquire and deploy missing foundational {domain} technical capabilities',
+                    'CIO / CISO', 'Months 1-9',
+                    (f'SIEM/EDR/IAM/Backup production-ready + integrated + '
+                     f'documented per {fw_short} technical controls'),
+                ),
+            }
     else:
-        priority_bank = {
-            'structural': (
-                f'Establish formal {domain} governance structure for {org_name}',
-                f'{org_name} CEO', 'Months 1-3',
-                (f'Approved committee charter + org structure + RACI '
-                 f'matrix — closes structural gap'),
-            ),
-            'awareness': (
-                f'{domain} awareness & training programme for {org_name} staff',
-                'HR', 'Months 2-9',
-                'Approved training curriculum + periodic pass-rate records',
-            ),
-            'incident_response': (
-                f'Establish SOC and {domain} detection/response capability',
-                f'{domain} Operations', 'Months 2-6',
-                f'24/7 SOC + production SIEM + {domain} IR runbook',
-            ),
-            'staffing': (
-                f'Build {domain} specialist workforce',
-                'HR + Training', 'Months 3-12',
-                'Hiring plan + certifications + professional-development track',
-            ),
-            'suppliers': (
-                f'Launch third-party risk management programme at {org_name}',
-                f'{domain} Management', 'Months 4-10',
-                f'{fw_short}-aligned supplier assessment register + contracts',
-            ),
-            'compliance': (
-                f'Build {fw_short} compliance-evidence system',
-                'GRC', 'Months 3-9',
-                'Audit-evidence repository + periodic reporting plan',
-            ),
-            'continuity': (
-                f'Activate business continuity & DR framework at {org_name}',
-                f'{domain} Management + IT', 'Months 4-12',
-                ('Approved BCP/DR plan + periodic recovery testing + '
-                 'regular backup repository'),
-            ),
-            'monitoring': (
-                f'Build continuous monitoring capability for {domain} assets',
-                f'{domain} Operations', 'Months 2-8',
-                ('Live monitoring dashboards + full detection coverage + '
-                 'linked response procedures'),
-            ),
-            'technology_gap': (
-                f'Acquire and deploy missing foundational technical capabilities',
-                f'IT + {domain}', 'Months 1-9',
-                ('Production tech capabilities: SIEM/EDR/IAM/Backup '
-                 'integrated and tested with operations runbooks'),
-            ),
-        }
+        # Drafting-mode priority bank — generic owners and deliverables
+        if is_ar:
+            priority_bank = {
+                'structural': (
+                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
+                    f'رئيس {org_name}',
+                    'الشهر 1 إلى الشهر 3',
+                    (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
+                     f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
+                ),
+                'awareness': (
+                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
+                    'الموارد البشرية',
+                    'الشهر 2 إلى الشهر 9',
+                    'مسار تدريبي معتمد + سجل الاجتياز الدوري',
+                ),
+                'incident_response': (
+                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
+                    f'عمليات {domain}',
+                    'الشهر 2 إلى الشهر 6',
+                    (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
+                     f'لحوادث {domain}'),
+                ),
+                'staffing': (
+                    f'بناء الكفاءات المتخصصة في {domain}',
+                    'الموارد البشرية + التدريب',
+                    'الشهر 3 إلى الشهر 12',
+                    'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
+                ),
+                'suppliers': (
+                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
+                    f'إدارة {domain}',
+                    'الشهر 4 إلى الشهر 10',
+                    f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
+                ),
+                'compliance': (
+                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
+                    'الحوكمة والامتثال',
+                    'الشهر 3 إلى الشهر 9',
+                    'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
+                ),
+                'continuity': (
+                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
+                    f'إدارة {domain} وتقنية المعلومات',
+                    'الشهر 4 إلى الشهر 12',
+                    ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
+                     'مستودع نسخ احتياطي منتظم'),
+                ),
+                'monitoring': (
+                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
+                    f'عمليات {domain}',
+                    'الشهر 2 إلى الشهر 8',
+                    ('لوحات مراقبة حية + تغطية رصد كاملة + '
+                     'إجراءات استجابة مرتبطة'),
+                ),
+                'technology_gap': (
+                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
+                    f'تقنية المعلومات و{domain}',
+                    'الشهر 1 إلى الشهر 9',
+                    ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
+                     'مع أدلة التشغيل'),
+                ),
+            }
+        else:
+            priority_bank = {
+                'structural': (
+                    f'Establish formal {domain} governance structure for {org_name}',
+                    f'{org_name} CEO', 'Months 1-3',
+                    (f'Approved committee charter + org structure + RACI '
+                     f'matrix — closes structural gap'),
+                ),
+                'awareness': (
+                    f'{domain} awareness & training programme for {org_name} staff',
+                    'HR', 'Months 2-9',
+                    'Approved training curriculum + periodic pass-rate records',
+                ),
+                'incident_response': (
+                    f'Establish SOC and {domain} detection/response capability',
+                    f'{domain} Operations', 'Months 2-6',
+                    f'24/7 SOC + production SIEM + {domain} IR runbook',
+                ),
+                'staffing': (
+                    f'Build {domain} specialist workforce',
+                    'HR + Training', 'Months 3-12',
+                    'Hiring plan + certifications + professional-development track',
+                ),
+                'suppliers': (
+                    f'Launch third-party risk management programme at {org_name}',
+                    f'{domain} Management', 'Months 4-10',
+                    f'{fw_short}-aligned supplier assessment register + contracts',
+                ),
+                'compliance': (
+                    f'Build {fw_short} compliance-evidence system',
+                    'GRC', 'Months 3-9',
+                    'Audit-evidence repository + periodic reporting plan',
+                ),
+                'continuity': (
+                    f'Activate business continuity & DR framework at {org_name}',
+                    f'{domain} Management + IT', 'Months 4-12',
+                    ('Approved BCP/DR plan + periodic recovery testing + '
+                     'regular backup repository'),
+                ),
+                'monitoring': (
+                    f'Build continuous monitoring capability for {domain} assets',
+                    f'{domain} Operations', 'Months 2-8',
+                    ('Live monitoring dashboards + full detection coverage + '
+                     'linked response procedures'),
+                ),
+                'technology_gap': (
+                    f'Acquire and deploy missing foundational technical capabilities',
+                    f'IT + {domain}', 'Months 1-9',
+                    ('Production tech capabilities: SIEM/EDR/IAM/Backup '
+                     'integrated and tested with operations runbooks'),
+                ),
+            }
 
     # Build new rows: priority first, then diagnostic_gaps entries, then
     # generic fill.
@@ -24716,7 +24976,7 @@ def api_generate_strategy():
         print(f"DEBUG: fw_short = {fw_short!r} (init: hoisted)", flush=True)
 
         # ── Advisory mode context ──────────────────────────────────────────────
-        _generation_mode = data.get('generation_mode', 'drafting')
+        _generation_mode = data.get('generation_mode', 'consulting')
         _is_consulting   = _generation_mode == 'consulting'
         _is_assurance    = _generation_mode == 'assurance'
         _is_drafting     = _generation_mode == 'drafting'
@@ -25271,6 +25531,14 @@ def api_generate_strategy():
 ## 4. خارطة الطريق التنفيذية
 
 (سلسل الأنشطة بحيث تُغلق الفجوات الأساسية أولاً. منظمة بحجم {_model_size} وميزانية {budget} لا تستطيع فعل كل شيء معاً — الترتيب يجب أن يكون منطقياً وواقعياً.)
+{("\"\"\"" if False else "") + ("" if not _is_consulting else """
+متطلبات وضع الاستشارة — دقة خارطة الطريق (إلزامية):
+- عمود المسؤول: دائماً منصب محدد (CISO، DPO، مدير الحوكمة، مدير SOC، مدير الموارد البشرية، مدير تقنية المعلومات، COO) — لا تكتب "الفريق" أو "الإدارة" وحدها
+- عمود المخرجات: دائماً قابل للقياس (مثال: "≥ 80% من الأصول الحيوية مصنّفة"، "MTTD ≤ 60 دقيقة"، "100% من الموردين الحرجين مُقيَّمون")
+- كل مرحلة يجب أن تشير إلى ضابط أو نطاق محدد من {frameworks_ar} تُحققه
+مثال صحيح: | 1 | نشر SIEM يغطي 100% من الأنظمة الحيوية | CISO | الأشهر 1-3 | SIEM منتج بتغطية ≥ 95% من الأصول — يُلبّي نطاق الكشف في {frameworks_ar} |
+مثال خاطئ: | 1 | نشر حل المراقبة | الفريق | الشهر 6 | وثيقة معتمدة |
+""")}
 
 ### المرحلة 1: التأسيس (0-6 أشهر)
 | # | النشاط | المسؤول | الجدول الزمني | المخرجات |
@@ -25323,6 +25591,11 @@ def api_generate_strategy():
 
 **مبررات التقييم:**
 [فقرة تشرح الدرجة بناءً على وضع هذه المنظمة تحديداً: نضج {maturity} في قطاع {_model_sector} مع {row_idx_ar - 1} فجوة تحتاج معالجة وميزانية {budget}. سمِّ العوامل التي ترفع الدرجة والعوامل التي تخفضها. لا توصيف عام.]
+
+{("" if not _is_consulting else f"""**مستوى النضج الحالي:** [حدّد مستوى النضج الحالي — مثال: "تعمل المنظمة حالياً عند مستوى النضج الابتدائي (ما يعادل تقريباً المستوى 1.5 على نموذج نضج الأمن السيبراني)"، أو استخدم المصطلحات الوصفية: ابتدائي / تطويري / محدد / مُدار / محسّن. يجب أن يكون المستوى خاصاً بالملف التشخيصي.]
+
+**مسار تطور النضج:** [حدّد المستوى المستهدف والإطار الزمني — مثال: "يُتوقع أن يرفع تطبيق هذه الاستراتيجية مستوى نضج المنظمة من وضعه الابتدائي الحالي إلى مستوى محدد (المستوى 3.0) خلال 18 شهراً، وإلى مستوى مُدار (المستوى 3.5) خلال 24 شهراً، بشرط الدعم التنفيذي المستمر وتخصيص ميزانية {budget}." يجب أن يكون هذا توقعاً محدداً، لا بياناً عاماً.]
+""")}
 
 ### عوامل النجاح الحرجة:
 | # | العامل | الوصف | الأهمية |
@@ -25905,6 +26178,14 @@ For each workstream write:
 ## 5. Implementation Roadmap
 
 (Sequence activities to close the diagnostic gaps in logical order — foundational gaps first. A {data.get('size','medium')}-sized organization with {data.get('budget','the stated')} budget cannot do everything at once. The phasing must be realistic.)
+{'"""' if False else ''}
+{("""CONSULTING MODE — ROADMAP SPECIFICITY REQUIREMENTS (mandatory):
+- Owner column: ALWAYS a specific named role (CISO, DPO, GRC Director, SOC Manager, HR Director, CIO, COO) — NEVER write "Team" or "Department" alone
+- Deliverable column: ALWAYS quantified (e.g., "≥ 80% of critical assets classified", "MTTD ≤ 60 min", "100% of critical suppliers assessed") — NEVER write "Approved document" or "Completed"
+- Each phase must cite at least one specific {fw_short} control or domain it satisfies
+EXAMPLE CORRECT ROW: | 1 | Deploy SIEM covering 100% of critical systems | CISO | Months 1-3 | Production SIEM with ≥ 95% asset coverage — satisfies {fw_short} detection domain |
+EXAMPLE WRONG ROW: | 1 | Deploy monitoring solution | Team | Month 6 | Approved document |
+""") if _is_consulting else ''}
 
 ### Phase 1: Foundation (0-6 months)
 | # | Activity | Owner | Timeline | Deliverable |
@@ -25996,6 +26277,11 @@ CORRECT format (copy this exactly, replacing [X] with an actual number):
 
 **Score Justification:**
 [Paragraph specific to {org_name}: state the actual score, name 2 specific factors raising confidence (e.g. regulatory mandate creates executive urgency, {budget} budget covers Phase 1 foundations), name 2 specific factors reducing it (e.g. talent shortage in {data.get('sector','this sector')}, {len(data.get('gaps','').split(chr(10))) if isinstance(data.get('gaps',''),str) else 'multiple'} simultaneous foundational gaps). State the single highest-risk execution assumption. This justification must be specific to {org_name}'s maturity={maturity} profile.]
+
+{("" if not _is_consulting else f"""**Current Maturity Level:** [State the current maturity level — e.g., "The Organization is currently operating at an initial maturity level (approximately Level 1.5 on the Cybersecurity Maturity Model)", or use descriptive terms: initial / developing / defined / managed / optimized. Be specific to the diagnostic profile.]
+
+**Maturity Trajectory:** [State the target maturity and timeframe — e.g., "Implementation of this strategy is projected to advance {org_name} from its current initial posture to a defined maturity level (Level 3.0) within 18 months, and to managed maturity (Level 3.5) within 24 months, contingent on sustained executive sponsorship and the {budget} budget allocation." This must be a specific projection, not a generic statement.]
+""")}
 
 ### Critical Success Factors:
 | # | Factor | Description | Importance |
@@ -29635,7 +29921,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                             # _wb_flags so the bypass fails closed here too.
                             try:
                                 _wb_rich = validate_arabic_strategy_semantic_richness(
-                                    sections, lang, doc_subtype=doc_subtype)
+                                    sections, lang, doc_subtype=doc_subtype,
+                                    generation_mode=_generation_mode)
                                 if _wb_rich:
                                     for _rtag, _rdetail in _wb_rich:
                                         _wb_flags.append((_rtag, _rdetail))
@@ -31872,7 +32159,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # the orchestrator.
                     try:
                         _richness_defects = validate_arabic_strategy_semantic_richness(
-                            sections, lang, doc_subtype=doc_subtype)
+                            sections, lang, doc_subtype=doc_subtype,
+                            generation_mode=_final_ctx.get(
+                                'generation_mode', 'consulting'))
                     except Exception as _rde:
                         print(f'[STRATEGY-DIAG] richness_validator_failed: '
                               f'{_rde}', flush=True)
