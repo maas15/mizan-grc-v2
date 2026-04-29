@@ -783,15 +783,16 @@ async function loadApprovals() {
             rejected: 'background:#ef444422;color:#ef4444',
             changes_requested: 'background:#6366f122;color:#6366f1'
         };
+        var _escHtmlDash = function(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
         list.innerHTML = d.recent.map(function(a) {
             return '<div style="display:flex;align-items:center;gap:0.75rem;padding:0.7rem 1rem;background:var(--bg-sidebar);border-radius:10px;border:1px solid var(--border-color);">' +
                 '<i class="fas fa-signature" style="color:var(--accent);font-size:1rem;flex-shrink:0;"></i>' +
                 '<div style="flex:1;min-width:0;">' +
-                '<div style="font-size:0.86rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + (a.artifact_title || a.artifact_type) + '</div>' +
-                '<div style="font-size:0.75rem;color:var(--text-secondary);">' + a.approver_role + ' · ' + a.artifact_type + '</div>' +
+                '<div style="font-size:0.86rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _escHtmlDash(a.artifact_title || a.artifact_type) + '</div>' +
+                '<div style="font-size:0.75rem;color:var(--text-secondary);">' + _escHtmlDash(a.approver_role) + ' · ' + _escHtmlDash(a.artifact_type) + '</div>' +
                 '</div>' +
-                '<span style="padding:3px 10px;border-radius:20px;font-size:0.73rem;white-space:nowrap;' + (statusStyle[a.status]||'') + '">' + a.status + '</span>' +
-                '<button onclick="openApprovalActModal(' + JSON.stringify(a).replace(/'/g,"&#39;") + ')" class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;flex-shrink:0;"><i class="fas fa-edit"></i></button>' +
+                '<span style="padding:3px 10px;border-radius:20px;font-size:0.73rem;white-space:nowrap;' + (statusStyle[a.status]||'') + '">' + _escHtmlDash(a.status) + '</span>' +
+                '<button onclick="openApprovalActModal(' + parseInt(a.id,10) + ')" class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;flex-shrink:0;"><i class="fas fa-edit"></i></button>' +
                 '</div>';
         }).join('');
     } catch(e) {}
@@ -801,8 +802,8 @@ window.openApprovalRequestModal = function() {
     document.getElementById('appr-req-modal').style.display = 'flex';
 };
 
-window.openApprovalActModal = function(appr) {
-    document.getElementById('appr-act-id').value = appr.id || '';
+window.openApprovalActModal = async function(approvalId) {
+    document.getElementById('appr-act-id').value = approvalId || '';
     document.getElementById('appr-act-status').value = 'approved';
     document.getElementById('appr-act-name').value = '';
     document.getElementById('appr-act-comments').value = '';

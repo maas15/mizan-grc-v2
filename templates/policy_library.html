@@ -46,7 +46,7 @@
                     {% if is_rtl %}مكتبة السياسات{% else %}Policy Library{% endif %}
                 </h1>
                 <p class="header-sub">
-                    {% if is_rtl %}40+ قالب سياسة جاهز — اختر وأنشئ في ثوانٍ{% else %}40+ ready-to-generate policy templates — pick one and launch in seconds{% endif %}
+                    {% if is_rtl %}{{ catalog.values() | sum(attribute='__len__') }}+ قالب سياسة جاهز — اختر وأنشئ في ثوانٍ{% else %}{{ catalog.values() | sum(attribute='__len__') }}+ ready-to-generate policy templates — pick one and launch in seconds{% endif %}
                 </p>
             </div>
         </header>

@@ -43641,6 +43641,12 @@ import json as _json_grc
 import traceback as _tb_grc
 import uuid as _uuid_grc
 
+
+def _grc_err(e: Exception) -> str:
+    """Log the real exception server-side but return a generic safe message to clients."""
+    print(f'[GRC-LAYER] error: {e}\n{_tb_grc.format_exc()}', flush=True)
+    return 'An internal error occurred. Please try again.'
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP 1 — POLICY LIBRARY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43710,7 +43716,7 @@ def api_assets_list():
                 ).fetchall()
             return jsonify({'success': True, 'assets': [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/assets', methods=['POST'])
@@ -43749,7 +43755,7 @@ def api_assets_create():
                    {'domain': data.get('domain'), 'asset': data.get('asset_name')})
         return jsonify({'success': True, 'asset_id': asset_id})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/assets/<int:asset_id>', methods=['PUT'])
@@ -43788,7 +43794,7 @@ def api_assets_update(asset_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/assets/<int:asset_id>', methods=['DELETE'])
@@ -43804,7 +43810,7 @@ def api_assets_delete(asset_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43844,7 +43850,7 @@ def api_audit_findings_list():
                 f['remediation_count'] = cnt['c'] if cnt else 0
         return jsonify({'success': True, 'findings': findings})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/audit-findings', methods=['POST'])
@@ -43891,7 +43897,7 @@ def api_audit_findings_create():
                    {'domain': domain, 'title': data.get('title'), 'ref': finding_ref})
         return jsonify({'success': True, 'finding_id': finding_id, 'finding_ref': finding_ref})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/audit-findings/<int:finding_id>', methods=['PUT'])
@@ -43928,7 +43934,7 @@ def api_audit_findings_update(finding_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/audit-findings/<int:finding_id>', methods=['DELETE'])
@@ -43948,7 +43954,7 @@ def api_audit_findings_delete(finding_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/remediation', methods=['GET'])
@@ -43980,7 +43986,7 @@ def api_remediation_list():
                 ).fetchall()
             return jsonify({'success': True, 'items': [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/remediation', methods=['POST'])
@@ -44019,7 +44025,7 @@ def api_remediation_create():
             item_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
         return jsonify({'success': True, 'item_id': item_id})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/remediation/<int:item_id>', methods=['PUT'])
@@ -44060,7 +44066,7 @@ def api_remediation_update(item_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/findings-summary', methods=['GET'])
@@ -44089,7 +44095,7 @@ def api_findings_summary():
         return jsonify({'success': True, 'total': findings_total, 'open': open_count,
                         'high_critical': high_count, 'overdue_remediation': overdue_count})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44307,7 +44313,7 @@ def api_training_materials_list():
             ).fetchall()
             return jsonify({'success': True, 'materials': [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/training-materials/<int:material_id>', methods=['GET'])
@@ -44324,7 +44330,7 @@ def api_training_material_get(material_id):
                 return jsonify({'success': False, 'error': 'Not found'}), 404
             return jsonify({'success': True, 'material': dict(row)})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/training-materials/<int:material_id>', methods=['DELETE'])
@@ -44340,7 +44346,7 @@ def api_training_material_delete(material_id):
             conn.commit()
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44373,7 +44379,7 @@ def api_approvals_list():
             ).fetchall()
             return jsonify({'success': True, 'approvals': [dict(r) for r in rows]})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/approvals', methods=['POST'])
@@ -44436,7 +44442,7 @@ def api_approvals_create():
                     'approver_role': data['approver_role']})
         return jsonify({'success': True, 'approval_id': approval_id})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/approvals/<int:approval_id>', methods=['PUT'])
@@ -44475,7 +44481,7 @@ def api_approvals_update(approval_id):
                    {'approval_id': approval_id})
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 @app.route('/api/approvals/summary', methods=['GET'])
@@ -44501,7 +44507,7 @@ def api_approvals_summary():
                         'approved': approved, 'rejected': rejected,
                         'recent': [dict(r) for r in recent]})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
 
 
 if __name__ == '__main__':

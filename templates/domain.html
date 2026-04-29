@@ -3814,6 +3814,24 @@ const DOMAIN_NAME = '{{ domain_name | e }}';
 const IS_RTL_DOMAIN = {{ 'true' if is_rtl else 'false' }};
 let _editingAssetId = null;
 
+// HTML escape helper — prevents XSS when inserting untrusted data into innerHTML
+function _escHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Fetch asset by ID from the server (avoids passing full object via onclick)
+async function editAssetById(id) {
+    try {
+        const r = await fetch(`/api/assets?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const d = await r.json();
+        if (d.success) {
+            const asset = (d.assets || []).find(a => a.id === id);
+            if (asset) openAssetModal(asset);
+        }
+    } catch(e) {}
+}
+
 function openAssetModal(asset) {
     _editingAssetId = asset ? asset.id : null;
     document.getElementById('asset-modal-title').textContent = asset
@@ -3866,20 +3884,25 @@ async function loadAssets() {
         if (!d.success) return;
         const tbody = document.getElementById('assets-tbody');
         if (!d.assets || d.assets.length === 0) {
+        const ASSETS_CACHE = {};
+        const critColor = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
+        const ratingColorMap = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
+        if (!d.assets || d.assets.length === 0) {
             tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">${IS_RTL_DOMAIN ? 'لا توجد أصول' : 'No assets registered'}</td></tr>`;
             return;
         }
-        const critColor = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
+        // Cache assets by ID to avoid XSS via inline JSON
+        d.assets.forEach(function(a) { ASSETS_CACHE[a.id] = a; });
         tbody.innerHTML = d.assets.map(a => `
             <tr style="border-bottom:1px solid var(--border-color);">
-                <td style="padding:10px 12px;font-weight:600;">${a.asset_name}</td>
-                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${a.asset_type}</td>
-                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 10px;border-radius:20px;font-size:0.75rem;background:${critColor[a.criticality]||'#888'}22;color:${critColor[a.criticality]||'#888'}">${a.criticality}</span></td>
-                <td style="padding:10px 12px;font-size:0.82rem;">${a.data_classification}</td>
-                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${a.owner||'-'}</td>
+                <td style="padding:10px 12px;font-weight:600;">${_escHtml(a.asset_name)}</td>
+                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${_escHtml(a.asset_type)}</td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 10px;border-radius:20px;font-size:0.75rem;background:${critColor[a.criticality]||'#888'}22;color:${critColor[a.criticality]||'#888'}">${_escHtml(a.criticality)}</span></td>
+                <td style="padding:10px 12px;font-size:0.82rem;">${_escHtml(a.data_classification)}</td>
+                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${_escHtml(a.owner||'-')}</td>
                 <td style="padding:10px 12px;text-align:center;display:flex;gap:6px;justify-content:center;">
-                    <button onclick='openAssetModal(${JSON.stringify(a)})' class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;"><i class="fas fa-edit"></i></button>
-                    <button onclick="deleteAsset(${a.id})" class="btn" style="padding:4px 10px;font-size:0.78rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
+                    <button onclick="editAssetById(${parseInt(a.id, 10)})" class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteAsset(${parseInt(a.id, 10)})" class="btn" style="padding:4px 10px;font-size:0.78rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
                 </td>
             </tr>`).join('');
     } catch(e) {}
@@ -3893,6 +3916,18 @@ async function deleteAsset(id) {
 
 // ──────────────── AUDIT FINDINGS JS ──────────────────────────────────────
 let _editingFindingId = null;
+
+// Fetch finding by ID from server (avoids passing full object via onclick)
+async function editFindingById(id) {
+    try {
+        const r = await fetch(`/api/audit-findings?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const d = await r.json();
+        if (d.success) {
+            const finding = (d.findings || []).find(f => f.id === id);
+            if (finding) openFindingModal(finding);
+        }
+    } catch(e) {}
+}
 
 function openFindingModal(finding) {
     _editingFindingId = finding ? finding.id : null;
@@ -3960,19 +3995,22 @@ async function loadFindings() {
             tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">${IS_RTL_DOMAIN ? 'لا توجد نتائج' : 'No findings yet'}</td></tr>`;
             return;
         }
+        // Cache findings by ID to avoid XSS via inline JSON
+        const FINDINGS_CACHE = {};
+        d.findings.forEach(function(f) { FINDINGS_CACHE[f.id] = f; });
         const ratingColor = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
         const statusStyle = {'Open':'background:#ef444422;color:#ef4444','In Progress':'background:#3b82f622;color:#3b82f6','Closed':'background:#22c55e22;color:#22c55e','Risk Accepted':'background:#6366f122;color:#6366f1'};
         tbody.innerHTML = d.findings.map(f => `
             <tr style="border-bottom:1px solid var(--border-color);">
-                <td style="padding:10px 12px;font-size:0.8rem;color:var(--text-secondary);white-space:nowrap;">${f.finding_ref||''}</td>
-                <td style="padding:10px 12px;font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${f.title}">${f.title}</td>
-                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;background:${ratingColor[f.risk_rating]||'#888'}22;color:${ratingColor[f.risk_rating]||'#888'}">${f.risk_rating}</span></td>
-                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;${statusStyle[f.status]||''}">${f.status}</span></td>
-                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${f.remediation_owner||'-'}</td>
-                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${f.target_date||'-'}</td>
+                <td style="padding:10px 12px;font-size:0.8rem;color:var(--text-secondary);white-space:nowrap;">${_escHtml(f.finding_ref||'')}</td>
+                <td style="padding:10px 12px;font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_escHtml(f.title)}">${_escHtml(f.title)}</td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;background:${ratingColor[f.risk_rating]||'#888'}22;color:${ratingColor[f.risk_rating]||'#888'}">${_escHtml(f.risk_rating)}</span></td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;${statusStyle[f.status]||''}">${_escHtml(f.status)}</span></td>
+                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${_escHtml(f.remediation_owner||'-')}</td>
+                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${_escHtml(f.target_date||'-')}</td>
                 <td style="padding:10px 12px;text-align:center;display:flex;gap:5px;justify-content:center;">
-                    <button onclick='openFindingModal(${JSON.stringify(f).replace(/'/g,"&#39;")})' class="btn btn-secondary" style="padding:4px 8px;font-size:0.75rem;"><i class="fas fa-edit"></i></button>
-                    <button onclick="deleteFinding(${f.id})" class="btn" style="padding:4px 8px;font-size:0.75rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
+                    <button onclick="editFindingById(${parseInt(f.id, 10)})" class="btn btn-secondary" style="padding:4px 8px;font-size:0.75rem;"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteFinding(${parseInt(f.id, 10)})" class="btn" style="padding:4px 8px;font-size:0.75rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
                 </td>
             </tr>`).join('');
     } catch(e) {}
