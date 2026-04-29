@@ -1227,6 +1227,105 @@ def init_db():
         except: pass
 
     _conn3.commit(); _conn3.close()
+
+    # ── PHASE 4: GRC REPLACEMENT LAYER ─────────────────────────────────────────
+    # Gap 1 — Policy Library  |  Gap 2 — Asset Inventory
+    # Gap 3 — Audit Findings  |  Gap 4 — Training Engine
+    # Gap 5 — Approval Workflow
+    _conn4 = get_db_direct(); _c4 = _conn4.cursor()
+
+    # Asset Inventory — structured asset records that feed into risk analysis
+    _c4.execute('''CREATE TABLE IF NOT EXISTS asset_inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        asset_name TEXT NOT NULL,
+        asset_type TEXT DEFAULT "Information System",
+        criticality TEXT DEFAULT "Medium",
+        data_classification TEXT DEFAULT "Internal",
+        owner TEXT,
+        location TEXT,
+        technology_stack TEXT,
+        cloud_provider TEXT,
+        third_party_dependencies TEXT,
+        existing_controls TEXT,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Audit Findings — formal findings from audit reviews
+    _c4.execute('''CREATE TABLE IF NOT EXISTS audit_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        audit_id INTEGER,
+        finding_ref TEXT,
+        title TEXT NOT NULL,
+        observation TEXT,
+        root_cause TEXT,
+        risk_rating TEXT DEFAULT "Medium",
+        control_reference TEXT,
+        recommendation TEXT,
+        management_response TEXT,
+        remediation_owner TEXT,
+        target_date TEXT,
+        status TEXT DEFAULT "Open",
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Remediation Items — granular remediation tracking per finding
+    _c4.execute('''CREATE TABLE IF NOT EXISTS remediation_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        finding_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        action_title TEXT NOT NULL,
+        action_description TEXT,
+        owner TEXT,
+        due_date TEXT,
+        priority TEXT DEFAULT "Medium",
+        status TEXT DEFAULT "Open",
+        evidence TEXT,
+        closed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (finding_id) REFERENCES audit_findings(id))''')
+
+    # Training Materials — generated training decks and tabletop exercises
+    _c4.execute('''CREATE TABLE IF NOT EXISTS training_materials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        material_type TEXT DEFAULT "training_deck",
+        audience TEXT DEFAULT "staff",
+        title TEXT NOT NULL,
+        content TEXT,
+        source_artifact_type TEXT,
+        source_artifact_id INTEGER,
+        language TEXT DEFAULT "en",
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Document Approvals — Board/CISO sign-off workflow
+    _c4.execute('''CREATE TABLE IF NOT EXISTS document_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        artifact_type TEXT NOT NULL,
+        artifact_id INTEGER NOT NULL,
+        artifact_title TEXT,
+        approver_role TEXT NOT NULL,
+        approver_name TEXT,
+        status TEXT DEFAULT "pending",
+        comments TEXT,
+        approved_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    _conn4.commit(); _conn4.close()
+
 init_db()
 
 # ============================================================================
@@ -6384,8 +6483,77 @@ STRATEGY_TEMPLATES = {"en": {}, "ar": {}}
 AUDIT_TEMPLATES = {"en": {}, "ar": {}}
 RISK_TEMPLATES = {"en": {}, "ar": {}}
 
-# ── Execute framework awareness merge (must run after AWARENESS_MODULES is defined) ──
-merge_framework_awareness()
+# ============================================================================
+# POLICY CATALOG — 40+ pre-defined policy templates per GRC domain
+# Each entry: {name, description, framework, category, icon}
+# ============================================================================
+POLICY_CATALOG = {
+    "Cyber Security": [
+        {"id": "cs-01", "name": "Information Security Policy",              "name_ar": "سياسة أمن المعلومات",                "description": "Overarching governance policy for information security management aligned to ISO 27001 Clause 5.2",                 "framework": "ISO 27001",      "category": "Governance",     "icon": "fa-shield-alt"},
+        {"id": "cs-02", "name": "Acceptable Use Policy",                    "name_ar": "سياسة الاستخدام المقبول",             "description": "Rules governing acceptable use of IT systems, internet, email and corporate devices",                          "framework": "NCA ECC",        "category": "Governance",     "icon": "fa-laptop"},
+        {"id": "cs-03", "name": "Access Control Policy",                    "name_ar": "سياسة التحكم في الوصول",              "description": "Controls for user identity, authentication, authorization and privileged access management",                   "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-key"},
+        {"id": "cs-04", "name": "Incident Response Policy",                 "name_ar": "سياسة الاستجابة للحوادث",             "description": "Procedures for detecting, reporting, and responding to cyber security incidents",                              "framework": "NCA ECC",        "category": "Operations",     "icon": "fa-fire-extinguisher"},
+        {"id": "cs-05", "name": "Data Classification Policy",               "name_ar": "سياسة تصنيف البيانات",               "description": "Framework for classifying data by sensitivity and prescribing handling requirements per classification tier",    "framework": "NCA DCC",        "category": "Data",           "icon": "fa-tags"},
+        {"id": "cs-06", "name": "Cryptography & Encryption Policy",         "name_ar": "سياسة التشفير",                      "description": "Standards for encryption algorithms, key management and certificate lifecycle",                               "framework": "ISO 27001",      "category": "Technical",      "icon": "fa-lock"},
+        {"id": "cs-07", "name": "Vulnerability Management Policy",          "name_ar": "سياسة إدارة الثغرات",                "description": "Policy for scanning, prioritizing and remediating technical vulnerabilities across the asset estate",           "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-bug"},
+        {"id": "cs-08", "name": "Change Management Policy",                 "name_ar": "سياسة إدارة التغيير",                "description": "Change request, approval, testing and rollback procedures for IT and OT environments",                          "framework": "ITIL / ISO 20000","category": "Operations",    "icon": "fa-code-branch"},
+        {"id": "cs-09", "name": "Network Security Policy",                  "name_ar": "سياسة أمن الشبكات",                  "description": "Controls for network segmentation, perimeter defense, remote access and wireless security",                    "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-network-wired"},
+        {"id": "cs-10", "name": "Third-Party & Vendor Security Policy",     "name_ar": "سياسة أمن الأطراف الثالثة",          "description": "Due diligence, contractual requirements and ongoing monitoring for third-party suppliers and vendors",           "framework": "NCA ECC",        "category": "Governance",     "icon": "fa-handshake"},
+        {"id": "cs-11", "name": "Security Awareness & Training Policy",     "name_ar": "سياسة التوعية الأمنية",              "description": "Mandatory security awareness training requirements for all staff, contractors and privileged users",             "framework": "ISO 27001",      "category": "People",         "icon": "fa-graduation-cap"},
+        {"id": "cs-12", "name": "Business Continuity & DR Policy",          "name_ar": "سياسة استمرارية الأعمال",            "description": "Recovery time and point objectives, BCP/DR plan testing, and backup management policy",                       "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-history"},
+    ],
+    "Data Management": [
+        {"id": "dm-01", "name": "Personal Data Protection Policy",          "name_ar": "سياسة حماية البيانات الشخصية",       "description": "PDPL/GDPR-aligned policy covering lawful bases, data subject rights, retention and cross-border transfers",      "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-user-shield"},
+        {"id": "dm-02", "name": "Data Retention & Disposal Policy",         "name_ar": "سياسة الاحتفاظ بالبيانات وإتلافها",  "description": "Defines retention schedules per data category and secure disposal methods for all media",                      "framework": "PDPL",           "category": "Data",           "icon": "fa-trash-alt"},
+        {"id": "dm-03", "name": "Data Quality Policy",                      "name_ar": "سياسة جودة البيانات",                "description": "Standards for data accuracy, completeness, consistency and ownership across all data assets",                 "framework": "ISO 8000",       "category": "Data",           "icon": "fa-check-circle"},
+        {"id": "dm-04", "name": "Data Governance Policy",                   "name_ar": "سياسة حوكمة البيانات",               "description": "Roles and responsibilities for data stewardship, data catalogue management and metadata standards",            "framework": "DAMA-DMBOK",     "category": "Governance",     "icon": "fa-sitemap"},
+        {"id": "dm-05", "name": "Data Breach Notification Policy",          "name_ar": "سياسة إخطار اختراق البيانات",        "description": "Procedures and timelines for internal escalation and regulatory notification in the event of a data breach",   "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-exclamation-circle"},
+        {"id": "dm-06", "name": "Data Sharing & Transfer Policy",           "name_ar": "سياسة مشاركة البيانات ونقلها",       "description": "Controls for internal and external data sharing, API access and cross-border data transfer mechanisms",          "framework": "PDPL",           "category": "Data",           "icon": "fa-exchange-alt"},
+        {"id": "dm-07", "name": "Records Management Policy",                "name_ar": "سياسة إدارة السجلات",               "description": "Lifecycle management of organizational records including creation, storage, access control and destruction",    "framework": "ISO 15489",      "category": "Data",           "icon": "fa-folder-open"},
+        {"id": "dm-08", "name": "Cloud Data Security Policy",               "name_ar": "سياسة أمن البيانات السحابية",        "description": "Security requirements for data stored and processed in cloud environments including SaaS, PaaS and IaaS",      "framework": "NCA CCC",        "category": "Technical",      "icon": "fa-cloud"},
+    ],
+    "Artificial Intelligence": [
+        {"id": "ai-01", "name": "AI Governance Policy",                     "name_ar": "سياسة حوكمة الذكاء الاصطناعي",      "description": "Principles, accountability structures and oversight mechanisms for AI system development and deployment",        "framework": "SDAIA AI Framework","category": "Governance",   "icon": "fa-brain"},
+        {"id": "ai-02", "name": "AI Ethics & Responsible Use Policy",       "name_ar": "سياسة أخلاقيات الذكاء الاصطناعي",   "description": "Ethical principles for AI systems including fairness, transparency, explainability and human oversight",          "framework": "EU AI Act",      "category": "Ethics",         "icon": "fa-balance-scale"},
+        {"id": "ai-03", "name": "AI Risk Management Policy",                "name_ar": "سياسة إدارة مخاطر الذكاء الاصطناعي","description": "Risk classification, assessment methodology and treatment plans for AI systems across their lifecycle",         "framework": "NIST AI RMF",    "category": "Risk",           "icon": "fa-exclamation-triangle"},
+        {"id": "ai-04", "name": "AI Data Privacy Policy",                   "name_ar": "سياسة خصوصية بيانات الذكاء الاصطناعي","description": "Controls for personal data used to train, fine-tune and operate AI models aligned to PDPL requirements",     "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-user-secret"},
+        {"id": "ai-05", "name": "Generative AI Acceptable Use Policy",      "name_ar": "سياسة الاستخدام المقبول للذكاء الاصطناعي التوليدي","description": "Rules governing employee use of generative AI tools including data input restrictions and output verification", "framework": "SDAIA",          "category": "Governance",     "icon": "fa-robot"},
+        {"id": "ai-06", "name": "AI Model Validation & Testing Policy",     "name_ar": "سياسة التحقق من نماذج الذكاء الاصطناعي","description": "Requirements for pre-deployment testing, bias assessment and post-deployment monitoring of AI models",       "framework": "NIST AI RMF",    "category": "Technical",      "icon": "fa-flask"},
+        {"id": "ai-07", "name": "AI Incident Response Policy",              "name_ar": "سياسة الاستجابة لحوادث الذكاء الاصطناعي","description": "Procedures for detecting, reporting and remediating AI system failures, bias events and misuse incidents",   "framework": "SDAIA",          "category": "Operations",     "icon": "fa-exclamation"},
+        {"id": "ai-08", "name": "AI Procurement & Third-Party Policy",      "name_ar": "سياسة شراء أنظمة الذكاء الاصطناعي", "description": "Due diligence and contractual requirements when procuring AI tools or AI-enabled services from vendors",         "framework": "EU AI Act",      "category": "Governance",     "icon": "fa-shopping-cart"},
+    ],
+    "Digital Transformation": [
+        {"id": "dt-01", "name": "Digital Transformation Governance Policy", "name_ar": "سياسة حوكمة التحول الرقمي",          "description": "Portfolio governance, investment prioritization and executive oversight for digital transformation programs",    "framework": "COBIT 2019",     "category": "Governance",     "icon": "fa-rocket"},
+        {"id": "dt-02", "name": "Cloud Adoption Policy",                    "name_ar": "سياسة اعتماد الحوسبة السحابية",      "description": "Framework for evaluating, approving and managing cloud service adoption including exit strategy requirements",    "framework": "NCA CCC",        "category": "Technical",      "icon": "fa-cloud-upload-alt"},
+        {"id": "dt-03", "name": "API & Integration Security Policy",        "name_ar": "سياسة أمن واجهات برمجة التطبيقات",   "description": "Security standards for API design, authentication, rate limiting and third-party integration management",         "framework": "OWASP API Top 10","category": "Technical",      "icon": "fa-plug"},
+        {"id": "dt-04", "name": "DevSecOps Policy",                         "name_ar": "سياسة DevSecOps",                    "description": "Security-by-design requirements embedded into CI/CD pipelines, code review and deployment gates",             "framework": "NIST SP 800-218","category": "Technical",      "icon": "fa-code"},
+        {"id": "dt-05", "name": "Digital Identity & IAM Policy",            "name_ar": "سياسة الهوية الرقمية وإدارة الوصول", "description": "Identity federation, SSO, MFA requirements and identity lifecycle management in digital environments",           "framework": "NIST SP 800-63", "category": "Technical",      "icon": "fa-id-badge"},
+        {"id": "dt-06", "name": "Data Analytics & BI Governance Policy",    "name_ar": "سياسة حوكمة تحليل البيانات",         "description": "Governance of business intelligence tools, data analytics platforms and reporting data quality",               "framework": "DAMA-DMBOK",     "category": "Data",           "icon": "fa-chart-bar"},
+        {"id": "dt-07", "name": "Emerging Technology Risk Policy",          "name_ar": "سياسة مخاطر التقنيات الناشئة",       "description": "Assessment and governance framework for evaluating and adopting emerging technologies (IoT, blockchain, AR/VR)",  "framework": "COBIT 2019",     "category": "Risk",           "icon": "fa-lightbulb"},
+        {"id": "dt-08", "name": "Digital Resilience & Cyber Recovery Policy","name_ar": "سياسة المرونة الرقمية",             "description": "Cyber resilience requirements including immutable backups, recovery testing and operational resilience planning",  "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-shield-virus"},
+    ],
+    "Enterprise Risk Management": [
+        {"id": "erm-01", "name": "Enterprise Risk Management Policy",       "name_ar": "سياسة إدارة المخاطر المؤسسية",       "description": "Overarching ERM policy establishing risk appetite, tolerance thresholds and governance structure",               "framework": "ISO 31000",      "category": "Governance",     "icon": "fa-exclamation-triangle"},
+        {"id": "erm-02", "name": "Risk Appetite Statement Policy",          "name_ar": "سياسة بيان الشهية للمخاطر",         "description": "Formally quantifies the organization's risk appetite across strategic, operational, financial and reputational categories","framework": "COSO ERM",    "category": "Governance",     "icon": "fa-thermometer-half"},
+        {"id": "erm-03", "name": "Operational Risk Management Policy",      "name_ar": "سياسة إدارة المخاطر التشغيلية",      "description": "Controls for identifying, measuring and mitigating operational risks including process, people and system failures",  "framework": "COSO ERM",       "category": "Operations",     "icon": "fa-cogs"},
+        {"id": "erm-04", "name": "Fraud Prevention & Anti-Bribery Policy",  "name_ar": "سياسة منع الاحتيال",                 "description": "Controls and reporting mechanisms for preventing fraud, bribery and corruption across the organization",          "framework": "ISO 37001",      "category": "Governance",     "icon": "fa-ban"},
+        {"id": "erm-05", "name": "Whistleblower & Ethics Hotline Policy",   "name_ar": "سياسة الإبلاغ عن المخالفات",        "description": "Safe reporting channels, non-retaliation protections and investigation procedures for ethics violations",         "framework": "COSO",           "category": "Governance",     "icon": "fa-bullhorn"},
+        {"id": "erm-06", "name": "Insurance & Risk Transfer Policy",        "name_ar": "سياسة التأمين ونقل المخاطر",         "description": "Requirements for cyber insurance, D&O liability and risk transfer mechanisms as part of the risk treatment mix",  "framework": "ISO 31000",      "category": "Financial",      "icon": "fa-file-invoice-dollar"},
+        {"id": "erm-07", "name": "Business Continuity Management Policy",   "name_ar": "سياسة إدارة استمرارية الأعمال",      "description": "BIA methodology, RTO/RPO requirements and BCM program governance aligned to ISO 22301",                         "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-redo"},
+        {"id": "erm-08", "name": "Compliance Management Policy",            "name_ar": "سياسة إدارة الامتثال",               "description": "Regulatory monitoring, obligation register maintenance and compliance reporting to board and regulators",        "framework": "ISO 37301",      "category": "Compliance",     "icon": "fa-balance-scale"},
+    ],
+    "Global Standards": [
+        {"id": "gs-01", "name": "Information Security Management System Policy","name_ar": "سياسة نظام إدارة أمن المعلومات", "description": "Top-level ISMS policy establishing scope, objectives and management commitment per ISO 27001 Clause 5.2",        "framework": "ISO 27001",      "category": "Governance",     "icon": "fa-shield-alt"},
+        {"id": "gs-02", "name": "IT Service Management Policy",             "name_ar": "سياسة إدارة خدمات تقنية المعلومات",  "description": "ITIL-aligned service management policy covering incident, problem, change, and service request management",      "framework": "ISO 20000",      "category": "Operations",     "icon": "fa-server"},
+        {"id": "gs-03", "name": "IT Governance Policy",                     "name_ar": "سياسة حوكمة تقنية المعلومات",        "description": "COBIT-aligned governance policy for IT strategy alignment, value delivery and performance measurement",           "framework": "COBIT 2019",     "category": "Governance",     "icon": "fa-sitemap"},
+        {"id": "gs-04", "name": "Supplier Relationship Management Policy",  "name_ar": "سياسة إدارة علاقات الموردين",        "description": "Supplier selection, performance management and exit requirements aligned to ISO 27036",                        "framework": "ISO 27036",      "category": "Governance",     "icon": "fa-handshake"},
+        {"id": "gs-05", "name": "Environmental & Social Governance Policy", "name_ar": "سياسة ESG والحوكمة البيئية",         "description": "ESG commitments, reporting framework and sustainability governance aligned to GRI Standards",                  "framework": "GRI Standards",  "category": "Governance",     "icon": "fa-leaf"},
+        {"id": "gs-06", "name": "Privacy by Design Policy",                 "name_ar": "سياسة الخصوصية في التصميم",          "description": "Embedding privacy requirements into system and product design lifecycle from concept to retirement",            "framework": "ISO 31700",      "category": "Privacy",        "icon": "fa-user-lock"},
+        {"id": "gs-07", "name": "Audit Management Policy",                  "name_ar": "سياسة إدارة التدقيق",                "description": "Internal audit charter, independence requirements, audit universe management and reporting to audit committee",  "framework": "IIA Standards",  "category": "Audit",          "icon": "fa-clipboard-check"},
+        {"id": "gs-08", "name": "Physical & Environmental Security Policy", "name_ar": "سياسة الأمن المادي والبيئي",         "description": "Physical access controls, environmental monitoring and secure area management requirements",                    "framework": "ISO 27001",      "category": "Technical",      "icon": "fa-building"},
+    ],
+}
+
 
 # ============================================================================
 # AI SERVICE
@@ -13751,7 +13919,7 @@ def count_substantive_kpis(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13777,7 +13945,7 @@ def count_substantive_kpis_strict(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13842,7 +14010,7 @@ def count_placeholder_kpi_rows(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13868,7 +14036,7 @@ def enrich_placeholder_kpi_rows(kpis_text, domain, fw_short):
     if not kpis_text:
         return kpis_text
     hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     lines = kpis_text.split('\n')
@@ -13910,7 +14078,7 @@ def _ts_extract_kpi_rows(kpis_text):
     if not kpis_text:
         return []
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     rows = []
@@ -14546,7 +14714,7 @@ def build_diagnostic_model(data, lang='en', diagnostic_gaps=None,
     if isinstance(challenges, list):
         challenges = '; '.join(str(c) for c in challenges if c)
     challenges = str(challenges).strip()
-    generation_mode = (data.get('generation_mode') or 'drafting').strip()
+    generation_mode = (data.get('generation_mode') or 'consulting').strip()
     domain = (data.get('domain') or '').strip()
 
     # Derived flags — the prompt explicitly calls out the "no defined
@@ -15007,12 +15175,18 @@ def _check_environment_topic_coverage(env_text):
     }
 
 
-def validate_environment_richness(sections, lang):
+def validate_environment_richness(sections, lang, generation_mode='consulting'):
     """Environment / Threat Context must be a real standalone section with
     narrative paragraphs and either a structured table or a structured
     bullet block, AND must cover all three required categories
     (regulatory + threat + business). Prompt clause A.3 + B3.1.
+
+    In consulting/assurance mode the environment paragraph count bar is
+    raised to 3 (one per category — regulatory, threat, business — each
+    substantive enough for board-level consumption).
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_env_paras = max(_RICHNESS_MIN_ENV_PARAS, 3) if _is_consulting_grade else _RICHNESS_MIN_ENV_PARAS
     defects = []
     env = sections.get('environment', '') or ''
     if not env.strip():
@@ -15023,10 +15197,10 @@ def validate_environment_richness(sections, lang):
     has_tbl = _env_has_structured_table(env)
     n_bullets = _count_env_bullets(env)
     has_structured_block = has_tbl or n_bullets >= _RICHNESS_MIN_ENV_BULLETS
-    if n_paras < _RICHNESS_MIN_ENV_PARAS:
+    if n_paras < _min_env_paras:
         defects.append((
             'environment_paragraphs_insufficient',
-            f'{n_paras}/{_RICHNESS_MIN_ENV_PARAS} substantive paragraphs',
+            f'{n_paras}/{_min_env_paras} substantive paragraphs',
         ))
     if not has_structured_block:
         defects.append((
@@ -15045,10 +15219,13 @@ def validate_environment_richness(sections, lang):
     return defects
 
 
-def validate_roadmap_richness(sections, lang):
+def validate_roadmap_richness(sections, lang, generation_mode='consulting'):
     """Roadmap must be a real execution roadmap with ≥ 4 substantive rows
-    across any schema. Prompt clause A.5.
+    across any schema. In consulting/assurance mode the bar is raised to
+    ≥ 8 rows (covering 3 phases × ≥ 2–3 activities each). Prompt clause A.5.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_roadmap = max(_RICHNESS_MIN_ROADMAP_ROWS, 8) if _is_consulting_grade else _RICHNESS_MIN_ROADMAP_ROWS
     defects = []
     roadmap = sections.get('roadmap', '') or ''
     if not roadmap.strip():
@@ -15056,20 +15233,24 @@ def validate_roadmap_richness(sections, lang):
                         'Roadmap section is empty'))
         return defects
     n = _count_substantive_roadmap_rows(roadmap)
-    if n < _RICHNESS_MIN_ROADMAP_ROWS:
+    if n < _min_roadmap:
         defects.append((
             'roadmap_rows_insufficient_for_richness',
-            f'{n}/{_RICHNESS_MIN_ROADMAP_ROWS} substantive roadmap activities',
+            f'{n}/{_min_roadmap} substantive roadmap activities',
         ))
     return defects
 
 
-def validate_kpi_richness(sections, lang):
+def validate_kpi_richness(sections, lang, generation_mode='consulting'):
     """KPI section must have ≥ 4 substantive KPI rows AND 1:1 guide
-    coverage. Prompt clause A.6 / B3.3 — "each KPI must include: name,
+    coverage. In consulting/assurance mode the bar is raised to ≥ 6 KPIs
+    (Big-4 scorecards carry 8–12; 6 is the floor for a single-domain
+    strategy). Prompt clause A.6 / B3.3 — "each KPI must include: name,
     target, formula, justification, timeframe". Uses the STRICT counter
     that requires all 5 data cells non-placeholder.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_kpis = max(_RICHNESS_MIN_KPI_ROWS, 6) if _is_consulting_grade else _RICHNESS_MIN_KPI_ROWS
     defects = []
     kpis = sections.get('kpis', '') or ''
     if not kpis.strip():
@@ -15078,10 +15259,10 @@ def validate_kpi_richness(sections, lang):
         return defects
     n_kpis   = count_substantive_kpis_strict(kpis)
     n_guides = count_kpi_guides(kpis)
-    if n_kpis < _RICHNESS_MIN_KPI_ROWS:
+    if n_kpis < _min_kpis:
         defects.append((
             'kpi_rows_insufficient_for_richness',
-            f'{n_kpis}/{_RICHNESS_MIN_KPI_ROWS} strictly-substantive KPI rows '
+            f'{n_kpis}/{_min_kpis} strictly-substantive KPI rows '
             f'(each must have description, target, formula, justification, timeframe)',
         ))
     if n_kpis > 0 and n_guides < n_kpis:
@@ -15092,7 +15273,7 @@ def validate_kpi_richness(sections, lang):
     return defects
 
 
-def validate_confidence_richness(sections, lang):
+def validate_confidence_richness(sections, lang, generation_mode='consulting'):
     """Confidence section must have ≥ 4 critical success factors AND ≥ 4
     risk rows with non-placeholder mitigation. Per prompt clause B3.4
     the richness contract ALSO requires:
@@ -15100,7 +15281,14 @@ def validate_confidence_richness(sections, lang):
         "درجة الثقة: 75%")
       - score justification present (inline paragraph OR "Score
         Justification" / "مبررات التقييم" heading followed by prose)
+
+    Gap 7 — Consulting/assurance mode additionally requires a maturity
+    trajectory statement: the current maturity level (numeric or label)
+    AND a 12–24 month target projection must appear in the section.
     """
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
+    _min_csf  = max(_RICHNESS_MIN_CSF_ROWS, 5) if _is_consulting_grade else _RICHNESS_MIN_CSF_ROWS
+    _min_risk = max(_RICHNESS_MIN_RISK_ROWS, 5) if _is_consulting_grade else _RICHNESS_MIN_RISK_ROWS
     defects = []
     conf = sections.get('confidence', '') or ''
     if not conf.strip():
@@ -15142,26 +15330,65 @@ def validate_confidence_richness(sections, lang):
 
     n_csf = _count_csf_rows(conf)
     n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
+    if n_csf < _min_csf:
         defects.append((
             'confidence_csf_insufficient',
-            f'{n_csf}/{_RICHNESS_MIN_CSF_ROWS} critical success factors',
+            f'{n_csf}/{_min_csf} critical success factors',
         ))
-    if n_risks < _RICHNESS_MIN_RISK_ROWS:
+    if n_risks < _min_risk:
         defects.append((
             'confidence_risks_insufficient',
-            f'{n_risks}/{_RICHNESS_MIN_RISK_ROWS} risk rows with mitigation',
+            f'{n_risks}/{_min_risk} risk rows with mitigation',
         ))
+
+    # Gap 7: consulting/assurance mode — maturity trajectory check.
+    # Big-4 confidence sections always state current maturity level AND a
+    # 12–24 month target projection (e.g., "Level 1.8 → Level 3.2 within
+    # 18 months" or "initial → managed maturity within 24 months").
+    if _is_consulting_grade:
+        _maturity_current_re = _ts_re.compile(
+            r'(?:current\s+maturity|maturity\s+level|current\s+level'
+            r'|مستوى\s+النضج\s+الحالي|النضج\s+الحالي|المستوى\s+الحالي'
+            r'|initial|developing|defined|managed|optimized'
+            r'|ابتدائي|تطويري|محدد|مُدار|محسّن)',
+            _ts_re.IGNORECASE,
+        )
+        _maturity_target_re = _ts_re.compile(
+            r'(?:target\s+maturity|target\s+level|within\s+1[2-9]\s*months?'
+            r'|within\s+2[0-4]\s*months?|by\s+(?:month|year)'
+            r'|مستوى\s+النضج\s+المستهدف|المستوى\s+المستهدف'
+            r'|خلال\s+1[2-9]\s+شهر|خلال\s+2[0-4]\s+شهر)',
+            _ts_re.IGNORECASE,
+        )
+        has_current_maturity = bool(_maturity_current_re.search(conf))
+        has_target_maturity  = bool(_maturity_target_re.search(conf))
+        if not has_current_maturity:
+            defects.append((
+                'confidence_maturity_current_missing',
+                'Confidence section lacks a current-maturity-level statement '
+                '(required for consulting-grade deliverable)',
+            ))
+        if not has_target_maturity:
+            defects.append((
+                'confidence_maturity_trajectory_missing',
+                'Confidence section lacks a 12–24 month maturity target projection '
+                '(required for consulting-grade deliverable)',
+            ))
     return defects
 
 
-def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None):
+def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
+                                               generation_mode='consulting'):
     """Orchestrator for semantic richness of the final Technical Strategy
     payload. Runs per-section richness validators and aggregates defects.
 
     Does NOT run for board-level executive summaries — those have their
     own dedicated schema validator. Returns a list of (tag, detail)
     tuples. Empty list = clean.
+
+    generation_mode adjusts the richness bar:
+      consulting / assurance → higher minimums (Big-4 grade)
+      drafting               → base minimums
 
     Name preserved from prompt clause D even though the check is applied
     bilingually; Arabic is the primary risk surface, but the richness bar
@@ -15171,6 +15398,7 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
         return []
     defects = []
     is_ar = (lang == 'ar')
+    _is_consulting_grade = str(generation_mode).lower() in ('consulting', 'assurance')
 
     # ── Canonical heading checks ─────────────────────────────────────────────
     if is_ar:
@@ -15323,18 +15551,21 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
                     'Risk register table has no mitigation plan column',
                 ))
 
-    # ── Higher SO-row bar (4 rather than the 3 used by structural check) ─────
+    # ── Higher SO-row bar (4 base; 6 for consulting/assurance) ──────────────
+    _min_so = _RICHNESS_MIN_SO_ROWS if not _is_consulting_grade else max(_RICHNESS_MIN_SO_ROWS, 6)
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
-    if n_so < _RICHNESS_MIN_SO_ROWS:
+    if n_so < _min_so:
         defects.append((
             'so_rows_insufficient_for_richness',
-            f'{n_so}/{_RICHNESS_MIN_SO_ROWS} valid SO rows',
+            f'{n_so}/{_min_so} valid SO rows',
         ))
+    # ── Pillar minimum: 3 base; 4 for consulting/assurance ───────────────────
+    _min_pillars = _RICHNESS_MIN_PILLARS if not _is_consulting_grade else max(_RICHNESS_MIN_PILLARS, 4)
     n_pill = _count_substantive_pillars(sections.get('pillars', '') or '')
-    if n_pill < _RICHNESS_MIN_PILLARS:
+    if n_pill < _min_pillars:
         defects.append((
             'pillars_insufficient_for_richness',
-            f'{n_pill}/{_RICHNESS_MIN_PILLARS} substantive pillars',
+            f'{n_pill}/{_min_pillars} substantive pillars',
         ))
     # Check that every substantive pillar has ≥ 3 initiative rows
     # (consulting-grade depth requirement).
@@ -15361,16 +15592,55 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
                 f'pillars with <{_RICHNESS_MIN_PILLAR_INITIATIVES} initiatives: '
                 + ', '.join(_thin_pillars),
             ))
+        # Gap 4: consulting-mode pillar narrative check.
+        # Every pillar must have ≥ 1 non-table paragraph of ≥ 100 chars
+        # BEFORE its initiative table — the consultative narrative that
+        # explains strategic logic, root causes, and framework linkage.
+        if _is_consulting_grade:
+            _narrative_missing = []
+            for _idx, _pm in enumerate(_pill_matches):
+                _pend = (_pill_matches[_idx + 1].start()
+                         if _idx + 1 < len(_pill_matches)
+                         else len(_pillars_text))
+                _pbody = _pillars_text[_pm.end():_pend]
+                # Collect text before the first pipe-table line
+                _pre_table_lines = []
+                for _ln in _pbody.splitlines():
+                    _s = _ln.strip()
+                    if _s.startswith('|') and _s.endswith('|'):
+                        break
+                    _pre_table_lines.append(_ln)
+                _pre_table_text = '\n'.join(_pre_table_lines)
+                _n_narrative = _count_substantive_paragraphs(
+                    _pre_table_text, min_chars=100)
+                if _n_narrative == 0:
+                    _pname = _ts_re.sub(
+                        r'^###\s+', '',
+                        _pillars_text[_pm.start():_pm.end()],
+                    ).strip()
+                    _narrative_missing.append(f'"{_pname}"')
+            if _narrative_missing:
+                defects.append((
+                    'pillar_narrative_missing',
+                    'pillars lacking a consultative narrative paragraph (≥100 chars) '
+                    'before the initiative table: ' + ', '.join(_narrative_missing),
+                ))
     n_gap = count_substantive_gaps(sections.get('gaps', '') or '')
-    if n_gap < _RICHNESS_MIN_GAP_ROWS:
+    # Gap rows: 2 base; 5 for consulting/assurance (Big 4 gap analyses have ≥5)
+    _min_gaps = _RICHNESS_MIN_GAP_ROWS if not _is_consulting_grade else max(_RICHNESS_MIN_GAP_ROWS, 5)
+    if n_gap < _min_gaps:
         defects.append((
             'gap_rows_insufficient_for_richness',
-            f'{n_gap}/{_RICHNESS_MIN_GAP_ROWS} substantive gap rows',
+            f'{n_gap}/{_min_gaps} substantive gap rows',
         ))
-    defects.extend(validate_environment_richness(sections, lang))
-    defects.extend(validate_roadmap_richness(sections, lang))
-    defects.extend(validate_kpi_richness(sections, lang))
-    defects.extend(validate_confidence_richness(sections, lang))
+    defects.extend(validate_environment_richness(sections, lang,
+                                                  generation_mode=generation_mode))
+    defects.extend(validate_roadmap_richness(sections, lang,
+                                              generation_mode=generation_mode))
+    defects.extend(validate_kpi_richness(sections, lang,
+                                          generation_mode=generation_mode))
+    defects.extend(validate_confidence_richness(sections, lang,
+                                                 generation_mode=generation_mode))
     return defects
 
 
@@ -15569,6 +15839,42 @@ def synthesize_environment_context(sections, lang, domain='Cyber Security',
     summary['categories_covered'] = ['regulatory', 'threat', 'business']
     summary['generation_mode'] = generation_mode
     summary['maturity'] = maturity
+
+    # Gap 3: consulting-mode — inject a 5-column sector-specific threat matrix
+    # (Actor → Attack Vector → Likelihood → Impact → Current Control) so the
+    # environment section matches Big-4 threat-context deliverables. The matrix
+    # is only appended when the mode is consulting/assurance AND no existing
+    # threat matrix header is already present (idempotent).
+    _is_consulting_env = str(generation_mode).lower() in ('consulting', 'assurance')
+    _has_threat_matrix = (
+        'Threat Actor' in env or 'جهة التهديد' in env
+        or 'Attack Vector' in env or 'ناقل الهجوم' in env
+    )
+    if _is_consulting_env and not _has_threat_matrix:
+        if is_ar:
+            threat_matrix = (
+                "\n\n**مصفوفة التهديدات القطاعية:**\n\n"
+                "| جهة التهديد | ناقل الهجوم | الاحتمالية | التأثير | الضابط الحالي |\n"
+                "|-------------|------------|------------|---------|----------------|\n"
+                f"| مجموعات التهديد المتقدمة (APT) | التصيد الموجّه واستغلال الثغرات | عالية | حرج | {fw_short} — الكشف والاستجابة |\n"
+                f"| برامج الفدية المنظّمة | استغلال بيانات اعتماد مسرّبة | عالية | حرج | عزل الشبكة + النسخ الاحتياطي |\n"
+                f"| مخاطر سلسلة الإمداد الرقمية | اختراق طرف ثالث موثوق | متوسطة | عالٍ | إدارة مخاطر الموردين ({fw_short}) |\n"
+                f"| التهديد الداخلي (قصد أو إهمال) | سوء استخدام الصلاحيات المميزة | منخفضة–متوسطة | عالٍ | PAM + مراقبة السلوك |\n"
+                f"| الهجمات على البنية التحتية الحيوية | هجمات DDoS وحقن التهديدات | متوسطة | عالٍ | أنظمة مكافحة DDoS والتصفية |\n"
+            )
+        else:
+            threat_matrix = (
+                "\n\n**Sector Threat Matrix:**\n\n"
+                "| Threat Actor | Attack Vector | Likelihood | Impact | Current Control |\n"
+                "|--------------|---------------|------------|--------|-----------------|\n"
+                f"| Advanced Persistent Threat (APT) groups | Spear-phishing + zero-day exploitation | High | Critical | {fw_short} detection & response controls |\n"
+                f"| Organised ransomware affiliates | Credential theft via dark-web leaks | High | Critical | Network segmentation + backup recovery |\n"
+                f"| Digital supply-chain attackers | Trusted third-party compromise | Medium | High | Third-party risk management ({fw_short}) |\n"
+                f"| Insider threat (malicious or negligent) | Privileged access abuse | Low–Medium | High | PAM controls + behavioural monitoring |\n"
+                f"| Critical-infrastructure attackers | DDoS + OT/IT boundary exploitation | Medium | High | Anti-DDoS + network filtering |\n"
+            )
+        env = env.rstrip() + threat_matrix
+        summary['threat_matrix_added'] = True
 
     if not has_structured_block:
         if is_ar:
@@ -16077,130 +16383,252 @@ def synthesize_roadmap_depth(sections, lang, domain='Cyber Security',
     # If count already meets minimum AND no priority injection is needed,
     # short-circuit.
     _mode_lc = str(generation_mode).lower()
+    _is_consulting_roadmap = _mode_lc in ('consulting', 'assurance')
     needed_floor = _RICHNESS_MIN_ROADMAP_ROWS
     if _mode_lc == 'consulting':
-        needed_floor += 1
+        needed_floor += 2   # Gap 5: raise consulting floor (was +1)
     elif _mode_lc == 'assurance':
-        needed_floor += 2
+        needed_floor += 3   # assurance gets even more depth
     if (current >= needed_floor and not priority_slots
             and not diagnostic_gaps):
         return 0
 
-    # Priority-row bank — diagnostic-themed, mentioning org + domain + fw
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                f'رئيس {org_name}',
-                'الشهر 1 إلى الشهر 3',
-                (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
-                 f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
-            ),
-            'awareness': (
-                f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                'الموارد البشرية',
-                'الشهر 2 إلى الشهر 9',
-                'مسار تدريبي معتمد + سجل الاجتياز الدوري',
-            ),
-            'incident_response': (
-                f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                f'عمليات {domain}',
-                'الشهر 2 إلى الشهر 6',
-                (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
-                 f'لحوادث {domain}'),
-            ),
-            'staffing': (
-                f'بناء الكفاءات المتخصصة في {domain}',
-                'الموارد البشرية + التدريب',
-                'الشهر 3 إلى الشهر 12',
-                'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
-            ),
-            'suppliers': (
-                f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                f'إدارة {domain}',
-                'الشهر 4 إلى الشهر 10',
-                f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
-            ),
-            'compliance': (
-                f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                'الحوكمة والامتثال',
-                'الشهر 3 إلى الشهر 9',
-                'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
-            ),
-            'continuity': (
-                f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                f'إدارة {domain} وتقنية المعلومات',
-                'الشهر 4 إلى الشهر 12',
-                ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
-                 'مستودع نسخ احتياطي منتظم'),
-            ),
-            'monitoring': (
-                f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                f'عمليات {domain}',
-                'الشهر 2 إلى الشهر 8',
-                ('لوحات مراقبة حية + تغطية رصد كاملة + '
-                 'إجراءات استجابة مرتبطة'),
-            ),
-            'technology_gap': (
-                f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                f'تقنية المعلومات و{domain}',
-                'الشهر 1 إلى الشهر 9',
-                ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
-                 'مع أدلة التشغيل'),
-            ),
-        }
+    # Gap 5: consulting/assurance mode uses specific named roles (CISO, DPO,
+    # etc.) and quantified deliverables (≥ X% of Y classified, etc.) rather
+    # than generic "Team" owners and "Approved document" deliverables.
+    if _is_consulting_roadmap:
+        if is_ar:
+            priority_bank = {
+                'structural': (
+                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
+                    f'المدير التنفيذي / CISO',
+                    'الشهر 1 إلى الشهر 3',
+                    (f'ميثاق لجنة حوكمة معتمد + مصفوفة RACI كاملة لأدوار {domain} '
+                     f'+ تعيين CISO رسمياً — يغلق فجوة الهيكل البنيوي ({fw_short})'),
+                ),
+                'awareness': (
+                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
+                    'مسؤول الموارد البشرية + CISO',
+                    'الشهر 2 إلى الشهر 9',
+                    f'≥ 90% من الكوادر يجتازون التدريب + ≤ 5% معدل الوقوع بالتصيد',
+                ),
+                'incident_response': (
+                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
+                    'CISO + مسؤول SOC',
+                    'الشهر 2 إلى الشهر 6',
+                    (f'SOC عامل 24/7 (MTTD ≤ 60 دق) + SIEM منتج + '
+                     f'كتيب الاستجابة معتمد وفق {fw_short}'),
+                ),
+                'staffing': (
+                    f'بناء الكفاءات المتخصصة في {domain}',
+                    'مسؤول الموارد البشرية',
+                    'الشهر 3 إلى الشهر 12',
+                    '≥ 80% من الشواغر المتخصصة مشغولة + خطط تطوير مهني موثقة',
+                ),
+                'suppliers': (
+                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
+                    'مسؤول مخاطر الأطراف الثالثة (TPRM) / DPO',
+                    'الشهر 4 إلى الشهر 10',
+                    f'100% من الموردين الحرجين مُقيَّمون وفق {fw_short} + نماذج تعاقدية معتمدة',
+                ),
+                'compliance': (
+                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
+                    'مسؤول الحوكمة والمخاطر والامتثال (GRC)',
+                    'الشهر 3 إلى الشهر 9',
+                    '100% من الضوابط الحرجة موثقة بأدلة تدقيق + تقارير ربعية للإدارة العليا',
+                ),
+                'continuity': (
+                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
+                    'مسؤول الاستمرارية التشغيلية + مدير تقنية المعلومات',
+                    'الشهر 4 إلى الشهر 12',
+                    ('خطة BCP/DR معتمدة + ≥ 2 اختبار تعافٍ سنوي + '
+                     '100% تغطية الأصول الحيوية بنسخ احتياطية مُختبَرة'),
+                ),
+                'monitoring': (
+                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
+                    'CISO + مهندس المراقبة الأمنية',
+                    'الشهر 2 إلى الشهر 8',
+                    ('≥ 95% تغطية الأصول الحيوية بالرصد الآني + '
+                     f'لوحات مراقبة تشغيلية وفق {fw_short}'),
+                ),
+                'technology_gap': (
+                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
+                    'مدير تقنية المعلومات + CISO',
+                    'الشهر 1 إلى الشهر 9',
+                    ('SIEM/EDR/IAM/Backup منتجة ومدمجة + '
+                     f'أدلة تشغيل موثقة وفق {fw_short}'),
+                ),
+            }
+        else:
+            priority_bank = {
+                'structural': (
+                    f'Establish formal {domain} governance structure for {org_name}',
+                    'CEO / CISO', 'Months 1-3',
+                    (f'Approved governance committee charter + full RACI matrix '
+                     f'for {domain} roles + formal CISO appointment — '
+                     f'satisfies {fw_short} governance domain'),
+                ),
+                'awareness': (
+                    f'{domain} awareness & security training programme for {org_name} staff',
+                    'CISO / HR Director', 'Months 2-9',
+                    f'≥ 90% of staff pass annual training; ≤ 5% phishing simulation click-rate',
+                ),
+                'incident_response': (
+                    f'Establish SOC and {domain} detection/response capability',
+                    'CISO / SOC Manager', 'Months 2-6',
+                    (f'24/7 SOC operational (MTTD ≤ 60 min; MTTR ≤ 4 hrs) + '
+                     f'production SIEM + approved {fw_short}-compliant IR runbook'),
+                ),
+                'staffing': (
+                    f'Build {domain} specialist workforce at {org_name}',
+                    'HR Director', 'Months 3-12',
+                    f'≥ 80% of specialist {domain} roles filled + documented development plans',
+                ),
+                'suppliers': (
+                    f'Launch third-party risk management programme at {org_name}',
+                    'TPRM Lead / DPO', 'Months 4-10',
+                    f'100% of critical suppliers assessed per {fw_short} controls + approved contract templates',
+                ),
+                'compliance': (
+                    f'Build {fw_short} compliance-evidence system',
+                    'GRC Director', 'Months 3-9',
+                    f'100% of critical controls documented with audit evidence + quarterly executive reporting',
+                ),
+                'continuity': (
+                    f'Activate business continuity & DR framework at {org_name}',
+                    'COO / IT Director', 'Months 4-12',
+                    ('Approved BCP/DR plan + ≥ 2 recovery tests per year + '
+                     '100% of critical assets covered by tested backup procedures'),
+                ),
+                'monitoring': (
+                    f'Build continuous monitoring capability for {domain} assets',
+                    'CISO / Security Architect', 'Months 2-8',
+                    (f'≥ 95% of critical assets under real-time monitoring + '
+                     f'operational dashboards aligned to {fw_short}'),
+                ),
+                'technology_gap': (
+                    f'Acquire and deploy missing foundational {domain} technical capabilities',
+                    'CIO / CISO', 'Months 1-9',
+                    (f'SIEM/EDR/IAM/Backup production-ready + integrated + '
+                     f'documented per {fw_short} technical controls'),
+                ),
+            }
     else:
-        priority_bank = {
-            'structural': (
-                f'Establish formal {domain} governance structure for {org_name}',
-                f'{org_name} CEO', 'Months 1-3',
-                (f'Approved committee charter + org structure + RACI '
-                 f'matrix — closes structural gap'),
-            ),
-            'awareness': (
-                f'{domain} awareness & training programme for {org_name} staff',
-                'HR', 'Months 2-9',
-                'Approved training curriculum + periodic pass-rate records',
-            ),
-            'incident_response': (
-                f'Establish SOC and {domain} detection/response capability',
-                f'{domain} Operations', 'Months 2-6',
-                f'24/7 SOC + production SIEM + {domain} IR runbook',
-            ),
-            'staffing': (
-                f'Build {domain} specialist workforce',
-                'HR + Training', 'Months 3-12',
-                'Hiring plan + certifications + professional-development track',
-            ),
-            'suppliers': (
-                f'Launch third-party risk management programme at {org_name}',
-                f'{domain} Management', 'Months 4-10',
-                f'{fw_short}-aligned supplier assessment register + contracts',
-            ),
-            'compliance': (
-                f'Build {fw_short} compliance-evidence system',
-                'GRC', 'Months 3-9',
-                'Audit-evidence repository + periodic reporting plan',
-            ),
-            'continuity': (
-                f'Activate business continuity & DR framework at {org_name}',
-                f'{domain} Management + IT', 'Months 4-12',
-                ('Approved BCP/DR plan + periodic recovery testing + '
-                 'regular backup repository'),
-            ),
-            'monitoring': (
-                f'Build continuous monitoring capability for {domain} assets',
-                f'{domain} Operations', 'Months 2-8',
-                ('Live monitoring dashboards + full detection coverage + '
-                 'linked response procedures'),
-            ),
-            'technology_gap': (
-                f'Acquire and deploy missing foundational technical capabilities',
-                f'IT + {domain}', 'Months 1-9',
-                ('Production tech capabilities: SIEM/EDR/IAM/Backup '
-                 'integrated and tested with operations runbooks'),
-            ),
-        }
+        # Drafting-mode priority bank — generic owners and deliverables
+        if is_ar:
+            priority_bank = {
+                'structural': (
+                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
+                    f'رئيس {org_name}',
+                    'الشهر 1 إلى الشهر 3',
+                    (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
+                     f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
+                ),
+                'awareness': (
+                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
+                    'الموارد البشرية',
+                    'الشهر 2 إلى الشهر 9',
+                    'مسار تدريبي معتمد + سجل الاجتياز الدوري',
+                ),
+                'incident_response': (
+                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
+                    f'عمليات {domain}',
+                    'الشهر 2 إلى الشهر 6',
+                    (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
+                     f'لحوادث {domain}'),
+                ),
+                'staffing': (
+                    f'بناء الكفاءات المتخصصة في {domain}',
+                    'الموارد البشرية + التدريب',
+                    'الشهر 3 إلى الشهر 12',
+                    'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
+                ),
+                'suppliers': (
+                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
+                    f'إدارة {domain}',
+                    'الشهر 4 إلى الشهر 10',
+                    f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
+                ),
+                'compliance': (
+                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
+                    'الحوكمة والامتثال',
+                    'الشهر 3 إلى الشهر 9',
+                    'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
+                ),
+                'continuity': (
+                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
+                    f'إدارة {domain} وتقنية المعلومات',
+                    'الشهر 4 إلى الشهر 12',
+                    ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
+                     'مستودع نسخ احتياطي منتظم'),
+                ),
+                'monitoring': (
+                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
+                    f'عمليات {domain}',
+                    'الشهر 2 إلى الشهر 8',
+                    ('لوحات مراقبة حية + تغطية رصد كاملة + '
+                     'إجراءات استجابة مرتبطة'),
+                ),
+                'technology_gap': (
+                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
+                    f'تقنية المعلومات و{domain}',
+                    'الشهر 1 إلى الشهر 9',
+                    ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
+                     'مع أدلة التشغيل'),
+                ),
+            }
+        else:
+            priority_bank = {
+                'structural': (
+                    f'Establish formal {domain} governance structure for {org_name}',
+                    f'{org_name} CEO', 'Months 1-3',
+                    (f'Approved committee charter + org structure + RACI '
+                     f'matrix — closes structural gap'),
+                ),
+                'awareness': (
+                    f'{domain} awareness & training programme for {org_name} staff',
+                    'HR', 'Months 2-9',
+                    'Approved training curriculum + periodic pass-rate records',
+                ),
+                'incident_response': (
+                    f'Establish SOC and {domain} detection/response capability',
+                    f'{domain} Operations', 'Months 2-6',
+                    f'24/7 SOC + production SIEM + {domain} IR runbook',
+                ),
+                'staffing': (
+                    f'Build {domain} specialist workforce',
+                    'HR + Training', 'Months 3-12',
+                    'Hiring plan + certifications + professional-development track',
+                ),
+                'suppliers': (
+                    f'Launch third-party risk management programme at {org_name}',
+                    f'{domain} Management', 'Months 4-10',
+                    f'{fw_short}-aligned supplier assessment register + contracts',
+                ),
+                'compliance': (
+                    f'Build {fw_short} compliance-evidence system',
+                    'GRC', 'Months 3-9',
+                    'Audit-evidence repository + periodic reporting plan',
+                ),
+                'continuity': (
+                    f'Activate business continuity & DR framework at {org_name}',
+                    f'{domain} Management + IT', 'Months 4-12',
+                    ('Approved BCP/DR plan + periodic recovery testing + '
+                     'regular backup repository'),
+                ),
+                'monitoring': (
+                    f'Build continuous monitoring capability for {domain} assets',
+                    f'{domain} Operations', 'Months 2-8',
+                    ('Live monitoring dashboards + full detection coverage + '
+                     'linked response procedures'),
+                ),
+                'technology_gap': (
+                    f'Acquire and deploy missing foundational technical capabilities',
+                    f'IT + {domain}', 'Months 1-9',
+                    ('Production tech capabilities: SIEM/EDR/IAM/Backup '
+                     'integrated and tested with operations runbooks'),
+                ),
+            }
 
     # Build new rows: priority first, then diagnostic_gaps entries, then
     # generic fill.
@@ -16369,7 +16797,7 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
         needed_floor += 2
 
     hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     existing_row_nums = set()
@@ -20337,7 +20765,7 @@ _PER_KPI_GUIDE_HEADING_RE = _ts_re.compile(
 # of column-3/4/5 labels.
 _KPI_MAIN_TABLE_HEADER_RE = _ts_re.compile(
     r'^\|[\s\u00a0]*#[\s\u00a0]*\|'
-    r'[\s\u00a0]*(?:KPI[\s\u00a0]+Description|وصف[\s\u00a0]+المؤشر|KPI|المؤشر)'
+    r'[\s\u00a0]*(?:KPI[\s\u00a0]+Description|وصف[\s\u00a0]+المؤشر|KPI|المؤشر|Metric)'
     r'[\s\u00a0]*\|',
     _ts_re.MULTILINE | _ts_re.IGNORECASE,
 )
@@ -23019,7 +23447,223 @@ def repair_confidence_risk_section(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# CANONICAL SECTION HEADING MAP
+# DETERMINISTIC REPAIR: KPI SECTION — MISSING FREQUENCY COLUMN
+#
+# Replaces the KPI main table with a canonical 9-column schema that includes
+# التكرار (Arabic) / Frequency (English) whenever the existing KPI section
+# lacks a frequency/periodicity column.  No AI calls; no HTML; pure Markdown
+# pipe-tables only.  Preserves the section key "kpis".  Does not touch any
+# other section.
+# ────────────────────────────────────────────────────────────────────────────
+
+def repair_kpi_section_if_missing_frequency(
+        sections, lang,
+        domain='Cyber Security',
+        org_name='The Organization',
+        sector='Government',
+        frameworks=None):
+    """Deterministic KPI frequency repair.
+
+    Inspects sections['kpis'].  If the KPI table is missing 'التكرار' or
+    'Frequency', replaces the entire KPI section with the canonical 9-column
+    KPI/KRI table plus 10 per-KPI guide blocks.
+
+    Canonical Arabic schema:
+      | # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |
+      | مصدر البيانات | المالك | التكرار | الإطار الزمني |
+
+    Canonical English schema:
+      | # | Metric | Type KPI/KRI | Target Value | Calculation Formula |
+      | Data Source | Owner | Frequency | Timeframe |
+
+    Returns the number of rows written (0 if section already had frequency).
+    """
+    frameworks = frameworks or ['NCA ECC']
+    fw_short = frameworks[0] if frameworks else 'NCA ECC'
+    is_ar = (lang == 'ar')
+
+    kpis_text = sections.get('kpis', '') or ''
+
+    # Check for frequency tokens
+    _kpi_freq_tokens = ('تكرار', 'frequency', 'دورية', 'شهري', 'monthly',
+                        'quarterly', 'ربع سنوي')
+    _kpi_lc = kpis_text.lower()
+    if any(t in _kpi_lc for t in _kpi_freq_tokens):
+        return 0  # Already has frequency — no repair needed
+
+    # ── Build canonical Arabic table
+    if is_ar:
+        section_heading = '## 6. مؤشرات الأداء الرئيسية'
+        table_header = (
+            '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب '
+            '| مصدر البيانات | المالك | التكرار | الإطار الزمني |'
+        )
+        table_sep = (
+            '|---|--------|---------------|-----------------|---------------|'
+            '----------------|--------|----------|----------------|'
+        )
+        guides_heading = '### أدلة تقييم مؤشرات الأداء'
+
+        # 10-row NCA ECC canonical bank
+        data_rows_raw = [
+            ('نسبة تطبيق ضوابط NCA ECC و NCA DCC',
+             'KPI', '90% خلال السنة الأولى',
+             'عدد الضوابط المطبقة ÷ إجمالي الضوابط ذات العلاقة × 100',
+             'سجل الضوابط ومستودع الأدلة',
+             'فريق الحوكمة والامتثال', 'شهري', 'خلال 12 شهراً'),
+            ('تغطية المصادقة متعددة العوامل MFA',
+             'KPI', '95% للحسابات الحرجة',
+             'عدد الحسابات المحمية بـ MFA ÷ إجمالي الحسابات الحرجة × 100',
+             'نظام IAM وتقارير الوصول',
+             'مدير الهوية والوصول', 'شهري', 'خلال 9 أشهر'),
+            ('اكتمال مراجعة الصلاحيات المميزة',
+             'KPI', '100% ربعياً',
+             'عدد الحسابات المميزة التي تمت مراجعتها ÷ إجمالي الحسابات المميزة × 100',
+             'نظام PAM وسجلات المراجعة',
+             'مدير الهوية والوصول', 'ربع سنوي', 'خلال 12 شهراً'),
+            ('معالجة الثغرات الحرجة ضمن SLA',
+             'KPI', '95% خلال 15 يوماً',
+             'عدد الثغرات الحرجة المغلقة ضمن SLA ÷ إجمالي الثغرات الحرجة × 100',
+             'منصة إدارة الثغرات',
+             'فريق أمن البنية التحتية', 'أسبوعي', 'خلال 9 أشهر'),
+            ('تغطية مصادر السجلات في SIEM',
+             'KPI', '80% من المصادر الحرجة',
+             'عدد مصادر السجلات المربوطة ÷ إجمالي المصادر الحرجة × 100',
+             'منصة SIEM وسجل الأصول',
+             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
+            ('متوسط زمن اكتشاف الحوادث MTTD',
+             'KRI', 'أقل من 4 ساعات',
+             'مجموع زمن الاكتشاف ÷ عدد الحوادث',
+             'منصة SIEM ونظام إدارة الحوادث',
+             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
+            ('متوسط زمن الاستجابة للحوادث MTTR',
+             'KRI', 'أقل من 24 ساعة للحوادث العالية',
+             'مجموع زمن الاستجابة ÷ عدد الحوادث',
+             'نظام إدارة الحوادث وتقارير الاستجابة',
+             'رئيس الأمن السيبراني', 'شهري', 'خلال 12 شهراً'),
+            ('معدل فشل محاكاة التصيد',
+             'KRI', 'أقل من 10%',
+             'عدد المستخدمين الذين فشلوا في المحاكاة ÷ إجمالي المشاركين × 100',
+             'منصة التوعية ومحاكاة التصيد',
+             'مسؤول التوعية الأمنية', 'ربع سنوي', 'خلال 9 أشهر'),
+            ('نجاح اختبارات استعادة النسخ الاحتياطي',
+             'KPI', '100% للأنظمة الحرجة',
+             'عدد اختبارات الاستعادة الناجحة ÷ إجمالي الاختبارات × 100',
+             'نظام النسخ الاحتياطي وتقارير DR',
+             'مدير البنية التحتية', 'ربع سنوي', 'خلال 18 شهراً'),
+            ('تغطية تقييم مخاطر الأطراف الثالثة',
+             'KPI', '100% للموردين الحرجيين',
+             'عدد الموردين الحرجيين المقيمين ÷ إجمالي الموردين الحرجيين × 100',
+             'سجل الموردين وتقييمات الأمن السيبراني',
+             'فريق الحوكمة والامتثال', 'نصف سنوي', 'خلال 12 شهراً'),
+        ]
+
+        def _make_guide(idx, name):
+            return [
+                f'#### دليل تقييم المؤشر رقم {idx}: {name}',
+                '',
+                '| الخطوة | الإجراء | الأداة/النظام | المسؤول | الناتج |',
+                '|--------|---------|----------------|---------|--------|',
+                f'| 1 | جمع البيانات من المصادر المعتمدة | نظام {domain} | فريق {domain} | سجل القياس |',
+                f'| 2 | تطبيق الصيغة الحسابية | لوحة التحكم | محلل {domain} | القيمة المحسوبة |',
+                f'| 3 | التحقق والمصادقة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق |',
+                f'| 4 | الإبلاغ للإدارة العليا | عرض مجلس {domain} | مدير {domain} | بيان الأداء |',
+                '',
+            ]
+
+    else:
+        section_heading = '## 6. Key Performance Indicators'
+        table_header = (
+            '| # | Metric | Type KPI/KRI | Target Value | Calculation Formula '
+            '| Data Source | Owner | Frequency | Timeframe |'
+        )
+        table_sep = (
+            '|---|--------|--------------|--------------|---------------------|'
+            '-------------|-------|-----------|-----------|'
+        )
+        guides_heading = '### KPI Assessment Guidelines'
+
+        data_rows_raw = [
+            (f'{fw_short} Control Implementation Rate',
+             'KPI', '≥ 90% in Year 1',
+             '(Controls implemented ÷ Total applicable controls) × 100',
+             'Control register & evidence repository',
+             'Governance & Compliance Team', 'Monthly', 'Within 12 months'),
+            ('Multi-Factor Authentication (MFA) Coverage',
+             'KPI', '95% of critical accounts',
+             '(MFA-protected accounts ÷ Total critical accounts) × 100',
+             'IAM system & access reports',
+             'Identity & Access Manager', 'Monthly', 'Within 9 months'),
+            ('Privileged Access Review Completion',
+             'KPI', '100% quarterly',
+             '(Reviewed privileged accounts ÷ Total privileged accounts) × 100',
+             'PAM system & review logs',
+             'Identity & Access Manager', 'Quarterly', 'Within 12 months'),
+            ('Critical Vulnerability Remediation within SLA',
+             'KPI', '95% within 15 days',
+             '(Critical vulns closed within SLA ÷ Total critical vulns) × 100',
+             'Vulnerability management platform',
+             'Infrastructure Security Team', 'Weekly', 'Within 9 months'),
+            ('SIEM Log Source Coverage',
+             'KPI', '80% of critical sources',
+             '(Connected log sources ÷ Total critical sources) × 100',
+             'SIEM platform & asset register',
+             'SOC Team', 'Monthly', 'Within 12 months'),
+            ('Mean Time to Detect (MTTD)',
+             'KRI', '< 4 hours',
+             'Sum of detection times ÷ Number of incidents',
+             'SIEM platform & incident management system',
+             'SOC Team', 'Monthly', 'Within 12 months'),
+            ('Mean Time to Respond (MTTR)',
+             'KRI', '< 24 hours for high severity',
+             'Sum of response times ÷ Number of incidents',
+             'Incident management system & response reports',
+             'Chief Information Security Officer', 'Monthly', 'Within 12 months'),
+            ('Phishing Simulation Failure Rate',
+             'KRI', '< 10%',
+             '(Failed participants ÷ Total participants) × 100',
+             'Security awareness & phishing simulation platform',
+             'Security Awareness Officer', 'Quarterly', 'Within 9 months'),
+            ('Backup Recovery Test Success Rate',
+             'KPI', '100% for critical systems',
+             '(Successful restore tests ÷ Total tests) × 100',
+             'Backup system & DR reports',
+             'Infrastructure Manager', 'Quarterly', 'Within 18 months'),
+            ('Third-Party Risk Assessment Coverage',
+             'KPI', '100% of critical vendors',
+             '(Assessed critical vendors ÷ Total critical vendors) × 100',
+             'Vendor register & cybersecurity assessments',
+             'Governance & Compliance Team', 'Semi-annually', 'Within 12 months'),
+        ]
+
+        def _make_guide(idx, name):
+            return [
+                f'#### KPI #{idx} Assessment Guide: {name}',
+                '',
+                '| Step | Action | Tool / System | Owner | Output |',
+                '|------|--------|----------------|-------|--------|',
+                f'| 1 | Collect data from authoritative sources | {domain} platform | {domain} Team | Measurement log |',
+                f'| 2 | Apply calculation formula | Dashboard | {domain} Analyst | Computed value |',
+                f'| 3 | Validate and attest | Management review | {domain} Lead | Attestation report |',
+                f'| 4 | Report to executive governance | {domain} board pack | {domain} Director | Performance statement |',
+                '',
+            ]
+
+    # ── Assemble the canonical KPI section
+    out_lines = [section_heading, '', table_header, table_sep]
+    for idx, row_cells in enumerate(data_rows_raw, start=1):
+        out_lines.append('| ' + str(idx) + ' | ' + ' | '.join(row_cells) + ' |')
+    out_lines.append('')
+    out_lines.append(guides_heading)
+    out_lines.append('')
+    for idx, row_cells in enumerate(data_rows_raw, start=1):
+        out_lines.extend(_make_guide(idx, row_cells[0]))
+
+    sections['kpis'] = '\n'.join(out_lines).rstrip() + '\n'
+    return len(data_rows_raw)
+
+
+
 #
 # Single source of truth for the canonical Arabic/English headings that must
 # appear at the top of each section body.  Used by:
@@ -24500,7 +25144,7 @@ def api_generate_strategy():
         print(f"DEBUG: fw_short = {fw_short!r} (init: hoisted)", flush=True)
 
         # ── Advisory mode context ──────────────────────────────────────────────
-        _generation_mode = data.get('generation_mode', 'drafting')
+        _generation_mode = data.get('generation_mode', 'consulting')
         _is_consulting   = _generation_mode == 'consulting'
         _is_assurance    = _generation_mode == 'assurance'
         _is_drafting     = _generation_mode == 'drafting'
@@ -25055,6 +25699,14 @@ def api_generate_strategy():
 ## 4. خارطة الطريق التنفيذية
 
 (سلسل الأنشطة بحيث تُغلق الفجوات الأساسية أولاً. منظمة بحجم {_model_size} وميزانية {budget} لا تستطيع فعل كل شيء معاً — الترتيب يجب أن يكون منطقياً وواقعياً.)
+{("\"\"\"" if False else "") + ("" if not _is_consulting else """
+متطلبات وضع الاستشارة — دقة خارطة الطريق (إلزامية):
+- عمود المسؤول: دائماً منصب محدد (CISO، DPO، مدير الحوكمة، مدير SOC، مدير الموارد البشرية، مدير تقنية المعلومات، COO) — لا تكتب "الفريق" أو "الإدارة" وحدها
+- عمود المخرجات: دائماً قابل للقياس (مثال: "≥ 80% من الأصول الحيوية مصنّفة"، "MTTD ≤ 60 دقيقة"، "100% من الموردين الحرجين مُقيَّمون")
+- كل مرحلة يجب أن تشير إلى ضابط أو نطاق محدد من {frameworks_ar} تُحققه
+مثال صحيح: | 1 | نشر SIEM يغطي 100% من الأنظمة الحيوية | CISO | الأشهر 1-3 | SIEM منتج بتغطية ≥ 95% من الأصول — يُلبّي نطاق الكشف في {frameworks_ar} |
+مثال خاطئ: | 1 | نشر حل المراقبة | الفريق | الشهر 6 | وثيقة معتمدة |
+""")}
 
 ### المرحلة 1: التأسيس (0-6 أشهر)
 | # | النشاط | المسؤول | الجدول الزمني | المخرجات |
@@ -25107,6 +25759,11 @@ def api_generate_strategy():
 
 **مبررات التقييم:**
 [فقرة تشرح الدرجة بناءً على وضع هذه المنظمة تحديداً: نضج {maturity} في قطاع {_model_sector} مع {row_idx_ar - 1} فجوة تحتاج معالجة وميزانية {budget}. سمِّ العوامل التي ترفع الدرجة والعوامل التي تخفضها. لا توصيف عام.]
+
+{("" if not _is_consulting else f"""**مستوى النضج الحالي:** [حدّد مستوى النضج الحالي — مثال: "تعمل المنظمة حالياً عند مستوى النضج الابتدائي (ما يعادل تقريباً المستوى 1.5 على نموذج نضج الأمن السيبراني)"، أو استخدم المصطلحات الوصفية: ابتدائي / تطويري / محدد / مُدار / محسّن. يجب أن يكون المستوى خاصاً بالملف التشخيصي.]
+
+**مسار تطور النضج:** [حدّد المستوى المستهدف والإطار الزمني — مثال: "يُتوقع أن يرفع تطبيق هذه الاستراتيجية مستوى نضج المنظمة من وضعه الابتدائي الحالي إلى مستوى محدد (المستوى 3.0) خلال 18 شهراً، وإلى مستوى مُدار (المستوى 3.5) خلال 24 شهراً، بشرط الدعم التنفيذي المستمر وتخصيص ميزانية {budget}." يجب أن يكون هذا توقعاً محدداً، لا بياناً عاماً.]
+""")}
 
 ### عوامل النجاح الحرجة:
 | # | العامل | الوصف | الأهمية |
@@ -25689,6 +26346,14 @@ For each workstream write:
 ## 5. Implementation Roadmap
 
 (Sequence activities to close the diagnostic gaps in logical order — foundational gaps first. A {data.get('size','medium')}-sized organization with {data.get('budget','the stated')} budget cannot do everything at once. The phasing must be realistic.)
+{'"""' if False else ''}
+{("""CONSULTING MODE — ROADMAP SPECIFICITY REQUIREMENTS (mandatory):
+- Owner column: ALWAYS a specific named role (CISO, DPO, GRC Director, SOC Manager, HR Director, CIO, COO) — NEVER write "Team" or "Department" alone
+- Deliverable column: ALWAYS quantified (e.g., "≥ 80% of critical assets classified", "MTTD ≤ 60 min", "100% of critical suppliers assessed") — NEVER write "Approved document" or "Completed"
+- Each phase must cite at least one specific {fw_short} control or domain it satisfies
+EXAMPLE CORRECT ROW: | 1 | Deploy SIEM covering 100% of critical systems | CISO | Months 1-3 | Production SIEM with ≥ 95% asset coverage — satisfies {fw_short} detection domain |
+EXAMPLE WRONG ROW: | 1 | Deploy monitoring solution | Team | Month 6 | Approved document |
+""") if _is_consulting else ''}
 
 ### Phase 1: Foundation (0-6 months)
 | # | Activity | Owner | Timeline | Deliverable |
@@ -25780,6 +26445,11 @@ CORRECT format (copy this exactly, replacing [X] with an actual number):
 
 **Score Justification:**
 [Paragraph specific to {org_name}: state the actual score, name 2 specific factors raising confidence (e.g. regulatory mandate creates executive urgency, {budget} budget covers Phase 1 foundations), name 2 specific factors reducing it (e.g. talent shortage in {data.get('sector','this sector')}, {len(data.get('gaps','').split(chr(10))) if isinstance(data.get('gaps',''),str) else 'multiple'} simultaneous foundational gaps). State the single highest-risk execution assumption. This justification must be specific to {org_name}'s maturity={maturity} profile.]
+
+{("" if not _is_consulting else f"""**Current Maturity Level:** [State the current maturity level — e.g., "The Organization is currently operating at an initial maturity level (approximately Level 1.5 on the Cybersecurity Maturity Model)", or use descriptive terms: initial / developing / defined / managed / optimized. Be specific to the diagnostic profile.]
+
+**Maturity Trajectory:** [State the target maturity and timeframe — e.g., "Implementation of this strategy is projected to advance {org_name} from its current initial posture to a defined maturity level (Level 3.0) within 18 months, and to managed maturity (Level 3.5) within 24 months, contingent on sustained executive sponsorship and the {budget} budget allocation." This must be a specific projection, not a generic statement.]
+""")}
 
 ### Critical Success Factors:
 | # | Factor | Description | Importance |
@@ -29419,7 +30089,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                             # _wb_flags so the bypass fails closed here too.
                             try:
                                 _wb_rich = validate_arabic_strategy_semantic_richness(
-                                    sections, lang, doc_subtype=doc_subtype)
+                                    sections, lang, doc_subtype=doc_subtype,
+                                    generation_mode=_generation_mode)
                                 if _wb_rich:
                                     for _rtag, _rdetail in _wb_rich:
                                         _wb_flags.append((_rtag, _rdetail))
@@ -30803,6 +31474,36 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'{_rr_e}',
                                 flush=True,
                             )
+                        # ── DETERMINISTIC KPI FREQUENCY REPAIR ──────────────
+                        # Runs after vision/confidence repair and before the
+                        # post-normalization audit gate. Replaces the KPI main
+                        # table with the canonical 9-column schema if the
+                        # existing section is missing التكرار/Frequency.
+                        try:
+                            _kpi_freq_repair = (
+                                repair_kpi_section_if_missing_frequency(
+                                    sections, lang,
+                                    domain=domain,
+                                    org_name=_final_ctx.get(
+                                        'org_name', 'The Organization'),
+                                    sector=_final_ctx.get(
+                                        'sector', 'Government'),
+                                    frameworks=_final_ctx.get(
+                                        'frameworks', ['NCA ECC']),
+                                )
+                            )
+                            if _kpi_freq_repair:
+                                print(
+                                    f'[STRATEGY-DIAG] repair_kpi_frequency='
+                                    f'rows_written={_kpi_freq_repair}',
+                                    flush=True,
+                                )
+                        except Exception as _kfr_e:
+                            print(
+                                f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '
+                                f'{_kfr_e}',
+                                flush=True,
+                            )
                         # Rebuild content blob after deterministic repairs so
                         # the audit gate, richness validator, and serializers
                         # all see the repaired payload.
@@ -31626,7 +32327,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # the orchestrator.
                     try:
                         _richness_defects = validate_arabic_strategy_semantic_richness(
-                            sections, lang, doc_subtype=doc_subtype)
+                            sections, lang, doc_subtype=doc_subtype,
+                            generation_mode=_final_ctx.get(
+                                'generation_mode', 'consulting'))
                     except Exception as _rde:
                         print(f'[STRATEGY-DIAG] richness_validator_failed: '
                               f'{_rde}', flush=True)
@@ -42926,5 +43629,886 @@ def api_risk_latest():
 # ═══════════════════════════════════════════════════════════════════════════════
 # END ASYNC GENERATION LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ╔═══════════════════════════════════════════════════════════════════════════════╗
+# ║  GRC REPLACEMENT LAYER — Gaps 1-5                                           ║
+# ║  Gap 1: Policy Library  |  Gap 2: Asset Inventory                           ║
+# ║  Gap 3: Audit Findings  |  Gap 4: Training Engine                           ║
+# ║  Gap 5: Approval Workflow                                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+import json as _json_grc
+import traceback as _tb_grc
+import uuid as _uuid_grc
+
+
+def _grc_err(e: Exception) -> str:
+    """Log the real exception server-side but return a generic safe message to clients."""
+    print(f'[GRC-LAYER] error: {e}\n{_tb_grc.format_exc()}', flush=True)
+    return 'An internal error occurred. Please try again.'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 1 — POLICY LIBRARY
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/policy-library')
+@login_required
+def policy_library():
+    """Policy Library page — displays catalogued policy templates."""
+    lang = request.args.get('lang', session.get('lang', 'en'))
+    session['lang'] = lang
+    is_rtl = lang == 'ar'
+    txt = get_text(lang)
+    ai_available = check_ai_available()
+    username = session.get('username', '')
+
+    # Enrich catalog entries with user's existing policies for "already generated" badge
+    generated_names = set()
+    try:
+        with closing(get_db_direct()) as conn:
+            rows = conn.execute(
+                'SELECT policy_name FROM policies WHERE user_id=? AND is_procedure=0',
+                (session['user_id'],)
+            ).fetchall()
+            generated_names = {r['policy_name'] for r in rows}
+    except Exception:
+        pass
+
+    catalog = POLICY_CATALOG
+    return render_template(
+        'policy_library.html',
+        lang=lang, is_rtl=is_rtl, txt=txt, ai_available=ai_available,
+        username=username, catalog=catalog, generated_names=generated_names,
+        config=config,
+    )
+
+
+@app.route('/api/policy-catalog', methods=['GET'])
+@login_required
+def api_policy_catalog():
+    """Return POLICY_CATALOG as JSON, optionally filtered by domain."""
+    domain = request.args.get('domain', '')
+    if domain and domain in POLICY_CATALOG:
+        return jsonify({'success': True, 'policies': POLICY_CATALOG[domain]})
+    return jsonify({'success': True, 'catalog': POLICY_CATALOG})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 2 — ASSET INVENTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/api/assets', methods=['GET'])
+@login_required
+def api_assets_list():
+    """List asset inventory for the logged-in user, optionally filtered by domain."""
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if domain:
+                rows = conn.execute(
+                    'SELECT * FROM asset_inventory WHERE user_id=? AND domain=? ORDER BY criticality DESC, created_at DESC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT * FROM asset_inventory WHERE user_id=? ORDER BY criticality DESC, created_at DESC',
+                    (session['user_id'],)
+                ).fetchall()
+            return jsonify({'success': True, 'assets': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/assets', methods=['POST'])
+@login_required
+def api_assets_create():
+    """Create a new asset in the inventory."""
+    data = request.json or {}
+    required = ['asset_name']
+    if not all(data.get(f) for f in required):
+        return jsonify({'success': False, 'error': 'asset_name is required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                '''INSERT INTO asset_inventory
+                   (user_id, domain, asset_name, asset_type, criticality, data_classification,
+                    owner, location, technology_stack, cloud_provider, third_party_dependencies,
+                    existing_controls, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 sanitize_input(data.get('domain', 'General'), 100),
+                 sanitize_input(data.get('asset_name', ''), 200),
+                 sanitize_input(data.get('asset_type', 'Information System'), 100),
+                 sanitize_input(data.get('criticality', 'Medium'), 20),
+                 sanitize_input(data.get('data_classification', 'Internal'), 50),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('location', ''), 200),
+                 sanitize_input(data.get('technology_stack', ''), 500),
+                 sanitize_input(data.get('cloud_provider', ''), 100),
+                 sanitize_input(data.get('third_party_dependencies', ''), 500),
+                 sanitize_input(data.get('existing_controls', ''), 1000),
+                 sanitize_input(data.get('notes', ''), 500))
+            )
+            conn.commit()
+            asset_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        log_action(session['user_id'], 'create_asset',
+                   {'domain': data.get('domain'), 'asset': data.get('asset_name')})
+        return jsonify({'success': True, 'asset_id': asset_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/assets/<int:asset_id>', methods=['PUT'])
+@login_required
+def api_assets_update(asset_id):
+    """Update an existing asset record."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM asset_inventory WHERE id=? AND user_id=?',
+                (asset_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Asset not found'}), 404
+            conn.execute(
+                '''UPDATE asset_inventory SET
+                   asset_name=?, asset_type=?, criticality=?, data_classification=?,
+                   owner=?, location=?, technology_stack=?, cloud_provider=?,
+                   third_party_dependencies=?, existing_controls=?, notes=?,
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('asset_name', ''), 200),
+                 sanitize_input(data.get('asset_type', ''), 100),
+                 sanitize_input(data.get('criticality', 'Medium'), 20),
+                 sanitize_input(data.get('data_classification', 'Internal'), 50),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('location', ''), 200),
+                 sanitize_input(data.get('technology_stack', ''), 500),
+                 sanitize_input(data.get('cloud_provider', ''), 100),
+                 sanitize_input(data.get('third_party_dependencies', ''), 500),
+                 sanitize_input(data.get('existing_controls', ''), 1000),
+                 sanitize_input(data.get('notes', ''), 500),
+                 asset_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/assets/<int:asset_id>', methods=['DELETE'])
+@login_required
+def api_assets_delete(asset_id):
+    """Delete an asset record."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM asset_inventory WHERE id=? AND user_id=?',
+                (asset_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 3 — AUDIT FINDINGS & REMEDIATION TRACKER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/api/audit-findings', methods=['GET'])
+@login_required
+def api_audit_findings_list():
+    """List audit findings for the logged-in user, optionally filtered by domain or audit_id."""
+    domain = request.args.get('domain', '')
+    audit_id = request.args.get('audit_id', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if audit_id:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? AND audit_id=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'], audit_id)
+                ).fetchall()
+            elif domain:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? AND domain=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'],)
+                ).fetchall()
+            findings = [dict(r) for r in rows]
+            # Attach remediation count to each finding
+            for f in findings:
+                cnt = conn.execute(
+                    'SELECT COUNT(*) as c FROM remediation_items WHERE finding_id=? AND user_id=?',
+                    (f['id'], session['user_id'])
+                ).fetchone()
+                f['remediation_count'] = cnt['c'] if cnt else 0
+        return jsonify({'success': True, 'findings': findings})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/audit-findings', methods=['POST'])
+@login_required
+def api_audit_findings_create():
+    """Create a new audit finding."""
+    data = request.json or {}
+    if not data.get('title'):
+        return jsonify({'success': False, 'error': 'title is required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Auto-generate finding_ref if not provided
+            domain = data.get('domain', 'General')
+            existing_count = conn.execute(
+                'SELECT COUNT(*) as c FROM audit_findings WHERE user_id=? AND domain=?',
+                (session['user_id'], domain)
+            ).fetchone()['c']
+            finding_ref = data.get('finding_ref') or f"FND-{domain[:3].upper()}-{existing_count + 1:03d}"
+
+            conn.execute(
+                '''INSERT INTO audit_findings
+                   (user_id, domain, audit_id, finding_ref, title, observation, root_cause,
+                    risk_rating, control_reference, recommendation, management_response,
+                    remediation_owner, target_date, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 sanitize_input(domain, 100),
+                 data.get('audit_id'),
+                 sanitize_input(finding_ref, 50),
+                 sanitize_input(data.get('title', ''), 300),
+                 sanitize_input(data.get('observation', ''), 2000),
+                 sanitize_input(data.get('root_cause', ''), 1000),
+                 sanitize_input(data.get('risk_rating', 'Medium'), 20),
+                 sanitize_input(data.get('control_reference', ''), 200),
+                 sanitize_input(data.get('recommendation', ''), 2000),
+                 sanitize_input(data.get('management_response', ''), 2000),
+                 sanitize_input(data.get('remediation_owner', ''), 200),
+                 sanitize_input(data.get('target_date', ''), 20),
+                 sanitize_input(data.get('status', 'Open'), 30))
+            )
+            conn.commit()
+            finding_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        log_action(session['user_id'], 'create_finding',
+                   {'domain': domain, 'title': data.get('title'), 'ref': finding_ref})
+        return jsonify({'success': True, 'finding_id': finding_id, 'finding_ref': finding_ref})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/audit-findings/<int:finding_id>', methods=['PUT'])
+@login_required
+def api_audit_findings_update(finding_id):
+    """Update an existing audit finding."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM audit_findings WHERE id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Finding not found'}), 404
+            conn.execute(
+                '''UPDATE audit_findings SET
+                   title=?, observation=?, root_cause=?, risk_rating=?, control_reference=?,
+                   recommendation=?, management_response=?, remediation_owner=?,
+                   target_date=?, status=?, updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('title', ''), 300),
+                 sanitize_input(data.get('observation', ''), 2000),
+                 sanitize_input(data.get('root_cause', ''), 1000),
+                 sanitize_input(data.get('risk_rating', 'Medium'), 20),
+                 sanitize_input(data.get('control_reference', ''), 200),
+                 sanitize_input(data.get('recommendation', ''), 2000),
+                 sanitize_input(data.get('management_response', ''), 2000),
+                 sanitize_input(data.get('remediation_owner', ''), 200),
+                 sanitize_input(data.get('target_date', ''), 20),
+                 sanitize_input(data.get('status', 'Open'), 30),
+                 finding_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/audit-findings/<int:finding_id>', methods=['DELETE'])
+@login_required
+def api_audit_findings_delete(finding_id):
+    """Delete an audit finding and its remediation items."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM remediation_items WHERE finding_id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            )
+            conn.execute(
+                'DELETE FROM audit_findings WHERE id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/remediation', methods=['GET'])
+@login_required
+def api_remediation_list():
+    """List remediation items for a finding or all findings in a domain."""
+    finding_id = request.args.get('finding_id', '')
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if finding_id:
+                rows = conn.execute(
+                    'SELECT * FROM remediation_items WHERE user_id=? AND finding_id=? ORDER BY priority DESC, due_date ASC',
+                    (session['user_id'], finding_id)
+                ).fetchall()
+            elif domain:
+                rows = conn.execute(
+                    'SELECT r.*, f.title as finding_title, f.finding_ref '
+                    'FROM remediation_items r JOIN audit_findings f ON r.finding_id=f.id '
+                    'WHERE r.user_id=? AND r.domain=? ORDER BY r.priority DESC, r.due_date ASC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT r.*, f.title as finding_title, f.finding_ref '
+                    'FROM remediation_items r JOIN audit_findings f ON r.finding_id=f.id '
+                    'WHERE r.user_id=? ORDER BY r.priority DESC, r.due_date ASC',
+                    (session['user_id'],)
+                ).fetchall()
+            return jsonify({'success': True, 'items': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/remediation', methods=['POST'])
+@login_required
+def api_remediation_create():
+    """Create a remediation action item for a finding."""
+    data = request.json or {}
+    if not data.get('finding_id') or not data.get('action_title'):
+        return jsonify({'success': False, 'error': 'finding_id and action_title are required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Verify the finding belongs to the user
+            finding = conn.execute(
+                'SELECT id, domain FROM audit_findings WHERE id=? AND user_id=?',
+                (data['finding_id'], session['user_id'])
+            ).fetchone()
+            if not finding:
+                return jsonify({'success': False, 'error': 'Finding not found'}), 404
+            conn.execute(
+                '''INSERT INTO remediation_items
+                   (user_id, finding_id, domain, action_title, action_description,
+                    owner, due_date, priority, status, evidence)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 data['finding_id'],
+                 finding['domain'],
+                 sanitize_input(data.get('action_title', ''), 300),
+                 sanitize_input(data.get('action_description', ''), 1000),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('due_date', ''), 20),
+                 sanitize_input(data.get('priority', 'Medium'), 20),
+                 sanitize_input(data.get('status', 'Open'), 30),
+                 sanitize_input(data.get('evidence', ''), 500))
+            )
+            conn.commit()
+            item_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        return jsonify({'success': True, 'item_id': item_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/remediation/<int:item_id>', methods=['PUT'])
+@login_required
+def api_remediation_update(item_id):
+    """Update a remediation action item (including closing it)."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id, status FROM remediation_items WHERE id=? AND user_id=?',
+                (item_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Item not found'}), 404
+            new_status = sanitize_input(data.get('status', existing['status']), 30)
+            closed_at = None
+            if new_status == 'Closed' and existing['status'] != 'Closed':
+                from datetime import datetime as _dt
+                closed_at = _dt.utcnow().isoformat()
+            conn.execute(
+                '''UPDATE remediation_items SET
+                   action_title=?, action_description=?, owner=?, due_date=?,
+                   priority=?, status=?, evidence=?,
+                   closed_at=COALESCE(?, closed_at),
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('action_title', ''), 300),
+                 sanitize_input(data.get('action_description', ''), 1000),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('due_date', ''), 20),
+                 sanitize_input(data.get('priority', 'Medium'), 20),
+                 new_status,
+                 sanitize_input(data.get('evidence', ''), 500),
+                 closed_at,
+                 item_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/findings-summary', methods=['GET'])
+@login_required
+def api_findings_summary():
+    """Return summary stats for findings and remediation items."""
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?' + (' AND domain=?' if domain else '')
+            params = (session['user_id'], domain) if domain else (session['user_id'],)
+            findings_total = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q}', params
+            ).fetchone()['c']
+            open_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q} AND status="Open"', params
+            ).fetchone()['c']
+            high_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q} AND risk_rating IN ("High","Critical")', params
+            ).fetchone()['c']
+            rem_q = 'WHERE user_id=?' + (' AND domain=?' if domain else '')
+            overdue_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM remediation_items {rem_q} '
+                f'AND status!="Closed" AND due_date < date("now")', params
+            ).fetchone()['c']
+        return jsonify({'success': True, 'total': findings_total, 'open': open_count,
+                        'high_critical': high_count, 'overdue_remediation': overdue_count})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 4 — TRAINING ENGINE (Training Decks + Tabletop Exercises)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_AUDIENCE_LABELS = {
+    'board':     'Board of Directors / Executive Committee',
+    'staff':     'General Staff (All Employees)',
+    'technical': 'IT / Security Technical Team',
+}
+_AUDIENCE_LABELS_AR = {
+    'board':     'مجلس الإدارة / اللجنة التنفيذية',
+    'staff':     'جميع الموظفين',
+    'technical': 'فريق تقنية المعلومات والأمن السيبراني',
+}
+
+def _build_training_prompt(data):
+    """Build training deck or tabletop exercise prompt."""
+    lang            = data.get('language', 'en')
+    material_type   = data.get('material_type', 'training_deck')
+    domain          = data.get('domain', 'Cyber Security')
+    audience        = data.get('audience', 'staff')
+    source_content  = data.get('source_content', '')
+    topic           = data.get('topic', domain)
+
+    if lang == 'ar':
+        audience_label = _AUDIENCE_LABELS_AR.get(audience, audience)
+        if material_type == 'tabletop':
+            prompt = (
+                f'أنت خبير GRC. أنشئ سيناريو تمرين طاولة (Tabletop Exercise) كاملاً '
+                f'في مجال {domain}.\n\n'
+                f'الجمهور: {audience_label}\n'
+                f'الموضوع: {topic}\n\n'
+                f'{'السياق: ' + source_content[:1500] + chr(10) if source_content else ""}'
+                f'أنشئ:\n'
+                f'1. **ملخص التمرين** — الأهداف والنطاق والمشاركون (جدول)\n'
+                f'2. **السيناريو الرئيسي** — وصف الحادثة التدريبية بتفاصيل واقعية\n'
+                f'3. **بطاقات الحقن** — 6 حقن متصاعدة مع التوقيت والسؤال التحفيزي (جدول: #|الوقت|الحدث|السؤال للفريق)\n'
+                f'4. **مصفوفة القرارات** — 8 قرارات نموذجية مع الإجابات المثالية (جدول)\n'
+                f'5. **دليل الميسر** — تعليمات إدارة التمرين ونقاط التوقف\n'
+                f'6. **نموذج الإحاطة التالية** — نقاط النقاش والدروس المستفادة\n'
+                f'الحد الأدنى 1200 كلمة. استخدم تنسيق Markdown مع جداول وعناوين واضحة.'
+            )
+        else:
+            prompt = (
+                f'أنت خبير GRC. أنشئ شرائح تدريبية (Training Deck) احترافية '
+                f'في مجال {domain}.\n\n'
+                f'الجمهور: {audience_label}\n'
+                f'الموضوع: {topic}\n\n'
+                f'{'المحتوى المرجعي: ' + source_content[:1500] + chr(10) if source_content else ""}'
+                f'أنشئ عرضاً تقديمياً بتنسيق Markdown يتضمن:\n'
+                f'1. **شريحة العنوان** — العنوان والجمهور والهدف\n'
+                f'2. **نقاط التعلم الرئيسية** — 5-7 نقاط رئيسية\n'
+                f'3. **الموضوع 1** — شريحة كاملة مع محتوى ونقاط نقاش\n'
+                f'4. **الموضوع 2** — شريحة كاملة\n'
+                f'5. **الموضوع 3** — شريحة كاملة\n'
+                f'6. **سيناريو عملي** — مثال واقعي أو دراسة حالة\n'
+                f'7. **نقاط التقييم الذاتي** — 5 أسئلة للتحقق من الفهم\n'
+                f'8. **خلاصة وخطوات تالية** — ملخص وإجراءات مقترحة\n'
+                f'الحد الأدنى 1000 كلمة.'
+            )
+    else:
+        audience_label = _AUDIENCE_LABELS.get(audience, audience)
+        if material_type == 'tabletop':
+            prompt = (
+                f'You are a Big4-grade GRC consultant. Create a complete Tabletop Exercise scenario '
+                f'for {domain}.\n\n'
+                f'Audience: {audience_label}\n'
+                f'Topic: {topic}\n\n'
+                f'{"Reference content: " + source_content[:1500] + chr(10) if source_content else ""}'
+                f'Produce:\n'
+                f'1. **Exercise Overview** — objectives, scope, participants (table)\n'
+                f'2. **Master Scenario** — realistic incident narrative with technical detail\n'
+                f'3. **Inject Cards** — 6 escalating injects with timing and discussion question (table: #|Time|Event|Question for Team)\n'
+                f'4. **Decision Matrix** — 8 key decisions with model responses (table)\n'
+                f'5. **Facilitator Guide** — exercise administration instructions and stop/pause points\n'
+                f'6. **Hot Wash / After-Action Template** — structured debrief questions and lessons-learned capture\n'
+                f'Minimum 1200 words. Well-structured Markdown with clear headings and tables.'
+            )
+        else:
+            prompt = (
+                f'You are a Big4-grade GRC consultant. Create a professional Training Deck '
+                f'for {domain}.\n\n'
+                f'Audience: {audience_label}\n'
+                f'Topic: {topic}\n\n'
+                f'{"Reference content: " + source_content[:1500] + chr(10) if source_content else ""}'
+                f'Produce a Markdown training deck with:\n'
+                f'1. **Title Slide** — Title, audience, learning objectives\n'
+                f'2. **Key Learning Points** — 5-7 takeaways\n'
+                f'3. **Topic 1** — Full slide with content and speaker notes\n'
+                f'4. **Topic 2** — Full slide\n'
+                f'5. **Topic 3** — Full slide\n'
+                f'6. **Practical Scenario** — real-world case study or worked example\n'
+                f'7. **Knowledge Check** — 5 comprehension questions with answers\n'
+                f'8. **Summary & Next Steps** — key actions and recommended follow-up\n'
+                f'Minimum 1000 words.'
+            )
+    return prompt
+
+
+def _run_training_generation_task(task_id, user_id, data):
+    """Background worker: generate training material and save to DB."""
+    import json as _j
+    import traceback as _tb
+    try:
+        lang          = data.get('language', 'en')
+        prompt        = data.get('_prompt', '')
+        domain        = data.get('domain', 'General')
+        material_type = data.get('material_type', 'training_deck')
+        audience      = data.get('audience', 'staff')
+        topic         = data.get('topic', domain)
+
+        if not prompt:
+            fail_background_task(task_id, 'Prompt missing')
+            return
+
+        content = generate_ai_content(prompt, lang, content_type='policy')
+        try:
+            content = ensure_markdown_formatting(content)
+        except Exception:
+            pass
+
+        material_id = None
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                '''INSERT INTO training_materials
+                   (user_id, domain, material_type, audience, title, content,
+                    source_artifact_type, source_artifact_id, language)
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                (user_id, domain, material_type, audience,
+                 sanitize_input(topic, 300), content,
+                 sanitize_input(data.get('source_artifact_type', ''), 50),
+                 data.get('source_artifact_id'),
+                 lang)
+            )
+            conn.commit()
+            material_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+
+        result = _j.dumps({
+            'success': True, 'material_id': material_id,
+            'content': content, 'language': lang,
+            'material_type': material_type, 'audience': audience,
+        }, ensure_ascii=False)
+        complete_background_task(task_id, result)
+        print(f'[TRAINING-ASYNC] task {task_id[:8]} done — material_id={material_id}', flush=True)
+    except Exception as exc:
+        print(f'[TRAINING-ASYNC] task {task_id[:8]} ERROR: {exc}\n{_tb.format_exc()}', flush=True)
+        fail_background_task(task_id, str(exc))
+
+
+@app.route('/api/generate-training', methods=['POST'])
+@login_required
+def api_generate_training():
+    """Start async generation of a training deck or tabletop exercise."""
+    import threading as _thr
+    data = request.json or {}
+    domain = data.get('domain', 'Cyber Security')
+
+    _rl_ok, _rl_retry = check_generation_rate_limit('training')
+    if not _rl_ok:
+        return jsonify({'success': False, 'error': 'Too many requests. Please wait.',
+                        'retry_after': _rl_retry}), 429
+
+    job_data = dict(data)
+    job_data['_prompt'] = _build_training_prompt(job_data)
+
+    task_id = str(_uuid_grc.uuid4())
+    create_background_task(task_id, session['user_id'], domain)
+    t = _thr.Thread(target=_run_training_generation_task,
+                    args=(task_id, session['user_id'], job_data), daemon=True)
+    t.start()
+    print(f'[TRAINING-ASYNC] task {task_id[:8]} started — domain={domain!r}', flush=True)
+    return jsonify({'task_id': task_id})
+
+
+@app.route('/api/training-status/<task_id>')
+@login_required
+def api_training_status(task_id):
+    """Poll training generation task status."""
+    task = get_background_task(task_id)
+    if not task:
+        return jsonify({'status': 'not_found'}), 404
+    if task['status'] == 'done':
+        try:
+            result = _json_grc.loads(task['result'])
+        except Exception:
+            result = {'success': False, 'error': 'Result parse error'}
+        return jsonify({'status': 'done', 'result': result})
+    if task['status'] == 'error':
+        return jsonify({'status': 'error', 'error': task['error'] or 'Unknown'}), 500
+    return jsonify({'status': 'pending'})
+
+
+@app.route('/api/training-materials', methods=['GET'])
+@login_required
+def api_training_materials_list():
+    """List training materials for the logged-in user."""
+    domain = request.args.get('domain', '')
+    material_type = request.args.get('material_type', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?'
+            params = [session['user_id']]
+            if domain:
+                q += ' AND domain=?'
+                params.append(domain)
+            if material_type:
+                q += ' AND material_type=?'
+                params.append(material_type)
+            rows = conn.execute(
+                f'SELECT id, domain, material_type, audience, title, language, created_at '
+                f'FROM training_materials {q} ORDER BY created_at DESC',
+                params
+            ).fetchall()
+            return jsonify({'success': True, 'materials': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/training-materials/<int:material_id>', methods=['GET'])
+@login_required
+def api_training_material_get(material_id):
+    """Get full content of a training material."""
+    try:
+        with closing(get_db_direct()) as conn:
+            row = conn.execute(
+                'SELECT * FROM training_materials WHERE id=? AND user_id=?',
+                (material_id, session['user_id'])
+            ).fetchone()
+            if not row:
+                return jsonify({'success': False, 'error': 'Not found'}), 404
+            return jsonify({'success': True, 'material': dict(row)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/training-materials/<int:material_id>', methods=['DELETE'])
+@login_required
+def api_training_material_delete(material_id):
+    """Delete a training material."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM training_materials WHERE id=? AND user_id=?',
+                (material_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 5 — DOCUMENT APPROVAL WORKFLOW
+# ─────────────────────────────────────────────────────────────────────────────
+
+_APPROVER_ROLES = ['CISO', 'Board of Directors', 'CEO', 'CTO', 'DPO',
+                   'Audit Committee', 'Risk Committee', 'Compliance Officer']
+
+
+@app.route('/api/approvals', methods=['GET'])
+@login_required
+def api_approvals_list():
+    """List approval records for a user, optionally by artifact type/id."""
+    artifact_type = request.args.get('artifact_type', '')
+    artifact_id   = request.args.get('artifact_id', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?'
+            params = [session['user_id']]
+            if artifact_type:
+                q += ' AND artifact_type=?'
+                params.append(artifact_type)
+            if artifact_id:
+                q += ' AND artifact_id=?'
+                params.append(artifact_id)
+            rows = conn.execute(
+                f'SELECT * FROM document_approvals {q} ORDER BY created_at DESC',
+                params
+            ).fetchall()
+            return jsonify({'success': True, 'approvals': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/approvals', methods=['POST'])
+@login_required
+def api_approvals_create():
+    """Request approval for a document artifact."""
+    data = request.json or {}
+    required = ['artifact_type', 'artifact_id', 'approver_role']
+    if not all(data.get(f) for f in required):
+        return jsonify({'success': False,
+                        'error': 'artifact_type, artifact_id and approver_role are required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Resolve artifact title
+            artifact_type = sanitize_input(data['artifact_type'], 50)
+            artifact_id   = int(data['artifact_id'])
+            title = ''
+            if artifact_type == 'policy':
+                row = conn.execute(
+                    'SELECT policy_name FROM policies WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = row['policy_name'] if row else ''
+            elif artifact_type == 'strategy':
+                row = conn.execute(
+                    'SELECT document_title FROM strategies WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = row['document_title'] if row else ''
+            elif artifact_type == 'audit':
+                row = conn.execute(
+                    'SELECT framework FROM audits WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = f"Audit — {row['framework']}" if row else ''
+            elif artifact_type == 'risk':
+                row = conn.execute(
+                    'SELECT asset_name, threat FROM risks WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = f"Risk — {row['asset_name']}" if row else ''
+
+            conn.execute(
+                '''INSERT INTO document_approvals
+                   (user_id, artifact_type, artifact_id, artifact_title,
+                    approver_role, approver_name, status, comments)
+                   VALUES (?,?,?,?,?,?,?,?)''',
+                (session['user_id'], artifact_type, artifact_id,
+                 sanitize_input(data.get('artifact_title') or title, 300),
+                 sanitize_input(data['approver_role'], 100),
+                 sanitize_input(data.get('approver_name', ''), 200),
+                 'pending',
+                 sanitize_input(data.get('comments', ''), 1000))
+            )
+            conn.commit()
+            approval_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+
+        log_action(session['user_id'], 'request_approval',
+                   {'artifact_type': artifact_type, 'artifact_id': artifact_id,
+                    'approver_role': data['approver_role']})
+        return jsonify({'success': True, 'approval_id': approval_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/approvals/<int:approval_id>', methods=['PUT'])
+@login_required
+def api_approvals_update(approval_id):
+    """Update approval status (approve / reject / request changes)."""
+    data = request.json or {}
+    new_status = sanitize_input(data.get('status', ''), 30)
+    if new_status not in ('approved', 'rejected', 'changes_requested', 'pending'):
+        return jsonify({'success': False, 'error': 'Invalid status'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM document_approvals WHERE id=? AND user_id=?',
+                (approval_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Approval record not found'}), 404
+            approved_at = None
+            if new_status == 'approved':
+                from datetime import datetime as _dt
+                approved_at = _dt.utcnow().isoformat()
+            conn.execute(
+                '''UPDATE document_approvals SET
+                   status=?, approver_name=?, comments=?,
+                   approved_at=COALESCE(?, approved_at)
+                   WHERE id=? AND user_id=?''',
+                (new_status,
+                 sanitize_input(data.get('approver_name', ''), 200),
+                 sanitize_input(data.get('comments', ''), 1000),
+                 approved_at,
+                 approval_id, session['user_id'])
+            )
+            conn.commit()
+        log_action(session['user_id'], f'approval_{new_status}',
+                   {'approval_id': approval_id})
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
+@app.route('/api/approvals/summary', methods=['GET'])
+@login_required
+def api_approvals_summary():
+    """Return approval workflow summary stats."""
+    try:
+        with closing(get_db_direct()) as conn:
+            total   = conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=?',
+                                   (session['user_id'],)).fetchone()['c']
+            pending = conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="pending"',
+                                   (session['user_id'],)).fetchone()['c']
+            approved= conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="approved"',
+                                   (session['user_id'],)).fetchone()['c']
+            rejected= conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="rejected"',
+                                   (session['user_id'],)).fetchone()['c']
+            recent  = conn.execute(
+                'SELECT artifact_type, artifact_title, approver_role, status, created_at '
+                'FROM document_approvals WHERE user_id=? ORDER BY created_at DESC LIMIT 5',
+                (session['user_id'],)
+            ).fetchall()
+        return jsonify({'success': True, 'total': total, 'pending': pending,
+                        'approved': approved, 'rejected': rejected,
+                        'recent': [dict(r) for r in recent]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _grc_err(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

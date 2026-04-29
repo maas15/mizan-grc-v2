@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="app-layout {{ 'rtl-layout' if is_rtl else '' }}">
+    <!-- Sidebar -->
+    <aside class="sidebar {{ 'sidebar-right' if is_rtl else 'sidebar-left' }}">
+        <div class="sidebar-brand">
+            <a href="{{ url_for('dashboard', lang=lang) }}">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Mizan Logo" class="sidebar-logo">
+            </a>
+        </div>
+        <div class="sidebar-controls">
+            <div class="sidebar-lang">
+                <a href="{{ url_for('policy_library', lang='en') }}" class="lang-btn {{ 'active' if lang == 'en' else '' }}">EN</a>
+                <a href="{{ url_for('policy_library', lang='ar') }}" class="lang-btn {{ 'active' if lang == 'ar' else '' }}">ع</a>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme"><i class="fas fa-sun"></i></button>
+        </div>
+        <a href="{{ url_for('dashboard', lang=lang) }}" class="back-btn">
+            <i class="fas fa-arrow-{{ 'right' if is_rtl else 'left' }}"></i>
+            {% if is_rtl %}العودة{% else %}Back{% endif %}
+        </a>
+        <div class="user-info">
+            <div class="user-avatar"><i class="fas fa-user"></i></div>
+            <div class="user-details">
+                <span class="user-label">{{ txt.logged_in_as }}</span>
+                <span class="user-name">{{ username }}</span>
+            </div>
+        </div>
+        <div class="ai-status {{ 'connected' if ai_available else 'disconnected' }}">
+            <div class="status-dot"></div>
+            <span>{{ txt.ai_connected if ai_available else txt.ai_disconnected }}</span>
+        </div>
+        <a href="{{ url_for('logout') }}" class="logout-btn"><i class="fas fa-sign-out-alt"></i> {{ txt.logout }}</a>
+        <div class="sidebar-footer">
+            <p class="created-by">{{ txt.created_by }}</p>
+            <p class="creator-name">{{ config.CREATOR_NAME_AR if is_rtl else config.CREATOR_NAME }}</p>
+            <p class="copyright">© {{ config.COPYRIGHT_YEAR }}</p>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <header class="dashboard-header">
+            <div>
+                <h1><i class="fas fa-book-open" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.5rem;"></i>
+                    {% if is_rtl %}مكتبة السياسات{% else %}Policy Library{% endif %}
+                </h1>
+                <p class="header-sub">
+                    {% if is_rtl %}{{ catalog.values() | sum(attribute='__len__') }}+ قالب سياسة جاهز — اختر وأنشئ في ثوانٍ{% else %}{{ catalog.values() | sum(attribute='__len__') }}+ ready-to-generate policy templates — pick one and launch in seconds{% endif %}
+                </p>
+            </div>
+        </header>
+
+        <!-- Domain filter tabs -->
+        <div class="tabs" id="lib-domain-tabs">
+            <button class="tab active" data-domain="all" onclick="filterDomain('all', this)">
+                {% if is_rtl %}الكل{% else %}All{% endif %}
+            </button>
+            {% for domain_name in catalog.keys() %}
+            <button class="tab" data-domain="{{ domain_name }}" onclick="filterDomain('{{ domain_name }}', this)">
+                {{ domain_name }}
+            </button>
+            {% endfor %}
+        </div>
+
+        <!-- Search bar -->
+        <div style="margin:1rem 0 1.5rem;">
+            <div style="position:relative;max-width:420px;">
+                <i class="fas fa-search" style="position:absolute;top:50%;transform:translateY(-50%);{{ 'right' if is_rtl else 'left' }}:12px;color:var(--text-secondary);pointer-events:none;"></i>
+                <input type="text" id="lib-search" placeholder="{% if is_rtl %}ابحث عن سياسة…{% else %}Search policies…{% endif %}"
+                    oninput="searchPolicies(this.value)"
+                    style="width:100%;padding:10px 12px 10px {{ '12px' if is_rtl else '36px' }};border-radius:10px;border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-primary);font-size:0.9rem;">
+            </div>
+        </div>
+
+        <!-- Policy cards grid -->
+        <div id="lib-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.25rem;">
+            {% for domain_name, policies in catalog.items() %}
+            {% for policy in policies %}
+            <div class="lib-card stat-card"
+                 data-domain="{{ domain_name }}"
+                 data-name="{{ policy.name | lower }}"
+                 data-name-ar="{{ policy.name_ar | lower }}"
+                 style="cursor:default;border:1px solid var(--border-color);border-radius:14px;padding:1.25rem;display:flex;flex-direction:column;gap:0.75rem;">
+                <!-- Header row -->
+                <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+                    <div style="width:42px;height:42px;border-radius:10px;background:var(--accent-alpha,rgba(99,102,241,0.12));display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                        <i class="fas {{ policy.icon }}" style="color:var(--accent);font-size:1.1rem;"></i>
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:0.92rem;line-height:1.3;color:var(--text-primary);">
+                            {% if is_rtl %}{{ policy.name_ar }}{% else %}{{ policy.name }}{% endif %}
+                        </div>
+                        <div style="margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;">
+                            <span style="font-size:0.72rem;padding:2px 8px;border-radius:20px;background:var(--bg-sidebar);color:var(--text-secondary);">
+                                <i class="fas fa-tag" style="margin-{{ 'left' if is_rtl else 'right' }}:3px;font-size:0.65rem;"></i>{{ policy.framework }}
+                            </span>
+                            <span style="font-size:0.72rem;padding:2px 8px;border-radius:20px;background:var(--bg-sidebar);color:var(--text-secondary);">
+                                {{ policy.category }}
+                            </span>
+                        </div>
+                    </div>
+                    {% if policy.name in generated_names or policy.name_ar in generated_names %}
+                    <span title="{% if is_rtl %}تم إنشاؤها{% else %}Already generated{% endif %}"
+                          style="font-size:0.7rem;padding:3px 8px;border-radius:20px;background:#22c55e22;color:#22c55e;flex-shrink:0;">
+                        <i class="fas fa-check"></i>
+                    </span>
+                    {% endif %}
+                </div>
+
+                <!-- Description -->
+                <p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5;margin:0;">
+                    {{ policy.description }}
+                </p>
+
+                <!-- Domain badge + Generate button -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:0.5rem;border-top:1px solid var(--border-color);">
+                    <span style="font-size:0.72rem;color:var(--text-secondary);">
+                        <i class="fas fa-layer-group" style="margin-{{ 'left' if is_rtl else 'right' }}:4px;"></i>{{ domain_name }}
+                    </span>
+                    <button class="btn btn-primary"
+                            onclick="launchPolicyGenerator('{{ policy.name | e }}', '{{ policy.framework | e }}', '{{ domain_name | e }}')"
+                            style="font-size:0.8rem;padding:6px 14px;border-radius:8px;">
+                        <i class="fas fa-magic"></i>
+                        {% if is_rtl %}إنشاء{% else %}Generate{% endif %}
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+            {% endfor %}
+        </div>
+
+        <!-- Empty state -->
+        <div id="lib-empty" style="display:none;text-align:center;padding:4rem 1rem;color:var(--text-secondary);">
+            <i class="fas fa-search" style="font-size:2.5rem;margin-bottom:1rem;opacity:0.4;"></i>
+            <p>{% if is_rtl %}لا توجد نتائج مطابقة{% else %}No matching policies found{% endif %}</p>
+        </div>
+    </main>
+</div>
+
+<!-- Generate Policy Modal -->
+<div id="lib-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:18px;padding:2rem;width:min(520px,94vw);max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.4);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+            <h3 style="margin:0;font-size:1.1rem;">
+                <i class="fas fa-magic" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.5rem;"></i>
+                {% if is_rtl %}إنشاء السياسة{% else %}Generate Policy{% endif %}
+            </h3>
+            <button onclick="closeLibModal()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:var(--text-secondary);">✕</button>
+        </div>
+
+        <div class="form-group" style="margin-bottom:1rem;">
+            <label style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}اسم السياسة{% else %}Policy Name{% endif %}</label>
+            <input id="lib-policy-name" type="text" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-input,var(--bg-sidebar));color:var(--text-primary);">
+        </div>
+        <div class="form-group" style="margin-bottom:1rem;">
+            <label style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}الإطار التنظيمي{% else %}Framework{% endif %}</label>
+            <input id="lib-framework" type="text" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-input,var(--bg-sidebar));color:var(--text-primary);">
+        </div>
+        <div class="form-group" style="margin-bottom:1rem;">
+            <label style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}اسم المنظمة{% else %}Organization Name{% endif %}</label>
+            <input id="lib-org-name" type="text" value="{% if is_rtl %}منظمتي{% else %}My Organization{% endif %}"
+                   style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-input,var(--bg-sidebar));color:var(--text-primary);">
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;">
+            <div class="form-group">
+                <label style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}القطاع{% else %}Sector{% endif %}</label>
+                <select id="lib-sector" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-input,var(--bg-sidebar));color:var(--text-primary);">
+                    {% for sector in txt.sectors %}
+                    <option value="{{ sector }}">{{ sector }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}اللغة{% else %}Language{% endif %}</label>
+                <select id="lib-language" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-input,var(--bg-sidebar));color:var(--text-primary);">
+                    <option value="en" {{ 'selected' if lang == 'en' }}>English</option>
+                    <option value="ar" {{ 'selected' if lang == 'ar' }}>العربية</option>
+                </select>
+            </div>
+        </div>
+        <input type="hidden" id="lib-domain">
+
+        <button onclick="submitLibGenerate()" id="lib-generate-btn"
+                class="btn btn-primary"
+                style="width:100%;padding:12px;border-radius:10px;font-size:0.95rem;font-weight:600;">
+            <i class="fas fa-magic"></i>
+            {% if is_rtl %}إنشاء السياسة{% else %}Generate Policy{% endif %}
+        </button>
+    </div>
+</div>
+
+<!-- Result Modal -->
+<div id="lib-result-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:18px;padding:2rem;width:min(760px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 id="lib-result-title" style="margin:0;font-size:1.1rem;"></h3>
+            <button onclick="closeResultModal()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <div id="lib-result-spinner" style="text-align:center;padding:3rem;display:none;">
+            <div class="spinner" style="width:40px;height:40px;margin:0 auto 1rem;border:4px solid var(--border-color);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>
+            <p style="color:var(--text-secondary);">{% if is_rtl %}يتم إنشاء السياسة…{% else %}Generating policy…{% endif %}</p>
+        </div>
+        <div id="lib-result-content" class="markdown-output" style="display:none;"></div>
+        <div id="lib-result-actions" style="display:none;margin-top:1.25rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
+            <button onclick="copyResult()" class="btn btn-secondary" style="padding:8px 18px;">
+                <i class="fas fa-copy"></i> {% if is_rtl %}نسخ{% else %}Copy{% endif %}
+            </button>
+            <button onclick="downloadResultDocx()" class="btn btn-info" style="padding:8px 18px;">
+                <i class="fas fa-file-word"></i> {% if is_rtl %}تنزيل Word{% else %}Download Word{% endif %}
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+.lib-card:hover { border-color: var(--accent) !important; box-shadow: 0 4px 20px rgba(99,102,241,0.12); }
+</style>
+
+<script>
+const IS_RTL = {{ 'true' if is_rtl else 'false' }};
+let _libTaskId = null;
+let _libPollInterval = null;
+let _libResultText = '';
+let _libPolicyName = '';
+let _libDomain = '';
+let _libLang = '{{ lang }}';
+
+function filterDomain(domain, btn) {
+    document.querySelectorAll('#lib-domain-tabs .tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const cards = document.querySelectorAll('.lib-card');
+    let visible = 0;
+    cards.forEach(card => {
+        const match = domain === 'all' || card.dataset.domain === domain;
+        card.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    document.getElementById('lib-empty').style.display = visible === 0 ? 'flex' : 'none';
+}
+
+function searchPolicies(q) {
+    q = q.toLowerCase().trim();
+    const cards = document.querySelectorAll('.lib-card');
+    let visible = 0;
+    cards.forEach(card => {
+        const name = (card.dataset.name || '') + ' ' + (card.dataset.nameAr || '');
+        const match = !q || name.includes(q);
+        card.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    document.getElementById('lib-empty').style.display = visible === 0 ? 'flex' : 'none';
+}
+
+function launchPolicyGenerator(name, framework, domain) {
+    document.getElementById('lib-policy-name').value = name;
+    document.getElementById('lib-framework').value = framework;
+    document.getElementById('lib-domain').value = domain;
+    _libPolicyName = name;
+    _libDomain = domain;
+    const modal = document.getElementById('lib-modal');
+    modal.style.display = 'flex';
+}
+
+function closeLibModal() {
+    document.getElementById('lib-modal').style.display = 'none';
+}
+
+function closeResultModal() {
+    document.getElementById('lib-result-modal').style.display = 'none';
+    if (_libPollInterval) { clearInterval(_libPollInterval); _libPollInterval = null; }
+}
+
+async function submitLibGenerate() {
+    const policyName = document.getElementById('lib-policy-name').value.trim();
+    const framework  = document.getElementById('lib-framework').value.trim();
+    const orgName    = document.getElementById('lib-org-name').value.trim();
+    const sector     = document.getElementById('lib-sector').value;
+    const language   = document.getElementById('lib-language').value;
+    const domain     = document.getElementById('lib-domain').value;
+
+    if (!policyName) { alert(IS_RTL ? 'الرجاء إدخال اسم السياسة' : 'Please enter a policy name'); return; }
+
+    closeLibModal();
+
+    // Show result modal with spinner
+    const rm = document.getElementById('lib-result-modal');
+    document.getElementById('lib-result-title').textContent = IS_RTL ? 'يتم إنشاء: ' + policyName : 'Generating: ' + policyName;
+    document.getElementById('lib-result-spinner').style.display = 'block';
+    document.getElementById('lib-result-content').style.display = 'none';
+    document.getElementById('lib-result-actions').style.display = 'none';
+    rm.style.display = 'flex';
+    _libLang = language;
+
+    try {
+        const resp = await fetch('/api/generate-policy-async', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                policy_name: policyName,
+                framework: framework,
+                org_name: orgName,
+                sector: sector,
+                language: language,
+                domain: domain,
+                is_procedure: false,
+            })
+        });
+        const data = await resp.json();
+        if (!data.task_id) {
+            showError(data.error || 'Failed to start generation');
+            return;
+        }
+        _libTaskId = data.task_id;
+        _libPollInterval = setInterval(pollLibTask, 3000);
+    } catch (err) {
+        showError(err.message);
+    }
+}
+
+async function pollLibTask() {
+    if (!_libTaskId) return;
+    try {
+        const resp = await fetch('/api/policy-status/' + _libTaskId);
+        const data = await resp.json();
+        if (data.status === 'done') {
+            clearInterval(_libPollInterval); _libPollInterval = null;
+            const result = data.result || {};
+            if (result.success && result.content) {
+                _libResultText = result.content;
+                showResult(result.content);
+            } else {
+                showError(result.error || 'Generation failed');
+            }
+        } else if (data.status === 'error') {
+            clearInterval(_libPollInterval); _libPollInterval = null;
+            showError(data.error || 'Generation error');
+        }
+    } catch (e) {}
+}
+
+function showResult(content) {
+    document.getElementById('lib-result-spinner').style.display = 'none';
+    const el = document.getElementById('lib-result-content');
+    el.style.display = 'block';
+    if (window.renderGRCMarkdown) {
+        el.innerHTML = renderGRCMarkdown(content);
+    } else {
+        el.innerHTML = content.replace(/\n/g, '<br>');
+    }
+    document.getElementById('lib-result-actions').style.display = 'flex';
+}
+
+function showError(msg) {
+    document.getElementById('lib-result-spinner').style.display = 'none';
+    document.getElementById('lib-result-content').style.display = 'block';
+    document.getElementById('lib-result-content').innerHTML =
+        '<div style="color:#ef4444;padding:1rem;"><i class="fas fa-exclamation-triangle"></i> ' + msg + '</div>';
+}
+
+function copyResult() {
+    navigator.clipboard.writeText(_libResultText).then(() => {
+        if (window.showToast) showToast(IS_RTL ? 'تم النسخ' : 'Copied!', 'success');
+    });
+}
+
+async function downloadResultDocx() {
+    const policyName = document.getElementById('lib-result-title').textContent.replace(/^(Generating|يتم إنشاء): /, '');
+    try {
+        const resp = await fetch('/api/generate-docx-async', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: _libResultText, filename: policyName, language: _libLang, doc_type: 'Policy Document' })
+        });
+        const d = await resp.json();
+        if (d.task_id) {
+            const dlCheck = setInterval(async () => {
+                const sr = await fetch('/api/export-status/' + d.task_id);
+                const sd = await sr.json();
+                if (sd.status === 'done') {
+                    clearInterval(dlCheck);
+                    window.location.href = '/api/export-download/' + d.task_id;
+                }
+            }, 2000);
+        }
+    } catch (e) {}
+}
+
+// Close modals on overlay click
+document.getElementById('lib-modal').addEventListener('click', function(e) { if (e.target === this) closeLibModal(); });
+document.getElementById('lib-result-modal').addEventListener('click', function(e) { if (e.target === this) closeResultModal(); });
+</script>
+{% endblock %}
