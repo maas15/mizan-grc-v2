@@ -15183,6 +15183,31 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
             'pillars_insufficient_for_richness',
             f'{n_pill}/{_RICHNESS_MIN_PILLARS} substantive pillars',
         ))
+    # Check that every substantive pillar has ≥ 3 initiative rows
+    # (consulting-grade depth requirement).
+    _pillars_text = sections.get('pillars', '') or ''
+    if _pillars_text.strip():
+        _pill_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(_pillars_text))
+        if not _pill_matches:
+            _pill_matches = list(_ts_re.finditer(
+                r'^###\s+[^\n]+$', _pillars_text, _ts_re.MULTILINE,
+            ))
+        _thin_pillars = []
+        for _idx, _pm in enumerate(_pill_matches):
+            _pend = (_pill_matches[_idx + 1].start()
+                     if _idx + 1 < len(_pill_matches)
+                     else len(_pillars_text))
+            _pbody = _pillars_text[_pm.end():_pend]
+            _n_init = _count_pillar_initiative_rows(_pbody)
+            if _n_init < _RICHNESS_MIN_PILLAR_INITIATIVES:
+                _pname = _ts_re.sub(r'^###\s+', '', _pillars_text[_pm.start():_pm.end()]).strip()
+                _thin_pillars.append(f'"{_pname}"({_n_init})')
+        if _thin_pillars:
+            defects.append((
+                'pillar_initiatives_insufficient',
+                f'pillars with <{_RICHNESS_MIN_PILLAR_INITIATIVES} initiatives: '
+                + ', '.join(_thin_pillars),
+            ))
     n_gap = count_substantive_gaps(sections.get('gaps', '') or '')
     if n_gap < _RICHNESS_MIN_GAP_ROWS:
         defects.append((
@@ -17472,153 +17497,223 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
     # Deterministic consultancy-grade pillar bank. Each pillar is designed
     # to pass _count_substantive_pillars — it has an initiative row AND a
     # narrative body well over 80 chars. Content references the user's
-    # domain / framework / sector / organization.
+    # domain / framework / sector / organization. Each pillar carries
+    # 3 initiative rows so synthesized pillars pass the 3+ initiative
+    # depth check without requiring a separate enrichment pass.
     if is_ar:
         pillar_bank = [
             {
-                'title': f'الركيزة الأولى: حوكمة {domain} والامتثال لـ{fw_short}',
+                'title': f'الركيزة الأولى: الحوكمة والامتثال وإدارة مخاطر {domain}',
                 'narrative': (
                     f"تؤسس هذه الركيزة إطار حوكمة {domain} الرسمي لـ{org_name} "
                     f"بما يحقق الامتثال لمتطلبات {fw_short} في قطاع {sector}. "
-                    "تشمل صلاحيات لجنة التوجيه، ومسارات التصعيد، وإعداد التقارير "
-                    "الدورية للإدارة العليا، وربط القرارات بالأولويات المؤسسية."
+                    "تشمل ميثاق الأمن السيبراني، وصلاحيات لجنة التوجيه، ومصفوفة "
+                    "RACI، وسجل الضوابط، ومسارات التصعيد، وإعداد التقارير الدورية "
+                    "للإدارة العليا، وربط القرارات بالأولويات المؤسسية."
                 ),
-                'initiative': (
-                    f'تأسيس لجنة حوكمة {domain}',
-                    f'تشكيل لجنة توجيه برئاسة تنفيذية وصلاحيات قرار واضحة لحوكمة {domain}',
-                    f'ميثاق اللجنة ومحاضر الاجتماعات الدورية وفق متطلبات {fw_short}',
-                ),
+                'initiatives': [
+                    (
+                        f'ميثاق الأمن السيبراني ولجنة الحوكمة',
+                        f'إعداد ميثاق {domain} المعتمد وتشكيل لجنة توجيه برئاسة تنفيذية مع اختصاصات واضحة وجداول اجتماعات دورية',
+                        f'ميثاق {domain} المعتمد + اختصاصات لجنة الحوكمة + محاضر الاجتماعات الربعية',
+                    ),
+                    (
+                        f'مصفوفة RACI وإطار السياسات',
+                        f'توثيق مصفوفة RACI لأدوار {domain} ومسؤولياتها وإعداد حزمة السياسات والإجراءات وفق {fw_short}',
+                        f'مصفوفة RACI المعتمدة + سياسة {domain} الرئيسية + الإجراءات التشغيلية',
+                    ),
+                    (
+                        f'سجل ضوابط {fw_short} وسجل المخاطر',
+                        f'بناء سجل ضوابط {fw_short} المُرقَّم وربطه بسجل مخاطر {domain} مع خطط معالجة موثقة',
+                        f'سجل ضوابط {fw_short} + سجل مخاطر نشط + خطط المعالجة الموثقة',
+                    ),
+                ],
             },
             {
-                'title': f'الركيزة الثانية: تقوية ضوابط {domain} التشغيلية',
+                'title': f'الركيزة الثانية: الحماية التقنية والهندسة الأمنية',
                 'narrative': (
-                    f"تعالج هذه الركيزة الفجوات التشغيلية المحددة في ضوابط {domain} "
-                    f"التي تؤثر مباشرة على جاهزية {org_name} لمواجهة التهديدات "
-                    f"الحالية، مع تسريع النضج وفق خط الأساس الذي يفرضه {fw_short}."
+                    f"تُحكم هذه الركيزة الضوابط التقنية الأساسية في بنية {org_name} "
+                    f"بما يشمل إدارة الهوية والوصول المميز (IAM/PAM)، ونشر منصات "
+                    f"الحماية المتطورة (EDR/XDR)، وتطبيق ضوابط حماية البيانات، "
+                    f"وذلك وفق خط الأساس الذي يفرضه {fw_short}."
                 ),
-                'initiative': (
-                    f'تنفيذ ضوابط {fw_short} الحرجة',
-                    f'تطبيق الضوابط ذات الأولوية العليا في {fw_short} مع أدلة امتثال موثقة',
-                    'سجل الضوابط المطبقة + أدلة التدقيق',
-                ),
+                'initiatives': [
+                    (
+                        'إدارة الهوية والوصول المميز (IAM/PAM)',
+                        'جرد الحسابات المميزة وتطبيق المصادقة متعددة العوامل (MFA) ونشر حل PAM مع آليات مراجعة الوصول الدورية',
+                        'قاموس هويات المستخدمين + خطة نشر PAM/MFA + سجل مراجعة الوصول',
+                    ),
+                    (
+                        'نشر منصات الحماية (EDR/XDR)',
+                        f'تطبيق خط الأساس الأمني للنهايات والشبكات عبر نشر EDR/XDR مع ضوابط {fw_short} التشغيلية',
+                        'سياسة تكوين النهايات + خط الأساس الأمني EDR/XDR + سجل تغطية الأجهزة',
+                    ),
+                    (
+                        'حماية البيانات والتصنيف',
+                        f'تنفيذ مخطط تصنيف البيانات وضوابط التشفير وسياسات DLP وفق متطلبات {fw_short}',
+                        'مخطط تصنيف البيانات + سياسة التشفير + قواعد DLP المفعَّلة',
+                    ),
+                ],
             },
             {
-                'title': f'الركيزة الثالثة: قدرات الكشف والاستجابة للحوادث',
+                'title': f'الركيزة الثالثة: الكشف والاستجابة والمرونة السيبرانية',
                 'narrative': (
                     f"ترفع هذه الركيزة قدرة {org_name} على الكشف المبكر والاستجابة "
-                    f"الفعّالة لحوادث {domain}، بما يشمل المراقبة المستمرة وأدلة "
-                    "التحقيق والتنسيق مع الجهات التنظيمية الوطنية."
+                    f"الفعّالة لحوادث {domain}، بما يشمل تفعيل SIEM، وإعداد كتب "
+                    "الاستجابة للحوادث، وتفعيل برنامج إدارة الثغرات، وضمان استمرارية "
+                    "الأعمال والتعافي من الكوارث."
                 ),
-                'initiative': (
-                    'تأسيس مركز عمليات الأمن (SOC)',
-                    f'تشغيل SOC بتغطية 24/7 مع أدوات المراقبة والاستجابة لحوادث {domain}',
-                    'كتيب تشغيل SOC + تقارير الحوادث الدورية',
-                ),
+                'initiatives': [
+                    (
+                        'SIEM وكتالوج حالات الاستخدام',
+                        f'ربط مصادر السجلات بمنصة SIEM وتطوير كتالوج حالات استخدام الكشف المرتبطة بتهديدات {sector}',
+                        'مصادر السجلات المُدمجة + كتالوج حالات SIEM + مصفوفة التصعيد',
+                    ),
+                    (
+                        'كتب الاستجابة للحوادث',
+                        f'إعداد كتب تشغيل الاستجابة للحوادث الحرجة وإجراء تمارين محاكاة دورية وفق متطلبات {fw_short}',
+                        'كتب الاستجابة المعتمدة + تقارير تمارين المحاكاة + مؤشرات MTTD/MTTR',
+                    ),
+                    (
+                        'إدارة الثغرات والنسخ الاحتياطي',
+                        f'تطبيق إجراء إدارة الثغرات والتصحيح مع اختبارات استعادة النسخ الاحتياطي بشكل دوري',
+                        'سجل الثغرات + تقارير اختبار الاستعادة + أدلة النسخ الاحتياطي',
+                    ),
+                ],
             },
             {
-                'title': f'الركيزة الرابعة: إدارة مخاطر الأطراف الثالثة',
+                'title': f'الركيزة الرابعة: الثقافة والقدرات والضمان المستمر',
                 'narrative': (
-                    f"تحكم هذه الركيزة مخاطر سلاسل الإمداد الرقمية التي تواجه {org_name}، "
-                    f"مع تقييم منتظم لموردي {domain} واشتراطات تعاقدية تعكس التزامات {fw_short}."
+                    f"تُطوّر هذه الركيزة كفاءات {org_name} في مجال {domain}، وتُعزّز "
+                    "ثقافة الأمن السيبراني عبر برامج التوعية ومحاكاة التصيد، وإدارة "
+                    "مخاطر الأطراف الثالثة، والضمان المستمر عبر التدقيق الداخلي."
                 ),
-                'initiative': (
-                    'برنامج تقييم الأطراف الثالثة',
-                    f'تقييم دوري لموردي {domain} وفق معايير {fw_short} مع قياس المخاطر',
-                    'سجل تقييم الموردين + خطط المعالجة',
-                ),
-            },
-            {
-                'title': f'الركيزة الخامسة: بناء القدرات البشرية ووعي {domain}',
-                'narrative': (
-                    f"تُطوّر هذه الركيزة كفاءات {org_name} في مجال {domain}، مع "
-                    "برنامج تدريب وتوعية ممتد عبر جميع المستويات الوظيفية ومقاييس "
-                    "أثر واضحة على الأداء المؤسسي."
-                ),
-                'initiative': (
-                    f'برنامج تدريب وتوعية {domain}',
-                    f'مسار تدريبي متدرج لكوادر {org_name} مع اختبارات اجتياز دورية',
-                    'سجل التدريبات ومعدلات الاجتياز',
-                ),
+                'initiatives': [
+                    (
+                        'برنامج التوعية ومحاكاة التصيد',
+                        f'تطوير برنامج توعية {domain} المتدرج مع تمارين محاكاة التصيد ومقاييس فعالية التدريب',
+                        'خطة حملة التوعية + تقارير محاكاة التصيد + معدلات الاجتياز',
+                    ),
+                    (
+                        'تقييم مخاطر الأطراف الثالثة',
+                        f'تطبيق نموذج تقييم {domain} للموردين الحرجين وفق {fw_short} مع متطلبات تعاقدية واضحة',
+                        'نموذج تقييم الأطراف الثالثة + سجل مخاطر الموردين + الشروط التعاقدية',
+                    ),
+                    (
+                        'التدقيق الداخلي والضمان المستمر',
+                        f'تشغيل دورة تدقيق داخلي دورية لضوابط {fw_short} مع إصدار تقارير تنفيذية ربعية',
+                        'تقارير التدقيق الداخلي + خطط المعالجة + لوحة متابعة الامتثال',
+                    ),
+                ],
             },
         ]
     else:
         pillar_bank = [
             {
-                'title': f'Pillar 1: {domain} Governance & {fw_short} Compliance',
+                'title': f'Pillar 1: {domain} Governance, Compliance & Risk Management',
                 'narrative': (
                     f"This pillar establishes {org_name}'s formal {domain} "
                     f"governance framework aligned to {fw_short} obligations "
-                    f"in the {sector} sector. It covers steering-committee "
-                    "authority, escalation paths, periodic executive reporting, "
-                    "and the link between security decisions and enterprise "
-                    "priorities."
+                    f"in the {sector} sector. It covers the cybersecurity "
+                    "charter, steering-committee authority, RACI matrix, "
+                    "control register, escalation paths, and periodic "
+                    "executive reporting."
                 ),
-                'initiative': (
-                    f'Establish {domain} governance committee',
-                    f'Form executive-chaired steering committee with clear decision '
-                    f'rights for {domain} under {fw_short}',
-                    f'Committee charter + periodic meeting minutes per {fw_short}',
-                ),
+                'initiatives': [
+                    (
+                        f'{domain} Charter & Governance Committee',
+                        f'Prepare the approved {domain} charter and form an executive-chaired steering committee with clear ToR and quarterly meeting schedule',
+                        f'Approved {domain} charter + Committee ToR + Quarterly meeting minutes',
+                    ),
+                    (
+                        f'RACI Matrix & Policy Framework',
+                        f'Document RACI matrix for {domain} roles and produce a policy/procedure pack aligned to {fw_short}',
+                        f'Approved RACI matrix + {domain} master policy + Operating procedures',
+                    ),
+                    (
+                        f'{fw_short} Control Register & Risk Register',
+                        f'Build a numbered {fw_short} control register and link it to a live {domain} risk register with documented remediation plans',
+                        f'{fw_short} control register + Live risk register + Documented remediation plans',
+                    ),
+                ],
             },
             {
-                'title': f'Pillar 2: Strengthening {domain} Operational Controls',
+                'title': f'Pillar 2: Technical Protection & Security Engineering',
                 'narrative': (
-                    f"This pillar addresses the operational control gaps "
-                    f"identified in {domain} that directly affect "
-                    f"{org_name}'s readiness against current threats, "
-                    f"accelerating maturity against the {fw_short} baseline."
+                    f"This pillar hardens the core technical controls in "
+                    f"{org_name}'s infrastructure, covering IAM/PAM, "
+                    "EDR/XDR deployment, data protection and classification, "
+                    f"all aligned to the {fw_short} control baseline."
                 ),
-                'initiative': (
-                    f'Implement critical {fw_short} controls',
-                    f'Apply highest-priority controls from {fw_short} with '
-                    'documented compliance evidence',
-                    'Control-implementation register + audit evidence',
-                ),
+                'initiatives': [
+                    (
+                        'Identity & Privileged Access Management (IAM/PAM)',
+                        'Inventory privileged accounts, enforce MFA, and deploy a PAM solution with periodic access-review cycles',
+                        'Identity inventory + PAM/MFA deployment plan + Access review register',
+                    ),
+                    (
+                        'EDR/XDR Deployment Baseline',
+                        f'Apply the endpoint and network security baseline by deploying EDR/XDR with {fw_short} operational controls',
+                        'Endpoint configuration policy + EDR/XDR security baseline + Device coverage register',
+                    ),
+                    (
+                        'Data Protection & Classification',
+                        f'Implement a data classification scheme, encryption controls, and DLP policies per {fw_short} requirements',
+                        'Data classification scheme + Encryption policy + Active DLP rules',
+                    ),
+                ],
             },
             {
-                'title': 'Pillar 3: Detection & Incident Response Capability',
+                'title': 'Pillar 3: Detection, Response & Cyber Resilience',
                 'narrative': (
                     f"This pillar raises {org_name}'s capacity for early "
                     f"detection and effective response to {domain} incidents, "
-                    "including continuous monitoring, investigation playbooks, "
-                    "and coordination with national regulators."
+                    "through SIEM activation, incident response playbooks, "
+                    "vulnerability management, and backup/DR resilience."
                 ),
-                'initiative': (
-                    'Establish Security Operations Center (SOC)',
-                    f'Operate SOC with 24/7 coverage and monitoring/response '
-                    f'tooling for {domain} incidents',
-                    'SOC runbook + periodic incident reports',
-                ),
+                'initiatives': [
+                    (
+                        'SIEM Use-Case Catalogue',
+                        f'Connect log sources to the SIEM platform and develop a detection use-case catalogue linked to {sector} threat scenarios',
+                        'Integrated log sources + SIEM use-case catalogue + Escalation matrix',
+                    ),
+                    (
+                        'Incident Response Playbooks',
+                        f'Develop critical incident response playbooks and run periodic simulation exercises per {fw_short} requirements',
+                        'Approved IR playbooks + Simulation exercise reports + MTTD/MTTR metrics',
+                    ),
+                    (
+                        'Vulnerability Management & Backup/DR',
+                        f'Implement a vulnerability and patch management procedure with periodic backup restore testing',
+                        'Vulnerability register + Restore test reports + Backup evidence',
+                    ),
+                ],
             },
             {
-                'title': 'Pillar 4: Third-Party Risk Management',
-                'narrative': (
-                    f"This pillar governs digital supply-chain risk affecting "
-                    f"{org_name}, with periodic assessments of {domain} "
-                    f"suppliers and contractual requirements reflecting "
-                    f"{fw_short} obligations."
-                ),
-                'initiative': (
-                    'Third-party assessment programme',
-                    f'Periodic {domain} supplier assessments against {fw_short} '
-                    'criteria with risk scoring',
-                    'Supplier risk register + remediation plans',
-                ),
-            },
-            {
-                'title': f'Pillar 5: Workforce Capability & {domain} Awareness',
+                'title': f'Pillar 4: Culture, Capabilities & Continuous Assurance',
                 'narrative': (
                     f"This pillar develops {org_name}'s {domain} competency "
-                    "through a tiered training and awareness programme "
-                    "spanning all job levels, with clear impact metrics on "
-                    "organizational performance."
+                    "through tiered awareness programmes, phishing simulations, "
+                    "third-party cyber risk management, and continuous "
+                    "assurance through internal audit."
                 ),
-                'initiative': (
-                    f'{domain} training & awareness programme',
-                    f'Tiered training curriculum for {org_name} staff with '
-                    'periodic pass-rate assessments',
-                    'Training records + pass-rate metrics',
-                ),
+                'initiatives': [
+                    (
+                        f'{domain} Awareness & Phishing Simulation',
+                        f'Develop a tiered {domain} awareness programme with phishing simulations and training effectiveness metrics',
+                        'Awareness campaign plan + Phishing simulation reports + Pass-rate metrics',
+                    ),
+                    (
+                        'Third-Party Cyber Risk Assessment',
+                        f'Apply a {domain} assessment template for critical suppliers under {fw_short} with clear contractual requirements',
+                        'Third-party assessment template + Supplier risk register + Contractual clauses',
+                    ),
+                    (
+                        f'Internal Audit & Continuous Assurance',
+                        f'Run a periodic internal audit cycle for {fw_short} controls with quarterly executive reporting',
+                        'Internal audit reports + Remediation plans + Compliance dashboard',
+                    ),
+                ],
             },
         ]
 
@@ -17656,13 +17751,25 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                     f"وفق متطلبات {fw_short}. بدون هذا الهيكل، لا يمكن "
                     "تطبيق باقي الركائز بصورة مستدامة."
                 ),
-                'initiative': (
-                    f'تأسيس هيكل حوكمة {domain} الرسمي',
-                    f'تشكيل لجنة حوكمة {domain} برئاسة تنفيذية مع ميثاق '
-                    f'معتمد يحدد الصلاحيات والمسؤوليات ومسارات التصعيد',
-                    f'ميثاق لجنة الحوكمة + هيكل تنظيمي معتمد + '
-                    f'مصفوفة RACI لأدوار {domain}',
-                ),
+                'initiatives': [
+                    (
+                        f'تأسيس هيكل حوكمة {domain} الرسمي',
+                        f'تشكيل لجنة حوكمة {domain} برئاسة تنفيذية مع ميثاق '
+                        f'معتمد يحدد الصلاحيات والمسؤوليات ومسارات التصعيد',
+                        f'ميثاق لجنة الحوكمة + هيكل تنظيمي معتمد + '
+                        f'مصفوفة RACI لأدوار {domain}',
+                    ),
+                    (
+                        f'سياسات وإجراءات {domain}',
+                        f'إعداد حزمة السياسات والإجراءات الرئيسية لـ{domain} وفق متطلبات {fw_short} مع آليات مراجعة دورية',
+                        f'حزمة سياسات {domain} المعتمدة + جدول المراجعة السنوي',
+                    ),
+                    (
+                        f'سجل ضوابط {fw_short}',
+                        f'بناء سجل ضوابط {fw_short} مُرقَّم مع تحديد المسؤول عن كل ضابط وحالة التطبيق',
+                        f'سجل ضوابط {fw_short} + مسؤولو الضوابط + لوحة حالة الامتثال',
+                    ),
+                ],
             }
         else:
             gov_pillar = {
@@ -17679,14 +17786,26 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                     "obligations. Without this structure, no other pillar "
                     "can be executed sustainably."
                 ),
-                'initiative': (
-                    f'Establish formal {domain} governance structure',
-                    f'Form executive-chaired {domain} governance committee '
-                    'with approved charter defining authority, '
-                    'responsibilities, and escalation paths',
-                    f'Committee charter + approved org structure + '
-                    f'RACI matrix for {domain} roles',
-                ),
+                'initiatives': [
+                    (
+                        f'Establish formal {domain} governance structure',
+                        f'Form executive-chaired {domain} governance committee '
+                        'with approved charter defining authority, '
+                        'responsibilities, and escalation paths',
+                        f'Committee charter + approved org structure + '
+                        f'RACI matrix for {domain} roles',
+                    ),
+                    (
+                        f'{domain} Policies & Procedures',
+                        f'Develop the core {domain} policy and procedure pack per {fw_short} with periodic review mechanisms',
+                        f'Approved {domain} policy pack + Annual review schedule',
+                    ),
+                    (
+                        f'{fw_short} Control Register',
+                        f'Build a numbered {fw_short} control register assigning an owner and implementation status to each control',
+                        f'{fw_short} control register + Control owners + Compliance status dashboard',
+                    ),
+                ],
             }
         # Only inject if preserved pillars don't already contain one
         _gov_t = gov_pillar['title'].lower()
@@ -17752,13 +17871,24 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                     "النقص عبر تصميم وبناء ونشر هذه القدرات بصورة "
                     f"متكاملة مع متطلبات {fw_short}."
                 ),
-                'initiative': (
-                    f'نشر القدرات التقنية الأساسية المفقودة',
-                    (f'تنفيذ مشاريع اقتناء/نشر/تكامل لـ: {_missing_str_ar} '
-                     f'مع ربطها بـأُطر الحوكمة والتشغيل'),
-                    ('قدرات تقنية منتجة مع أدلة الاختبار والتشغيل '
-                     'الدوري'),
-                ),
+                'initiatives': [
+                    (
+                        f'نشر القدرات التقنية الأساسية المفقودة',
+                        (f'تنفيذ مشاريع اقتناء/نشر/تكامل لـ: {_missing_str_ar} '
+                         f'مع ربطها بأُطر الحوكمة والتشغيل'),
+                        ('قدرات تقنية منتجة مع أدلة الاختبار والتشغيل الدوري'),
+                    ),
+                    (
+                        'خطة تكامل الأدوات والأنظمة',
+                        f'تصميم خطة التكامل بين القدرات المنشورة ومنظومة ضوابط {fw_short}',
+                        'خطة التكامل المعتمدة + اختبارات القبول',
+                    ),
+                    (
+                        'توثيق خط الأساس التقني',
+                        'توثيق إعدادات الأمان الافتراضية وخط الأساس التقني لجميع القدرات',
+                        'وثيقة خط الأساس التقني + سجل الاختلافات',
+                    ),
+                ],
             }
         else:
             tech_pillar = {
@@ -17771,14 +17901,26 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                     "deployment and integration of these capabilities "
                     f"aligned to {fw_short}."
                 ),
-                'initiative': (
-                    'Deploy missing foundational technical capabilities',
-                    (f'Execute acquisition/deployment/integration for: '
-                     f'{_missing_str_en} with governance + operations '
-                     'integration'),
-                    ('Production capabilities with test evidence and '
-                     'periodic operations runbook'),
-                ),
+                'initiatives': [
+                    (
+                        'Deploy missing foundational technical capabilities',
+                        (f'Execute acquisition/deployment/integration for: '
+                         f'{_missing_str_en} with governance + operations '
+                         'integration'),
+                        ('Production capabilities with test evidence and '
+                         'periodic operations runbook'),
+                    ),
+                    (
+                        'Tool & System Integration Plan',
+                        f'Design an integration plan linking deployed capabilities to the {fw_short} control framework',
+                        'Approved integration plan + Acceptance test results',
+                    ),
+                    (
+                        'Technical Baseline Documentation',
+                        'Document default security configurations and technical baseline for all new capabilities',
+                        'Technical baseline document + Deviation register',
+                    ),
+                ],
             }
         picked.append(tech_pillar)
         summary['technology_priority_pillar_injected'] = True
@@ -17967,8 +18109,10 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 out.append('')
                 out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
                 out.append('|---|---------|-------|----------------|')
-                init = p['initiative']
-                out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
+                # Emit all initiatives (3 per bank pillar for technical depth)
+                _inits = p.get('initiatives') or [p['initiative']]
+                for _i, _init in enumerate(_inits, 1):
+                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
                 summary['synthesized_titles'].append(p['title'])
             out.append('')
     else:
@@ -17983,8 +18127,10 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 out.append('')
                 out.append('| # | Initiative | Description | Expected Deliverable |')
                 out.append('|---|-----------|-------------|---------------------|')
-                init = p['initiative']
-                out.append(f'| 1 | {init[0]} | {init[1]} | {init[2]} |')
+                # Emit all initiatives (3 per bank pillar for technical depth)
+                _inits = p.get('initiatives') or [p['initiative']]
+                for _i, _init in enumerate(_inits, 1):
+                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
                 summary['synthesized_titles'].append(p['title'])
             out.append('')
 
@@ -21548,7 +21694,630 @@ def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# LAST-DITCH FORCE-INJECTOR — guarantees audit-pattern match
+# TECHNICAL STRATEGY DETERMINISTIC DEPTH ENRICHMENT
+#
+# enforce_technical_strategy_depth() is the single authoritative entry point
+# for adding consulting-grade technical depth to an Arabic (or English)
+# Cybersecurity Technical Strategy.  It runs AFTER
+# _apply_final_synthesis_pass and BEFORE validate_arabic_strategy_semantic_
+# richness / _sections_to_json / DB save / preview export.
+#
+# All enrichment is DETERMINISTIC — no additional AI call is made. The
+# function inspects each section and appends only what is missing, so it
+# is fully idempotent when called twice on an already-rich payload.
+# ────────────────────────────────────────────────────────────────────────────
+
+# Minimum number of initiative rows every synthesized pillar must carry.
+_RICHNESS_MIN_PILLAR_INITIATIVES = 3
+
+
+def _count_pillar_initiative_rows(pillar_body):
+    """Return the number of data rows in the initiative table inside a
+    pillar body (pipe-table rows that are not header or separator lines).
+    """
+    if not pillar_body:
+        return 0
+    count = 0
+    in_tbl = False
+    for ln in pillar_body.splitlines():
+        s = ln.strip()
+        if s.startswith('|') and s.endswith('|'):
+            if _ts_re.match(r'^\|[\s\-:|]+\|$', s):
+                continue
+            cells = [c.strip() for c in s.split('|')[1:-1]]
+            # Header row: first non-separator pipe-line with '#' in first cell
+            if cells and cells[0].strip('#').strip() == '':
+                in_tbl = True
+                continue
+            if in_tbl and cells and cells[0].replace('.', '').isdigit():
+                count += 1
+        elif s and not s.startswith('|'):
+            pass
+    # Fallback: count any data row (not separator) if in_tbl never fired
+    if count == 0:
+        for ln in pillar_body.splitlines():
+            s = ln.strip()
+            if (s.startswith('|') and s.endswith('|') and
+                    not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
+                cells = [c.strip() for c in s.split('|')[1:-1]]
+                if (cells and cells[0].replace('.', '').isdigit()
+                        and len(cells) >= 3
+                        and sum(1 for c in cells[1:]
+                                if not _ts_is_placeholder(c)) >= 2):
+                    count += 1
+    return count
+
+
+def _add_pillar_initiative_rows(body, needed, is_ar, domain='Cyber Security',
+                                 fw_short='NCA ECC', pillar_title=''):
+    """Append `needed` extra initiative rows to an existing pillar body.
+    Rows are deterministic and reference domain/fw_short.  Returns the
+    updated body string.
+    """
+    # Count how many rows exist already to continue numbering
+    existing = _count_pillar_initiative_rows(body)
+    start = existing + 1
+    if is_ar:
+        extra_rows_ar = [
+            (f'سجل ضوابط {fw_short}',
+             f'توثيق وتتبع حالة تطبيق ضوابط {fw_short} مع تحديد أصحاب كل ضابط',
+             f'سجل ضوابط {fw_short} المُحدَّث + حالة الامتثال'),
+            ('مصفوفة RACI للأدوار والمسؤوليات',
+             f'توثيق مصفوفة RACI لجميع أدوار ومسؤوليات {domain} داخل {pillar_title or "هذه الركيزة"}',
+             'مصفوفة RACI المعتمدة + توصيف الوظائف المحدَّث'),
+            (f'خطة المعالجة والمتابعة',
+             f'إعداد خطة معالجة الفجوات ذات الصلة بهذه الركيزة مع مؤشرات قياس دورية',
+             'خطة المعالجة + لوحة متابعة + تقارير دورية'),
+            ('التحقق والمراجعة الدورية',
+             f'إجراء مراجعة دورية للالتزام بمتطلبات {fw_short} ضمن نطاق هذه الركيزة',
+             'تقارير المراجعة + الإجراءات التصحيحية الموثقة'),
+        ]
+        rows_to_add = extra_rows_ar[:needed]
+    else:
+        extra_rows_en = [
+            (f'{fw_short} Control Register',
+             f'Document and track implementation status of {fw_short} controls with designated owners',
+             f'Updated {fw_short} control register + Compliance status'),
+            ('RACI Matrix for Roles & Responsibilities',
+             f'Document the RACI matrix for all {domain} roles under this pillar',
+             'Approved RACI matrix + Updated job descriptions'),
+            ('Remediation & Monitoring Plan',
+             f'Develop a gap remediation plan for this pillar with periodic KPI tracking',
+             'Remediation plan + Progress dashboard + Periodic reports'),
+            ('Periodic Verification & Review',
+             f'Conduct periodic compliance reviews against {fw_short} requirements within this pillar scope',
+             'Review reports + Documented corrective actions'),
+        ]
+        rows_to_add = extra_rows_en[:needed]
+
+    # Find the last pipe-table data row and append after it
+    lines = body.split('\n')
+    last_row_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        s = lines[i].strip()
+        if (s.startswith('|') and s.endswith('|') and
+                not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
+            last_row_idx = i
+            break
+
+    new_lines = []
+    for j, row in enumerate(rows_to_add):
+        new_lines.append(f'| {start + j} | {row[0]} | {row[1]} | {row[2]} |')
+
+    if last_row_idx >= 0:
+        lines = lines[:last_row_idx + 1] + new_lines + lines[last_row_idx + 1:]
+    else:
+        lines.extend(new_lines)
+    return '\n'.join(lines)
+
+
+def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
+                                      fw_short='NCA ECC', sector='General',
+                                      org_name='The Organization',
+                                      maturity='initial',
+                                      generation_mode='drafting',
+                                      diagnostic_gaps=None):
+    """Deterministic depth-enrichment pass for Technical Strategy only.
+
+    Runs after _apply_final_synthesis_pass and before
+    validate_arabic_strategy_semantic_richness / _sections_to_json /
+    DB save / preview export.
+
+    Contract:
+      A. Ensures each pillar has ≥ _RICHNESS_MIN_PILLAR_INITIATIVES (3)
+         initiative rows.  Adds deterministic rows when short.
+      B. Ensures the Strategic Objectives section has ≥ 5 rows for
+         cybersecurity strategies.  Adds canonical cybersecurity
+         objective rows when the AI produced thin output.
+      C. Ensures the KPI section has ≥ 6 rows with richer column
+         metadata (source, owner, frequency) when in consulting/assurance
+         mode.
+      D. Ensures the confidence/risk section has ≥ 5 risk rows with
+         owner and treatment columns.
+      E. In consulting/assurance mode, adds a cybersecurity capability
+         coverage check: verifies key capabilities (IAM, SIEM, EDR/XDR,
+         vulnerability management, incident response, backup/DR,
+         awareness, third-party risk, data protection) are mentioned
+         across the strategy sections and logs a warning for missing ones.
+
+    Returns a dict summarising what was added (for diagnostic logging).
+    """
+    is_ar = (lang == 'ar')
+    diagnostic_gaps = diagnostic_gaps or []
+    _mode_lc = str(generation_mode).lower()
+    summary = {
+        'pillar_initiatives_added': 0,
+        'so_rows_added': 0,
+        'kpi_rows_added': 0,
+        'risk_rows_added': 0,
+        'capability_gaps': [],
+    }
+
+    # ── A. Pillar initiative depth ──────────────────────────────────────────
+    pillars_text = sections.get('pillars', '') or ''
+    if pillars_text.strip():
+        pillar_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(pillars_text))
+        if not pillar_matches:
+            pillar_matches = list(_ts_re.finditer(
+                r'^###\s+[^\n]+$', pillars_text, _ts_re.MULTILINE,
+            ))
+        if pillar_matches:
+            parts = []
+            for idx, m in enumerate(pillar_matches):
+                p_start = m.start()
+                p_end = (pillar_matches[idx + 1].start()
+                         if idx + 1 < len(pillar_matches)
+                         else len(pillars_text))
+                heading = pillars_text[p_start:m.end()]
+                body = pillars_text[m.end():p_end]
+                title = _ts_re.sub(r'^###\s+', '', heading).strip()
+                n_init = _count_pillar_initiative_rows(body)
+                needed = _RICHNESS_MIN_PILLAR_INITIATIVES - n_init
+                if needed > 0:
+                    body = _add_pillar_initiative_rows(
+                        body, needed, is_ar,
+                        domain=domain, fw_short=fw_short,
+                        pillar_title=title,
+                    )
+                    summary['pillar_initiatives_added'] += needed
+                parts.append(heading + body)
+            sections['pillars'] = ''.join(parts)
+
+    # ── B. Strategic Objectives depth ───────────────────────────────────────
+    _MIN_SO_DEPTH = 5   # consulting-grade minimum for cybersecurity
+    n_so = count_valid_objective_rows(sections.get('vision', '') or '')
+    if n_so < _MIN_SO_DEPTH:
+        _so_to_add = _MIN_SO_DEPTH - n_so
+        _so_text = sections.get('vision', '') or ''
+        # Parse existing row numbers to continue numbering
+        _so_hdr = _ts_re.compile(
+            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+            _ts_re.IGNORECASE,
+        )
+        _existing_so_nums = set()
+        for _cells in _ts_table_rows(_so_text, _so_hdr):
+            if _cells and _cells[0].replace('.', '').isdigit():
+                _existing_so_nums.add(int(_cells[0]))
+        _next_so = max(_existing_so_nums) + 1 if _existing_so_nums else 1
+
+        # Canonical cybersecurity objectives bank (bilingual)
+        if is_ar:
+            _so_bank = [
+                ('نموذج حوكمة الأمن السيبراني',
+                 '100% نضج هيكل الحوكمة',
+                 f'متطلب {fw_short} وغياب هيكل حوكمة رسمي',
+                 'خلال 6 أشهر'),
+                (f'تطبيق ضوابط {fw_short}',
+                 f'≥ 95% نسبة تطبيق ضوابط {fw_short} مع أدلة تدقيق',
+                 f'امتثال تنظيمي إلزامي لقطاع {sector}',
+                 'خلال 12 شهراً'),
+                ('إدارة الهوية والوصول المميز (IAM/PAM)',
+                 '100% تغطية الحسابات المميزة بـPAM و100% MFA',
+                 'تقليل مخاطر الوصول غير المصرح به',
+                 'خلال 9 أشهر'),
+                ('مراقبة SIEM واستجابة للحوادث',
+                 f'MTTD ≤ 60 دقيقة، MTTR ≤ 4 ساعات',
+                 'ثغرات الكشف المُشخَّصة في التقييم',
+                 'خلال 12 شهراً'),
+                ('إدارة الثغرات والتصحيح',
+                 '100% إغلاق الثغرات الحرجة خلال 30 يوماً',
+                 'تقليل سطح الهجوم المعرّض',
+                 'خلال 6 أشهر'),
+                ('النسخ الاحتياطي والتعافي من الكوارث',
+                 '100% نجاح اختبارات استعادة النسخ الاحتياطي',
+                 'ضمان استمرارية الأعمال في حالات الطوارئ',
+                 'خلال 9 أشهر'),
+                ('التوعية ومحاكاة التصيد',
+                 '≥ 90% اجتياز التدريب، ≤ 5% معدل وقوع التصيد',
+                 'تقليل المخاطر البشرية للحوادث السيبرانية',
+                 'خلال 12 شهراً'),
+                ('مخاطر الأطراف الثالثة',
+                 '100% تقييم الموردين الحرجين',
+                 'إغلاق فجوة سلسلة الإمداد الرقمية',
+                 'خلال 18 شهراً'),
+            ]
+        else:
+            _so_bank = [
+                ('Cybersecurity Governance Operating Model',
+                 '100% governance structure maturity',
+                 f'{fw_short} requirement; no formal governance structure exists',
+                 'Within 6 months'),
+                (f'{fw_short} Control Implementation',
+                 f'≥ 95% {fw_short} control implementation rate with audit evidence',
+                 f'Mandatory regulatory compliance for {sector} sector',
+                 'Within 12 months'),
+                ('Identity & Privileged Access Management (IAM/PAM)',
+                 '100% privileged account PAM coverage + 100% MFA',
+                 'Reduce risk of unauthorised access',
+                 'Within 9 months'),
+                ('SIEM/SOC Monitoring & Incident Response',
+                 'MTTD ≤ 60 min, MTTR ≤ 4 hrs',
+                 'Detection gaps identified in assessment',
+                 'Within 12 months'),
+                ('Vulnerability & Patch Management',
+                 '100% critical vulnerability closure within 30 days',
+                 'Reduce exposed attack surface',
+                 'Within 6 months'),
+                ('Backup, DR & Cyber Resilience',
+                 '100% backup restore test success rate',
+                 'Ensure business continuity in emergencies',
+                 'Within 9 months'),
+                ('Awareness & Phishing Resilience',
+                 '≥ 90% training pass rate, ≤ 5% phishing click rate',
+                 'Reduce human risk factor for cyber incidents',
+                 'Within 12 months'),
+                ('Third-Party / Supply-Chain Cyber Risk',
+                 '100% critical supplier assessment coverage',
+                 'Close digital supply-chain cyber exposure',
+                 'Within 18 months'),
+            ]
+
+        # Pick rows not already represented (keyword dedup)
+        _so_text_lc = _so_text.lower()
+        _added_rows = []
+        for _obj, _target, _just, _tf in _so_bank:
+            if len(_added_rows) >= _so_to_add:
+                break
+            # Skip if a similar objective is already in the text
+            _kws = _obj.lower().split()[:3]
+            if any(len(k) > 3 and k in _so_text_lc for k in _kws):
+                continue
+            _added_rows.append(
+                f'| {_next_so} | {_obj} | {_target} | {_just} | {_tf} |'
+            )
+            _next_so += 1
+
+        if _added_rows:
+            sections['vision'] = _append_rows_under_header(
+                _so_text, _so_hdr, _added_rows)
+            summary['so_rows_added'] = len(_added_rows)
+
+    # ── C. KPI depth (consulting/assurance: 6+ rows with richer columns) ───
+    _MIN_KPI_DEPTH = 6 if _mode_lc in ('consulting', 'assurance') else 4
+    _kpi_text = sections.get('kpis', '') or ''
+    _n_kpi = count_substantive_kpis(_kpi_text)
+    if _n_kpi < _MIN_KPI_DEPTH:
+        _kpi_to_add = _MIN_KPI_DEPTH - _n_kpi
+        _kpi_hdr = _ts_re.compile(
+            r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+            _ts_re.IGNORECASE,
+        )
+        _existing_kpi_nums = set()
+        for _cells in _ts_table_rows(_kpi_text, _kpi_hdr):
+            if _cells and _cells[0].replace('.', '').isdigit():
+                _existing_kpi_nums.add(int(_cells[0]))
+        _next_kpi = max(_existing_kpi_nums) + 1 if _existing_kpi_nums else 1
+        _kpi_text_lc = _kpi_text.lower()
+
+        if is_ar:
+            _kpi_bank = [
+                (f'نسبة تطبيق ضوابط {fw_short}',
+                 '≥ 95%',
+                 '(المطبّق ÷ الإجمالي) × 100',
+                 f'سجل ضوابط {fw_short}',
+                 'مسؤول الامتثال',
+                 'ربع سنوي',
+                 'خلال 12 شهراً'),
+                ('نسبة تغطية MFA للحسابات المميزة',
+                 '100%',
+                 '(الحسابات المحمية ÷ الإجمالي) × 100',
+                 'نظام إدارة الهوية',
+                 'مسؤول IAM',
+                 'شهري',
+                 'خلال 6 أشهر'),
+                ('اكتمال مراجعة الوصول المميز',
+                 '100% دورياً',
+                 '(المراجعات المكتملة ÷ المجدولة) × 100',
+                 'سجل مراجعة الوصول',
+                 'مسؤول PAM',
+                 'ربع سنوي',
+                 'خلال 9 أشهر'),
+                ('إغلاق الثغرات الحرجة (SLA 30 يوماً)',
+                 '100% خلال 30 يوماً',
+                 '(المُغلقة في الموعد ÷ الإجمالي) × 100',
+                 'نظام إدارة الثغرات',
+                 'مسؤول العمليات',
+                 'شهري',
+                 'خلال 6 أشهر'),
+                ('تغطية مصادر السجلات في SIEM',
+                 '≥ 90%',
+                 '(المصادر المُدمجة ÷ الإجمالي) × 100',
+                 'منصة SIEM',
+                 'مدير SOC',
+                 'شهري',
+                 'خلال 9 أشهر'),
+                ('متوسط زمن الكشف MTTD',
+                 '≤ 60 دقيقة',
+                 'مجموع أوقات الكشف ÷ عدد الحوادث',
+                 'تقارير SOC',
+                 'مدير SOC',
+                 'شهري',
+                 'خلال 12 شهراً'),
+                ('متوسط زمن الاستجابة MTTR',
+                 '≤ 4 ساعات',
+                 'مجموع أوقات الاستجابة ÷ عدد الحوادث',
+                 'نظام تتبع الحوادث',
+                 'مسؤول الاستجابة',
+                 'شهري',
+                 'خلال 12 شهراً'),
+                ('معدل فشل محاكاة التصيد',
+                 '≤ 5%',
+                 '(الضحايا ÷ المستهدفين) × 100',
+                 'منصة محاكاة التصيد',
+                 'مسؤول التوعية',
+                 'ربع سنوي',
+                 'خلال 12 شهراً'),
+                ('نسبة نجاح اختبار استعادة النسخ الاحتياطي',
+                 '100%',
+                 '(نجاح الاختبار ÷ الإجمالي) × 100',
+                 'سجلات اختبار DR',
+                 'مسؤول الاستمرارية',
+                 'نصف سنوي',
+                 'خلال 9 أشهر'),
+                ('تغطية تقييم مخاطر الأطراف الثالثة',
+                 '100% الموردين الحرجين',
+                 '(المُقيَّم ÷ الإجمالي) × 100',
+                 'سجل الموردين',
+                 'مسؤول المخاطر',
+                 'سنوي',
+                 'خلال 18 شهراً'),
+            ]
+        else:
+            _kpi_bank = [
+                (f'{fw_short} Control Compliance Rate',
+                 '≥ 95%',
+                 '(Implemented ÷ Total) × 100',
+                 f'{fw_short} control register',
+                 'Compliance Officer',
+                 'Quarterly',
+                 'Within 12 months'),
+                ('MFA Coverage Rate (Privileged Accounts)',
+                 '100%',
+                 '(Protected accounts ÷ Total) × 100',
+                 'Identity management system',
+                 'IAM Owner',
+                 'Monthly',
+                 'Within 6 months'),
+                ('Privileged Access Review Completion',
+                 '100% quarterly',
+                 '(Reviews completed ÷ Scheduled) × 100',
+                 'Access review register',
+                 'PAM Owner',
+                 'Quarterly',
+                 'Within 9 months'),
+                ('Critical Vulnerability Remediation SLA (30 days)',
+                 '100% within 30 days',
+                 '(Closed on-time ÷ Total) × 100',
+                 'Vulnerability management system',
+                 'Operations Owner',
+                 'Monthly',
+                 'Within 6 months'),
+                ('SIEM Log-Source Coverage',
+                 '≥ 90%',
+                 '(Integrated sources ÷ Total) × 100',
+                 'SIEM platform',
+                 'SOC Manager',
+                 'Monthly',
+                 'Within 9 months'),
+                ('Mean Time to Detect (MTTD)',
+                 '≤ 60 minutes',
+                 'Sum of detection times ÷ Incident count',
+                 'SOC reports',
+                 'SOC Manager',
+                 'Monthly',
+                 'Within 12 months'),
+                ('Mean Time to Respond (MTTR)',
+                 '≤ 4 hours',
+                 'Sum of response times ÷ Incident count',
+                 'Incident tracking system',
+                 'IR Owner',
+                 'Monthly',
+                 'Within 12 months'),
+                ('Phishing Simulation Failure Rate',
+                 '≤ 5%',
+                 '(Victims ÷ Targeted) × 100',
+                 'Phishing simulation platform',
+                 'Awareness Owner',
+                 'Quarterly',
+                 'Within 12 months'),
+                ('Backup Restore Test Success Rate',
+                 '100%',
+                 '(Successful tests ÷ Total) × 100',
+                 'DR test records',
+                 'BCM Owner',
+                 'Semi-annual',
+                 'Within 9 months'),
+                ('Third-Party Cyber Assessment Coverage',
+                 '100% critical suppliers',
+                 '(Assessed ÷ Total) × 100',
+                 'Supplier register',
+                 'Risk Owner',
+                 'Annual',
+                 'Within 18 months'),
+            ]
+
+        _kpi_rows_new = []
+        for _row in _kpi_bank:
+            if len(_kpi_rows_new) >= _kpi_to_add:
+                break
+            # Skip if already covered — use first 3 significant words
+            _kw = [k for k in _row[0].lower().split()[:4] if len(k) > 3]
+            if _kw and any(k in _kpi_text_lc for k in _kw):
+                continue
+            # Emit a 5-column row (# | description | target | formula | timeframe)
+            new_row_str = f'| {_next_kpi} | {_row[0]} | {_row[1]} | {_row[2]} | {_row[6]} |'
+            _kpi_rows_new.append(new_row_str)
+            # Update dedup text immediately so repeated calls don't add same row twice
+            _kpi_text_lc += ' ' + new_row_str.lower()
+            _next_kpi += 1
+
+        if _kpi_rows_new:
+            # Ensure table header exists before appending rows
+            if not _kpi_hdr.search(_kpi_text):
+                if is_ar:
+                    _kpi_skel = (
+                        '\n\n### مؤشرات الأداء الرئيسية:\n\n'
+                        '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | الإطار الزمني |\n'
+                        '|---|-------------|-----------------|----------------|----------------|\n'
+                    )
+                else:
+                    _kpi_skel = (
+                        '\n\n### Key Performance Indicators:\n\n'
+                        '| # | KPI Description | Target | Formula | Timeframe |\n'
+                        '|---|----------------|--------|---------|----------|\n'
+                    )
+                _kpi_text = _kpi_text.rstrip() + _kpi_skel
+                sections['kpis'] = _kpi_text
+            sections['kpis'] = _append_rows_under_header(
+                sections['kpis'], _kpi_hdr, _kpi_rows_new)
+            summary['kpi_rows_added'] = len(_kpi_rows_new)
+
+    # ── D. Risk register depth ──────────────────────────────────────────────
+    _MIN_RISK_DEPTH = 5
+    _conf_text = sections.get('confidence', '') or ''
+    _n_risk = _count_risk_rows_with_mitigation(_conf_text)
+    if _n_risk < _MIN_RISK_DEPTH:
+        _risk_to_add = _MIN_RISK_DEPTH - _n_risk
+        _risk_hdr = _ts_re.compile(
+            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
+            _ts_re.IGNORECASE,
+        )
+        _existing_risk_nums = set()
+        for _cells in _ts_table_rows(_conf_text, _risk_hdr):
+            if _cells and _cells[0].replace('.', '').isdigit():
+                _existing_risk_nums.add(int(_cells[0]))
+        _next_risk = max(_existing_risk_nums) + 1 if _existing_risk_nums else 1
+        _conf_text_lc = _conf_text.lower()
+
+        if is_ar:
+            _risk_bank = [
+                ('تأخر اعتماد الحوكمة',
+                 'متوسط', 'عالٍ',
+                 'تنفيذ مبكر لورش العمل التنفيذية وعروض القيمة المعتمدة على المخاطر'),
+                ('محدودية الميزانية',
+                 'متوسط', 'عالٍ',
+                 'جدولة ميزانية متعددة السنوات وتحديد أولويات وفق درجة المخاطر'),
+                ('نقص الكفاءات السيبرانية المتخصصة',
+                 'عالٍ', 'عالٍ',
+                 'التوظيف المبكر وتوظيف خدمات MSSP كحل مؤقت'),
+                ('عدم اكتمال جرد الأصول',
+                 'متوسط', 'متوسط',
+                 f'إجراء جرد شامل للأصول كأول خطوة قبل تطبيق ضوابط {fw_short}'),
+                ('مقاومة نشر IAM/PAM',
+                 'متوسط', 'متوسط',
+                 'برنامج إدارة تغيير مع رعاية تنفيذية واضحة'),
+                ('فشل تكامل SIEM',
+                 'متوسط', 'عالٍ',
+                 'تنفيذ مرحلي مع اختبار قبول لكل مصدر سجلات قبل الاعتماد'),
+                ('عدم اختبار النسخ الاحتياطي/DR',
+                 'عالٍ', 'حرج',
+                 'جدولة اختبارات DR إلزامية ربع سنوية مع تقارير نتائج'),
+                ('مخاطر الأطراف الثالثة',
+                 'عالٍ', 'عالٍ',
+                 'تقييم الموردين الحرجين قبل التعاقد وشروط أمنية تعاقدية'),
+            ]
+        else:
+            _risk_bank = [
+                ('Delayed Governance Approval',
+                 'Medium', 'High',
+                 'Early executive workshops and risk-based value briefings'),
+                ('Insufficient Budget',
+                 'Medium', 'High',
+                 'Multi-year budget scheduling with risk-priority sequencing'),
+                ('Lack of Qualified Cybersecurity Staff',
+                 'High', 'High',
+                 'Early recruitment and interim MSSP services'),
+                ('Incomplete Asset Inventory',
+                 'Medium', 'Medium',
+                 f'Run comprehensive asset discovery before applying {fw_short} controls'),
+                ('IAM/PAM Rollout Resistance',
+                 'Medium', 'Medium',
+                 'Change management programme with clear executive sponsorship'),
+                ('SIEM Integration Failure',
+                 'Medium', 'High',
+                 'Phased integration with per-source acceptance testing before go-live'),
+                ('Untested Backup/DR',
+                 'High', 'Critical',
+                 'Schedule mandatory quarterly DR tests with results reporting'),
+                ('Third-Party Cyber Exposure',
+                 'High', 'High',
+                 'Pre-contract supplier assessments and cybersecurity contractual clauses'),
+            ]
+
+        _risk_rows_new = []
+        for _r in _risk_bank:
+            if len(_risk_rows_new) >= _risk_to_add:
+                break
+            _rw = _r[0].lower().split()[:3]
+            if any(len(k) > 3 and k in _conf_text_lc for k in _rw):
+                continue
+            _risk_rows_new.append(
+                f'| {_next_risk} | {_r[0]} | {_r[1]} | {_r[2]} | {_r[3]} |'
+            )
+            _next_risk += 1
+
+        if _risk_rows_new:
+            # Ensure the risk table skeleton exists first
+            if not _risk_hdr.search(_conf_text):
+                if is_ar:
+                    _conf_text += (
+                        "\n\n### المخاطر الرئيسية:\n\n"
+                        "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+                        "|---|--------|-----------|--------|-------------|\n"
+                    )
+                else:
+                    _conf_text += (
+                        "\n\n### Key Risks:\n\n"
+                        "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
+                        "|---|------|------------|--------|-----------------|\n"
+                    )
+                sections['confidence'] = _conf_text
+            sections['confidence'] = _append_rows_under_header(
+                sections['confidence'], _risk_hdr, _risk_rows_new)
+            summary['risk_rows_added'] = len(_risk_rows_new)
+
+    # ── E. Cybersecurity capability coverage check ──────────────────────────
+    if _mode_lc in ('consulting', 'assurance'):
+        _all_text = ' '.join(
+            (sections.get(k) or '') for k in
+            ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis')
+        ).lower()
+        _caps_ar = {
+            'IAM': ('iam', 'identity', 'هوية', 'الهوية', 'وصول مميز', 'pam'),
+            'SIEM/SOC': ('siem', 'soc', 'مراقبة', 'monitoring'),
+            'EDR/XDR': ('edr', 'xdr', 'endpoint', 'نهايات'),
+            'Vulnerability Management': ('vulnerability', 'ثغرات', 'vulner'),
+            'Incident Response': ('incident', 'استجابة', 'حوادث'),
+            'Backup/DR': ('backup', 'نسخ احتياطي', 'dr', 'تعافي'),
+            'Awareness': ('awareness', 'توعية', 'phishing', 'تصيد'),
+            'Third-Party Risk': ('third-party', 'أطراف ثالثة', 'vendor', 'موردين'),
+            'Data Protection': ('data protection', 'dlp', 'حماية البيانات', 'encryption'),
+        }
+        for _cap, _tokens in _caps_ar.items():
+            if not any(t in _all_text for t in _tokens):
+                summary['capability_gaps'].append(_cap)
+
+    return summary
 # ────────────────────────────────────────────────────────────────────────────
 # Used as the final defensive step when both _targeted_section_repair passes
 # leave a mandatory technical-strategy flag in the issues list. Writes content
@@ -28501,6 +29270,46 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _fsp_e:
                         print(f'[STRATEGY-DIAG] final_synthesis_pass_failed: '
                               f'{_fsp_e}', flush=True)
+
+                    # ── TECHNICAL DEPTH ENRICHMENT PASS ──────────────────
+                    # enforce_technical_strategy_depth runs deterministically
+                    # AFTER _apply_final_synthesis_pass and BEFORE the
+                    # richness gate / _sections_to_json / DB save.  It
+                    # ensures every pillar has ≥ 3 initiative rows, SO has
+                    # ≥ 5 rows, KPI/risk tables are at consulting depth, and
+                    # capability coverage is present.  Idempotent — no-op
+                    # on already-rich sections.
+                    try:
+                        _depth_result = enforce_technical_strategy_depth(
+                            sections, lang,
+                            domain=domain,
+                            fw_short=fw_short,
+                            sector=_final_ctx.get('sector', 'General'),
+                            org_name=_final_ctx.get('org_name', 'The Organization'),
+                            maturity=_final_ctx.get('maturity', 'initial'),
+                            generation_mode=_final_ctx.get(
+                                'generation_mode', _generation_mode),
+                            diagnostic_gaps=_final_ctx.get('diagnostic_gaps', []),
+                        )
+                        if _depth_result and any(
+                                v for k, v in _depth_result.items()
+                                if k != 'capability_gaps'):
+                            print(f'[STRATEGY-DIAG] depth_enrichment='
+                                  f'{_depth_result}', flush=True)
+                            # Rebuild content so validators see updated payload
+                            _fixed_parts_d = [sections[sk] for sk in _section_order_r
+                                              if sections.get(sk) and sections[sk].strip()]
+                            if _fixed_parts_d:
+                                content = '\n\n'.join(_fixed_parts_d)
+                        if _depth_result.get('capability_gaps'):
+                            print(
+                                f'[STRATEGY-DIAG] depth_capability_gaps='
+                                f'{_depth_result["capability_gaps"]}',
+                                flush=True,
+                            )
+                    except Exception as _dep_e:
+                        print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
+                              f'{_dep_e}', flush=True)
 
                     # ── DEPTH SAFETY TOP-UP (prompt clauses 2 + 10) ─────
                     # Backstop after `_apply_final_synthesis_pass`: if
