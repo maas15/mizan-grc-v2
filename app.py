@@ -19773,8 +19773,9 @@ def normalize_final_arabic_sections(sections, lang):
     catches as `*_contains_en_template_residue`.
 
     This helper applies the existing _AR_TEMPLATE_RESIDUE_MAP as
-    REPLACEMENTS (not deletions) on the four sections the contamination
-    validator currently flags: environment, gaps, pillars, roadmap.
+    REPLACEMENTS (not deletions) on all seven canonical sections that
+    the contamination validator checks: vision, pillars, environment,
+    gaps, roadmap, kpis, confidence.
     Idempotent: running twice yields the same result.
 
     Returns a {section_key: count_of_replacements} dict for logging.
@@ -19782,7 +19783,8 @@ def normalize_final_arabic_sections(sections, lang):
     if lang != 'ar':
         return {}
     counts = {}
-    for key in ('environment', 'gaps', 'pillars', 'roadmap'):
+    for key in ('vision', 'pillars', 'environment', 'gaps',
+                'roadmap', 'kpis', 'confidence'):
         text = sections.get(key, '') or ''
         if not text:
             continue
@@ -31739,6 +31741,37 @@ The confidence score is based on a comprehensive assessment of the organization'
                         ]
                         if _fixed_parts_dr:
                             content = '\n\n'.join(_fixed_parts_dr)
+
+                        # ── POST-REPAIR EN RESIDUE SWEEP ────────────────────
+                        # repair_confidence_risk_section and
+                        # repair_kpi_section_if_missing_frequency can
+                        # preserve LLM-generated rows that contain EN template
+                        # residue strings (e.g. "Within 3 months",
+                        # "System/Tool"). Run cleanup_arabic_template_residue
+                        # once more so the contamination validator never fires
+                        # `*_contains_en_template_residue` for confidence or
+                        # kpis after those repair steps.
+                        try:
+                            _post_repair_repl = cleanup_arabic_template_residue(
+                                sections, lang)
+                            if _post_repair_repl:
+                                print(
+                                    f'[STRATEGY-DIAG] post_repair_ar_residue_replaced='
+                                    f'{_post_repair_repl}',
+                                    flush=True,
+                                )
+                                _fixed_parts_pr = [
+                                    sections[sk] for sk in _section_order_r
+                                    if sections.get(sk) and sections[sk].strip()
+                                ]
+                                if _fixed_parts_pr:
+                                    content = '\n\n'.join(_fixed_parts_pr)
+                        except Exception as _prre:
+                            print(
+                                f'[STRATEGY-DIAG] post_repair_ar_residue_failed: '
+                                f'{_prre}',
+                                flush=True,
+                            )
 
                         # ── HARD ASSERTIONS after deterministic repair ──────
                         # These assertions verify that the repair functions
