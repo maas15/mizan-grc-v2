@@ -283,7 +283,77 @@
     }).join('');
     return '<div class="evidence-gate"'+dir+'>'+(block.label?'<strong>'+inlineHtml(block.label)+'</strong>':'')+checks+'</div>';
   }
-  function renderSubheading(block,isRtl){ return '<h3'+(isRtl?' dir="rtl"':'')+'>'+inlineHtml(block.text||'')+'</h3>'; }
+  function renderSubheading(block,isRtl){
+    var dir=isRtl?' dir="rtl"':'';
+    return '<div class="subsection-header"'+dir+'>'+inlineHtml(block.text||'')+'</div>';
+  }
+
+  // ── Section summary stats bar (counts for gap / KPI / pillar tables) ────────
+  function renderSectionSummaryBar(blocks, isRtl) {
+    var dir = isRtl ? ' dir="rtl"' : '';
+    // Find the first major table block in this section
+    var tableBlock = null;
+    for (var i = 0; i < blocks.length; i++) {
+      if ((blocks[i].type || '').toLowerCase() === 'table' && (blocks[i].headers || []).length >= 3) {
+        tableBlock = blocks[i];
+        break;
+      }
+    }
+    if (!tableBlock) return '';
+    var headers = tableBlock.headers || [];
+    var rows = normalizeRows(headers, tableBlock.rows || []);
+    var schema = tableSchemaName(headers);
+
+    var chips = [];
+
+    if (schema === 'gap-analysis') {
+      var total = rows.length;
+      if (!total) return '';
+      var counts = { critical: 0, high: 0, medium: 0, low: 0 };
+      rows.forEach(function(r) {
+        var pri = (r[3] || '').trim().toLowerCase();
+        if (/^(critical|حرج)$/.test(pri)) counts.critical++;
+        else if (/^(high|عالي|عالية)$/.test(pri)) counts.high++;
+        else if (/^(medium|متوسط)$/.test(pri)) counts.medium++;
+        else if (/^(low|منخفض)$/.test(pri)) counts.low++;
+      });
+      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'فجوة' : 'gaps') + '</span>');
+      if (counts.critical) chips.push('<span class="summary-chip summary-chip-critical">' + counts.critical + ' ' + (isRtl ? 'حرجة' : 'critical') + '</span>');
+      if (counts.high)     chips.push('<span class="summary-chip summary-chip-high">'     + counts.high     + ' ' + (isRtl ? 'عالية' : 'high') + '</span>');
+      if (counts.medium)   chips.push('<span class="summary-chip summary-chip-medium">'   + counts.medium   + ' ' + (isRtl ? 'متوسطة' : 'medium') + '</span>');
+      if (counts.low)      chips.push('<span class="summary-chip summary-chip-low">'      + counts.low      + ' ' + (isRtl ? 'منخفضة' : 'low') + '</span>');
+    } else if (schema === 'kpi-summary') {
+      var total = rows.length;
+      if (!total) return '';
+      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'مؤشر' : 'KPIs') + '</span>');
+      // Count KRI vs KPI if type column exists
+      var typeColIdx = -1;
+      headers.forEach(function(h, i) { if (/kri|kpi.*type|type.*kpi|النوع/i.test(h)) typeColIdx = i; });
+      if (typeColIdx >= 0) {
+        var kpiCount = 0, kriCount = 0;
+        rows.forEach(function(r) {
+          var t = (r[typeColIdx] || '').toLowerCase();
+          if (t.indexOf('kri') >= 0) kriCount++; else kpiCount++;
+        });
+        if (kpiCount) chips.push('<span class="summary-chip summary-chip-kpi">KPI ×' + kpiCount + '</span>');
+        if (kriCount) chips.push('<span class="summary-chip summary-chip-kri">KRI ×' + kriCount + '</span>');
+      }
+    } else if (schema === 'pillar-initiatives' || schema === 'strategic-objectives') {
+      var total = rows.length;
+      if (!total) return '';
+      var label = schema === 'strategic-objectives'
+        ? (isRtl ? 'هدف استراتيجي' : 'objectives')
+        : (isRtl ? 'مبادرة' : 'initiatives');
+      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + label + '</span>');
+    } else if (schema === 'key-risks') {
+      var total = rows.length;
+      if (!total) return '';
+      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'مخاطرة' : 'risks') + '</span>');
+    }
+
+    if (!chips.length) return '';
+    return '<div class="section-summary-bar"' + dir + '>' + chips.join('') + '</div>';
+  }
 
   function renderBlock(block,isRtl){
     var t=(block.type||'').toLowerCase();
@@ -600,7 +670,11 @@
     var title = section.number ? section.number + '. ' + (section.title || '') : (section.title || '');
     var html = title ? '<div class="section-banner">' + inlineHtml(title) + '</div>' : '';
 
-    coalescePreviewTables(section.blocks || []).forEach(function(block) {
+    var coalescedBlocks = coalescePreviewTables(section.blocks || []);
+    // Section summary stats bar (shown once, after the section banner)
+    html += renderSectionSummaryBar(coalescedBlocks, isRtl);
+
+    coalescedBlocks.forEach(function(block) {
       if ((block.type || '').toLowerCase() === 'table') {
         html += renderTableWithQuality(block, isRtl);
       } else {
@@ -624,7 +698,9 @@
       // icon is appended to section banners in the normal document view.
       var title = section.number ? section.number + '. ' + (section.title || '') : (section.title || '');
       if (title) html += '<div class="section-banner">' + inlineHtml(title) + '</div>';
-      coalescePreviewTables(section.blocks || []).forEach(function(block) {
+      var coalescedBlocks = coalescePreviewTables(section.blocks || []);
+      html += renderSectionSummaryBar(coalescedBlocks, isRtl);
+      coalescedBlocks.forEach(function(block) {
         if ((block.type || '').toLowerCase() === 'table') {
           html += renderTableWithQuality(block, isRtl);
         } else {
