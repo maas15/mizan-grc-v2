@@ -8270,13 +8270,13 @@ def _sections_to_json(sections, domain='', lang='en', title=''):
     import re
 
     SECTION_META = [
-        ('vision',      '1', 'Vision & Objectives' if lang == 'en' else 'الرؤية والأهداف'),
+        ('vision',      '1', 'Vision & Strategic Objectives' if lang == 'en' else 'الرؤية والأهداف الاستراتيجية'),
         ('pillars',     '2', 'Strategic Pillars' if lang == 'en' else 'الركائز الاستراتيجية'),
-        ('environment', '3', 'Business Environment & Regulatory Context' if lang == 'en' else 'السياق التنظيمي'),
+        ('environment', '3', 'Regulatory Environment & Threat Landscape' if lang == 'en' else 'البيئة التنظيمية والتهديدات'),
         ('gaps',        '4', 'Gap Analysis' if lang == 'en' else 'تحليل الفجوات'),
-        ('roadmap',     '5', 'Implementation Roadmap' if lang == 'en' else 'خارطة التنفيذ'),
-        ('kpis',        '6', 'Key Performance Indicators' if lang == 'en' else 'مؤشرات الأداء'),
-        ('confidence',  '7', 'Confidence Assessment & Risks' if lang == 'en' else 'تقييم الثقة والمخاطر'),
+        ('roadmap',     '5', 'Implementation Roadmap' if lang == 'en' else 'خارطة الطريق التنفيذية'),
+        ('kpis',        '6', 'Key Performance Indicators' if lang == 'en' else 'مؤشرات الأداء الرئيسية'),
+        ('confidence',  '7', 'Confidence Assessment & Risk Register' if lang == 'en' else 'تقييم الثقة والمخاطر'),
     ]
 
     def _is_num(v):
@@ -15170,7 +15170,160 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None)
     if doc_subtype == 'board':
         return []
     defects = []
-    # Higher SO-row bar (4 rather than the 3 used by structural check).
+    is_ar = (lang == 'ar')
+
+    # ── Canonical heading checks ─────────────────────────────────────────────
+    if is_ar:
+        headings_map = _CANONICAL_SECTION_HEADINGS.get('ar', {})
+        section_h2_re = _ts_re.compile(r'^##\s*\d+\.?\s*([^\n]+)', _ts_re.MULTILINE)
+        seen_headings = {}
+        for key, canonical in headings_map.items():
+            text = sections.get(key, '') or ''
+            if not text.strip():
+                continue
+            m = section_h2_re.search(text)
+            if m:
+                found_title = m.group(1).strip()
+                canonical_title = _ts_re.sub(r'^##\s*\d+\.?\s*', '', canonical).strip()
+                if found_title != canonical_title:
+                    defects.append((
+                        f'{key}_canonical_heading_mismatch',
+                        f'Section "{key}" heading is "{found_title}"; '
+                        f'expected "{canonical_title}"',
+                    ))
+                # Track for duplicate heading detection
+                if found_title in seen_headings:
+                    defects.append((
+                        'duplicate_section_heading',
+                        f'Heading "{found_title}" appears in both '
+                        f'"{seen_headings[found_title]}" and "{key}"',
+                    ))
+                else:
+                    seen_headings[found_title] = key
+
+    # ── Roadmap must not appear inside KPI section ───────────────────────────
+    kpis_text = sections.get('kpis', '') or ''
+    if kpis_text.strip() and is_ar:
+        roadmap_cols = ['النشاط', 'المسؤول', 'الإطار الزمني', 'المخرج']
+        tbl_hdr_re = _ts_re.compile(r'^\|.+\|$', _ts_re.MULTILINE)
+        m = tbl_hdr_re.search(kpis_text)
+        if m:
+            hdr_line = m.group(0)
+            road_cols_found = [c for c in roadmap_cols if c in hdr_line]
+            if len(road_cols_found) >= 2:
+                defects.append((
+                    'kpis_contains_roadmap_columns',
+                    f'KPI section table header contains roadmap columns: '
+                    f'{road_cols_found}',
+                ))
+
+    # ── Risk section must not be duplicated ─────────────────────────────────
+    if is_ar:
+        conf_text = sections.get('confidence', '') or ''
+        dup_risk_re = _ts_re.compile(r'###\s*المخاطر\s+الرئيسية', _ts_re.MULTILINE)
+        n_risk_hdrs = len(dup_risk_re.findall(conf_text))
+        if n_risk_hdrs > 1:
+            defects.append((
+                'duplicate_risk_header',
+                f'"المخاطر الرئيسية" heading appears {n_risk_hdrs} times; '
+                f'must appear exactly once',
+            ))
+
+    # ── Risk register must be valid (non-empty rows) ─────────────────────────
+    if is_ar:
+        conf_text = sections.get('confidence', '') or ''
+        n_risks = _count_risk_rows_with_mitigation(conf_text)
+        if conf_text.strip() and n_risks == 0:
+            # Check if there's a risk header at all
+            if _ts_re.search(r'###\s*المخاطر\s+الرئيسية', conf_text):
+                defects.append((
+                    'risk_register_empty',
+                    'Confidence section has a "المخاطر الرئيسية" header but '
+                    'contains no valid risk rows',
+                ))
+
+    # ── Cybersecurity capabilities must be present across sections ───────────
+    _all_strategy_text = ' '.join(
+        (sections.get(k) or '') for k in
+        ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis')
+    )
+    _caps_required = {
+        'IAM/PAM': ('iam', 'pam', 'هوية', 'هويات', 'الهوية', 'وصول مميز', 'identity'),
+        'MFA': ('mfa', 'multi-factor', 'عامل مصادقة متعدد', 'المصادقة الثنائية'),
+        'SIEM/SOC': ('siem', 'soc', 'مراقبة', 'monitoring'),
+        'Incident Response': ('incident', 'استجابة', 'حوادث', 'response'),
+        'Vulnerability Management': ('vulnerability', 'ثغرات', 'vulner', 'التصحيح'),
+        'Backup/DR': ('backup', 'نسخ احتياطي', 'dr', 'تعافي', 'استعادة'),
+        'Awareness': ('awareness', 'توعية', 'phishing', 'تصيد', 'التدريب'),
+        'Data Protection': ('dlp', 'data protection', 'حماية البيانات', 'encryption', 'تشفير'),
+    }
+    _all_lc = _all_strategy_text.lower()
+    _missing_caps = []
+    for _cap_name, _tokens in _caps_required.items():
+        if not any(t in _all_lc or t in _all_strategy_text for t in _tokens):
+            _missing_caps.append(_cap_name)
+    if _missing_caps:
+        defects.append((
+            'cybersecurity_capabilities_missing',
+            f'Missing technical capabilities: {", ".join(_missing_caps)}',
+        ))
+
+    # ── Gap guides must be unique (not identical repeated templates) ──────────
+    gaps_text = sections.get('gaps', '') or ''
+    if gaps_text.strip():
+        # Find all guide section headings in gaps
+        guide_hdr_re = _ts_re.compile(
+            r'^####\s+(?:دليل|Gap\s+#\d+\s+Implementation)', _ts_re.MULTILINE)
+        guide_bodies = guide_hdr_re.split(gaps_text)
+        if len(guide_bodies) > 2:
+            # Compare content of consecutive guide bodies (stripped)
+            stripped_bodies = [b.strip()[:200] for b in guide_bodies[1:]]
+            unique_bodies = set(stripped_bodies)
+            if len(unique_bodies) < len(stripped_bodies):
+                defects.append((
+                    'gap_guides_not_unique',
+                    f'{len(stripped_bodies) - len(unique_bodies)} duplicate '
+                    f'gap guide(s) detected; guides must be gap-specific',
+                ))
+
+    # ── KPIs must have owner, data source, frequency ─────────────────────────
+    kpis_text = sections.get('kpis', '') or ''
+    if kpis_text.strip():
+        kpi_owner_tokens = ('مالك', 'owner', 'مسؤول', 'responsible')
+        kpi_freq_tokens = ('تكرار', 'frequency', 'دورية', 'شهري', 'monthly', 'quarterly', 'ربع سنوي')
+        kpi_src_tokens = ('مصدر', 'source', 'بيانات', 'data')
+        _kpi_lc = kpis_text.lower()
+        if not any(t in _kpi_lc for t in kpi_owner_tokens):
+            defects.append((
+                'kpis_missing_owner_column',
+                'KPI section has no owner/responsible column',
+            ))
+        if not any(t in _kpi_lc for t in kpi_freq_tokens):
+            defects.append((
+                'kpis_missing_frequency_column',
+                'KPI section has no frequency/periodicity column',
+            ))
+
+    # ── Risks must have owner, mitigation plan, warning indicator ────────────
+    if is_ar:
+        conf_text = sections.get('confidence', '') or ''
+        risk_sec_re = _ts_re.compile(r'###\s*المخاطر\s+الرئيسية', _ts_re.MULTILINE)
+        risk_m = risk_sec_re.search(conf_text)
+        if risk_m:
+            risk_section = conf_text[risk_m.start():]
+            _r_lc = risk_section.lower()
+            if not any(t in risk_section for t in ('المالك', 'المسؤول', 'owner')):
+                defects.append((
+                    'risk_register_missing_owner',
+                    'Risk register table has no owner/المالك column',
+                ))
+            if not any(t in risk_section for t in ('خطة المعالجة', 'mitigation', 'المعالجة')):
+                defects.append((
+                    'risk_register_missing_mitigation',
+                    'Risk register table has no mitigation plan column',
+                ))
+
+    # ── Higher SO-row bar (4 rather than the 3 used by structural check) ─────
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _RICHNESS_MIN_SO_ROWS:
         defects.append((
@@ -22200,7 +22353,7 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
         _risk_to_add = _MIN_RISK_DEPTH - _n_risk
         _risk_hdr = _ts_re.compile(
             r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE,
+            _ts_re.IGNORECASE | _ts_re.MULTILINE,
         )
         _existing_risk_nums = set()
         for _cells in _ts_table_rows(_conf_text, _risk_hdr):
@@ -22318,6 +22471,389 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                 summary['capability_gaps'].append(_cap)
 
     return summary
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# CANONICAL SECTION HEADING MAP
+#
+# Single source of truth for the canonical Arabic/English headings that must
+# appear at the top of each section body.  Used by:
+#   - _reapply_canonical_section_headings()
+#   - validate_section_context_alignment()
+#   - enforce_cybersecurity_technical_depth()
+# ────────────────────────────────────────────────────────────────────────────
+
+_CANONICAL_SECTION_HEADINGS = {
+    'ar': {
+        'vision':      '## 1. الرؤية والأهداف الاستراتيجية',
+        'pillars':     '## 2. الركائز الاستراتيجية',
+        'environment': '## 3. البيئة التنظيمية والتهديدات',
+        'gaps':        '## 4. تحليل الفجوات',
+        'roadmap':     '## 5. خارطة الطريق التنفيذية',
+        'kpis':        '## 6. مؤشرات الأداء الرئيسية',
+        'confidence':  '## 7. تقييم الثقة والمخاطر',
+    },
+    'en': {
+        'vision':      '## 1. Vision & Strategic Objectives',
+        'pillars':     '## 2. Strategic Pillars',
+        'environment': '## 3. Regulatory Environment & Threat Landscape',
+        'gaps':        '## 4. Gap Analysis',
+        'roadmap':     '## 5. Implementation Roadmap',
+        'kpis':        '## 6. Key Performance Indicators',
+        'confidence':  '## 7. Confidence Assessment & Risk Register',
+    },
+}
+
+# Wrong headings that are known to appear in the wrong sections (Arabic).
+# Maps (wrong_heading_fragment, section_it_appears_in) → correct_section_key.
+_MISROUTED_HEADING_SIGNALS_AR = [
+    # environment section carrying gap-analysis heading
+    ('تحليل الفجوات', 'environment', 'gaps'),
+    # gaps section carrying environment heading
+    ('البيئة التنظيمية', 'gaps', 'environment'),
+    ('السياق التنظيمي', 'gaps', 'environment'),
+    ('سياق التهديدات', 'gaps', 'environment'),
+    # kpis section carrying roadmap heading
+    ('خارطة الطريق', 'kpis', 'roadmap'),
+    ('خارطة التنفيذ', 'kpis', 'roadmap'),
+    # roadmap section carrying kpi heading
+    ('مؤشرات الأداء الرئيسية', 'roadmap', 'kpis'),
+]
+
+# Roadmap column keywords that must NOT appear in the KPI section header
+_ROADMAP_COLUMN_KEYWORDS_AR = ['النشاط', 'المسؤول', 'الإطار الزمني', 'المخرج']
+_ROADMAP_COLUMN_KEYWORDS_EN = ['activity', 'owner', 'timeline', 'deliverable']
+
+
+def _reapply_canonical_section_headings(sections, lang):
+    """Strip any wrong/mismatched ``## N.`` heading from each section body
+    and replace it with the canonical heading for that section key.
+
+    This is called BEFORE ``_sections_to_json`` / preview / PDF export to
+    ensure the rendered output always shows the correct section number and
+    title regardless of what the AI emitted as its first heading line.
+
+    Returns a dict of {section_key: old_heading} for any sections that
+    were repaired (empty dict if no changes needed).
+    """
+    headings_map = _CANONICAL_SECTION_HEADINGS.get(lang, _CANONICAL_SECTION_HEADINGS['ar'])
+    repaired = {}
+    section_heading_re = _ts_re.compile(r'^##\s*\d+\.?\s*[^\n]*\n?', _ts_re.MULTILINE)
+
+    for key, canonical in headings_map.items():
+        text = sections.get(key, '') or ''
+        if not text.strip():
+            continue
+        m = section_heading_re.match(text.lstrip('\n'))
+        if not m:
+            # No top-level heading found; prepend canonical heading
+            sections[key] = canonical + '\n\n' + text.lstrip('\n')
+            repaired[key] = ''
+            continue
+        existing_heading = m.group(0).rstrip('\n')
+        canonical_title = _ts_re.sub(r'^##\s*\d+\.?\s*', '', canonical).strip()
+        existing_title = _ts_re.sub(r'^##\s*\d+\.?\s*', '', existing_heading).strip()
+        if existing_title != canonical_title:
+            # Replace the wrong heading with the canonical one
+            repaired[key] = existing_heading
+            body_after_heading = text[text.find('\n', text.find(existing_heading)):].lstrip('\n')
+            sections[key] = canonical + '\n\n' + body_after_heading
+    return repaired
+
+
+def validate_section_context_alignment(sections, lang):
+    """Validate and repair canonical section context alignment.
+
+    Checks that each section's body does NOT start with a heading that
+    belongs to a different section (e.g., the environment section must not
+    be labelled "تحليل الفجوات"; the KPI section must not contain roadmap
+    table columns; "المخاطر الرئيسية" must appear at most once).
+
+    For each alignment problem found the function REPAIRS the section in
+    place (moving content to its canonical home) and also returns a list
+    of (problem_tag, description) tuples for diagnostic logging.
+
+    Parameters
+    ----------
+    sections : dict  — the live section dict {key: markdown_text}
+    lang     : str   — 'ar' or 'en'
+
+    Returns
+    -------
+    list of (tag, detail) tuples (empty if all sections are aligned).
+    """
+    is_ar = (lang == 'ar')
+    issues = []
+
+    # ── 1. Check for misrouted headings in Arabic ────────────────────────────
+    if is_ar:
+        headings_map = _CANONICAL_SECTION_HEADINGS['ar']
+        section_h2_re = _ts_re.compile(r'^##\s*\d+\.?\s*([^\n]+)', _ts_re.MULTILINE)
+        for wrong_fragment, bad_section, correct_section in _MISROUTED_HEADING_SIGNALS_AR:
+            text = sections.get(bad_section, '') or ''
+            if not text.strip():
+                continue
+            m = section_h2_re.search(text)
+            if m and wrong_fragment in m.group(1):
+                issues.append((
+                    f'{bad_section}_mislabeled_as_{correct_section}',
+                    f'Section "{bad_section}" starts with heading fragment '
+                    f'"{wrong_fragment}" which belongs in "{correct_section}"',
+                ))
+                # Repair: replace the misrouted heading with the canonical one
+                canonical = headings_map.get(bad_section, '')
+                if canonical:
+                    # Remove the wrong heading line (first ## N. line)
+                    first_h2 = _ts_re.compile(r'^##\s*\d+\.?\s*[^\n]*\n?', _ts_re.MULTILINE)
+                    new_text = first_h2.sub('', text, count=1).lstrip('\n')
+                    sections[bad_section] = canonical + '\n\n' + new_text
+
+    # ── 2. KPI section must not contain roadmap table columns ────────────────
+    kpis_text = sections.get('kpis', '') or ''
+    if kpis_text.strip():
+        roadmap_cols = _ROADMAP_COLUMN_KEYWORDS_AR if is_ar else _ROADMAP_COLUMN_KEYWORDS_EN
+        # Match the first full pipe-table header line (all columns visible)
+        tbl_hdr_re = _ts_re.compile(r'^\|.+\|$', _ts_re.MULTILINE)
+        m = tbl_hdr_re.search(kpis_text)
+        if m:
+            hdr_line = m.group(0)
+            roadmap_cols_found = [c for c in roadmap_cols if c in hdr_line]
+            if len(roadmap_cols_found) >= 2:
+                issues.append((
+                    'kpis_contains_roadmap_columns',
+                    f'KPI section header contains roadmap columns: '
+                    f'{roadmap_cols_found}',
+                ))
+                # Move the roadmap table block from kpis to roadmap
+                roadmap_tbl_re = _ts_re.compile(
+                    r'(?:^|\n)((?:\|[^\n]+\|\n)+)', _ts_re.MULTILINE)
+                rm = roadmap_tbl_re.search(kpis_text)
+                if rm:
+                    roadmap_block = rm.group(1).strip()
+                    sections['kpis'] = (kpis_text[:rm.start()] +
+                                        kpis_text[rm.end():]).strip()
+                    roadmap_text = sections.get('roadmap', '') or ''
+                    if roadmap_text.strip():
+                        sections['roadmap'] = roadmap_text.rstrip() + '\n\n' + roadmap_block + '\n'
+                    else:
+                        heading = _CANONICAL_SECTION_HEADINGS.get(lang, {}).get('roadmap', '## 5. خارطة الطريق التنفيذية')
+                        sections['roadmap'] = heading + '\n\n' + roadmap_block + '\n'
+
+    # ── 3. Environment section must not have gap-analysis as main body ───────
+    if is_ar:
+        env_text = sections.get('environment', '') or ''
+        gaps_text = sections.get('gaps', '') or ''
+        if env_text.strip():
+            # If environment body starts with "السياق التنظيمي" or "سياق التهديدات"
+            # but the HEADING says gap analysis, that's fine (already repaired above).
+            # But if gaps section starts with environment context paragraphs BEFORE
+            # the gap table, log it.
+            gap_table_re = _ts_re.compile(
+                r'^\|[^\n]*(?:الفجوة|Gap)[^\n]*\|', _ts_re.MULTILINE)
+            if gaps_text.strip() and not gap_table_re.search(gaps_text):
+                # gaps section has no gap table at all — check if it's really env content
+                env_keywords = ['التهديدات', 'البيئة التنظيمية', 'السياق التنظيمي',
+                                 'الامتثال التنظيمي', 'هيئة الاتصالات']
+                text_lc = gaps_text.lower()
+                env_hit_count = sum(1 for k in env_keywords if k in gaps_text)
+                if env_hit_count >= 2:
+                    issues.append((
+                        'gaps_contains_environment_context',
+                        'Gaps section body appears to contain regulatory/environment '
+                        'context rather than a gap table',
+                    ))
+
+    # ── 4. Confidence section: "المخاطر الرئيسية" must appear at most once ──
+    if is_ar:
+        conf_text = sections.get('confidence', '') or ''
+        dup_risk_hdr_re = _ts_re.compile(
+            r'###\s*المخاطر\s+الرئيسية', _ts_re.MULTILINE)
+        risk_hdr_matches = list(dup_risk_hdr_re.finditer(conf_text))
+        if len(risk_hdr_matches) > 1:
+            issues.append((
+                'duplicate_risk_header',
+                f'"المخاطر الرئيسية" heading appears {len(risk_hdr_matches)} '
+                f'times in confidence section; should appear exactly once',
+            ))
+            # Repair: keep only the first occurrence; merge tables under it
+            first_m = risk_hdr_matches[0]
+            # Find the body of the first risk table (up to next ### or end)
+            next_section_re = _ts_re.compile(r'^###\s', _ts_re.MULTILINE)
+            after_first = conf_text[first_m.end():]
+            next_hdr = next_section_re.search(after_first)
+            if next_hdr:
+                first_risk_body = after_first[:next_hdr.start()]
+                rest = after_first[next_hdr.start():]
+            else:
+                first_risk_body = after_first
+                rest = ''
+            # Collect all duplicate risk table rows
+            extra_rows = []
+            for dup_m in risk_hdr_matches[1:]:
+                dup_after = conf_text[dup_m.end():]
+                dup_next = next_section_re.search(dup_after)
+                dup_body = dup_after[:dup_next.start()] if dup_next else dup_after
+                for ln in dup_body.splitlines():
+                    s = ln.strip()
+                    if (s.startswith('|') and s.endswith('|')
+                            and not _ts_re.match(r'^\|[\s\-:|]+\|$', s)):
+                        cells = [c.strip() for c in s.split('|')[1:-1]]
+                        if cells and cells[0].replace('.', '').isdigit():
+                            extra_rows.append(ln)
+            # Remove all duplicate risk sections from conf_text
+            new_conf = conf_text[:first_m.end()] + first_risk_body
+            if extra_rows:
+                # Append extra rows before the rest
+                new_conf = new_conf.rstrip() + '\n' + '\n'.join(extra_rows) + '\n'
+            # Strip all further occurrences of ### المخاطر الرئيسية from rest
+            if rest:
+                # Remove dup headings + their bodies from rest
+                cleaned_rest = dup_risk_hdr_re.sub('', rest)
+                # Remove any pipe-only line blocks that remain from dup tables
+                new_conf = new_conf.rstrip() + '\n\n' + cleaned_rest.lstrip('\n')
+            sections['confidence'] = _ts_re.sub(r'\n{3,}', '\n\n', new_conf).rstrip() + '\n'
+
+    # ── 5. Success-factor table and risk table must be in separate subsections
+    if is_ar:
+        conf_text = sections.get('confidence', '') or ''
+        if conf_text.strip():
+            has_csf_hdr = bool(_ts_re.search(r'###\s*عوامل\s+النجاح', conf_text))
+            has_risk_hdr = bool(_ts_re.search(r'###\s*المخاطر\s+الرئيسية', conf_text))
+            if not has_csf_hdr and not has_risk_hdr:
+                # Check if there's a single combined table that mixes both
+                combined_hdr_re = _ts_re.compile(
+                    r'#\s+العامل\s+الوصف\s+الأهمية', _ts_re.MULTILINE)
+                if combined_hdr_re.search(conf_text):
+                    issues.append((
+                        'confidence_malformed_combined_table',
+                        'Confidence section has a malformed combined table '
+                        'under "# العامل الوصف الأهمية"; should have separate '
+                        'عوامل النجاح and المخاطر الرئيسية subsections',
+                    ))
+
+    return issues
+
+
+def enforce_cybersecurity_technical_depth(
+        sections,
+        lang,
+        org_name='The Organization',
+        sector='General',
+        frameworks=None,
+        maturity='initial',
+        generation_mode='consulting',
+        diagnostic_gaps=None):
+    """Enhanced deterministic depth-enrichment for Arabic Cybersecurity
+    Technical Strategies.
+
+    This function is the public entry point called by the pipeline after
+    initial generation/normalization and before validation, saving, preview,
+    PDF, and DOCX export.  It delegates to ``enforce_technical_strategy_depth``
+    (the low-level enricher) with cybersecurity-specific minimum thresholds and
+    then applies additional canonical heading reapplication and section-context
+    alignment validation.
+
+    Parameters
+    ----------
+    sections        : dict  — live section dict {key: markdown_text}
+    lang            : str   — 'ar' or 'en'
+    org_name        : str
+    sector          : str
+    frameworks      : list[str] | None — e.g. ['NCA ECC', 'NCA DCC']
+    maturity        : str   — 'initial' | 'developing' | 'defined' | 'managed'
+    generation_mode : str   — 'drafting' | 'consulting' | 'assurance'
+    diagnostic_gaps : list  — gap objects from diagnostic model
+
+    Returns
+    -------
+    dict with keys:
+        'depth_summary'   — result from enforce_technical_strategy_depth
+        'heading_repairs' — dict of {section_key: old_heading} from reapplication
+        'alignment_issues'— list of (tag, detail) from validate_section_context_alignment
+        'capability_gaps' — list of capability names not found in the strategy
+    """
+    frameworks = frameworks or ['NCA ECC']
+    fw_short = frameworks[0] if frameworks else 'NCA ECC'
+    diagnostic_gaps = diagnostic_gaps or []
+
+    # ── Step 1: Canonical heading reapplication ─────────────────────────────
+    heading_repairs = _reapply_canonical_section_headings(sections, lang)
+
+    # ── Step 2: Section context alignment validation + auto-repair ──────────
+    alignment_issues = validate_section_context_alignment(sections, lang)
+
+    # ── Step 3: Core depth enrichment (via existing authoritative function) ─
+    depth_summary = enforce_technical_strategy_depth(
+        sections, lang,
+        domain='Cyber Security',
+        fw_short=fw_short,
+        sector=sector,
+        org_name=org_name,
+        maturity=maturity,
+        generation_mode=generation_mode,
+        diagnostic_gaps=diagnostic_gaps,
+    )
+
+    # ── Step 4: Ensure confidence section has TWO separate subsections ──────
+    if lang == 'ar':
+        _ensure_confidence_split(sections, fw_short=fw_short)
+
+    return {
+        'depth_summary': depth_summary,
+        'heading_repairs': heading_repairs,
+        'alignment_issues': alignment_issues,
+        'capability_gaps': depth_summary.get('capability_gaps', []),
+    }
+
+
+def _ensure_confidence_split(sections, fw_short='NCA ECC'):
+    """Ensure the confidence section has separate CSF and risk subsections.
+
+    If "عوامل النجاح الحرجة" is missing, adds a minimal header.
+    If "المخاطر الرئيسية" appears more than once, collapses to one occurrence.
+    Idempotent.
+    """
+    conf = sections.get('confidence', '') or ''
+    if not conf.strip():
+        return
+
+    has_csf = bool(_ts_re.search(r'###\s*عوامل\s+النجاح', conf))
+    has_risk = bool(_ts_re.search(r'###\s*المخاطر\s+الرئيسية', conf))
+
+    # If neither subsection header exists, try to split by looking for
+    # a pipe-table that uses risk columns vs CSF columns
+    if not has_csf:
+        # Inject minimal CSF block before the first pipe-table if no CSF header
+        risk_hdr_pos = conf.find('### المخاطر')
+        if risk_hdr_pos > 0:
+            insert_pos = risk_hdr_pos
+        else:
+            # Find the first pipe-table header
+            tbl_m = _ts_re.search(r'^(?:\|[^\n]+\|\n)+', conf, _ts_re.MULTILINE)
+            insert_pos = tbl_m.start() if tbl_m else len(conf)
+        csf_block = (
+            '\n\n### عوامل النجاح الحرجة:\n\n'
+            '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
+            '|---|-------|-------|--------|-------------|\n'
+            f'| 1 | دعم القيادة التنفيذية | التزام الإدارة العليا بالأمن السيبراني | حرج | قرارات مجلس الإدارة |\n'
+            f'| 2 | توفر الميزانية | تخصيص ميزانية كافية لمتطلبات {fw_short} | عالٍ | سجل الميزانية المعتمد |\n'
+            f'| 3 | توفر الكفاءات | توظيف موارد بشرية مؤهلة في الأمن السيبراني | عالٍ | وصف وظيفي + شهادات |\n'
+        )
+        conf = conf[:insert_pos] + csf_block + conf[insert_pos:]
+        sections['confidence'] = conf
+
+    if not has_risk:
+        conf = sections.get('confidence', '') or ''
+        risk_block = (
+            '\n\n### المخاطر الرئيسية:\n\n'
+            '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
+            '|---|-------|-------|-----------|--------|------------|--------|--------------|-----------------|---------------|\n'
+            f'| 1 | تأخر اعتماد الحوكمة | تأخر القرارات التنفيذية | متوسط | عالٍ | متوسط | CISO | ورش عمل مبكرة وعروض قيمة مبنية على المخاطر | عدم انعقاد لجنة الحوكمة | مخاطر متبقية منخفضة |\n'
+            f'| 2 | نقص الكفاءات السيبرانية | صعوبة استقطاب المواهب | عالٍ | عالٍ | عالٍ | CISO | التوظيف المبكر + MSSP مؤقت | شواغر غير مشغولة > 30 يوماً | مخاطر متبقية متوسطة |\n'
+        )
+        sections['confidence'] = (sections.get('confidence', '') or '').rstrip() + risk_block
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Used as the final defensive step when both _targeted_section_repair passes
 # leave a mandatory technical-strategy flag in the issues list. Writes content
@@ -29310,6 +29846,47 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _dep_e:
                         print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
                               f'{_dep_e}', flush=True)
+
+                    # ── CYBERSECURITY DEPTH + SECTION ALIGNMENT PASS ─────
+                    # enforce_cybersecurity_technical_depth runs after the
+                    # basic depth enrichment and applies:
+                    #   1. Canonical heading reapplication (strip wrong
+                    #      headings; enforce canonical Arabic titles).
+                    #   2. Section context alignment validation + auto-
+                    #      repair (misrouted headings, duplicate risk
+                    #      headers, roadmap columns inside KPI table).
+                    #   3. Confidence split into CSF + risk subsections.
+                    # Idempotent; no-op on already-correct payloads.
+                    try:
+                        _cyber_depth = enforce_cybersecurity_technical_depth(
+                            sections, lang,
+                            org_name=_final_ctx.get('org_name', 'The Organization'),
+                            sector=_final_ctx.get('sector', 'General'),
+                            frameworks=_final_ctx.get('frameworks', ['NCA ECC']),
+                            maturity=_final_ctx.get('maturity', 'initial'),
+                            generation_mode=_final_ctx.get(
+                                'generation_mode', _generation_mode),
+                            diagnostic_gaps=_final_ctx.get('diagnostic_gaps', []),
+                        )
+                        if (_cyber_depth.get('heading_repairs')
+                                or _cyber_depth.get('alignment_issues')
+                                or _cyber_depth.get('capability_gaps')):
+                            print(
+                                f'[STRATEGY-DIAG] cyber_depth_enrichment='
+                                f'heading_repairs={_cyber_depth.get("heading_repairs")} '
+                                f'alignment_issues={_cyber_depth.get("alignment_issues")} '
+                                f'capability_gaps={_cyber_depth.get("capability_gaps")}',
+                                flush=True,
+                            )
+                        # Rebuild content so validators see updated payload
+                        _fixed_parts_cyber = [
+                            sections[sk] for sk in _section_order_r
+                            if sections.get(sk) and sections[sk].strip()]
+                        if _fixed_parts_cyber:
+                            content = '\n\n'.join(_fixed_parts_cyber)
+                    except Exception as _cde:
+                        print(f'[STRATEGY-DIAG] cyber_depth_enrichment_failed: '
+                              f'{_cde}', flush=True)
 
                     # ── DEPTH SAFETY TOP-UP (prompt clauses 2 + 10) ─────
                     # Backstop after `_apply_final_synthesis_pass`: if
