@@ -25728,12 +25728,15 @@ def api_generate_strategy():
   حالة الوثيقة: "مسودة — قيد المراجعة".'''
 ) if _is_drafting else (
 '''- قواعد الوضع الاستشاري (CONSULTING) — متطلبات عمق إلزامية:
+  الجمهور المستهدف: مجلس الإدارة والإدارة العليا — هذه الوثيقة مُعدّة للعرض أمام أصحاب القرار الاستراتيجي، وليس للفريق التقني.
   هذه وثيقة استشارية كاملة على مستوى Big-4. طبّق هذه القواعد على كل قسم:
-  1. عمق السرد: كل ركيزة يجب أن تحتوي 3-4 جمل من السرد الاستشاري — ليس مجرد عنوان جدول.
-  2. تفسير الفجوات: لا تكتفِ بسردها — حلّل الأسباب الجذرية والأنماط المنهجية والمخاطر المتسلسلة.
-  3. منطق التسلسل: اشرح صراحةً لماذا الأنشطة مرتبة بهذا الترتيب.
-  4. لغة استشارية: "مأسسة الحوكمة"، "المرونة بالتصميم"، "سلسلة ثغرات منهجية" يجب أن تظهر طبيعياً.
-  5. مبررات الثقة الأقوى: درجة الثقة يجب أن تذكر 3 عوامل ترفع الثقة و3 عوامل تخلق مخاطر.'''
+  1. عمق السرد: كل ركيزة يجب أن تحتوي 3-4 جمل من السرد الاستشاري — ليس مجرد عنوان جدول. الجملة الأولى تربط الركيزة بقرار استراتيجي أمام المجلس.
+  2. التعمق التقني الحقيقي: كل مبادرة تقنية تذكر الأنظمة/الأدوات المقترحة (مثال: SIEM، PAM، WAF، DLP، نظام GRC) وكيف تُغلق الفجوة تقنياً. لا توصيات مبهمة كـ"نشر حل أمني".
+  3. تفسير الفجوات: لا تكتفِ بسردها — حلّل الأسباب الجذرية والأنماط المنهجية والمخاطر المتسلسلة وأثرها على استمرارية الأعمال.
+  4. منطق الاستثمار: كل مرحلة تذكر حجم الاستثمار المقدر وعائده المتوقع (قيمة المخاطر المخففة أو تكلفة عدم الامتثال المتجنبة) — لغة التكلفة/العائد مطلوبة لمجلس الإدارة.
+  5. منطق التسلسل: اشرح صراحةً لماذا الأنشطة مرتبة بهذا الترتيب وما الذي يُصبح ممكناً لمجلس الإدارة الموافقة عليه بعد كل مرحلة.
+  6. لغة استشارية: "مأسسة الحوكمة"، "المرونة بالتصميم"، "سلسلة ثغرات منهجية"، "قرار استراتيجي أمام المجلس" يجب أن تظهر طبيعياً.
+  7. مبررات الثقة الأقوى: درجة الثقة يجب أن تذكر 3 عوامل ترفع الثقة و3 عوامل تخلق مخاطر — مرتبطة بمؤشرات قابلة لقياس المجلس.'''
 ) if _is_consulting else (
 '''- قواعد وضع الضمان (ASSURANCE) — قابل للنشر، دفاعي، واعٍ بالأدلة:
   هذه الوثيقة يجب أن تصمد أمام المراجعة الخارجية. طبّق:
@@ -25756,6 +25759,7 @@ def api_generate_strategy():
 {"8. تنبيه حاسم: " + org_struct_critical_ar if _has_no_org_ar and org_struct_critical_ar else ""}
 
 أسلوب الوثيقة (معيار Big-4):
+- الجمهور المستهدف: مجلس الإدارة والإدارة العليا — صِغ كل توصية كقرار استراتيجي يُعرض على أصحاب السلطة، وليس كتعليمات تشغيلية لفريق التنفيذ
 - لغة رسمية موثوقة على مستوى مجلس الإدارة
 - كل توصية محددة وقابلة للتنفيذ مع دور مسؤول مُسمَّى
 - كل خلية في الجداول تحتوي محتوى حقيقياً — لا فراغات ولا شرطات
@@ -25858,27 +25862,49 @@ def api_generate_strategy():
 
 ### الركيزة 1: (الحوكمة وإدارة المخاطر أو ما يناسب {domain})
 
-| # | المبادرة | الوصف (اذكر الفجوة التي تُغلقها) | المخرج المتوقع |
-|---|---------|----------------------------------|---------------|
-(3-4 صفوف. كل مبادرة تُغلق فجوة مسماة. لا خلايا فارغة.)
+[اكتب 3-4 جمل من السرد الاستشاري قبل الجدول. اذكر أرقام الفجوات التي تعالجها هذه الركيزة. وضّح ما يصبح مستحيلاً بدون هذه الركيزة. اربط بضابط أو نطاق محدد من {frameworks_ar}. اجعل السرد خاصاً بالملف التشخيصي لـ{org_name} — ليس عاماً. مثال: "مأسسة الحوكمة هي الأساس القيادي لـ{org_name} — بدون صلاحية واضحة لـCISO وإشراف على مستوى مجلس الإدارة، لا يمكن تطبيق أي ضابط من {frameworks_ar} بشكل مستدام. هذه الركيزة تُغلق الفجوة رقم 1 والفجوة رقم 2، اللتين تمثلان المتطلبات الهيكلية الأساسية التي تحدد ما إذا كانت الاستثمارات اللاحقة ستحقق الامتثال المستدام."]
+
+| # | المبادرة | الوصف (الفجوة التي تُغلقها + التقنية/الأداة المقترحة إن انطبق) | المخرج المتوقع |
+|---|---------|---------------------------------------------------------------|---------------|
+(3-4 صفوف. كل مبادرة تُغلق فجوة مسماة. المبادرات التقنية تذكر الأنظمة/الأدوات المقترحة. لا خلايا فارغة.)
+
+*يُقاس التقدم في هذه الركيزة بمؤشر KPI رقم 1 — انظر القسم السادس.*
 
 ### الركيزة 2: (التقنية والبنية التحتية أو ما يناسب {domain})
 
-| # | المبادرة | الوصف (اذكر الفجوة التي تُغلقها) | المخرج المتوقع |
-|---|---------|----------------------------------|---------------|
-(3-4 صفوف. لا خلايا فارغة.)
+⚠ هذه الركيزة يجب أن تحتوي فقرة سرد خاصة بها + جدول خاص بها. لا تدمج مع الركيزة الأولى أو الركائز الأخرى.
+
+[اكتب 3-4 جمل من السرد الاستشاري. اذكر التقنيات/الأنظمة المقترحة بالاسم (مثال: SIEM، PAM، EDR، WAF، نظام إدارة المخاطر). اشرح كيف تبني هذه الركيزة على مخرجات الركيزة الأولى. حدد الفجوات التقنية التي تُغلقها وما المخاطر التشغيلية التي تستمر حتى تُنجز هذه الركيزة. اذكر البنية التقنية المقترحة على المستوى العالي — هذا جزء من الوثيقة التي يراجعها مجلس الإدارة قبل إقرار الميزانية.]
+
+| # | المبادرة | الوصف (الفجوة التي تُغلقها + الأداة/النظام المقترح) | المخرج المتوقع |
+|---|---------|---------------------------------------------------|---------------|
+(3-4 صفوف. كل مبادرة تذكر الأداة أو النظام المقترح. لا خلايا فارغة.)
+
+*يُقاس التقدم في هذه الركيزة بمؤشر KPI رقم 2 — انظر القسم السادس.*
 
 ### الركيزة 3: (الكوادر والثقافة أو ما يناسب {domain})
 
-| # | المبادرة | الوصف (اذكر الفجوة التي تُغلقها) | المخرج المتوقع |
-|---|---------|----------------------------------|---------------|
+⚠ هذه الركيزة يجب أن تحتوي فقرة سرد خاصة بها + جدول خاص بها. لا تدمج مع الركائز الأخرى.
+
+[اكتب 3-4 جمل من السرد الاستشاري. وضّح البُعد البشري — لماذا الضوابط التقنية وحدها غير كافية بدون المبادرات الثقافية في هذه الركيزة. أشر إلى الخطر الداخلي أو فجوة الوعي من الملف التشخيصي. اذكر برامج التدريب والتوعية المحددة المقترحة.]
+
+| # | المبادرة | الوصف (الفجوة التي تُغلقها + البرنامج/الأداة المقترحة) | المخرج المتوقع |
+|---|---------|-------------------------------------------------------|---------------|
 (3-4 صفوف. لا خلايا فارغة.)
+
+*يُقاس التقدم في هذه الركيزة بمؤشر KPI رقم 3 — انظر القسم السادس.*
 
 ### الركيزة 4: (الامتثال والضمان أو ما يناسب {domain})
 
-| # | المبادرة | الوصف (اذكر الفجوة التي تُغلقها) | المخرج المتوقع |
-|---|---------|----------------------------------|---------------|
+⚠ هذه الركيزة يجب أن تحتوي فقرة سرد خاصة بها + جدول خاص بها. لا تدمج مع الركائز الأخرى.
+
+[اكتب 3-4 جمل من السرد الاستشاري. وضّح كيف تُحوّل هذه الركيزة استثمارات الركائز السابقة إلى أدلة امتثال قابلة للتحقق أمام الجهات التنظيمية ومجلس الإدارة. اذكر آلية تقييم {frameworks_ar} المحددة أو متطلب التقارير التنظيمية الذي تُنجزه هذه الركيزة.]
+
+| # | المبادرة | الوصف (الفجوة التي تُغلقها + الأداة/المنهجية المقترحة) | المخرج المتوقع |
+|---|---------|-------------------------------------------------------|---------------|
 (3-4 صفوف. لا خلايا فارغة.)
+
+*يُقاس التقدم في هذه الركيزة بمؤشر KPI رقم 4 — انظر القسم السادس.*
 
 [SECTION]
 
@@ -25900,25 +25926,25 @@ def api_generate_strategy():
 
 **الإجراءات الفورية (0-30 يوم):**
 
-| الخطوة | الإجراء | المسؤول | المخرج |
-|--------|---------|---------|--------|
+| الخطوة | الإجراء التقني/التنظيمي | المسؤول | المخرج |
+|--------|------------------------|---------|--------|
 {"| 1 | تقييم الهيكل التنظيمي الحالي مقابل متطلبات " + frameworks_ar + " وتوثيق الوضع الراهن | الإدارة التنفيذية | تقرير تقييم الوضع الحالي |" if _has_no_org_ar else ""}
-(أنشئ 3 صفوف: خطوات فورية خاصة بهذه الفجوة تحديداً. لا خلايا فارغة.)
+(أنشئ 3 صفوف: خطوات فورية محددة وقابلة للتنفيذ خاصة بهذه الفجوة تحديداً. اذكر الأنظمة أو الأدوات التقنية إذا كانت المبادرة تقنية. لا خلايا فارغة.)
 
 **أهداف المدى القصير (1-6 أشهر):**
 
-| الخطوة | الإجراء | المسؤول | المخرج |
-|--------|---------|---------|--------|
+| الخطوة | الإجراء التقني/التنظيمي | المسؤول | المخرج القابل للقياس |
+|--------|------------------------|---------|---------------------|
 {"| 1 | تصميم الهيكل التنظيمي المقترح وإقراره رسمياً مع تحديد الصلاحيات وخطوط التقارير | الإدارة التنفيذية | الهيكل التنظيمي المعتمد وخطابات التعيين |" if _has_no_org_ar else ""}
-(أنشئ 3 صفوف: بناء الحل ومأسسته. كل خطوة تبني على المرحلة الفورية. لا خلايا فارغة.)
+(أنشئ 3 صفوف: بناء الحل التقني/التنظيمي ومأسسته. المخرج قابل للقياس ويذكر معيار النجاح. لا خلايا فارغة.)
 
 **أهداف المدى المتوسط (6-24 شهراً):**
 
-| الخطوة | الإجراء | المسؤول | المخرج |
-|--------|---------|---------|--------|
-(أنشئ 3 صفوف: تحسين وتوسيع وقياس الأثر. لا خلايا فارغة.)
+| الخطوة | الإجراء التقني/التنظيمي | المسؤول | المخرج القابل للقياس |
+|--------|------------------------|---------|---------------------|
+(أنشئ 3 صفوف: تحسين وتوسيع وقياس الأثر الاستراتيجي. كل خطوة تحدد المعيار الذي يُقبله مجلس الإدارة دليلاً على إغلاق الفجوة. لا خلايا فارغة.)
 
-**الأدلة المطلوبة:** ☐ (3 أدلة محددة وملموسة تُثبت إغلاق هذه الفجوة)
+**الأدلة المطلوبة:** ☐ (3 أدلة محددة وملموسة تُثبت إغلاق هذه الفجوة أمام الجهات التنظيمية ومجلس الإدارة)
 
 (تابع مع الفجوة رقم 2، 3، إلخ — دليل واحد لكل فجوة بالمراحل الثلاث.)
 
@@ -26252,18 +26278,21 @@ GENERATION MODE: {_generation_mode.upper()}
   Mark strategic objectives as provisional: add "(Draft)" after each timeframe.'''
 ) if _is_drafting else (
 '''- CONSULTING MODE RULES — MANDATORY DEPTH REQUIREMENTS:
+  AUDIENCE: Board of Directors and Senior Management — this document will be presented to strategic decision-makers, NOT the technical team.
   This is a full consulting-grade advisory deliverable. Apply these rules to every section:
   1. STRATEGIC NARRATIVE DEPTH: Each pillar must have 3-4 sentences of consulting narrative — not just a table header.
      Explain WHY each pillar matters to this specific organization, what becomes impossible without it, and how it links to the next pillar.
-  2. GAP INTERPRETATION: Do not merely list gaps. Synthesize them — identify root causes, systemic patterns, and cascading risks.
+     Open each pillar narrative with the governance/strategic decision it requires from the board.
+  2. GENUINE TECHNICAL DEPTH: Every technology initiative must name the specific systems/tools recommended (e.g., SIEM, PAM, EDR, WAF, DLP, GRC platform) and explain HOW they close the gap technically. No vague recommendations like "deploy a security solution".
+  3. GAP INTERPRETATION: Do not merely list gaps. Synthesize them — identify root causes, systemic patterns, cascading risks, and business continuity implications.
      E.g., "The absence of a governance structure (Gap #1) is not isolated — it means every subsequent control has no accountable owner, creating a systemic accountability vacuum."
-  3. SEQUENCING LOGIC: Explicitly state why activities are sequenced as they are. Name the dependency chain.
-  4. MANAGEMENT IMPLICATIONS: Each section must end with one sentence stating the management implication — what leadership must do.
-  5. DOMAIN-SPECIFIC LANGUAGE: Use precise {fw_short} clause references. Use sector-specific benchmarks.
+  4. INVESTMENT LANGUAGE: Every roadmap phase must articulate the cost of inaction (regulatory penalty, breach cost, reputational damage) alongside the investment rationale. The board needs cost/benefit framing to approve budgets.
+  5. SEQUENCING LOGIC: Explicitly state why activities are sequenced as they are. Name what becomes possible for board approval after each phase completes.
+  6. DOMAIN-SPECIFIC LANGUAGE: Use precise {fw_short} clause references. Use sector-specific benchmarks.
      Reference current-state technologies ({tech_list}) in gap descriptions where relevant.
-  6. CONSULTING REGISTER: Phrases like "Institutionalizing governance", "Resilience-by-design", "Systemic vulnerability chain",
-     "Compliance posture", "Control effectiveness" must appear naturally throughout — not as checklist items.
-  7. STRONGER CONFIDENCE RATIONALE: The confidence score justification must name 3 factors raising confidence AND 3 factors creating risk.'''
+  7. CONSULTING REGISTER: Phrases like "Institutionalizing governance", "Resilience-by-design", "Systemic vulnerability chain",
+     "Compliance posture", "Control effectiveness", "Strategic board decision" must appear naturally throughout — not as checklist items.
+  8. STRONGER CONFIDENCE RATIONALE: The confidence score justification must name 3 factors raising confidence AND 3 factors creating risk — tied to board-observable metrics.'''
 ) if _is_consulting else (
 '''- ASSURANCE MODE RULES — PUBLISHABLE, DEFENSIBLE, EVIDENCE-CONSCIOUS:
   This document must hold up under external review (NCA audit, board scrutiny, regulatory inspection). Apply:
@@ -26297,6 +26326,7 @@ REASONING RULES (how a Big-4 GRC consultant thinks):
 {"8. CRITICAL: The organization has NO dedicated " + _org_dept_en + " — Objective #1 must be establishing this structure (" + _org_roles_en + "). Without it, no other control can be sustainably owned or monitored." if _has_no_org else ""}
 
 DOCUMENT STYLE (Big-4 Consulting Standard):
+- AUDIENCE: Board of Directors and Senior Management — frame every finding and recommendation as a strategic decision briefing for executives who govern but do not operate
 - Formal, authoritative executive language — board-ready
 - Every recommendation is specific and actionable with a named owner role
 - Every table cell contains substantive content — no filler, no dashes
@@ -26451,11 +26481,11 @@ WRONG — do NOT do this (single merged table for all pillars):
 
 CORRECT — each pillar has its own narrative paragraph THEN its own table:
 
-[Write 2-3 sentences of KPMG narrative BEFORE the table. Name the specific gap numbers this pillar closes (e.g. Gap #1, Gap #2). Explain what becomes structurally impossible without this pillar. Link to a {fw_short} domain or control. Make it specific to {org_name}'s diagnostic profile — NOT generic. Example: "Institutionalizing governance is the command-and-control foundation for {org_name} — without defined CISO authority and board-level oversight, no {fw_short} control can be sustainably implemented. This pillar directly closes Gap #1 and Gap #2, the structural prerequisites that determine whether all subsequent investments deliver sustainable compliance or become orphaned projects."]
+[Write 3-4 sentences of KPMG narrative BEFORE the table. Name the specific gap numbers this pillar closes (e.g. Gap #1, Gap #2). Open with the governance/strategic decision this pillar requires from the board. Explain what becomes structurally impossible without this pillar. Link to a {fw_short} domain or control. Make it specific to {org_name}'s diagnostic profile — NOT generic. Example: "Institutionalizing governance is the command-and-control foundation for {org_name} — without defined CISO authority and board-level oversight, no {fw_short} control can be sustainably implemented. This pillar directly closes Gap #1 and Gap #2, the structural prerequisites that determine whether all subsequent investments deliver sustainable compliance or become orphaned projects. The board's approval of a dedicated governance charter is the single most consequential decision in this strategy."]
 
-| # | Initiative | Description (gap it closes) | Expected Deliverable |
-|---|-----------|------------------------------|---------------------|
-(EXACTLY 3-4 rows. '#' = 1,2,3 only. Description must name the specific gap. NO empty cells.)
+| # | Initiative | Description (gap it closes + tool/system if technical) | Expected Deliverable |
+|---|-----------|--------------------------------------------------------|---------------------|
+(EXACTLY 3-4 rows. '#' = 1,2,3 only. Description must name the specific gap AND the specific tool/system/methodology for technical initiatives. NO empty cells.)
 
 *Progress measured by KPI #1 — see Section 6.*
 
@@ -26463,11 +26493,11 @@ CORRECT — each pillar has its own narrative paragraph THEN its own table:
 
 ⚠ This pillar MUST have its OWN narrative paragraph + its OWN pipe table. NEVER merge with Pillar 1 or other pillars.
 
-[Write 2-3 sentences of KPMG-style consultative narrative BEFORE the table. Explain how this pillar builds on Pillar 1's governance foundation. Identify which technology or process gaps it closes and what operational risk persists until this pillar is operational. Quantify the exposure where possible. Example style: "Resilience-by-design emerges through systematic deployment of foundational security technologies that provide comprehensive visibility across the organization's digital infrastructure. Until this technical foundation is operational, the Organization remains exposed to undetected threats — a condition that {fw_short} [specific domain] explicitly prohibits for entities of this classification." Make it specific to this org's diagnostic gaps.]
+[Write 3-4 sentences of KPMG-style consultative narrative BEFORE the table. Explain how this pillar builds on Pillar 1's governance foundation. Name the specific technologies recommended (e.g. SIEM, PAM, EDR, WAF, DLP, vulnerability scanner, GRC platform) and explain how each closes a specific technical gap. Quantify the operational risk that persists until this pillar is operational. Example style: "Resilience-by-design emerges through systematic deployment of foundational security technologies — specifically a SIEM covering 100% of critical systems (Gap #3 closure), a Privileged Access Management solution preventing credential abuse (Gap #4), and an EDR platform enabling MTTD ≤ 60 minutes. Until this technical foundation is operational, {org_name} remains exposed to undetected threats — a condition that {fw_short} [specific domain] explicitly prohibits for entities of this classification." Make it specific to this org's diagnostic gaps.]
 
-| # | Initiative | Description (include which diagnostic gap this closes) | Expected Deliverable |
-|---|-----------|-------------------------------------------------------|---------------------|
-(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes. NO empty cells.)
+| # | Initiative | Description (gap it closes + specific tool/system recommended) | Expected Deliverable |
+|---|-----------|----------------------------------------------------------------|---------------------|
+(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes AND the specific tool/system. NO empty cells.)
 
 *Progress toward this pillar is measured by KPI #2 — see Section 6.*
 
@@ -26475,11 +26505,11 @@ CORRECT — each pillar has its own narrative paragraph THEN its own table:
 
 ⚠ This pillar MUST have its OWN narrative paragraph + its OWN pipe table. NEVER merge with Pillar 1 or other pillars.
 
-[Write 2-3 sentences of KPMG-style consultative narrative BEFORE the table. Explain the human capital dimension — why technology controls alone are insufficient without the people and culture initiatives in this pillar. Reference the insider threat exposure or awareness gap from the diagnostic profile. Example style: "Technology and governance controls create a defensive perimeter, but human behaviour remains the most exploited attack vector in government sector breaches. This pillar addresses the cultural transformation required to embed {domain} awareness across the entire organisation — converting compliance training from an annual checkbox into a sustained capability that {fw_short} Domain [X] mandates." Make it specific to this org's diagnostic gaps.]
+[Write 3-4 sentences of KPMG-style consultative narrative BEFORE the table. Explain the human capital dimension — why technology controls alone are insufficient without the people and culture initiatives in this pillar. Reference the insider threat exposure or awareness gap from the diagnostic profile. Name the specific programs/platforms recommended (e.g. LMS platform, phishing simulation tool, security certification programs). Example style: "Technology and governance controls create a defensive perimeter, but human behaviour remains the most exploited attack vector in government sector breaches. This pillar addresses the cultural transformation required to embed {domain} awareness across the entire organisation — converting compliance training from an annual checkbox into a sustained capability that {fw_short} Domain [X] mandates." Make it specific to this org's diagnostic gaps.]
 
-| # | Initiative | Description (include which diagnostic gap this closes) | Expected Deliverable |
-|---|-----------|-------------------------------------------------------|---------------------|
-(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes. NO empty cells.)
+| # | Initiative | Description (gap it closes + program/platform recommended) | Expected Deliverable |
+|---|-----------|-----------------------------------------------------------|---------------------|
+(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes AND the program/platform. NO empty cells.)
 
 *Progress toward this pillar is measured by KPI #3 — see Section 6.*
 
@@ -26487,11 +26517,11 @@ CORRECT — each pillar has its own narrative paragraph THEN its own table:
 
 ⚠ This pillar MUST have its OWN narrative paragraph + its OWN pipe table. NEVER merge with Pillar 1 or other pillars.
 
-[Write 2-3 sentences of KPMG-style consultative narrative BEFORE the table. Explain how this pillar converts all previous pillar investments into verifiable, auditable compliance status. Identify the specific {fw_short} assessment mechanism or regulatory reporting requirement this pillar fulfils. Example style: "Compliance and assurance transforms the investments made across Pillars 1-3 from internal capabilities into externally verifiable evidence of {fw_short} adherence. Without this pillar, the Organization cannot demonstrate to the NCA or executive leadership that controls are operating effectively — the difference between having a security program and being able to prove one exists." Make it specific to this org's diagnostic gaps.]
+[Write 3-4 sentences of KPMG-style consultative narrative BEFORE the table. Explain how this pillar converts all previous pillar investments into verifiable, auditable compliance status demonstrable to the board and regulators. Identify the specific {fw_short} assessment mechanism or regulatory reporting requirement this pillar fulfils. Name the specific compliance tools/platforms recommended (e.g. GRC platform, audit management system, automated compliance dashboard). Example style: "Compliance and assurance transforms the investments made across Pillars 1-3 from internal capabilities into externally verifiable evidence of {fw_short} adherence. Without this pillar, the Organization cannot demonstrate to the NCA, board, or executive leadership that controls are operating effectively — the difference between having a security program and being able to prove one exists. A dedicated GRC platform providing real-time compliance dashboards gives the board the visibility it needs to govern cyber risk at the strategic level." Make it specific to this org's diagnostic gaps.]
 
-| # | Initiative | Description (include which diagnostic gap this closes) | Expected Deliverable |
-|---|-----------|-------------------------------------------------------|---------------------|
-(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes. NO empty cells.)
+| # | Initiative | Description (gap it closes + tool/methodology recommended) | Expected Deliverable |
+|---|-----------|-----------------------------------------------------------|---------------------|
+(Write EXACTLY 3-4 rows as a markdown pipe table. Column '#': 1,2,3 only. Column 'Description': name which gap it closes AND the specific tool/methodology. NO empty cells.)
 
 *Progress toward this pillar is measured by KPI #4 — see Section 6.*
 
@@ -37431,6 +37461,8 @@ def api_generate_pdf():
             CRITICAL: We wrap to arabic_wrap_width (narrower than frame) so ReportLab
             never needs to re-wrap our pre-wrapped lines.
             """
+            if text is None:
+                return ''
             if is_arabic and text:
                 try:
                     text = str(text).strip()
@@ -37507,6 +37539,8 @@ def api_generate_pdf():
         
         def process_arabic_table(text, col_width, font_size=9):
             """Process Arabic text for table cells with specific column width."""
+            if text is None:
+                return ''
             if is_arabic and text:
                 try:
                     text = str(text).strip()
@@ -38723,6 +38757,9 @@ def api_generate_pdf():
                         'القيمة المستهدفة','صيغة الاحتساب','المبادرة',
                         'العامل','الأهمية','الخطر','الاحتمالية','التأثير','خطة التخفيف',
                         'البعد','مستوى النضج الحالي','مستوى النضج المستهدف',
+                        # Arabic gap-guide / action table headers
+                        'الإجراء','الإجراء التقني/التنظيمي','المخرج القابل للقياس',
+                        'الأداة/النظام','الأداة/النظام المقترح',
                     }
                     _PDF_HDR_MAP = {
                         (5,'objective') : ['#','Objective','Target Metric','Justification','Timeframe'],
@@ -39007,15 +39044,19 @@ def api_generate_pdf():
                     for row_idx, row in enumerate(table_data):
                         wrapped_row = []
                         for col_idx, cell in enumerate(row):
-                            cell_text = str(cell)
+                            cell_text = str(cell) if cell is not None else ''
                             # Process Arabic: reshape and per-cell-width bidi
                             if is_arabic and cell_text:
                                 cw = col_widths[col_idx] if col_idx < len(col_widths) else text_width / len(row)
-                                cell_text = process_arabic_table(cell_text, cw, font_size=9)
+                                cell_text = process_arabic_table(cell_text, cw, font_size=9) or ''
                             if row_idx == 0:  # Header row
                                 wrapped_row.append(Paragraph(cell_text, header_cell_style))
                             else:
                                 wrapped_row.append(Paragraph(cell_text, cell_style))
+                        # Pad short rows to match col_count so Table() receives uniform data
+                        while len(wrapped_row) < col_count:
+                            _pad_style = header_cell_style if row_idx == 0 else cell_style
+                            wrapped_row.append(Paragraph('', _pad_style))
                         wrapped_data.append(wrapped_row)
                     
                     # ── Big4 table style ─────────────────────────────────────
