@@ -33,6 +33,7 @@
     var j=JSON.stringify(norm);
     if(j===JSON.stringify(['#','objective','target metric','justification','timeframe'])) return 'strategic-objectives';
     if(j===JSON.stringify(['#','kpi description','target value','calculation formula','justification','timeframe'])) return 'kpi-summary';
+    if(j===JSON.stringify(['#','metric','type kpi/kri','target value','calculation formula','data source','owner','frequency','timeframe'])) return 'kpi-summary';
     if(j===JSON.stringify(['#','gap','description','priority','status'])) return 'gap-analysis';
     if(j===JSON.stringify(['#','initiative','description','expected deliverable'])) return 'pillar-initiatives';
     if(j===JSON.stringify(['#','risk','likelihood','impact','mitigation plan'])) return 'key-risks';
@@ -51,6 +52,7 @@
     // Arabic variants
     if(j===JSON.stringify(['#','الهدف','المؤشر المستهدف','المبرر','الإطار الزمني'])) return 'strategic-objectives';
     if(j===JSON.stringify(['#','وصف مؤشر الأداء','القيمة المستهدفة','صيغة الحساب','المبرر','الإطار الزمني'])) return 'kpi-summary';
+    if(j===JSON.stringify(['#','المؤشر','النوع kpi/kri','القيمة المستهدفة','صيغة الاحتساب','مصدر البيانات','المالك','التكرار','الإطار الزمني'])) return 'kpi-summary';
     if(j===JSON.stringify(['#','الفجوة','الوصف','الأولوية','الحالة'])) return 'gap-analysis';
     if(j===JSON.stringify(['#','المخاطر','الاحتمالية','التأثير','خطة المعالجة'])) return 'key-risks';
     return 'generic';

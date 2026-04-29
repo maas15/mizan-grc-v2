@@ -13751,7 +13751,7 @@ def count_substantive_kpis(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13777,7 +13777,7 @@ def count_substantive_kpis_strict(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13842,7 +13842,7 @@ def count_placeholder_kpi_rows(kpis_text):
     if not kpis_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     n = 0
@@ -13868,7 +13868,7 @@ def enrich_placeholder_kpi_rows(kpis_text, domain, fw_short):
     if not kpis_text:
         return kpis_text
     hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     lines = kpis_text.split('\n')
@@ -13910,7 +13910,7 @@ def _ts_extract_kpi_rows(kpis_text):
     if not kpis_text:
         return []
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     rows = []
@@ -16369,7 +16369,7 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
         needed_floor += 2
 
     hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
         _ts_re.IGNORECASE,
     )
     existing_row_nums = set()
@@ -20337,7 +20337,7 @@ _PER_KPI_GUIDE_HEADING_RE = _ts_re.compile(
 # of column-3/4/5 labels.
 _KPI_MAIN_TABLE_HEADER_RE = _ts_re.compile(
     r'^\|[\s\u00a0]*#[\s\u00a0]*\|'
-    r'[\s\u00a0]*(?:KPI[\s\u00a0]+Description|وصف[\s\u00a0]+المؤشر|KPI|المؤشر)'
+    r'[\s\u00a0]*(?:KPI[\s\u00a0]+Description|وصف[\s\u00a0]+المؤشر|KPI|المؤشر|Metric)'
     r'[\s\u00a0]*\|',
     _ts_re.MULTILINE | _ts_re.IGNORECASE,
 )
@@ -23019,7 +23019,223 @@ def repair_confidence_risk_section(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# CANONICAL SECTION HEADING MAP
+# DETERMINISTIC REPAIR: KPI SECTION — MISSING FREQUENCY COLUMN
+#
+# Replaces the KPI main table with a canonical 9-column schema that includes
+# التكرار (Arabic) / Frequency (English) whenever the existing KPI section
+# lacks a frequency/periodicity column.  No AI calls; no HTML; pure Markdown
+# pipe-tables only.  Preserves the section key "kpis".  Does not touch any
+# other section.
+# ────────────────────────────────────────────────────────────────────────────
+
+def repair_kpi_section_if_missing_frequency(
+        sections, lang,
+        domain='Cyber Security',
+        org_name='The Organization',
+        sector='Government',
+        frameworks=None):
+    """Deterministic KPI frequency repair.
+
+    Inspects sections['kpis'].  If the KPI table is missing 'التكرار' or
+    'Frequency', replaces the entire KPI section with the canonical 9-column
+    KPI/KRI table plus 10 per-KPI guide blocks.
+
+    Canonical Arabic schema:
+      | # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |
+      | مصدر البيانات | المالك | التكرار | الإطار الزمني |
+
+    Canonical English schema:
+      | # | Metric | Type KPI/KRI | Target Value | Calculation Formula |
+      | Data Source | Owner | Frequency | Timeframe |
+
+    Returns the number of rows written (0 if section already had frequency).
+    """
+    frameworks = frameworks or ['NCA ECC']
+    fw_short = frameworks[0] if frameworks else 'NCA ECC'
+    is_ar = (lang == 'ar')
+
+    kpis_text = sections.get('kpis', '') or ''
+
+    # Check for frequency tokens
+    _kpi_freq_tokens = ('تكرار', 'frequency', 'دورية', 'شهري', 'monthly',
+                        'quarterly', 'ربع سنوي')
+    _kpi_lc = kpis_text.lower()
+    if any(t in _kpi_lc for t in _kpi_freq_tokens):
+        return 0  # Already has frequency — no repair needed
+
+    # ── Build canonical Arabic table
+    if is_ar:
+        section_heading = '## 6. مؤشرات الأداء الرئيسية'
+        table_header = (
+            '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب '
+            '| مصدر البيانات | المالك | التكرار | الإطار الزمني |'
+        )
+        table_sep = (
+            '|---|--------|---------------|-----------------|---------------|'
+            '----------------|--------|----------|----------------|'
+        )
+        guides_heading = '### أدلة تقييم مؤشرات الأداء'
+
+        # 10-row NCA ECC canonical bank
+        data_rows_raw = [
+            ('نسبة تطبيق ضوابط NCA ECC و NCA DCC',
+             'KPI', '90% خلال السنة الأولى',
+             'عدد الضوابط المطبقة ÷ إجمالي الضوابط ذات العلاقة × 100',
+             'سجل الضوابط ومستودع الأدلة',
+             'فريق الحوكمة والامتثال', 'شهري', 'خلال 12 شهراً'),
+            ('تغطية المصادقة متعددة العوامل MFA',
+             'KPI', '95% للحسابات الحرجة',
+             'عدد الحسابات المحمية بـ MFA ÷ إجمالي الحسابات الحرجة × 100',
+             'نظام IAM وتقارير الوصول',
+             'مدير الهوية والوصول', 'شهري', 'خلال 9 أشهر'),
+            ('اكتمال مراجعة الصلاحيات المميزة',
+             'KPI', '100% ربعياً',
+             'عدد الحسابات المميزة التي تمت مراجعتها ÷ إجمالي الحسابات المميزة × 100',
+             'نظام PAM وسجلات المراجعة',
+             'مدير الهوية والوصول', 'ربع سنوي', 'خلال 12 شهراً'),
+            ('معالجة الثغرات الحرجة ضمن SLA',
+             'KPI', '95% خلال 15 يوماً',
+             'عدد الثغرات الحرجة المغلقة ضمن SLA ÷ إجمالي الثغرات الحرجة × 100',
+             'منصة إدارة الثغرات',
+             'فريق أمن البنية التحتية', 'أسبوعي', 'خلال 9 أشهر'),
+            ('تغطية مصادر السجلات في SIEM',
+             'KPI', '80% من المصادر الحرجة',
+             'عدد مصادر السجلات المربوطة ÷ إجمالي المصادر الحرجة × 100',
+             'منصة SIEM وسجل الأصول',
+             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
+            ('متوسط زمن اكتشاف الحوادث MTTD',
+             'KRI', 'أقل من 4 ساعات',
+             'مجموع زمن الاكتشاف ÷ عدد الحوادث',
+             'منصة SIEM ونظام إدارة الحوادث',
+             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
+            ('متوسط زمن الاستجابة للحوادث MTTR',
+             'KRI', 'أقل من 24 ساعة للحوادث العالية',
+             'مجموع زمن الاستجابة ÷ عدد الحوادث',
+             'نظام إدارة الحوادث وتقارير الاستجابة',
+             'رئيس الأمن السيبراني', 'شهري', 'خلال 12 شهراً'),
+            ('معدل فشل محاكاة التصيد',
+             'KRI', 'أقل من 10%',
+             'عدد المستخدمين الذين فشلوا في المحاكاة ÷ إجمالي المشاركين × 100',
+             'منصة التوعية ومحاكاة التصيد',
+             'مسؤول التوعية الأمنية', 'ربع سنوي', 'خلال 9 أشهر'),
+            ('نجاح اختبارات استعادة النسخ الاحتياطي',
+             'KPI', '100% للأنظمة الحرجة',
+             'عدد اختبارات الاستعادة الناجحة ÷ إجمالي الاختبارات × 100',
+             'نظام النسخ الاحتياطي وتقارير DR',
+             'مدير البنية التحتية', 'ربع سنوي', 'خلال 18 شهراً'),
+            ('تغطية تقييم مخاطر الأطراف الثالثة',
+             'KPI', '100% للموردين الحرجيين',
+             'عدد الموردين الحرجيين المقيمين ÷ إجمالي الموردين الحرجيين × 100',
+             'سجل الموردين وتقييمات الأمن السيبراني',
+             'فريق الحوكمة والامتثال', 'نصف سنوي', 'خلال 12 شهراً'),
+        ]
+
+        def _make_guide(idx, name):
+            return [
+                f'#### دليل تقييم المؤشر رقم {idx}: {name}',
+                '',
+                '| الخطوة | الإجراء | الأداة/النظام | المسؤول | الناتج |',
+                '|--------|---------|----------------|---------|--------|',
+                f'| 1 | جمع البيانات من المصادر المعتمدة | نظام {domain} | فريق {domain} | سجل القياس |',
+                f'| 2 | تطبيق الصيغة الحسابية | لوحة التحكم | محلل {domain} | القيمة المحسوبة |',
+                f'| 3 | التحقق والمصادقة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق |',
+                f'| 4 | الإبلاغ للإدارة العليا | عرض مجلس {domain} | مدير {domain} | بيان الأداء |',
+                '',
+            ]
+
+    else:
+        section_heading = '## 6. Key Performance Indicators'
+        table_header = (
+            '| # | Metric | Type KPI/KRI | Target Value | Calculation Formula '
+            '| Data Source | Owner | Frequency | Timeframe |'
+        )
+        table_sep = (
+            '|---|--------|--------------|--------------|---------------------|'
+            '-------------|-------|-----------|-----------|'
+        )
+        guides_heading = '### KPI Assessment Guidelines'
+
+        data_rows_raw = [
+            (f'{fw_short} Control Implementation Rate',
+             'KPI', '≥ 90% in Year 1',
+             '(Controls implemented ÷ Total applicable controls) × 100',
+             'Control register & evidence repository',
+             'Governance & Compliance Team', 'Monthly', 'Within 12 months'),
+            ('Multi-Factor Authentication (MFA) Coverage',
+             'KPI', '95% of critical accounts',
+             '(MFA-protected accounts ÷ Total critical accounts) × 100',
+             'IAM system & access reports',
+             'Identity & Access Manager', 'Monthly', 'Within 9 months'),
+            ('Privileged Access Review Completion',
+             'KPI', '100% quarterly',
+             '(Reviewed privileged accounts ÷ Total privileged accounts) × 100',
+             'PAM system & review logs',
+             'Identity & Access Manager', 'Quarterly', 'Within 12 months'),
+            ('Critical Vulnerability Remediation within SLA',
+             'KPI', '95% within 15 days',
+             '(Critical vulns closed within SLA ÷ Total critical vulns) × 100',
+             'Vulnerability management platform',
+             'Infrastructure Security Team', 'Weekly', 'Within 9 months'),
+            ('SIEM Log Source Coverage',
+             'KPI', '80% of critical sources',
+             '(Connected log sources ÷ Total critical sources) × 100',
+             'SIEM platform & asset register',
+             'SOC Team', 'Monthly', 'Within 12 months'),
+            ('Mean Time to Detect (MTTD)',
+             'KRI', '< 4 hours',
+             'Sum of detection times ÷ Number of incidents',
+             'SIEM platform & incident management system',
+             'SOC Team', 'Monthly', 'Within 12 months'),
+            ('Mean Time to Respond (MTTR)',
+             'KRI', '< 24 hours for high severity',
+             'Sum of response times ÷ Number of incidents',
+             'Incident management system & response reports',
+             'Chief Information Security Officer', 'Monthly', 'Within 12 months'),
+            ('Phishing Simulation Failure Rate',
+             'KRI', '< 10%',
+             '(Failed participants ÷ Total participants) × 100',
+             'Security awareness & phishing simulation platform',
+             'Security Awareness Officer', 'Quarterly', 'Within 9 months'),
+            ('Backup Recovery Test Success Rate',
+             'KPI', '100% for critical systems',
+             '(Successful restore tests ÷ Total tests) × 100',
+             'Backup system & DR reports',
+             'Infrastructure Manager', 'Quarterly', 'Within 18 months'),
+            ('Third-Party Risk Assessment Coverage',
+             'KPI', '100% of critical vendors',
+             '(Assessed critical vendors ÷ Total critical vendors) × 100',
+             'Vendor register & cybersecurity assessments',
+             'Governance & Compliance Team', 'Semi-annually', 'Within 12 months'),
+        ]
+
+        def _make_guide(idx, name):
+            return [
+                f'#### KPI #{idx} Assessment Guide: {name}',
+                '',
+                '| Step | Action | Tool / System | Owner | Output |',
+                '|------|--------|----------------|-------|--------|',
+                f'| 1 | Collect data from authoritative sources | {domain} platform | {domain} Team | Measurement log |',
+                f'| 2 | Apply calculation formula | Dashboard | {domain} Analyst | Computed value |',
+                f'| 3 | Validate and attest | Management review | {domain} Lead | Attestation report |',
+                f'| 4 | Report to executive governance | {domain} board pack | {domain} Director | Performance statement |',
+                '',
+            ]
+
+    # ── Assemble the canonical KPI section
+    out_lines = [section_heading, '', table_header, table_sep]
+    for idx, row_cells in enumerate(data_rows_raw, start=1):
+        out_lines.append('| ' + str(idx) + ' | ' + ' | '.join(row_cells) + ' |')
+    out_lines.append('')
+    out_lines.append(guides_heading)
+    out_lines.append('')
+    for idx, row_cells in enumerate(data_rows_raw, start=1):
+        out_lines.extend(_make_guide(idx, row_cells[0]))
+
+    sections['kpis'] = '\n'.join(out_lines).rstrip() + '\n'
+    return len(data_rows_raw)
+
+
+
 #
 # Single source of truth for the canonical Arabic/English headings that must
 # appear at the top of each section body.  Used by:
@@ -30801,6 +31017,36 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 f'[STRATEGY-DIAG] repair_confidence_risk_failed: '
                                 f'{_rr_e}',
+                                flush=True,
+                            )
+                        # ── DETERMINISTIC KPI FREQUENCY REPAIR ──────────────
+                        # Runs after vision/confidence repair and before the
+                        # post-normalization audit gate. Replaces the KPI main
+                        # table with the canonical 9-column schema if the
+                        # existing section is missing التكرار/Frequency.
+                        try:
+                            _kpi_freq_repair = (
+                                repair_kpi_section_if_missing_frequency(
+                                    sections, lang,
+                                    domain=domain,
+                                    org_name=_final_ctx.get(
+                                        'org_name', 'The Organization'),
+                                    sector=_final_ctx.get(
+                                        'sector', 'Government'),
+                                    frameworks=_final_ctx.get(
+                                        'frameworks', ['NCA ECC']),
+                                )
+                            )
+                            if _kpi_freq_repair:
+                                print(
+                                    f'[STRATEGY-DIAG] repair_kpi_frequency='
+                                    f'rows_written={_kpi_freq_repair}',
+                                    flush=True,
+                                )
+                        except Exception as _kfr_e:
+                            print(
+                                f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '
+                                f'{_kfr_e}',
                                 flush=True,
                             )
                         # Rebuild content blob after deterministic repairs so
