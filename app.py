@@ -14114,6 +14114,7 @@ def _ts_extract_gap_rows(gaps_text):
 def ensure_kpi_guide_coverage(sections, lang, domain, fw_short):
     """Synthesize per-KPI Assessment Guides for every KPI row that lacks one.
     Idempotent: only adds guides for indices that don't already have them.
+    Generates 5-step guides that include data sources, validation, and reporting.
     """
     kpis = sections.get('kpis', '') or ''
     rows = _ts_extract_kpi_rows(kpis)
@@ -14149,11 +14150,12 @@ def ensure_kpi_guide_coverage(sections, lang, domain, fw_short):
                 '',
                 '| الخطوة | الإجراء | الأداة / النظام | المسؤول | الناتج |',
                 '|--------|---------|------------------|---------|--------|',
-                f'| 1 | جمع البيانات من المصادر المعتمدة | نظام {domain} | فريق {domain} | سجل القياس |',
-                f'| 2 | تطبيق الصيغة الحسابية | لوحة التحكم | محلل {domain} | القيمة المحسوبة |',
-                f'| 3 | التحقق والمصادقة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق |',
-                f'| 4 | الإبلاغ للإدارة العليا | عرض مجلس {domain} | مدير {domain} | بيان الأداء |',
-                f'**الصيغة:** راجع صيغة الحساب في جدول المؤشرات الرئيسي.',
+                f'| 1 | تحديد مصادر البيانات المعتمدة وتوثيق آلية الجمع | نظام {domain} | فريق {domain} | بروتوكول جمع البيانات |',
+                f'| 2 | جمع البيانات الأولية والتحقق من اكتمالها ودقتها | لوحة التحكم | محلل {domain} | مجموعة البيانات المُراجَعة |',
+                f'| 3 | تطبيق صيغة الاحتساب وحساب قيمة المؤشر | نظام BI / لوحة التحكم | محلل {domain} | القيمة المحسوبة + توثيق الحساب |',
+                f'| 4 | التحقق المستقل والمصادقة على صحة النتيجة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق الموقّع |',
+                f'| 5 | رفع التقرير للإدارة العليا مع التحليل والتوصيات | لوحة الأداء التنفيذية | مدير {domain} | بيان الأداء + توصيات التحسين |',
+                f'**ملاحظة:** راجع صيغة الاحتساب والقيمة المستهدفة في جدول المؤشرات الرئيسي أعلاه.',
                 '',
             ])
         else:
@@ -14162,19 +14164,241 @@ def ensure_kpi_guide_coverage(sections, lang, domain, fw_short):
                 '',
                 '| Step | Action | Tool / System | Owner | Output |',
                 '|------|--------|----------------|-------|--------|',
-                f'| 1 | Collect data from authoritative sources | {domain} platform | {domain} Team | Measurement log |',
-                f'| 2 | Apply calculation formula | Dashboard | {domain} Analyst | Computed value |',
-                f'| 3 | Validate and attest | Management review | {domain} Lead | Attestation report |',
-                f'| 4 | Report to executive governance | {domain} board pack | {domain} Director | Performance statement |',
-                f'**Formula:** Refer to Calculation Formula column in the KPI main table above.',
+                f'| 1 | Identify authoritative data sources and document collection method | {domain} platform | {domain} Team | Data collection protocol |',
+                f'| 2 | Collect raw data and verify completeness and accuracy | Dashboard | {domain} Analyst | Validated dataset |',
+                f'| 3 | Apply calculation formula and compute metric value | BI system / Dashboard | {domain} Analyst | Computed value + calculation record |',
+                f'| 4 | Independent validation and attestation of the result | Management review | {domain} Lead | Signed attestation report |',
+                f'| 5 | Report to senior management with analysis and improvement recommendations | Executive dashboard | {domain} Director | Performance statement + recommendations |',
+                f'**Note:** Refer to Calculation Formula and Target Value columns in the KPI main table above.',
                 '',
             ])
     if len(new_guides) > 2 or (new_guides and has_guides_hdr):
         sections['kpis'] = kpis.rstrip() + '\n' + '\n'.join(new_guides)
 
+def _gap_type(name, desc, is_ar):
+    """Detect gap type keyword for template selection."""
+    text = (name + ' ' + (desc or '')).lower()
+    if is_ar:
+        if any(k in text for k in ['حوكمة', 'هيكل حوكمة', 'لجنة', 'مجلس', 'صلاحيات', 'اختصاصات']):
+            return 'governance'
+        if any(k in text for k in ['بيانات', 'حماية البيانات', 'dlp', 'تصنيف البيانات', 'خصوصية']):
+            return 'data'
+        if any(k in text for k in ['وعي', 'تدريب', 'توعية', 'تأهيل', 'كفاءات']):
+            return 'awareness'
+        if any(k in text for k in ['سياسة', 'سياسات', 'إجراء', 'إجراءات', 'لوائح', 'معايير']):
+            return 'policy'
+        if any(k in text for k in ['مراقبة', 'رصد', 'كشف', 'siem', 'soc', 'تسجيل']):
+            return 'monitoring'
+        if any(k in text for k in ['مخاطر', 'إدارة المخاطر', 'تقييم المخاطر']):
+            return 'risk'
+        if any(k in text for k in ['هوية', 'وصول', 'iam', 'صلاحية', 'mfa', 'مصادقة']):
+            return 'iam'
+        if any(k in text for k in ['استمرارية', 'تعافي', 'أعمال', 'bcm', 'bcp', 'dr']):
+            return 'continuity'
+        if any(k in text for k in ['تقنية', 'أنظمة', 'بنية', 'أدوات', 'برمجيات']):
+            return 'technical'
+    else:
+        if any(k in text for k in ['governance', 'framework', 'committee', 'charter', 'oversight']):
+            return 'governance'
+        if any(k in text for k in ['data', 'dlp', 'classification', 'privacy', 'protection']):
+            return 'data'
+        if any(k in text for k in ['awareness', 'training', 'education', 'capacity']):
+            return 'awareness'
+        if any(k in text for k in ['policy', 'procedure', 'process', 'standard', 'guideline']):
+            return 'policy'
+        if any(k in text for k in ['monitor', 'detection', 'siem', 'soc', 'logging', 'visibility']):
+            return 'monitoring'
+        if any(k in text for k in ['risk', 'risk management', 'risk assessment', 'risk register']):
+            return 'risk'
+        if any(k in text for k in ['identity', 'access', 'iam', 'mfa', 'privileged', 'authentication']):
+            return 'iam'
+        if any(k in text for k in ['continuity', 'recovery', 'resilience', 'bcm', 'bcp', 'disaster']):
+            return 'continuity'
+        if any(k in text for k in ['technology', 'system', 'infrastructure', 'tool', 'software']):
+            return 'technical'
+    return 'generic'
+
+
+def _gap_guide_steps_ar(gap_type, domain, fw_short, name):
+    """Return Arabic gap-type-specific implementation step rows."""
+    _d, _f = domain, fw_short
+    templates = {
+        'governance': [
+            f'| 1 | مراجعة متطلبات الحوكمة في {_f} وتوثيق الفجوات التفصيلية | فريق {_d} | الشهر 1 | تقرير تحليل الفجوات |',
+            f'| 2 | تصميم هيكل لجنة {_d} وتوزيع الأدوار عبر مصفوفة RACI | رئيس {_d} | شهر 1-2 | مسودة هيكل الحوكمة |',
+            f'| 3 | صياغة التفويضات والاختصاصات واعتمادها من الإدارة العليا | الإدارة العليا | شهر 2-3 | وثيقة التفويض المعتمدة |',
+            f'| 4 | تشغيل اللجنة وتفعيل جدول الاجتماعات وقوالب التقارير | رئيس {_d} | شهر 3-5 | محاضر الاجتماعات الدورية |',
+            f'| 5 | مراجعة الفاعلية واختبار الامتثال لمتطلبات {_f} | فريق {_d} | شهر 5-6 | تقرير مراجعة الفاعلية |',
+            f'| 6 | التدقيق المستقل ورفع تقرير الامتثال النهائي للإدارة | رئيس {_d} | الشهر 7 | تقرير الامتثال النهائي |',
+        ],
+        'data': [
+            f'| 1 | تصنيف البيانات حسب الحساسية وفق معيار {_f} | فريق {_d} | الشهر 1 | مصفوفة تصنيف البيانات |',
+            f'| 2 | تقييم مخاطر الحماية وتحديد ثغرات الضوابط الحالية | فريق {_d} | شهر 1-2 | تقرير تحليل الثغرات |',
+            f'| 3 | تصميم ضوابط الحماية (DLP / تشفير / إدارة الوصول) | رئيس {_d} | شهر 2-3 | خطة الضوابط التقنية |',
+            f'| 4 | تنفيذ الضوابط التقنية وتكاملها مع البنية التحتية | فريق {_d} | شهر 3-6 | الضوابط التقنية المفعّلة |',
+            f'| 5 | اختبار فعالية الضوابط وإجراء تمرين اختراق موجّه | رئيس {_d} | شهر 6 | تقرير الاختبار |',
+            f'| 6 | التدقيق المستقل والتحقق من الامتثال لـ {_f} | فريق {_d} | الشهر 7 | تقرير التدقيق النهائي |',
+        ],
+        'awareness': [
+            f'| 1 | قياس مستوى الوعي الحالي (استبيان + اختبار أساسي) | فريق {_d} | الشهر 1 | تقرير تقييم الوعي الأساسي |',
+            f'| 2 | تصميم خطة تدريبية موجّهة وفق متطلبات {_f} | رئيس {_d} | شهر 1-2 | خطة التدريب المعتمدة |',
+            f'| 3 | تنفيذ دورات التوعية والتدريب المتخصص للموظفين | فريق {_d} | شهر 2-5 | سجلات حضور التدريب |',
+            f'| 4 | إجراء تمارين محاكاة (تصيد / هندسة اجتماعية) | رئيس {_d} | شهر 4-6 | تقارير نتائج التمارين |',
+            f'| 5 | قياس أثر البرنامج ومقارنته بالمستوى الأساسي | فريق {_d} | شهر 5-6 | تقرير التحسن المقاس |',
+            f'| 6 | تحديث المحتوى وتوثيق الامتثال لمتطلبات {_f} | رئيس {_d} | الشهر 7 | محتوى محدّث + شهادة الامتثال |',
+        ],
+        'policy': [
+            f'| 1 | جرد الوثائق الحالية وتحديد الفجوات مقابل {_f} | فريق {_d} | الشهر 1 | قائمة الفجوات الوثائقية |',
+            f'| 2 | صياغة / تحديث السياسات والإجراءات المطلوبة | رئيس {_d} | شهر 1-3 | مسودات الوثائق |',
+            f'| 3 | مراجعة قانونية وفنية واعتماد الوثائق رسمياً | الإدارة العليا | شهر 3-4 | وثائق معتمدة وموقّعة |',
+            f'| 4 | نشر الوثائق وتدريب الموظفين المعنيين عليها | فريق {_d} | شهر 4-5 | سجلات التوزيع والتدريب |',
+            f'| 5 | رصد الالتزام بالتطبيق وتوثيق الانتهاكات | رئيس {_d} | شهر 5-6 | تقارير الامتثال الدورية |',
+            f'| 6 | مراجعة الوثائق دورياً والتحقق من تغطية {_f} | فريق {_d} | الشهر 7 | تقرير المراجعة السنوية |',
+        ],
+        'monitoring': [
+            f'| 1 | تقييم قدرات الرصد الحالية وتحديد النقاط العمياء | فريق {_d} | الشهر 1 | تقرير تقييم القدرات |',
+            f'| 2 | تصميم معمارية الرصد والإنذار المبكر وفق {_f} | رئيس {_d} | شهر 1-2 | مخطط المعمارية |',
+            f'| 3 | تطبيق / تحديث حلول SIEM/SOC وربط مصادر البيانات | فريق {_d} | شهر 2-5 | لوحة التحكم الموحدة |',
+            f'| 4 | تطوير قواعد الكشف وأدلة الاستجابة للحوادث | رئيس {_d} | شهر 3-5 | مكتبة قواعد الكشف |',
+            f'| 5 | إجراء تمرين كشف وهمي لاختبار فعالية الرصد | فريق {_d} | شهر 5-6 | تقرير نتائج التمرين |',
+            f'| 6 | ضبط الأداء وتوثيق الامتثال لمتطلبات {_f} | رئيس {_d} | الشهر 7 | تقرير الامتثال |',
+        ],
+        'risk': [
+            f'| 1 | مراجعة إطار إدارة المخاطر الحالي ومقارنته بـ {_f} | فريق {_d} | الشهر 1 | تقرير تحليل الفجوات |',
+            f'| 2 | تحديث منهجية التقييم وإعادة بناء سجل المخاطر | رئيس {_d} | شهر 1-3 | سجل المخاطر المحدّث |',
+            f'| 3 | تعيين أصحاب المخاطر وتوثيق خطط المعالجة | فريق {_d} | شهر 3-4 | خطط المعالجة المعتمدة |',
+            f'| 4 | تفعيل دورة مراجعة المخاطر ومؤشرات المخاطر الرئيسية | رئيس {_d} | شهر 4-5 | لوحة مؤشرات المخاطر |',
+            f'| 5 | رفع تقارير المخاطر للإدارة العليا وهيئات الحوكمة | فريق {_d} | شهر 5-6 | تقارير مخاطر دورية |',
+            f'| 6 | التدقيق المستقل والتحقق من امتثال الإطار لـ {_f} | رئيس {_d} | الشهر 7 | تقرير التدقيق النهائي |',
+        ],
+        'iam': [
+            f'| 1 | جرد الحسابات والصلاحيات الحالية وتحديد الانتهاكات | فريق {_d} | الشهر 1 | تقرير جرد الصلاحيات |',
+            f'| 2 | تصميم نموذج الصلاحيات وفق مبدأ الامتياز الأدنى | رئيس {_d} | شهر 1-2 | مصفوفة الصلاحيات |',
+            f'| 3 | تطبيق حل IAM/PAM وتكامله مع الأنظمة الأساسية | فريق {_d} | شهر 2-5 | النظام المفعّل |',
+            f'| 4 | تفعيل المصادقة متعددة العوامل (MFA) للوصول الحساس | رئيس {_d} | شهر 4-5 | سجلات تفعيل MFA |',
+            f'| 5 | تدريب الموظفين وتوثيق إجراءات إدارة الهوية | فريق {_d} | شهر 5-6 | سجلات التدريب |',
+            f'| 6 | التدقيق المستقل والتحقق من الامتثال لـ {_f} | رئيس {_d} | الشهر 7 | تقرير التدقيق |',
+        ],
+        'continuity': [
+            f'| 1 | تقييم أثر الأعمال (BIA) وتحديد الأصول الحرجة | فريق {_d} | الشهر 1 | تقرير BIA |',
+            f'| 2 | تصميم خطة الاستمرارية والتعافي وفق {_f} | رئيس {_d} | شهر 1-3 | خطة BCM/DR المسودة |',
+            f'| 3 | اعتماد الخطة وتوزيع الأدوار والمسؤوليات | الإدارة العليا | شهر 3-4 | خطة BCM/DR المعتمدة |',
+            f'| 4 | إعداد البيئة التقنية للتعافي واختبار النسخ الاحتياطية | فريق {_d} | شهر 4-5 | بيئة DR جاهزة |',
+            f'| 5 | إجراء تمرين محاكاة كامل للاستمرارية | رئيس {_d} | شهر 5-6 | تقرير نتائج التمرين |',
+            f'| 6 | تحديث الخطة والتحقق من الامتثال لمتطلبات {_f} | فريق {_d} | الشهر 7 | الخطة المحدّثة + تقرير الامتثال |',
+        ],
+        'technical': [
+            f'| 1 | تقييم البنية التحتية الحالية وتحديد الفجوات التقنية | فريق {_d} | الشهر 1 | تقرير تقييم البنية |',
+            f'| 2 | تصميم الحل التقني المقترح وفق متطلبات {_f} | رئيس {_d} | شهر 1-2 | وثيقة تصميم الحل |',
+            f'| 3 | الحصول على الأدوات وإعداد بيئة التنفيذ | فريق {_d} | شهر 2-3 | البيئة التقنية الجاهزة |',
+            f'| 4 | تنفيذ الحل وتكامله مع الأنظمة القائمة | رئيس {_d} | شهر 3-6 | الحل المنفّذ والمتكامل |',
+            f'| 5 | اختبار الأداء وتأكيد التوافق مع {_f} | فريق {_d} | شهر 6 | تقرير الاختبار |',
+            f'| 6 | التحقق المستقل والتسليم الرسمي للتشغيل | رئيس {_d} | الشهر 7 | شهادة القبول التشغيلي |',
+        ],
+    }
+    return templates.get(gap_type, [
+        f'| 1 | تحليل الوضع الحالي وتوثيق متطلبات المعالجة | فريق {_d} | الشهر 1 | تقرير الوضع الحالي |',
+        f'| 2 | تصميم خطة المعالجة وفق متطلبات {_f} | رئيس {_d} | شهر 1-2 | خطة المعالجة المفصّلة |',
+        f'| 3 | الحصول على الموارد والأدوات اللازمة للتنفيذ | فريق {_d} | شهر 2-3 | الموارد جاهزة |',
+        f'| 4 | تنفيذ الضوابط والإجراءات التصحيحية | رئيس {_d} | شهر 3-6 | الضوابط المفعّلة |',
+        f'| 5 | اختبار فعالية الضوابط والتحقق من الامتثال | فريق {_d} | شهر 6 | تقرير الاختبار |',
+        f'| 6 | التدقيق المستقل وإغلاق الفجوة رسمياً | رئيس {_d} | الشهر 7 | تقرير الإغلاق النهائي |',
+    ])
+
+
+def _gap_guide_steps_en(gap_type, domain, fw_short, name):
+    """Return English gap-type-specific implementation step rows."""
+    _d, _f = domain, fw_short
+    templates = {
+        'governance': [
+            f'| 1 | Review {_f} governance requirements and document gap details | {_d} Team | Month 1 | Gap analysis report |',
+            f'| 2 | Design {_d} governance committee structure and RACI matrix | {_d} Lead | Months 1–2 | Governance charter draft |',
+            f'| 3 | Ratify mandate and have executive leadership formally endorse | Senior Management | Months 2–3 | Approved governance charter |',
+            f'| 4 | Operationalise committee: schedule meetings, define reporting cadence | {_d} Lead | Months 3–5 | Meeting minutes + report templates |',
+            f'| 5 | Review effectiveness and test compliance with {_f} requirements | {_d} Team | Months 5–6 | Effectiveness review report |',
+            f'| 6 | Independent audit and final compliance report to management | {_d} Lead | Month 7 | Final compliance report |',
+        ],
+        'data': [
+            f'| 1 | Classify data by sensitivity level per {_f} standard | {_d} Team | Month 1 | Data classification matrix |',
+            f'| 2 | Assess protection risks and identify control gaps | {_d} Team | Months 1–2 | Gap assessment report |',
+            f'| 3 | Design protection controls (DLP / encryption / access restrictions) | {_d} Lead | Months 2–3 | Technical control plan |',
+            f'| 4 | Implement controls and integrate with existing infrastructure | {_d} Team | Months 3–6 | Operational controls |',
+            f'| 5 | Test control effectiveness with targeted penetration exercise | {_d} Lead | Month 6 | Testing report |',
+            f'| 6 | Independent audit and {_f} compliance verification | {_d} Team | Month 7 | Final audit report |',
+        ],
+        'awareness': [
+            f'| 1 | Measure current security awareness level (survey + baseline test) | {_d} Team | Month 1 | Baseline awareness report |',
+            f'| 2 | Design targeted training programme aligned with {_f} requirements | {_d} Lead | Months 1–2 | Approved training plan |',
+            f'| 3 | Deliver awareness sessions and specialised training for all staff | {_d} Team | Months 2–5 | Training attendance records |',
+            f'| 4 | Conduct simulation exercises (phishing / social engineering) | {_d} Lead | Months 4–6 | Exercise result reports |',
+            f'| 5 | Measure programme impact and compare against baseline | {_d} Team | Months 5–6 | Impact measurement report |',
+            f'| 6 | Update content and certify compliance with {_f} requirements | {_d} Lead | Month 7 | Updated content + compliance certificate |',
+        ],
+        'policy': [
+            f'| 1 | Inventory existing documents and identify gaps vs {_f} | {_d} Team | Month 1 | Policy gap list |',
+            f'| 2 | Draft / update required policies and procedures | {_d} Lead | Months 1–3 | Draft policy documents |',
+            f'| 3 | Legal and technical review; formal management approval | Senior Management | Months 3–4 | Approved and signed documents |',
+            f'| 4 | Publish documents and train affected staff | {_d} Team | Months 4–5 | Distribution and training records |',
+            f'| 5 | Monitor compliance and document exceptions | {_d} Lead | Months 5–6 | Periodic compliance reports |',
+            f'| 6 | Annual document review and {_f} coverage verification | {_d} Team | Month 7 | Annual review report |',
+        ],
+        'monitoring': [
+            f'| 1 | Assess existing monitoring capabilities and identify blind spots | {_d} Team | Month 1 | Capability assessment report |',
+            f'| 2 | Design monitoring and alerting architecture aligned with {_f} | {_d} Lead | Months 1–2 | Architecture diagram |',
+            f'| 3 | Deploy / upgrade SIEM/SOC and connect data sources | {_d} Team | Months 2–5 | Unified monitoring dashboard |',
+            f'| 4 | Develop detection rules and incident response playbooks | {_d} Lead | Months 3–5 | Detection rule library |',
+            f'| 5 | Run simulated detection exercise to validate effectiveness | {_d} Team | Months 5–6 | Exercise result report |',
+            f'| 6 | Fine-tune performance and document {_f} compliance | {_d} Lead | Month 7 | Compliance report |',
+        ],
+        'risk': [
+            f'| 1 | Review current risk framework and benchmark against {_f} | {_d} Team | Month 1 | Gap analysis report |',
+            f'| 2 | Update risk assessment methodology and rebuild risk register | {_d} Lead | Months 1–3 | Updated risk register |',
+            f'| 3 | Assign risk owners and document treatment plans | {_d} Team | Months 3–4 | Approved treatment plans |',
+            f'| 4 | Activate risk review cycle and define key risk indicators (KRIs) | {_d} Lead | Months 4–5 | Risk indicator dashboard |',
+            f'| 5 | Report risks to senior management and governance bodies | {_d} Team | Months 5–6 | Periodic risk reports |',
+            f'| 6 | Independent audit and framework compliance verification with {_f} | {_d} Lead | Month 7 | Final audit report |',
+        ],
+        'iam': [
+            f'| 1 | Inventory accounts and privileges; identify policy violations | {_d} Team | Month 1 | Privilege inventory report |',
+            f'| 2 | Design access model based on least-privilege principle | {_d} Lead | Months 1–2 | Access rights matrix |',
+            f'| 3 | Deploy IAM/PAM solution and integrate with core systems | {_d} Team | Months 2–5 | Operational IAM system |',
+            f'| 4 | Enforce MFA for all privileged and sensitive access | {_d} Lead | Months 4–5 | MFA activation records |',
+            f'| 5 | Train staff and document identity management procedures | {_d} Team | Months 5–6 | Training records |',
+            f'| 6 | Independent audit and {_f} compliance verification | {_d} Lead | Month 7 | Audit report |',
+        ],
+        'continuity': [
+            f'| 1 | Conduct Business Impact Analysis (BIA) and identify critical assets | {_d} Team | Month 1 | BIA report |',
+            f'| 2 | Design continuity and recovery plans aligned with {_f} | {_d} Lead | Months 1–3 | BCM/DR plan draft |',
+            f'| 3 | Gain executive approval and assign roles and responsibilities | Senior Management | Months 3–4 | Approved BCM/DR plan |',
+            f'| 4 | Configure DR environment and test backup procedures | {_d} Team | Months 4–5 | Ready DR environment |',
+            f'| 5 | Run full continuity simulation exercise | {_d} Lead | Months 5–6 | Exercise result report |',
+            f'| 6 | Update plan and verify compliance with {_f} requirements | {_d} Team | Month 7 | Updated plan + compliance report |',
+        ],
+        'technical': [
+            f'| 1 | Assess current infrastructure and identify technical gaps | {_d} Team | Month 1 | Infrastructure assessment report |',
+            f'| 2 | Design proposed technical solution aligned with {_f} | {_d} Lead | Months 1–2 | Solution design document |',
+            f'| 3 | Procure tools and prepare the deployment environment | {_d} Team | Months 2–3 | Ready deployment environment |',
+            f'| 4 | Deploy solution and integrate with existing systems | {_d} Lead | Months 3–6 | Deployed and integrated solution |',
+            f'| 5 | Validate performance and confirm {_f} alignment | {_d} Team | Month 6 | Testing report |',
+            f'| 6 | Independent verification and formal operational handover | {_d} Lead | Month 7 | Operational acceptance certificate |',
+        ],
+    }
+    return templates.get(gap_type, [
+        f'| 1 | Analyse current state and document remediation requirements | {_d} Team | Month 1 | Current state report |',
+        f'| 2 | Design remediation plan aligned with {_f} requirements | {_d} Lead | Months 1–2 | Detailed remediation plan |',
+        f'| 3 | Procure resources and tools needed for implementation | {_d} Team | Months 2–3 | Resources ready |',
+        f'| 4 | Implement corrective controls and procedures | {_d} Lead | Months 3–6 | Operational controls |',
+        f'| 5 | Test control effectiveness and verify compliance | {_d} Team | Month 6 | Testing report |',
+        f'| 6 | Independent audit and formal gap closure | {_d} Lead | Month 7 | Final closure report |',
+    ])
+
+
 def ensure_gap_guide_coverage(sections, lang, domain, fw_short):
     """Synthesize per-gap Implementation Guides for every gap row that lacks one.
     Idempotent: only adds guides for indices that don't already have them.
+    Generates type-specific 6-step guides based on gap keywords (governance,
+    data protection, awareness, policy, monitoring, risk, IAM, continuity,
+    technical, or generic fallback).
     """
     gaps = sections.get('gaps', '') or ''
     rows = _ts_extract_gap_rows(gaps)
@@ -14196,40 +14420,42 @@ def ensure_gap_guide_coverage(sections, lang, domain, fw_short):
     has_guides_hdr = bool(guides_hdr_re.search(gaps))
     new_guides = []
     if not has_guides_hdr:
-        new_guides.append('\n\n### Gap Implementation Guidance'
-                          if not is_ar else '\n\n### أدلة تنفيذ الفجوات')
+        new_guides.append('\n\n### أدلة تنفيذ الفجوات'
+                          if is_ar else '\n\n### Gap Implementation Guidance')
         new_guides.append('')
     for idx, name, desc, pri in rows:
         if idx in existing:
             continue
+        gap_type = _gap_type(name, desc, is_ar)
         if is_ar:
+            steps = _gap_guide_steps_ar(gap_type, domain, fw_short, name)
+            # Priority label for the header badge
+            pri_label = {'حرج': '🔴 حرجة', 'عالي': '🟠 عالية', 'عالية': '🟠 عالية',
+                         'متوسط': '🟡 متوسطة', 'منخفض': '🟢 منخفضة'}.get(
+                pri.strip() if pri else '', f'الأولوية: {pri}' if pri else '')
             new_guides.extend([
                 f'#### دليل تنفيذ الفجوة رقم {idx}: {name}',
                 '',
-                f'**الوصف:** {desc}',
+                f'**السياق:** {desc}' if desc and desc != '—' else '',
+                f'**الأولوية:** {pri_label}' if pri_label else '',
                 '',
                 '| الخطوة | الإجراء | المسؤول | الجدول الزمني | الناتج |',
                 '|--------|---------|---------|----------------|--------|',
-                f'| 1 | تقييم الوضع الحالي للفجوة | فريق {domain} | الشهر 1 | تقرير تقييم |',
-                f'| 2 | تصميم ضوابط المعالجة وفق {fw_short} | رئيس {domain} | شهر 2-3 | خطة المعالجة |',
-                f'| 3 | تنفيذ الضوابط والاختبار | فريق {domain} | شهر 4-6 | الضوابط المفعّلة |',
-                f'| 4 | التحقق والإغلاق | رئيس {domain} | الشهر 7 | تقرير الإغلاق |',
-                '',
-            ])
+            ] + steps + [''])
         else:
+            steps = _gap_guide_steps_en(gap_type, domain, fw_short, name)
+            pri_label = {'critical': '🔴 Critical', 'high': '🟠 High',
+                         'medium': '🟡 Medium', 'low': '🟢 Low'}.get(
+                (pri or '').strip().lower(), f'Priority: {pri}' if pri else '')
             new_guides.extend([
                 f'#### Gap #{idx} Implementation Guide: {name}',
                 '',
-                f'**Description:** {desc}',
+                f'**Context:** {desc}' if desc and desc != '—' else '',
+                f'**Priority:** {pri_label}' if pri_label else '',
                 '',
                 '| Step | Action | Owner | Timeline | Output |',
                 '|------|--------|-------|----------|--------|',
-                f'| 1 | Assess current-state baseline | {domain} Team | Month 1 | Assessment report |',
-                f'| 2 | Design remediation controls aligned with {fw_short} | {domain} Lead | Months 2–3 | Remediation plan |',
-                f'| 3 | Implement controls and validate | {domain} Team | Months 4–6 | Operational controls |',
-                f'| 4 | Verify closure and report | {domain} Lead | Month 7 | Closure report |',
-                '',
-            ])
+            ] + steps + [''])
     if len(new_guides) > 2 or (new_guides and has_guides_hdr):
         sections['gaps'] = gaps.rstrip() + '\n' + '\n'.join(new_guides)
 
@@ -37484,9 +37710,15 @@ def api_generate_pdf():
         def _make_kpmg_panel(label_txt, body_txt, avail_w):
             """Return a KPMG-style shaded callout panel (label + body)."""
             from reportlab.lib.colors import HexColor as _HC
+            from reportlab.platypus import Spacer as _Spacer
             PANEL_BG   = _HC('#F3F4F6')
             BORDER_COL = _HC('#1D2B4F')
-            accent = Table([['']], colWidths=[5], rowHeights=[None])
+            # Use a Spacer cell instead of an empty string to guarantee
+            # ReportLab 4.x can always compute a deterministic row height.
+            # An empty string '' with rowHeights=[None] can leave the height
+            # as None internally, causing max(None, None) → TypeError during
+            # doc.build() when two cells both fail height computation.
+            accent = Table([[_Spacer(5, 1)]], colWidths=[5])
             accent.setStyle(TableStyle([
                 ('BACKGROUND',    (0,0),(0,0), BORDER_COL),
                 ('TOPPADDING',    (0,0),(0,0), 0),

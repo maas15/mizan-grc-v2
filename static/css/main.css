@@ -4294,3 +4294,53 @@ select option,
 
 /* ── Publishability score mini-ring in history ───────────────────────────── */
 .pub-score-mini{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:.7rem;font-weight:800;color:#fff;flex-shrink:0;}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PREVIEW ENRICHMENT — subsection headers + section summary bars
+   Added for richer, more structured strategy preview output.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Sub-section header (replaces plain <h3> for pillars, gap guides, etc.) */
+.document-page .subsection-header {
+  background: linear-gradient(90deg, #1D2B4F 0%, #2d4170 100%);
+  color: #fff;
+  padding: 9px 16px;
+  margin: 1.8rem 0 12px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  border-radius: 5px;
+  letter-spacing: 0.01em;
+  border-left: 4px solid #D04A02;
+}
+[dir="rtl"] .document-page .subsection-header {
+  border-left: none;
+  border-right: 4px solid #D04A02;
+}
+
+/* ── Section summary stats bar (appears just below section-banner) ─────── */
+.section-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 14px;
+  align-items: center;
+}
+[dir="rtl"] .section-summary-bar { flex-direction: row-reverse; }
+
+.summary-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.summary-chip-total   { background: rgba(29,43,79,.1);  color: #1D2B4F; border: 1px solid rgba(29,43,79,.2); }
+.summary-chip-critical{ background: rgba(220,38,38,.1); color: #dc2626; border: 1px solid rgba(220,38,38,.2); }
+.summary-chip-high    { background: rgba(234,88,12,.1); color: #ea580c; border: 1px solid rgba(234,88,12,.2); }
+.summary-chip-medium  { background: rgba(217,119,6,.1); color: #d97706; border: 1px solid rgba(217,119,6,.2); }
+.summary-chip-low     { background: rgba(22,163,74,.1); color: #16a34a; border: 1px solid rgba(22,163,74,.2); }
+.summary-chip-kpi     { background: rgba(59,130,246,.1);color: #2563eb; border: 1px solid rgba(59,130,246,.2); }
+.summary-chip-kri     { background: rgba(139,92,246,.1);color: #7c3aed; border: 1px solid rgba(139,92,246,.2); }
