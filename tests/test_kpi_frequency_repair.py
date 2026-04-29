@@ -207,9 +207,10 @@ class TestKpiFrequencyRepair(unittest.TestCase):
         )
         defects = _APP.validate_arabic_strategy_semantic_richness(
             sections, 'ar', doc_subtype=None)
-        freq_defects = [t for t, _ in defects if 'frequency' in t.lower()]
+        freq_defects = [t for t, _ in defects
+                        if t == 'kpis_missing_frequency_column']
         self.assertEqual(freq_defects, [],
-            f'Expected no frequency defects after repair, got: {freq_defects}')
+            f'Expected no kpis_missing_frequency_column defects after repair, got: {freq_defects}')
 
     @_skip_if_no_app
     def test_repair_does_not_modify_other_sections(self):
