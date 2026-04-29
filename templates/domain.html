@@ -12,6 +12,7 @@
         </div>
         <a href="{{ url_for('dashboard', lang=lang) }}" class="back-btn"><i class="fas fa-arrow-{{ 'right' if is_rtl else 'left' }}"></i> {% if is_rtl %}العودة{% else %}Back{% endif %}</a>
         <a href="{{ url_for('document_history', lang=lang) }}" class="history-link"><i class="fas fa-folder-open"></i> {{ txt.my_documents }}</a>
+        <a href="{{ url_for('policy_library', lang=lang) }}" class="history-link"><i class="fas fa-book-open"></i> {% if is_rtl %}مكتبة السياسات{% else %}Policy Library{% endif %}</a>
         <div class="user-info">
             <div class="user-avatar"><i class="fas fa-user"></i></div>
             <div class="user-details">
@@ -39,6 +40,9 @@
         <div class="tabs" {% if is_rtl %}style="display: flex; flex-direction: row-reverse;"{% endif %}>
             {% if is_rtl %}
             <button class="tab" data-tab="podcast" style="flex-direction: row-reverse;"><i class="fas fa-comments"></i> نقاش GRC</button>
+            <button class="tab" data-tab="training" style="flex-direction: row-reverse;"><i class="fas fa-chalkboard-teacher"></i> التدريب</button>
+            <button class="tab" data-tab="findings" style="flex-direction: row-reverse;"><i class="fas fa-search-plus"></i> النتائج والمعالجة</button>
+            <button class="tab" data-tab="assets" style="flex-direction: row-reverse;"><i class="fas fa-server"></i> جرد الأصول</button>
             <button class="tab" data-tab="procedures" style="flex-direction: row-reverse;"><i class="fas fa-clipboard-list"></i> الإجراءات</button>
             <button class="tab" data-tab="awareness" style="flex-direction: row-reverse;"><i class="fas fa-user-tie"></i> تدريب GRC</button>
             <button class="tab" data-tab="tasks" style="flex-direction: row-reverse;"><i class="fas fa-tasks"></i> إدارة المهام</button>
@@ -54,6 +58,9 @@
             <button class="tab" data-tab="risk"><i class="fas fa-exclamation-triangle"></i> {{ txt.tabs[3] }}</button>
             <button class="tab" data-tab="register"><i class="fas fa-th-list"></i> Risk Register</button>
             <button class="tab" data-tab="tasks"><i class="fas fa-tasks"></i> Tasks</button>
+            <button class="tab" data-tab="assets"><i class="fas fa-server"></i> Assets</button>
+            <button class="tab" data-tab="findings"><i class="fas fa-search-plus"></i> Findings</button>
+            <button class="tab" data-tab="training"><i class="fas fa-chalkboard-teacher"></i> Training</button>
             <button class="tab" data-tab="procedures"><i class="fas fa-clipboard-list"></i> Procedures</button>
             <button class="tab" data-tab="awareness"><i class="fas fa-user-tie"></i> GRC Training</button>
             <button class="tab" data-tab="podcast"><i class="fas fa-comments"></i> GRC Discussion</button>
@@ -3446,4 +3453,681 @@ window.renderPublishabilityStrip = function(d){
   if(trBtn) trBtn.style.display = '';
 };
 </script>
-{% endblock %}
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- GAP 2 — ASSET INVENTORY TAB                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-content" id="assets-tab">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;">
+        <h2 class="section-title" style="margin:0;">
+            <i class="fas fa-server" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.5rem;"></i>
+            {% if is_rtl %}جرد الأصول{% else %}Asset Inventory{% endif %}
+        </h2>
+        <button class="btn btn-primary" onclick="openAssetModal()" style="padding:8px 18px;">
+            <i class="fas fa-plus"></i> {% if is_rtl %}إضافة أصل{% else %}Add Asset{% endif %}
+        </button>
+    </div>
+
+    <div style="margin-bottom:1rem;padding:0.75rem 1rem;background:var(--bg-sidebar);border-radius:10px;border:1px solid var(--border-color);font-size:0.85rem;color:var(--text-secondary);">
+        <i class="fas fa-info-circle" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.4rem;"></i>
+        {% if is_rtl %}سجّل أصول منظمتك هنا لتغذية نموذج تهديد حي وسجل مخاطر مرتبط بالأصول.{% else %}Register your organization's assets to feed a live threat model and asset-linked risk register.{% endif %}
+    </div>
+
+    <!-- Assets table -->
+    <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.86rem;" id="assets-table">
+            <thead>
+                <tr style="background:var(--bg-sidebar);color:var(--text-secondary);">
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}اسم الأصل{% else %}Asset Name{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}النوع{% else %}Type{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}الأهمية{% else %}Criticality{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}تصنيف البيانات{% else %}Data Class.{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}المالك{% else %}Owner{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:center;border-bottom:1px solid var(--border-color);">{% if is_rtl %}الإجراءات{% else %}Actions{% endif %}</th>
+                </tr>
+            </thead>
+            <tbody id="assets-tbody">
+                <tr><td colspan="6" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">
+                    <i class="fas fa-server" style="font-size:2rem;margin-bottom:0.5rem;opacity:0.3;display:block;"></i>
+                    {% if is_rtl %}لا توجد أصول مسجلة. انقر "إضافة أصل" للبدء.{% else %}No assets registered. Click "Add Asset" to begin.{% endif %}
+                </td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Asset Modal -->
+<div id="asset-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(560px,94vw);max-height:90vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 style="margin:0;font-size:1rem;" id="asset-modal-title">{% if is_rtl %}إضافة أصل{% else %}Add Asset{% endif %}</h3>
+            <button onclick="closeAssetModal()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <input type="hidden" id="asset-edit-id">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+            <div class="form-group" style="grid-column:1/-1;">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}اسم الأصل *{% else %}Asset Name *{% endif %}</label>
+                <input id="a-name" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}النوع{% else %}Asset Type{% endif %}</label>
+                <select id="a-type" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="Information System">Information System</option>
+                    <option value="Database">Database</option>
+                    <option value="Web Application">Web Application</option>
+                    <option value="API">API / Integration</option>
+                    <option value="Cloud Service">Cloud Service</option>
+                    <option value="Network Device">Network Device</option>
+                    <option value="Endpoint">Endpoint / Workstation</option>
+                    <option value="OT/ICS">OT / ICS</option>
+                    <option value="Physical">Physical Asset</option>
+                    <option value="Data Asset">Data Asset</option>
+                    <option value="Third-Party">Third-Party Service</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الأهمية{% else %}Criticality{% endif %}</label>
+                <select id="a-criticality" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="Critical">Critical</option>
+                    <option value="High">High</option>
+                    <option value="Medium" selected>Medium</option>
+                    <option value="Low">Low</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}تصنيف البيانات{% else %}Data Classification{% endif %}</label>
+                <select id="a-classification" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="Public">Public</option>
+                    <option value="Internal" selected>Internal</option>
+                    <option value="Confidential">Confidential</option>
+                    <option value="Restricted">Restricted / Top Secret</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}المالك{% else %}Owner{% endif %}</label>
+                <input id="a-owner" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}مزود السحابة{% else %}Cloud Provider{% endif %}</label>
+                <input id="a-cloud" type="text" placeholder="AWS / Azure / GCP / On-prem" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group" style="grid-column:1/-1;">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}التقنيات المستخدمة{% else %}Technology Stack{% endif %}</label>
+                <input id="a-tech" type="text" placeholder="e.g. Python, PostgreSQL, nginx" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group" style="grid-column:1/-1;">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الضوابط الموجودة{% else %}Existing Controls{% endif %}</label>
+                <textarea id="a-controls" rows="2" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+            <div class="form-group" style="grid-column:1/-1;">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}ملاحظات{% else %}Notes{% endif %}</label>
+                <textarea id="a-notes" rows="2" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+        </div>
+        <div style="display:flex;gap:0.75rem;margin-top:1rem;">
+            <button onclick="saveAsset()" class="btn btn-primary" style="flex:1;padding:10px;">
+                <i class="fas fa-save"></i> {% if is_rtl %}حفظ{% else %}Save{% endif %}
+            </button>
+            <button onclick="closeAssetModal()" class="btn btn-secondary" style="padding:10px 18px;">{% if is_rtl %}إلغاء{% else %}Cancel{% endif %}</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- GAP 3 — AUDIT FINDINGS & REMEDIATION TAB                              -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-content" id="findings-tab">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;">
+        <h2 class="section-title" style="margin:0;">
+            <i class="fas fa-search-plus" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.5rem;"></i>
+            {% if is_rtl %}نتائج التدقيق والمعالجة{% else %}Audit Findings & Remediation{% endif %}
+        </h2>
+        <button class="btn btn-primary" onclick="openFindingModal()" style="padding:8px 18px;">
+            <i class="fas fa-plus"></i> {% if is_rtl %}إضافة نتيجة{% else %}Add Finding{% endif %}
+        </button>
+    </div>
+
+    <!-- Summary stats row -->
+    <div id="findings-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.75rem;margin-bottom:1.25rem;">
+        <div style="background:var(--bg-sidebar);border-radius:10px;padding:0.75rem;text-align:center;border:1px solid var(--border-color);">
+            <div style="font-size:1.5rem;font-weight:700;" id="fs-total">-</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">{% if is_rtl %}الكل{% else %}Total{% endif %}</div>
+        </div>
+        <div style="background:rgba(239,68,68,0.1);border-radius:10px;padding:0.75rem;text-align:center;border:1px solid rgba(239,68,68,0.2);">
+            <div style="font-size:1.5rem;font-weight:700;color:#ef4444;" id="fs-open">-</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">{% if is_rtl %}مفتوحة{% else %}Open{% endif %}</div>
+        </div>
+        <div style="background:rgba(249,115,22,0.1);border-radius:10px;padding:0.75rem;text-align:center;border:1px solid rgba(249,115,22,0.2);">
+            <div style="font-size:1.5rem;font-weight:700;color:#f97316;" id="fs-high">-</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">{% if is_rtl %}عالي/حرج{% else %}High/Critical{% endif %}</div>
+        </div>
+        <div style="background:rgba(234,179,8,0.1);border-radius:10px;padding:0.75rem;text-align:center;border:1px solid rgba(234,179,8,0.2);">
+            <div style="font-size:1.5rem;font-weight:700;color:#eab308;" id="fs-overdue">-</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);">{% if is_rtl %}متأخرة{% else %}Overdue{% endif %}</div>
+        </div>
+    </div>
+
+    <!-- Findings table -->
+    <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;" id="findings-table">
+            <thead>
+                <tr style="background:var(--bg-sidebar);color:var(--text-secondary);">
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}المرجع{% else %}Ref{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}العنوان{% else %}Title{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:center;border-bottom:1px solid var(--border-color);">{% if is_rtl %}الخطورة{% else %}Rating{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:center;border-bottom:1px solid var(--border-color);">{% if is_rtl %}الحالة{% else %}Status{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}المالك{% else %}Owner{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:{{ 'right' if is_rtl else 'left' }};border-bottom:1px solid var(--border-color);">{% if is_rtl %}الموعد{% else %}Target{% endif %}</th>
+                    <th style="padding:10px 12px;text-align:center;border-bottom:1px solid var(--border-color);"></th>
+                </tr>
+            </thead>
+            <tbody id="findings-tbody">
+                <tr><td colspan="7" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">
+                    <i class="fas fa-search-plus" style="font-size:2rem;margin-bottom:0.5rem;opacity:0.3;display:block;"></i>
+                    {% if is_rtl %}لا توجد نتائج. انقر "إضافة نتيجة" للبدء.{% else %}No findings yet. Click "Add Finding" to begin.{% endif %}
+                </td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Finding Modal -->
+<div id="finding-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(600px,94vw);max-height:90vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 style="margin:0;font-size:1rem;" id="finding-modal-title">{% if is_rtl %}إضافة نتيجة{% else %}Add Finding{% endif %}</h3>
+            <button onclick="closeFindingModal()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <input type="hidden" id="finding-edit-id">
+        <div style="display:grid;gap:0.75rem;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                <div class="form-group" style="grid-column:1/-1;">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}عنوان النتيجة *{% else %}Finding Title *{% endif %}</label>
+                    <input id="f-title" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الخطورة{% else %}Risk Rating{% endif %}</label>
+                    <select id="f-rating" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium" selected>Medium</option>
+                        <option value="Low">Low</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الحالة{% else %}Status{% endif %}</label>
+                    <select id="f-status" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                        <option value="Open" selected>Open</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Closed">Closed</option>
+                        <option value="Risk Accepted">Risk Accepted</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}مرجع الضابط{% else %}Control Reference{% endif %}</label>
+                    <input id="f-control" type="text" placeholder="e.g. NCA ECC 2-1" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}مالك المعالجة{% else %}Remediation Owner{% endif %}</label>
+                    <input id="f-owner" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}التاريخ المستهدف{% else %}Target Date{% endif %}</label>
+                    <input id="f-target" type="date" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                </div>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الملاحظة{% else %}Observation{% endif %}</label>
+                <textarea id="f-observation" rows="2" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}السبب الجذري{% else %}Root Cause{% endif %}</label>
+                <textarea id="f-rootcause" rows="2" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}التوصية{% else %}Recommendation{% endif %}</label>
+                <textarea id="f-recommendation" rows="2" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+        </div>
+        <div style="display:flex;gap:0.75rem;margin-top:1rem;">
+            <button onclick="saveFinding()" class="btn btn-primary" style="flex:1;padding:10px;">
+                <i class="fas fa-save"></i> {% if is_rtl %}حفظ{% else %}Save{% endif %}
+            </button>
+            <button onclick="closeFindingModal()" class="btn btn-secondary" style="padding:10px 18px;">{% if is_rtl %}إلغاء{% else %}Cancel{% endif %}</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- GAP 4 — TRAINING ENGINE TAB                                            -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="tab-content" id="training-tab">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.75rem;">
+        <h2 class="section-title" style="margin:0;">
+            <i class="fas fa-chalkboard-teacher" style="color:var(--accent);margin-{{ 'left' if is_rtl else 'right' }}:0.5rem;"></i>
+            {% if is_rtl %}محرك التدريب والتمارين{% else %}Training & Tabletop Engine{% endif %}
+        </h2>
+        <button class="btn btn-primary" onclick="openTrainingModal()" style="padding:8px 18px;">
+            <i class="fas fa-magic"></i> {% if is_rtl %}إنشاء مواد تدريبية{% else %}Generate Material{% endif %}
+        </button>
+    </div>
+
+    <!-- Type selector cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-bottom:1.5rem;">
+        <div class="stat-card" style="cursor:pointer;border:2px solid var(--border-color);" onclick="openTrainingModal('training_deck','board')">
+            <div style="font-size:1.8rem;margin-bottom:0.5rem;">📊</div>
+            <div style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}عرض مجلس الإدارة{% else %}Board Briefing Deck{% endif %}</div>
+            <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">{% if is_rtl %}ملخص تنفيذي لمجلس الإدارة{% else %}Executive-level training slides{% endif %}</div>
+        </div>
+        <div class="stat-card" style="cursor:pointer;border:2px solid var(--border-color);" onclick="openTrainingModal('training_deck','staff')">
+            <div style="font-size:1.8rem;margin-bottom:0.5rem;">👥</div>
+            <div style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}تدريب الموظفين{% else %}Staff Awareness Deck{% endif %}</div>
+            <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">{% if is_rtl %}وعي GRC لجميع الموظفين{% else %}GRC awareness for all staff{% endif %}</div>
+        </div>
+        <div class="stat-card" style="cursor:pointer;border:2px solid var(--border-color);" onclick="openTrainingModal('training_deck','technical')">
+            <div style="font-size:1.8rem;margin-bottom:0.5rem;">🔧</div>
+            <div style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}التدريب التقني{% else %}Technical Team Deep-dive{% endif %}</div>
+            <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">{% if is_rtl %}تدريب متعمق للفريق التقني{% else %}In-depth training for IT/Security{% endif %}</div>
+        </div>
+        <div class="stat-card" style="cursor:pointer;border:2px solid var(--border-color);" onclick="openTrainingModal('tabletop','staff')">
+            <div style="font-size:1.8rem;margin-bottom:0.5rem;">🎯</div>
+            <div style="font-weight:600;font-size:0.9rem;">{% if is_rtl %}تمرين الطاولة{% else %}Tabletop Exercise{% endif %}</div>
+            <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">{% if is_rtl %}سيناريو تمرين كامل مع بطاقات الحقن{% else %}Full exercise scenario with inject cards{% endif %}</div>
+        </div>
+    </div>
+
+    <!-- Generated materials list -->
+    <h3 style="font-size:0.95rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.75rem;">
+        <i class="fas fa-history" style="margin-{{ 'left' if is_rtl else 'right' }}:0.4rem;"></i>
+        {% if is_rtl %}المواد المُنشأة{% else %}Generated Materials{% endif %}
+    </h3>
+    <div id="training-list" style="display:grid;gap:0.5rem;">
+        <div style="text-align:center;padding:2rem;color:var(--text-secondary);font-size:0.85rem;" id="training-empty">
+            <i class="fas fa-chalkboard-teacher" style="font-size:2rem;opacity:0.3;margin-bottom:0.5rem;display:block;"></i>
+            {% if is_rtl %}لا توجد مواد. انقر على أحد النماذج أعلاه للبدء.{% else %}No materials yet. Click a template above to generate one.{% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Training Generator Modal -->
+<div id="training-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(520px,94vw);max-height:90vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 style="margin:0;font-size:1rem;" id="training-modal-title">{% if is_rtl %}إنشاء مواد تدريبية{% else %}Generate Training Material{% endif %}</h3>
+            <button onclick="closeTrainingModal()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <div style="display:grid;gap:0.75rem;">
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}النوع{% else %}Material Type{% endif %}</label>
+                <select id="tr-type" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="training_deck">Training Deck (Slides)</option>
+                    <option value="tabletop">Tabletop Exercise Scenario</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الجمهور{% else %}Audience{% endif %}</label>
+                <select id="tr-audience" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="board">Board of Directors / Executive Committee</option>
+                    <option value="staff" selected>General Staff (All Employees)</option>
+                    <option value="technical">IT / Security Technical Team</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}الموضوع{% else %}Topic{% endif %}</label>
+                <input id="tr-topic" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}اللغة{% else %}Language{% endif %}</label>
+                <select id="tr-lang" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="en" {{ 'selected' if lang == 'en' }}>English</option>
+                    <option value="ar" {{ 'selected' if lang == 'ar' }}>العربية</option>
+                </select>
+            </div>
+        </div>
+        <button onclick="submitTraining()" class="btn btn-primary" style="width:100%;margin-top:1rem;padding:11px;">
+            <i class="fas fa-magic"></i> {% if is_rtl %}إنشاء{% else %}Generate{% endif %}
+        </button>
+    </div>
+</div>
+
+<!-- Training Result Modal -->
+<div id="training-result-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(760px,96vw);max-height:90vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+            <h3 id="tr-result-title" style="margin:0;font-size:1rem;"></h3>
+            <button onclick="closeTrainingResult()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <div id="tr-result-spinner" style="text-align:center;padding:3rem;display:none;">
+            <div class="spinner" style="width:40px;height:40px;margin:0 auto 1rem;border:4px solid var(--border-color);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>
+            <p style="color:var(--text-secondary);">{% if is_rtl %}جارٍ الإنشاء…{% else %}Generating…{% endif %}</p>
+        </div>
+        <div id="tr-result-content" class="markdown-output" style="display:none;"></div>
+        <div id="tr-result-actions" style="display:none;margin-top:1rem;display:flex;gap:0.75rem;">
+            <button onclick="copyTrainingResult()" class="btn btn-secondary" style="padding:8px 18px;"><i class="fas fa-copy"></i> {% if is_rtl %}نسخ{% else %}Copy{% endif %}</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ──────────────── ASSET INVENTORY JS ──────────────────────────────────────
+const DOMAIN_NAME = '{{ domain_name | e }}';
+const IS_RTL_DOMAIN = {{ 'true' if is_rtl else 'false' }};
+let _editingAssetId = null;
+
+function openAssetModal(asset) {
+    _editingAssetId = asset ? asset.id : null;
+    document.getElementById('asset-modal-title').textContent = asset
+        ? (IS_RTL_DOMAIN ? 'تعديل الأصل' : 'Edit Asset') : (IS_RTL_DOMAIN ? 'إضافة أصل' : 'Add Asset');
+    document.getElementById('a-name').value = asset ? asset.asset_name : '';
+    document.getElementById('a-type').value = asset ? asset.asset_type : 'Information System';
+    document.getElementById('a-criticality').value = asset ? asset.criticality : 'Medium';
+    document.getElementById('a-classification').value = asset ? asset.data_classification : 'Internal';
+    document.getElementById('a-owner').value = asset ? (asset.owner || '') : '';
+    document.getElementById('a-cloud').value = asset ? (asset.cloud_provider || '') : '';
+    document.getElementById('a-tech').value = asset ? (asset.technology_stack || '') : '';
+    document.getElementById('a-controls').value = asset ? (asset.existing_controls || '') : '';
+    document.getElementById('a-notes').value = asset ? (asset.notes || '') : '';
+    document.getElementById('asset-modal').style.display = 'flex';
+}
+
+function closeAssetModal() {
+    document.getElementById('asset-modal').style.display = 'none';
+}
+
+async function saveAsset() {
+    const name = document.getElementById('a-name').value.trim();
+    if (!name) { alert(IS_RTL_DOMAIN ? 'اسم الأصل مطلوب' : 'Asset name is required'); return; }
+    const payload = {
+        domain: DOMAIN_NAME,
+        asset_name: name,
+        asset_type: document.getElementById('a-type').value,
+        criticality: document.getElementById('a-criticality').value,
+        data_classification: document.getElementById('a-classification').value,
+        owner: document.getElementById('a-owner').value,
+        cloud_provider: document.getElementById('a-cloud').value,
+        technology_stack: document.getElementById('a-tech').value,
+        existing_controls: document.getElementById('a-controls').value,
+        notes: document.getElementById('a-notes').value,
+    };
+    const url = _editingAssetId ? `/api/assets/${_editingAssetId}` : '/api/assets';
+    const method = _editingAssetId ? 'PUT' : 'POST';
+    try {
+        const r = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const d = await r.json();
+        if (d.success) { closeAssetModal(); loadAssets(); }
+        else alert(d.error || 'Error saving asset');
+    } catch(e) { alert(e.message); }
+}
+
+async function loadAssets() {
+    try {
+        const r = await fetch(`/api/assets?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const d = await r.json();
+        if (!d.success) return;
+        const tbody = document.getElementById('assets-tbody');
+        if (!d.assets || d.assets.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">${IS_RTL_DOMAIN ? 'لا توجد أصول' : 'No assets registered'}</td></tr>`;
+            return;
+        }
+        const critColor = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
+        tbody.innerHTML = d.assets.map(a => `
+            <tr style="border-bottom:1px solid var(--border-color);">
+                <td style="padding:10px 12px;font-weight:600;">${a.asset_name}</td>
+                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${a.asset_type}</td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 10px;border-radius:20px;font-size:0.75rem;background:${critColor[a.criticality]||'#888'}22;color:${critColor[a.criticality]||'#888'}">${a.criticality}</span></td>
+                <td style="padding:10px 12px;font-size:0.82rem;">${a.data_classification}</td>
+                <td style="padding:10px 12px;color:var(--text-secondary);font-size:0.82rem;">${a.owner||'-'}</td>
+                <td style="padding:10px 12px;text-align:center;display:flex;gap:6px;justify-content:center;">
+                    <button onclick='openAssetModal(${JSON.stringify(a)})' class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteAsset(${a.id})" class="btn" style="padding:4px 10px;font-size:0.78rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>`).join('');
+    } catch(e) {}
+}
+
+async function deleteAsset(id) {
+    if (!confirm(IS_RTL_DOMAIN ? 'حذف هذا الأصل؟' : 'Delete this asset?')) return;
+    await fetch(`/api/assets/${id}`, { method: 'DELETE' });
+    loadAssets();
+}
+
+// ──────────────── AUDIT FINDINGS JS ──────────────────────────────────────
+let _editingFindingId = null;
+
+function openFindingModal(finding) {
+    _editingFindingId = finding ? finding.id : null;
+    document.getElementById('finding-modal-title').textContent = finding
+        ? (IS_RTL_DOMAIN ? 'تعديل النتيجة' : 'Edit Finding') : (IS_RTL_DOMAIN ? 'إضافة نتيجة' : 'Add Finding');
+    document.getElementById('f-title').value = finding ? finding.title : '';
+    document.getElementById('f-rating').value = finding ? finding.risk_rating : 'Medium';
+    document.getElementById('f-status').value = finding ? finding.status : 'Open';
+    document.getElementById('f-control').value = finding ? (finding.control_reference||'') : '';
+    document.getElementById('f-owner').value = finding ? (finding.remediation_owner||'') : '';
+    document.getElementById('f-target').value = finding ? (finding.target_date||'') : '';
+    document.getElementById('f-observation').value = finding ? (finding.observation||'') : '';
+    document.getElementById('f-rootcause').value = finding ? (finding.root_cause||'') : '';
+    document.getElementById('f-recommendation').value = finding ? (finding.recommendation||'') : '';
+    document.getElementById('finding-modal').style.display = 'flex';
+}
+
+function closeFindingModal() {
+    document.getElementById('finding-modal').style.display = 'none';
+}
+
+async function saveFinding() {
+    const title = document.getElementById('f-title').value.trim();
+    if (!title) { alert(IS_RTL_DOMAIN ? 'العنوان مطلوب' : 'Title is required'); return; }
+    const payload = {
+        domain: DOMAIN_NAME,
+        title,
+        risk_rating: document.getElementById('f-rating').value,
+        status: document.getElementById('f-status').value,
+        control_reference: document.getElementById('f-control').value,
+        remediation_owner: document.getElementById('f-owner').value,
+        target_date: document.getElementById('f-target').value,
+        observation: document.getElementById('f-observation').value,
+        root_cause: document.getElementById('f-rootcause').value,
+        recommendation: document.getElementById('f-recommendation').value,
+    };
+    const url = _editingFindingId ? `/api/audit-findings/${_editingFindingId}` : '/api/audit-findings';
+    const method = _editingFindingId ? 'PUT' : 'POST';
+    try {
+        const r = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const d = await r.json();
+        if (d.success) { closeFindingModal(); loadFindings(); }
+        else alert(d.error || 'Error saving finding');
+    } catch(e) { alert(e.message); }
+}
+
+async function loadFindings() {
+    try {
+        const r = await fetch(`/api/audit-findings?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const d = await r.json();
+        if (!d.success) return;
+
+        // Update stats
+        const rSummary = await fetch(`/api/findings-summary?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const sm = await rSummary.json();
+        if (sm.success) {
+            document.getElementById('fs-total').textContent = sm.total;
+            document.getElementById('fs-open').textContent = sm.open;
+            document.getElementById('fs-high').textContent = sm.high_critical;
+            document.getElementById('fs-overdue').textContent = sm.overdue_remediation;
+        }
+
+        const tbody = document.getElementById('findings-tbody');
+        if (!d.findings || d.findings.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:2.5rem;color:var(--text-secondary);">${IS_RTL_DOMAIN ? 'لا توجد نتائج' : 'No findings yet'}</td></tr>`;
+            return;
+        }
+        const ratingColor = {'Critical':'#ef4444','High':'#f97316','Medium':'#eab308','Low':'#22c55e'};
+        const statusStyle = {'Open':'background:#ef444422;color:#ef4444','In Progress':'background:#3b82f622;color:#3b82f6','Closed':'background:#22c55e22;color:#22c55e','Risk Accepted':'background:#6366f122;color:#6366f1'};
+        tbody.innerHTML = d.findings.map(f => `
+            <tr style="border-bottom:1px solid var(--border-color);">
+                <td style="padding:10px 12px;font-size:0.8rem;color:var(--text-secondary);white-space:nowrap;">${f.finding_ref||''}</td>
+                <td style="padding:10px 12px;font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${f.title}">${f.title}</td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;background:${ratingColor[f.risk_rating]||'#888'}22;color:${ratingColor[f.risk_rating]||'#888'}">${f.risk_rating}</span></td>
+                <td style="padding:10px 12px;text-align:center;"><span style="padding:3px 8px;border-radius:20px;font-size:0.73rem;${statusStyle[f.status]||''}">${f.status}</span></td>
+                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${f.remediation_owner||'-'}</td>
+                <td style="padding:10px 12px;font-size:0.82rem;color:var(--text-secondary);">${f.target_date||'-'}</td>
+                <td style="padding:10px 12px;text-align:center;display:flex;gap:5px;justify-content:center;">
+                    <button onclick='openFindingModal(${JSON.stringify(f).replace(/'/g,"&#39;")})' class="btn btn-secondary" style="padding:4px 8px;font-size:0.75rem;"><i class="fas fa-edit"></i></button>
+                    <button onclick="deleteFinding(${f.id})" class="btn" style="padding:4px 8px;font-size:0.75rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>`).join('');
+    } catch(e) {}
+}
+
+async function deleteFinding(id) {
+    if (!confirm(IS_RTL_DOMAIN ? 'حذف هذه النتيجة؟' : 'Delete this finding?')) return;
+    await fetch(`/api/audit-findings/${id}`, { method: 'DELETE' });
+    loadFindings();
+}
+
+// ──────────────── TRAINING ENGINE JS ──────────────────────────────────────
+let _trTaskId = null;
+let _trPollInterval = null;
+let _trResultText = '';
+
+function openTrainingModal(type, audience) {
+    if (type) document.getElementById('tr-type').value = type;
+    if (audience) document.getElementById('tr-audience').value = audience;
+    document.getElementById('tr-topic').value = DOMAIN_NAME;
+    document.getElementById('training-modal').style.display = 'flex';
+}
+
+function closeTrainingModal() {
+    document.getElementById('training-modal').style.display = 'none';
+}
+
+function closeTrainingResult() {
+    document.getElementById('training-result-modal').style.display = 'none';
+    if (_trPollInterval) { clearInterval(_trPollInterval); _trPollInterval = null; }
+}
+
+async function submitTraining() {
+    const matType   = document.getElementById('tr-type').value;
+    const audience  = document.getElementById('tr-audience').value;
+    const topic     = document.getElementById('tr-topic').value.trim() || DOMAIN_NAME;
+    const language  = document.getElementById('tr-lang').value;
+
+    closeTrainingModal();
+
+    // Show result modal with spinner
+    document.getElementById('tr-result-title').textContent =
+        IS_RTL_DOMAIN ? 'جارٍ الإنشاء: ' + topic : 'Generating: ' + topic;
+    document.getElementById('tr-result-spinner').style.display = 'block';
+    document.getElementById('tr-result-content').style.display = 'none';
+    document.getElementById('tr-result-actions').style.display = 'none';
+    document.getElementById('training-result-modal').style.display = 'flex';
+
+    try {
+        const r = await fetch('/api/generate-training', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ domain: DOMAIN_NAME, material_type: matType, audience, topic, language })
+        });
+        const d = await r.json();
+        if (!d.task_id) { showTrError(d.error || 'Failed'); return; }
+        _trTaskId = d.task_id;
+        _trPollInterval = setInterval(pollTrTask, 3000);
+    } catch(e) { showTrError(e.message); }
+}
+
+async function pollTrTask() {
+    if (!_trTaskId) return;
+    try {
+        const r = await fetch('/api/training-status/' + _trTaskId);
+        const d = await r.json();
+        if (d.status === 'done') {
+            clearInterval(_trPollInterval); _trPollInterval = null;
+            const res = d.result || {};
+            if (res.success && res.content) { _trResultText = res.content; showTrResult(res.content); loadTrainingList(); }
+            else showTrError(res.error || 'Generation failed');
+        } else if (d.status === 'error') {
+            clearInterval(_trPollInterval); _trPollInterval = null;
+            showTrError(d.error || 'Error');
+        }
+    } catch(e) {}
+}
+
+function showTrResult(content) {
+    document.getElementById('tr-result-spinner').style.display = 'none';
+    const el = document.getElementById('tr-result-content');
+    el.style.display = 'block';
+    el.innerHTML = window.renderGRCMarkdown ? renderGRCMarkdown(content) : content.replace(/\n/g,'<br>');
+    document.getElementById('tr-result-actions').style.display = 'flex';
+}
+
+function showTrError(msg) {
+    document.getElementById('tr-result-spinner').style.display = 'none';
+    document.getElementById('tr-result-content').style.display = 'block';
+    document.getElementById('tr-result-content').innerHTML = `<div style="color:#ef4444;padding:1rem;"><i class="fas fa-exclamation-triangle"></i> ${msg}</div>`;
+}
+
+function copyTrainingResult() {
+    navigator.clipboard.writeText(_trResultText).then(() => {
+        if (window.showToast) showToast(IS_RTL_DOMAIN ? 'تم النسخ' : 'Copied!', 'success');
+    });
+}
+
+async function loadTrainingList() {
+    try {
+        const r = await fetch(`/api/training-materials?domain=${encodeURIComponent(DOMAIN_NAME)}`);
+        const d = await r.json();
+        if (!d.success) return;
+        const listEl = document.getElementById('training-list');
+        const emptyEl = document.getElementById('training-empty');
+        if (!d.materials || d.materials.length === 0) {
+            emptyEl.style.display = 'block';
+            listEl.innerHTML = '';
+            listEl.appendChild(emptyEl);
+            return;
+        }
+        emptyEl.style.display = 'none';
+        const typeIcon = {'training_deck':'📊','tabletop':'🎯'};
+        listEl.innerHTML = d.materials.map(m => `
+            <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1rem;background:var(--bg-sidebar);border-radius:10px;border:1px solid var(--border-color);">
+                <span style="font-size:1.5rem;">${typeIcon[m.material_type]||'📄'}</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;font-size:0.88rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.title}</div>
+                    <div style="font-size:0.75rem;color:var(--text-secondary);">${m.material_type} · ${m.audience} · ${m.language.toUpperCase()}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button onclick="viewTrainingMaterial(${m.id})" class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;"><i class="fas fa-eye"></i></button>
+                    <button onclick="deleteTrainingMaterial(${m.id})" class="btn" style="padding:4px 10px;font-size:0.78rem;background:#ef444422;color:#ef4444;border:1px solid #ef444444;border-radius:6px;"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>`).join('');
+    } catch(e) {}
+}
+
+async function viewTrainingMaterial(id) {
+    const r = await fetch(`/api/training-materials/${id}`);
+    const d = await r.json();
+    if (!d.success) return;
+    const m = d.material;
+    _trResultText = m.content || '';
+    document.getElementById('tr-result-title').textContent = m.title;
+    document.getElementById('tr-result-spinner').style.display = 'none';
+    showTrResult(m.content);
+    document.getElementById('training-result-modal').style.display = 'flex';
+}
+
+async function deleteTrainingMaterial(id) {
+    if (!confirm(IS_RTL_DOMAIN ? 'حذف هذه المادة؟' : 'Delete this material?')) return;
+    await fetch(`/api/training-materials/${id}`, { method: 'DELETE' });
+    loadTrainingList();
+}
+
+// Load data when tabs are first activated
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.tab').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const tab = this.dataset.tab;
+            if (tab === 'assets') loadAssets();
+            else if (tab === 'findings') loadFindings();
+            else if (tab === 'training') loadTrainingList();
+        });
+    });
+});
+</script>

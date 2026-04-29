@@ -1227,6 +1227,105 @@ def init_db():
         except: pass
 
     _conn3.commit(); _conn3.close()
+
+    # ── PHASE 4: GRC REPLACEMENT LAYER ─────────────────────────────────────────
+    # Gap 1 — Policy Library  |  Gap 2 — Asset Inventory
+    # Gap 3 — Audit Findings  |  Gap 4 — Training Engine
+    # Gap 5 — Approval Workflow
+    _conn4 = get_db_direct(); _c4 = _conn4.cursor()
+
+    # Asset Inventory — structured asset records that feed into risk analysis
+    _c4.execute('''CREATE TABLE IF NOT EXISTS asset_inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        asset_name TEXT NOT NULL,
+        asset_type TEXT DEFAULT "Information System",
+        criticality TEXT DEFAULT "Medium",
+        data_classification TEXT DEFAULT "Internal",
+        owner TEXT,
+        location TEXT,
+        technology_stack TEXT,
+        cloud_provider TEXT,
+        third_party_dependencies TEXT,
+        existing_controls TEXT,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Audit Findings — formal findings from audit reviews
+    _c4.execute('''CREATE TABLE IF NOT EXISTS audit_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        audit_id INTEGER,
+        finding_ref TEXT,
+        title TEXT NOT NULL,
+        observation TEXT,
+        root_cause TEXT,
+        risk_rating TEXT DEFAULT "Medium",
+        control_reference TEXT,
+        recommendation TEXT,
+        management_response TEXT,
+        remediation_owner TEXT,
+        target_date TEXT,
+        status TEXT DEFAULT "Open",
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Remediation Items — granular remediation tracking per finding
+    _c4.execute('''CREATE TABLE IF NOT EXISTS remediation_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        finding_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        action_title TEXT NOT NULL,
+        action_description TEXT,
+        owner TEXT,
+        due_date TEXT,
+        priority TEXT DEFAULT "Medium",
+        status TEXT DEFAULT "Open",
+        evidence TEXT,
+        closed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (finding_id) REFERENCES audit_findings(id))''')
+
+    # Training Materials — generated training decks and tabletop exercises
+    _c4.execute('''CREATE TABLE IF NOT EXISTS training_materials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        domain TEXT DEFAULT "General",
+        material_type TEXT DEFAULT "training_deck",
+        audience TEXT DEFAULT "staff",
+        title TEXT NOT NULL,
+        content TEXT,
+        source_artifact_type TEXT,
+        source_artifact_id INTEGER,
+        language TEXT DEFAULT "en",
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    # Document Approvals — Board/CISO sign-off workflow
+    _c4.execute('''CREATE TABLE IF NOT EXISTS document_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        artifact_type TEXT NOT NULL,
+        artifact_id INTEGER NOT NULL,
+        artifact_title TEXT,
+        approver_role TEXT NOT NULL,
+        approver_name TEXT,
+        status TEXT DEFAULT "pending",
+        comments TEXT,
+        approved_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id))''')
+
+    _conn4.commit(); _conn4.close()
+
 init_db()
 
 # ============================================================================
@@ -6384,8 +6483,77 @@ STRATEGY_TEMPLATES = {"en": {}, "ar": {}}
 AUDIT_TEMPLATES = {"en": {}, "ar": {}}
 RISK_TEMPLATES = {"en": {}, "ar": {}}
 
-# ── Execute framework awareness merge (must run after AWARENESS_MODULES is defined) ──
-merge_framework_awareness()
+# ============================================================================
+# POLICY CATALOG — 40+ pre-defined policy templates per GRC domain
+# Each entry: {name, description, framework, category, icon}
+# ============================================================================
+POLICY_CATALOG = {
+    "Cyber Security": [
+        {"id": "cs-01", "name": "Information Security Policy",              "name_ar": "سياسة أمن المعلومات",                "description": "Overarching governance policy for information security management aligned to ISO 27001 Clause 5.2",                 "framework": "ISO 27001",      "category": "Governance",     "icon": "fa-shield-alt"},
+        {"id": "cs-02", "name": "Acceptable Use Policy",                    "name_ar": "سياسة الاستخدام المقبول",             "description": "Rules governing acceptable use of IT systems, internet, email and corporate devices",                          "framework": "NCA ECC",        "category": "Governance",     "icon": "fa-laptop"},
+        {"id": "cs-03", "name": "Access Control Policy",                    "name_ar": "سياسة التحكم في الوصول",              "description": "Controls for user identity, authentication, authorization and privileged access management",                   "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-key"},
+        {"id": "cs-04", "name": "Incident Response Policy",                 "name_ar": "سياسة الاستجابة للحوادث",             "description": "Procedures for detecting, reporting, and responding to cyber security incidents",                              "framework": "NCA ECC",        "category": "Operations",     "icon": "fa-fire-extinguisher"},
+        {"id": "cs-05", "name": "Data Classification Policy",               "name_ar": "سياسة تصنيف البيانات",               "description": "Framework for classifying data by sensitivity and prescribing handling requirements per classification tier",    "framework": "NCA DCC",        "category": "Data",           "icon": "fa-tags"},
+        {"id": "cs-06", "name": "Cryptography & Encryption Policy",         "name_ar": "سياسة التشفير",                      "description": "Standards for encryption algorithms, key management and certificate lifecycle",                               "framework": "ISO 27001",      "category": "Technical",      "icon": "fa-lock"},
+        {"id": "cs-07", "name": "Vulnerability Management Policy",          "name_ar": "سياسة إدارة الثغرات",                "description": "Policy for scanning, prioritizing and remediating technical vulnerabilities across the asset estate",           "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-bug"},
+        {"id": "cs-08", "name": "Change Management Policy",                 "name_ar": "سياسة إدارة التغيير",                "description": "Change request, approval, testing and rollback procedures for IT and OT environments",                          "framework": "ITIL / ISO 20000","category": "Operations",    "icon": "fa-code-branch"},
+        {"id": "cs-09", "name": "Network Security Policy",                  "name_ar": "سياسة أمن الشبكات",                  "description": "Controls for network segmentation, perimeter defense, remote access and wireless security",                    "framework": "NCA ECC",        "category": "Technical",      "icon": "fa-network-wired"},
+        {"id": "cs-10", "name": "Third-Party & Vendor Security Policy",     "name_ar": "سياسة أمن الأطراف الثالثة",          "description": "Due diligence, contractual requirements and ongoing monitoring for third-party suppliers and vendors",           "framework": "NCA ECC",        "category": "Governance",     "icon": "fa-handshake"},
+        {"id": "cs-11", "name": "Security Awareness & Training Policy",     "name_ar": "سياسة التوعية الأمنية",              "description": "Mandatory security awareness training requirements for all staff, contractors and privileged users",             "framework": "ISO 27001",      "category": "People",         "icon": "fa-graduation-cap"},
+        {"id": "cs-12", "name": "Business Continuity & DR Policy",          "name_ar": "سياسة استمرارية الأعمال",            "description": "Recovery time and point objectives, BCP/DR plan testing, and backup management policy",                       "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-history"},
+    ],
+    "Data Management": [
+        {"id": "dm-01", "name": "Personal Data Protection Policy",          "name_ar": "سياسة حماية البيانات الشخصية",       "description": "PDPL/GDPR-aligned policy covering lawful bases, data subject rights, retention and cross-border transfers",      "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-user-shield"},
+        {"id": "dm-02", "name": "Data Retention & Disposal Policy",         "name_ar": "سياسة الاحتفاظ بالبيانات وإتلافها",  "description": "Defines retention schedules per data category and secure disposal methods for all media",                      "framework": "PDPL",           "category": "Data",           "icon": "fa-trash-alt"},
+        {"id": "dm-03", "name": "Data Quality Policy",                      "name_ar": "سياسة جودة البيانات",                "description": "Standards for data accuracy, completeness, consistency and ownership across all data assets",                 "framework": "ISO 8000",       "category": "Data",           "icon": "fa-check-circle"},
+        {"id": "dm-04", "name": "Data Governance Policy",                   "name_ar": "سياسة حوكمة البيانات",               "description": "Roles and responsibilities for data stewardship, data catalogue management and metadata standards",            "framework": "DAMA-DMBOK",     "category": "Governance",     "icon": "fa-sitemap"},
+        {"id": "dm-05", "name": "Data Breach Notification Policy",          "name_ar": "سياسة إخطار اختراق البيانات",        "description": "Procedures and timelines for internal escalation and regulatory notification in the event of a data breach",   "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-exclamation-circle"},
+        {"id": "dm-06", "name": "Data Sharing & Transfer Policy",           "name_ar": "سياسة مشاركة البيانات ونقلها",       "description": "Controls for internal and external data sharing, API access and cross-border data transfer mechanisms",          "framework": "PDPL",           "category": "Data",           "icon": "fa-exchange-alt"},
+        {"id": "dm-07", "name": "Records Management Policy",                "name_ar": "سياسة إدارة السجلات",               "description": "Lifecycle management of organizational records including creation, storage, access control and destruction",    "framework": "ISO 15489",      "category": "Data",           "icon": "fa-folder-open"},
+        {"id": "dm-08", "name": "Cloud Data Security Policy",               "name_ar": "سياسة أمن البيانات السحابية",        "description": "Security requirements for data stored and processed in cloud environments including SaaS, PaaS and IaaS",      "framework": "NCA CCC",        "category": "Technical",      "icon": "fa-cloud"},
+    ],
+    "Artificial Intelligence": [
+        {"id": "ai-01", "name": "AI Governance Policy",                     "name_ar": "سياسة حوكمة الذكاء الاصطناعي",      "description": "Principles, accountability structures and oversight mechanisms for AI system development and deployment",        "framework": "SDAIA AI Framework","category": "Governance",   "icon": "fa-brain"},
+        {"id": "ai-02", "name": "AI Ethics & Responsible Use Policy",       "name_ar": "سياسة أخلاقيات الذكاء الاصطناعي",   "description": "Ethical principles for AI systems including fairness, transparency, explainability and human oversight",          "framework": "EU AI Act",      "category": "Ethics",         "icon": "fa-balance-scale"},
+        {"id": "ai-03", "name": "AI Risk Management Policy",                "name_ar": "سياسة إدارة مخاطر الذكاء الاصطناعي","description": "Risk classification, assessment methodology and treatment plans for AI systems across their lifecycle",         "framework": "NIST AI RMF",    "category": "Risk",           "icon": "fa-exclamation-triangle"},
+        {"id": "ai-04", "name": "AI Data Privacy Policy",                   "name_ar": "سياسة خصوصية بيانات الذكاء الاصطناعي","description": "Controls for personal data used to train, fine-tune and operate AI models aligned to PDPL requirements",     "framework": "PDPL / GDPR",    "category": "Privacy",        "icon": "fa-user-secret"},
+        {"id": "ai-05", "name": "Generative AI Acceptable Use Policy",      "name_ar": "سياسة الاستخدام المقبول للذكاء الاصطناعي التوليدي","description": "Rules governing employee use of generative AI tools including data input restrictions and output verification", "framework": "SDAIA",          "category": "Governance",     "icon": "fa-robot"},
+        {"id": "ai-06", "name": "AI Model Validation & Testing Policy",     "name_ar": "سياسة التحقق من نماذج الذكاء الاصطناعي","description": "Requirements for pre-deployment testing, bias assessment and post-deployment monitoring of AI models",       "framework": "NIST AI RMF",    "category": "Technical",      "icon": "fa-flask"},
+        {"id": "ai-07", "name": "AI Incident Response Policy",              "name_ar": "سياسة الاستجابة لحوادث الذكاء الاصطناعي","description": "Procedures for detecting, reporting and remediating AI system failures, bias events and misuse incidents",   "framework": "SDAIA",          "category": "Operations",     "icon": "fa-exclamation"},
+        {"id": "ai-08", "name": "AI Procurement & Third-Party Policy",      "name_ar": "سياسة شراء أنظمة الذكاء الاصطناعي", "description": "Due diligence and contractual requirements when procuring AI tools or AI-enabled services from vendors",         "framework": "EU AI Act",      "category": "Governance",     "icon": "fa-shopping-cart"},
+    ],
+    "Digital Transformation": [
+        {"id": "dt-01", "name": "Digital Transformation Governance Policy", "name_ar": "سياسة حوكمة التحول الرقمي",          "description": "Portfolio governance, investment prioritization and executive oversight for digital transformation programs",    "framework": "COBIT 2019",     "category": "Governance",     "icon": "fa-rocket"},
+        {"id": "dt-02", "name": "Cloud Adoption Policy",                    "name_ar": "سياسة اعتماد الحوسبة السحابية",      "description": "Framework for evaluating, approving and managing cloud service adoption including exit strategy requirements",    "framework": "NCA CCC",        "category": "Technical",      "icon": "fa-cloud-upload-alt"},
+        {"id": "dt-03", "name": "API & Integration Security Policy",        "name_ar": "سياسة أمن واجهات برمجة التطبيقات",   "description": "Security standards for API design, authentication, rate limiting and third-party integration management",         "framework": "OWASP API Top 10","category": "Technical",      "icon": "fa-plug"},
+        {"id": "dt-04", "name": "DevSecOps Policy",                         "name_ar": "سياسة DevSecOps",                    "description": "Security-by-design requirements embedded into CI/CD pipelines, code review and deployment gates",             "framework": "NIST SP 800-218","category": "Technical",      "icon": "fa-code"},
+        {"id": "dt-05", "name": "Digital Identity & IAM Policy",            "name_ar": "سياسة الهوية الرقمية وإدارة الوصول", "description": "Identity federation, SSO, MFA requirements and identity lifecycle management in digital environments",           "framework": "NIST SP 800-63", "category": "Technical",      "icon": "fa-id-badge"},
+        {"id": "dt-06", "name": "Data Analytics & BI Governance Policy",    "name_ar": "سياسة حوكمة تحليل البيانات",         "description": "Governance of business intelligence tools, data analytics platforms and reporting data quality",               "framework": "DAMA-DMBOK",     "category": "Data",           "icon": "fa-chart-bar"},
+        {"id": "dt-07", "name": "Emerging Technology Risk Policy",          "name_ar": "سياسة مخاطر التقنيات الناشئة",       "description": "Assessment and governance framework for evaluating and adopting emerging technologies (IoT, blockchain, AR/VR)",  "framework": "COBIT 2019",     "category": "Risk",           "icon": "fa-lightbulb"},
+        {"id": "dt-08", "name": "Digital Resilience & Cyber Recovery Policy","name_ar": "سياسة المرونة الرقمية",             "description": "Cyber resilience requirements including immutable backups, recovery testing and operational resilience planning",  "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-shield-virus"},
+    ],
+    "Enterprise Risk Management": [
+        {"id": "erm-01", "name": "Enterprise Risk Management Policy",       "name_ar": "سياسة إدارة المخاطر المؤسسية",       "description": "Overarching ERM policy establishing risk appetite, tolerance thresholds and governance structure",               "framework": "ISO 31000",      "category": "Governance",     "icon": "fa-exclamation-triangle"},
+        {"id": "erm-02", "name": "Risk Appetite Statement Policy",          "name_ar": "سياسة بيان الشهية للمخاطر",         "description": "Formally quantifies the organization's risk appetite across strategic, operational, financial and reputational categories","framework": "COSO ERM",    "category": "Governance",     "icon": "fa-thermometer-half"},
+        {"id": "erm-03", "name": "Operational Risk Management Policy",      "name_ar": "سياسة إدارة المخاطر التشغيلية",      "description": "Controls for identifying, measuring and mitigating operational risks including process, people and system failures",  "framework": "COSO ERM",       "category": "Operations",     "icon": "fa-cogs"},
+        {"id": "erm-04", "name": "Fraud Prevention & Anti-Bribery Policy",  "name_ar": "سياسة منع الاحتيال",                 "description": "Controls and reporting mechanisms for preventing fraud, bribery and corruption across the organization",          "framework": "ISO 37001",      "category": "Governance",     "icon": "fa-ban"},
+        {"id": "erm-05", "name": "Whistleblower & Ethics Hotline Policy",   "name_ar": "سياسة الإبلاغ عن المخالفات",        "description": "Safe reporting channels, non-retaliation protections and investigation procedures for ethics violations",         "framework": "COSO",           "category": "Governance",     "icon": "fa-bullhorn"},
+        {"id": "erm-06", "name": "Insurance & Risk Transfer Policy",        "name_ar": "سياسة التأمين ونقل المخاطر",         "description": "Requirements for cyber insurance, D&O liability and risk transfer mechanisms as part of the risk treatment mix",  "framework": "ISO 31000",      "category": "Financial",      "icon": "fa-file-invoice-dollar"},
+        {"id": "erm-07", "name": "Business Continuity Management Policy",   "name_ar": "سياسة إدارة استمرارية الأعمال",      "description": "BIA methodology, RTO/RPO requirements and BCM program governance aligned to ISO 22301",                         "framework": "ISO 22301",      "category": "Resilience",     "icon": "fa-redo"},
+        {"id": "erm-08", "name": "Compliance Management Policy",            "name_ar": "سياسة إدارة الامتثال",               "description": "Regulatory monitoring, obligation register maintenance and compliance reporting to board and regulators",        "framework": "ISO 37301",      "category": "Compliance",     "icon": "fa-balance-scale"},
+    ],
+    "Global Standards": [
+        {"id": "gs-01", "name": "Information Security Management System Policy","name_ar": "سياسة نظام إدارة أمن المعلومات", "description": "Top-level ISMS policy establishing scope, objectives and management commitment per ISO 27001 Clause 5.2",        "framework": "ISO 27001",      "category": "Governance",     "icon": "fa-shield-alt"},
+        {"id": "gs-02", "name": "IT Service Management Policy",             "name_ar": "سياسة إدارة خدمات تقنية المعلومات",  "description": "ITIL-aligned service management policy covering incident, problem, change, and service request management",      "framework": "ISO 20000",      "category": "Operations",     "icon": "fa-server"},
+        {"id": "gs-03", "name": "IT Governance Policy",                     "name_ar": "سياسة حوكمة تقنية المعلومات",        "description": "COBIT-aligned governance policy for IT strategy alignment, value delivery and performance measurement",           "framework": "COBIT 2019",     "category": "Governance",     "icon": "fa-sitemap"},
+        {"id": "gs-04", "name": "Supplier Relationship Management Policy",  "name_ar": "سياسة إدارة علاقات الموردين",        "description": "Supplier selection, performance management and exit requirements aligned to ISO 27036",                        "framework": "ISO 27036",      "category": "Governance",     "icon": "fa-handshake"},
+        {"id": "gs-05", "name": "Environmental & Social Governance Policy", "name_ar": "سياسة ESG والحوكمة البيئية",         "description": "ESG commitments, reporting framework and sustainability governance aligned to GRI Standards",                  "framework": "GRI Standards",  "category": "Governance",     "icon": "fa-leaf"},
+        {"id": "gs-06", "name": "Privacy by Design Policy",                 "name_ar": "سياسة الخصوصية في التصميم",          "description": "Embedding privacy requirements into system and product design lifecycle from concept to retirement",            "framework": "ISO 31700",      "category": "Privacy",        "icon": "fa-user-lock"},
+        {"id": "gs-07", "name": "Audit Management Policy",                  "name_ar": "سياسة إدارة التدقيق",                "description": "Internal audit charter, independence requirements, audit universe management and reporting to audit committee",  "framework": "IIA Standards",  "category": "Audit",          "icon": "fa-clipboard-check"},
+        {"id": "gs-08", "name": "Physical & Environmental Security Policy", "name_ar": "سياسة الأمن المادي والبيئي",         "description": "Physical access controls, environmental monitoring and secure area management requirements",                    "framework": "ISO 27001",      "category": "Technical",      "icon": "fa-building"},
+    ],
+}
+
 
 # ============================================================================
 # AI SERVICE
@@ -43461,5 +43629,880 @@ def api_risk_latest():
 # ═══════════════════════════════════════════════════════════════════════════════
 # END ASYNC GENERATION LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ╔═══════════════════════════════════════════════════════════════════════════════╗
+# ║  GRC REPLACEMENT LAYER — Gaps 1-5                                           ║
+# ║  Gap 1: Policy Library  |  Gap 2: Asset Inventory                           ║
+# ║  Gap 3: Audit Findings  |  Gap 4: Training Engine                           ║
+# ║  Gap 5: Approval Workflow                                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+import json as _json_grc
+import traceback as _tb_grc
+import uuid as _uuid_grc
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 1 — POLICY LIBRARY
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/policy-library')
+@login_required
+def policy_library():
+    """Policy Library page — displays catalogued policy templates."""
+    lang = request.args.get('lang', session.get('lang', 'en'))
+    session['lang'] = lang
+    is_rtl = lang == 'ar'
+    txt = get_text(lang)
+    ai_available = check_ai_available()
+    username = session.get('username', '')
+
+    # Enrich catalog entries with user's existing policies for "already generated" badge
+    generated_names = set()
+    try:
+        with closing(get_db_direct()) as conn:
+            rows = conn.execute(
+                'SELECT policy_name FROM policies WHERE user_id=? AND is_procedure=0',
+                (session['user_id'],)
+            ).fetchall()
+            generated_names = {r['policy_name'] for r in rows}
+    except Exception:
+        pass
+
+    catalog = POLICY_CATALOG
+    return render_template(
+        'policy_library.html',
+        lang=lang, is_rtl=is_rtl, txt=txt, ai_available=ai_available,
+        username=username, catalog=catalog, generated_names=generated_names,
+        config=config,
+    )
+
+
+@app.route('/api/policy-catalog', methods=['GET'])
+@login_required
+def api_policy_catalog():
+    """Return POLICY_CATALOG as JSON, optionally filtered by domain."""
+    domain = request.args.get('domain', '')
+    if domain and domain in POLICY_CATALOG:
+        return jsonify({'success': True, 'policies': POLICY_CATALOG[domain]})
+    return jsonify({'success': True, 'catalog': POLICY_CATALOG})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 2 — ASSET INVENTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/api/assets', methods=['GET'])
+@login_required
+def api_assets_list():
+    """List asset inventory for the logged-in user, optionally filtered by domain."""
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if domain:
+                rows = conn.execute(
+                    'SELECT * FROM asset_inventory WHERE user_id=? AND domain=? ORDER BY criticality DESC, created_at DESC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT * FROM asset_inventory WHERE user_id=? ORDER BY criticality DESC, created_at DESC',
+                    (session['user_id'],)
+                ).fetchall()
+            return jsonify({'success': True, 'assets': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/assets', methods=['POST'])
+@login_required
+def api_assets_create():
+    """Create a new asset in the inventory."""
+    data = request.json or {}
+    required = ['asset_name']
+    if not all(data.get(f) for f in required):
+        return jsonify({'success': False, 'error': 'asset_name is required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                '''INSERT INTO asset_inventory
+                   (user_id, domain, asset_name, asset_type, criticality, data_classification,
+                    owner, location, technology_stack, cloud_provider, third_party_dependencies,
+                    existing_controls, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 sanitize_input(data.get('domain', 'General'), 100),
+                 sanitize_input(data.get('asset_name', ''), 200),
+                 sanitize_input(data.get('asset_type', 'Information System'), 100),
+                 sanitize_input(data.get('criticality', 'Medium'), 20),
+                 sanitize_input(data.get('data_classification', 'Internal'), 50),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('location', ''), 200),
+                 sanitize_input(data.get('technology_stack', ''), 500),
+                 sanitize_input(data.get('cloud_provider', ''), 100),
+                 sanitize_input(data.get('third_party_dependencies', ''), 500),
+                 sanitize_input(data.get('existing_controls', ''), 1000),
+                 sanitize_input(data.get('notes', ''), 500))
+            )
+            conn.commit()
+            asset_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        log_action(session['user_id'], 'create_asset',
+                   {'domain': data.get('domain'), 'asset': data.get('asset_name')})
+        return jsonify({'success': True, 'asset_id': asset_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/assets/<int:asset_id>', methods=['PUT'])
+@login_required
+def api_assets_update(asset_id):
+    """Update an existing asset record."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM asset_inventory WHERE id=? AND user_id=?',
+                (asset_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Asset not found'}), 404
+            conn.execute(
+                '''UPDATE asset_inventory SET
+                   asset_name=?, asset_type=?, criticality=?, data_classification=?,
+                   owner=?, location=?, technology_stack=?, cloud_provider=?,
+                   third_party_dependencies=?, existing_controls=?, notes=?,
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('asset_name', ''), 200),
+                 sanitize_input(data.get('asset_type', ''), 100),
+                 sanitize_input(data.get('criticality', 'Medium'), 20),
+                 sanitize_input(data.get('data_classification', 'Internal'), 50),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('location', ''), 200),
+                 sanitize_input(data.get('technology_stack', ''), 500),
+                 sanitize_input(data.get('cloud_provider', ''), 100),
+                 sanitize_input(data.get('third_party_dependencies', ''), 500),
+                 sanitize_input(data.get('existing_controls', ''), 1000),
+                 sanitize_input(data.get('notes', ''), 500),
+                 asset_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/assets/<int:asset_id>', methods=['DELETE'])
+@login_required
+def api_assets_delete(asset_id):
+    """Delete an asset record."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM asset_inventory WHERE id=? AND user_id=?',
+                (asset_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 3 — AUDIT FINDINGS & REMEDIATION TRACKER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/api/audit-findings', methods=['GET'])
+@login_required
+def api_audit_findings_list():
+    """List audit findings for the logged-in user, optionally filtered by domain or audit_id."""
+    domain = request.args.get('domain', '')
+    audit_id = request.args.get('audit_id', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if audit_id:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? AND audit_id=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'], audit_id)
+                ).fetchall()
+            elif domain:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? AND domain=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT * FROM audit_findings WHERE user_id=? ORDER BY risk_rating DESC, created_at DESC',
+                    (session['user_id'],)
+                ).fetchall()
+            findings = [dict(r) for r in rows]
+            # Attach remediation count to each finding
+            for f in findings:
+                cnt = conn.execute(
+                    'SELECT COUNT(*) as c FROM remediation_items WHERE finding_id=? AND user_id=?',
+                    (f['id'], session['user_id'])
+                ).fetchone()
+                f['remediation_count'] = cnt['c'] if cnt else 0
+        return jsonify({'success': True, 'findings': findings})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audit-findings', methods=['POST'])
+@login_required
+def api_audit_findings_create():
+    """Create a new audit finding."""
+    data = request.json or {}
+    if not data.get('title'):
+        return jsonify({'success': False, 'error': 'title is required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Auto-generate finding_ref if not provided
+            domain = data.get('domain', 'General')
+            existing_count = conn.execute(
+                'SELECT COUNT(*) as c FROM audit_findings WHERE user_id=? AND domain=?',
+                (session['user_id'], domain)
+            ).fetchone()['c']
+            finding_ref = data.get('finding_ref') or f"FND-{domain[:3].upper()}-{existing_count + 1:03d}"
+
+            conn.execute(
+                '''INSERT INTO audit_findings
+                   (user_id, domain, audit_id, finding_ref, title, observation, root_cause,
+                    risk_rating, control_reference, recommendation, management_response,
+                    remediation_owner, target_date, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 sanitize_input(domain, 100),
+                 data.get('audit_id'),
+                 sanitize_input(finding_ref, 50),
+                 sanitize_input(data.get('title', ''), 300),
+                 sanitize_input(data.get('observation', ''), 2000),
+                 sanitize_input(data.get('root_cause', ''), 1000),
+                 sanitize_input(data.get('risk_rating', 'Medium'), 20),
+                 sanitize_input(data.get('control_reference', ''), 200),
+                 sanitize_input(data.get('recommendation', ''), 2000),
+                 sanitize_input(data.get('management_response', ''), 2000),
+                 sanitize_input(data.get('remediation_owner', ''), 200),
+                 sanitize_input(data.get('target_date', ''), 20),
+                 sanitize_input(data.get('status', 'Open'), 30))
+            )
+            conn.commit()
+            finding_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        log_action(session['user_id'], 'create_finding',
+                   {'domain': domain, 'title': data.get('title'), 'ref': finding_ref})
+        return jsonify({'success': True, 'finding_id': finding_id, 'finding_ref': finding_ref})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audit-findings/<int:finding_id>', methods=['PUT'])
+@login_required
+def api_audit_findings_update(finding_id):
+    """Update an existing audit finding."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM audit_findings WHERE id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Finding not found'}), 404
+            conn.execute(
+                '''UPDATE audit_findings SET
+                   title=?, observation=?, root_cause=?, risk_rating=?, control_reference=?,
+                   recommendation=?, management_response=?, remediation_owner=?,
+                   target_date=?, status=?, updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('title', ''), 300),
+                 sanitize_input(data.get('observation', ''), 2000),
+                 sanitize_input(data.get('root_cause', ''), 1000),
+                 sanitize_input(data.get('risk_rating', 'Medium'), 20),
+                 sanitize_input(data.get('control_reference', ''), 200),
+                 sanitize_input(data.get('recommendation', ''), 2000),
+                 sanitize_input(data.get('management_response', ''), 2000),
+                 sanitize_input(data.get('remediation_owner', ''), 200),
+                 sanitize_input(data.get('target_date', ''), 20),
+                 sanitize_input(data.get('status', 'Open'), 30),
+                 finding_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/audit-findings/<int:finding_id>', methods=['DELETE'])
+@login_required
+def api_audit_findings_delete(finding_id):
+    """Delete an audit finding and its remediation items."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM remediation_items WHERE finding_id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            )
+            conn.execute(
+                'DELETE FROM audit_findings WHERE id=? AND user_id=?',
+                (finding_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remediation', methods=['GET'])
+@login_required
+def api_remediation_list():
+    """List remediation items for a finding or all findings in a domain."""
+    finding_id = request.args.get('finding_id', '')
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            if finding_id:
+                rows = conn.execute(
+                    'SELECT * FROM remediation_items WHERE user_id=? AND finding_id=? ORDER BY priority DESC, due_date ASC',
+                    (session['user_id'], finding_id)
+                ).fetchall()
+            elif domain:
+                rows = conn.execute(
+                    'SELECT r.*, f.title as finding_title, f.finding_ref '
+                    'FROM remediation_items r JOIN audit_findings f ON r.finding_id=f.id '
+                    'WHERE r.user_id=? AND r.domain=? ORDER BY r.priority DESC, r.due_date ASC',
+                    (session['user_id'], domain)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT r.*, f.title as finding_title, f.finding_ref '
+                    'FROM remediation_items r JOIN audit_findings f ON r.finding_id=f.id '
+                    'WHERE r.user_id=? ORDER BY r.priority DESC, r.due_date ASC',
+                    (session['user_id'],)
+                ).fetchall()
+            return jsonify({'success': True, 'items': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remediation', methods=['POST'])
+@login_required
+def api_remediation_create():
+    """Create a remediation action item for a finding."""
+    data = request.json or {}
+    if not data.get('finding_id') or not data.get('action_title'):
+        return jsonify({'success': False, 'error': 'finding_id and action_title are required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Verify the finding belongs to the user
+            finding = conn.execute(
+                'SELECT id, domain FROM audit_findings WHERE id=? AND user_id=?',
+                (data['finding_id'], session['user_id'])
+            ).fetchone()
+            if not finding:
+                return jsonify({'success': False, 'error': 'Finding not found'}), 404
+            conn.execute(
+                '''INSERT INTO remediation_items
+                   (user_id, finding_id, domain, action_title, action_description,
+                    owner, due_date, priority, status, evidence)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (session['user_id'],
+                 data['finding_id'],
+                 finding['domain'],
+                 sanitize_input(data.get('action_title', ''), 300),
+                 sanitize_input(data.get('action_description', ''), 1000),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('due_date', ''), 20),
+                 sanitize_input(data.get('priority', 'Medium'), 20),
+                 sanitize_input(data.get('status', 'Open'), 30),
+                 sanitize_input(data.get('evidence', ''), 500))
+            )
+            conn.commit()
+            item_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        return jsonify({'success': True, 'item_id': item_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/remediation/<int:item_id>', methods=['PUT'])
+@login_required
+def api_remediation_update(item_id):
+    """Update a remediation action item (including closing it)."""
+    data = request.json or {}
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id, status FROM remediation_items WHERE id=? AND user_id=?',
+                (item_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Item not found'}), 404
+            new_status = sanitize_input(data.get('status', existing['status']), 30)
+            closed_at = None
+            if new_status == 'Closed' and existing['status'] != 'Closed':
+                from datetime import datetime as _dt
+                closed_at = _dt.utcnow().isoformat()
+            conn.execute(
+                '''UPDATE remediation_items SET
+                   action_title=?, action_description=?, owner=?, due_date=?,
+                   priority=?, status=?, evidence=?,
+                   closed_at=COALESCE(?, closed_at),
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=?''',
+                (sanitize_input(data.get('action_title', ''), 300),
+                 sanitize_input(data.get('action_description', ''), 1000),
+                 sanitize_input(data.get('owner', ''), 200),
+                 sanitize_input(data.get('due_date', ''), 20),
+                 sanitize_input(data.get('priority', 'Medium'), 20),
+                 new_status,
+                 sanitize_input(data.get('evidence', ''), 500),
+                 closed_at,
+                 item_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/findings-summary', methods=['GET'])
+@login_required
+def api_findings_summary():
+    """Return summary stats for findings and remediation items."""
+    domain = request.args.get('domain', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?' + (' AND domain=?' if domain else '')
+            params = (session['user_id'], domain) if domain else (session['user_id'],)
+            findings_total = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q}', params
+            ).fetchone()['c']
+            open_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q} AND status="Open"', params
+            ).fetchone()['c']
+            high_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM audit_findings {q} AND risk_rating IN ("High","Critical")', params
+            ).fetchone()['c']
+            rem_q = 'WHERE user_id=?' + (' AND domain=?' if domain else '')
+            overdue_count = conn.execute(
+                f'SELECT COUNT(*) as c FROM remediation_items {rem_q} '
+                f'AND status!="Closed" AND due_date < date("now")', params
+            ).fetchone()['c']
+        return jsonify({'success': True, 'total': findings_total, 'open': open_count,
+                        'high_critical': high_count, 'overdue_remediation': overdue_count})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 4 — TRAINING ENGINE (Training Decks + Tabletop Exercises)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_AUDIENCE_LABELS = {
+    'board':     'Board of Directors / Executive Committee',
+    'staff':     'General Staff (All Employees)',
+    'technical': 'IT / Security Technical Team',
+}
+_AUDIENCE_LABELS_AR = {
+    'board':     'مجلس الإدارة / اللجنة التنفيذية',
+    'staff':     'جميع الموظفين',
+    'technical': 'فريق تقنية المعلومات والأمن السيبراني',
+}
+
+def _build_training_prompt(data):
+    """Build training deck or tabletop exercise prompt."""
+    lang            = data.get('language', 'en')
+    material_type   = data.get('material_type', 'training_deck')
+    domain          = data.get('domain', 'Cyber Security')
+    audience        = data.get('audience', 'staff')
+    source_content  = data.get('source_content', '')
+    topic           = data.get('topic', domain)
+
+    if lang == 'ar':
+        audience_label = _AUDIENCE_LABELS_AR.get(audience, audience)
+        if material_type == 'tabletop':
+            prompt = (
+                f'أنت خبير GRC. أنشئ سيناريو تمرين طاولة (Tabletop Exercise) كاملاً '
+                f'في مجال {domain}.\n\n'
+                f'الجمهور: {audience_label}\n'
+                f'الموضوع: {topic}\n\n'
+                f'{'السياق: ' + source_content[:1500] + chr(10) if source_content else ""}'
+                f'أنشئ:\n'
+                f'1. **ملخص التمرين** — الأهداف والنطاق والمشاركون (جدول)\n'
+                f'2. **السيناريو الرئيسي** — وصف الحادثة التدريبية بتفاصيل واقعية\n'
+                f'3. **بطاقات الحقن** — 6 حقن متصاعدة مع التوقيت والسؤال التحفيزي (جدول: #|الوقت|الحدث|السؤال للفريق)\n'
+                f'4. **مصفوفة القرارات** — 8 قرارات نموذجية مع الإجابات المثالية (جدول)\n'
+                f'5. **دليل الميسر** — تعليمات إدارة التمرين ونقاط التوقف\n'
+                f'6. **نموذج الإحاطة التالية** — نقاط النقاش والدروس المستفادة\n'
+                f'الحد الأدنى 1200 كلمة. استخدم تنسيق Markdown مع جداول وعناوين واضحة.'
+            )
+        else:
+            prompt = (
+                f'أنت خبير GRC. أنشئ شرائح تدريبية (Training Deck) احترافية '
+                f'في مجال {domain}.\n\n'
+                f'الجمهور: {audience_label}\n'
+                f'الموضوع: {topic}\n\n'
+                f'{'المحتوى المرجعي: ' + source_content[:1500] + chr(10) if source_content else ""}'
+                f'أنشئ عرضاً تقديمياً بتنسيق Markdown يتضمن:\n'
+                f'1. **شريحة العنوان** — العنوان والجمهور والهدف\n'
+                f'2. **نقاط التعلم الرئيسية** — 5-7 نقاط رئيسية\n'
+                f'3. **الموضوع 1** — شريحة كاملة مع محتوى ونقاط نقاش\n'
+                f'4. **الموضوع 2** — شريحة كاملة\n'
+                f'5. **الموضوع 3** — شريحة كاملة\n'
+                f'6. **سيناريو عملي** — مثال واقعي أو دراسة حالة\n'
+                f'7. **نقاط التقييم الذاتي** — 5 أسئلة للتحقق من الفهم\n'
+                f'8. **خلاصة وخطوات تالية** — ملخص وإجراءات مقترحة\n'
+                f'الحد الأدنى 1000 كلمة.'
+            )
+    else:
+        audience_label = _AUDIENCE_LABELS.get(audience, audience)
+        if material_type == 'tabletop':
+            prompt = (
+                f'You are a Big4-grade GRC consultant. Create a complete Tabletop Exercise scenario '
+                f'for {domain}.\n\n'
+                f'Audience: {audience_label}\n'
+                f'Topic: {topic}\n\n'
+                f'{"Reference content: " + source_content[:1500] + chr(10) if source_content else ""}'
+                f'Produce:\n'
+                f'1. **Exercise Overview** — objectives, scope, participants (table)\n'
+                f'2. **Master Scenario** — realistic incident narrative with technical detail\n'
+                f'3. **Inject Cards** — 6 escalating injects with timing and discussion question (table: #|Time|Event|Question for Team)\n'
+                f'4. **Decision Matrix** — 8 key decisions with model responses (table)\n'
+                f'5. **Facilitator Guide** — exercise administration instructions and stop/pause points\n'
+                f'6. **Hot Wash / After-Action Template** — structured debrief questions and lessons-learned capture\n'
+                f'Minimum 1200 words. Well-structured Markdown with clear headings and tables.'
+            )
+        else:
+            prompt = (
+                f'You are a Big4-grade GRC consultant. Create a professional Training Deck '
+                f'for {domain}.\n\n'
+                f'Audience: {audience_label}\n'
+                f'Topic: {topic}\n\n'
+                f'{"Reference content: " + source_content[:1500] + chr(10) if source_content else ""}'
+                f'Produce a Markdown training deck with:\n'
+                f'1. **Title Slide** — Title, audience, learning objectives\n'
+                f'2. **Key Learning Points** — 5-7 takeaways\n'
+                f'3. **Topic 1** — Full slide with content and speaker notes\n'
+                f'4. **Topic 2** — Full slide\n'
+                f'5. **Topic 3** — Full slide\n'
+                f'6. **Practical Scenario** — real-world case study or worked example\n'
+                f'7. **Knowledge Check** — 5 comprehension questions with answers\n'
+                f'8. **Summary & Next Steps** — key actions and recommended follow-up\n'
+                f'Minimum 1000 words.'
+            )
+    return prompt
+
+
+def _run_training_generation_task(task_id, user_id, data):
+    """Background worker: generate training material and save to DB."""
+    import json as _j
+    import traceback as _tb
+    try:
+        lang          = data.get('language', 'en')
+        prompt        = data.get('_prompt', '')
+        domain        = data.get('domain', 'General')
+        material_type = data.get('material_type', 'training_deck')
+        audience      = data.get('audience', 'staff')
+        topic         = data.get('topic', domain)
+
+        if not prompt:
+            fail_background_task(task_id, 'Prompt missing')
+            return
+
+        content = generate_ai_content(prompt, lang, content_type='policy')
+        try:
+            content = ensure_markdown_formatting(content)
+        except Exception:
+            pass
+
+        material_id = None
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                '''INSERT INTO training_materials
+                   (user_id, domain, material_type, audience, title, content,
+                    source_artifact_type, source_artifact_id, language)
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                (user_id, domain, material_type, audience,
+                 sanitize_input(topic, 300), content,
+                 sanitize_input(data.get('source_artifact_type', ''), 50),
+                 data.get('source_artifact_id'),
+                 lang)
+            )
+            conn.commit()
+            material_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+
+        result = _j.dumps({
+            'success': True, 'material_id': material_id,
+            'content': content, 'language': lang,
+            'material_type': material_type, 'audience': audience,
+        }, ensure_ascii=False)
+        complete_background_task(task_id, result)
+        print(f'[TRAINING-ASYNC] task {task_id[:8]} done — material_id={material_id}', flush=True)
+    except Exception as exc:
+        print(f'[TRAINING-ASYNC] task {task_id[:8]} ERROR: {exc}\n{_tb.format_exc()}', flush=True)
+        fail_background_task(task_id, str(exc))
+
+
+@app.route('/api/generate-training', methods=['POST'])
+@login_required
+def api_generate_training():
+    """Start async generation of a training deck or tabletop exercise."""
+    import threading as _thr
+    data = request.json or {}
+    domain = data.get('domain', 'Cyber Security')
+
+    _rl_ok, _rl_retry = check_generation_rate_limit('training')
+    if not _rl_ok:
+        return jsonify({'success': False, 'error': 'Too many requests. Please wait.',
+                        'retry_after': _rl_retry}), 429
+
+    job_data = dict(data)
+    job_data['_prompt'] = _build_training_prompt(job_data)
+
+    task_id = str(_uuid_grc.uuid4())
+    create_background_task(task_id, session['user_id'], domain)
+    t = _thr.Thread(target=_run_training_generation_task,
+                    args=(task_id, session['user_id'], job_data), daemon=True)
+    t.start()
+    print(f'[TRAINING-ASYNC] task {task_id[:8]} started — domain={domain!r}', flush=True)
+    return jsonify({'task_id': task_id})
+
+
+@app.route('/api/training-status/<task_id>')
+@login_required
+def api_training_status(task_id):
+    """Poll training generation task status."""
+    task = get_background_task(task_id)
+    if not task:
+        return jsonify({'status': 'not_found'}), 404
+    if task['status'] == 'done':
+        try:
+            result = _json_grc.loads(task['result'])
+        except Exception:
+            result = {'success': False, 'error': 'Result parse error'}
+        return jsonify({'status': 'done', 'result': result})
+    if task['status'] == 'error':
+        return jsonify({'status': 'error', 'error': task['error'] or 'Unknown'}), 500
+    return jsonify({'status': 'pending'})
+
+
+@app.route('/api/training-materials', methods=['GET'])
+@login_required
+def api_training_materials_list():
+    """List training materials for the logged-in user."""
+    domain = request.args.get('domain', '')
+    material_type = request.args.get('material_type', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?'
+            params = [session['user_id']]
+            if domain:
+                q += ' AND domain=?'
+                params.append(domain)
+            if material_type:
+                q += ' AND material_type=?'
+                params.append(material_type)
+            rows = conn.execute(
+                f'SELECT id, domain, material_type, audience, title, language, created_at '
+                f'FROM training_materials {q} ORDER BY created_at DESC',
+                params
+            ).fetchall()
+            return jsonify({'success': True, 'materials': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/training-materials/<int:material_id>', methods=['GET'])
+@login_required
+def api_training_material_get(material_id):
+    """Get full content of a training material."""
+    try:
+        with closing(get_db_direct()) as conn:
+            row = conn.execute(
+                'SELECT * FROM training_materials WHERE id=? AND user_id=?',
+                (material_id, session['user_id'])
+            ).fetchone()
+            if not row:
+                return jsonify({'success': False, 'error': 'Not found'}), 404
+            return jsonify({'success': True, 'material': dict(row)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/training-materials/<int:material_id>', methods=['DELETE'])
+@login_required
+def api_training_material_delete(material_id):
+    """Delete a training material."""
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'DELETE FROM training_materials WHERE id=? AND user_id=?',
+                (material_id, session['user_id'])
+            )
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GAP 5 — DOCUMENT APPROVAL WORKFLOW
+# ─────────────────────────────────────────────────────────────────────────────
+
+_APPROVER_ROLES = ['CISO', 'Board of Directors', 'CEO', 'CTO', 'DPO',
+                   'Audit Committee', 'Risk Committee', 'Compliance Officer']
+
+
+@app.route('/api/approvals', methods=['GET'])
+@login_required
+def api_approvals_list():
+    """List approval records for a user, optionally by artifact type/id."""
+    artifact_type = request.args.get('artifact_type', '')
+    artifact_id   = request.args.get('artifact_id', '')
+    try:
+        with closing(get_db_direct()) as conn:
+            q = 'WHERE user_id=?'
+            params = [session['user_id']]
+            if artifact_type:
+                q += ' AND artifact_type=?'
+                params.append(artifact_type)
+            if artifact_id:
+                q += ' AND artifact_id=?'
+                params.append(artifact_id)
+            rows = conn.execute(
+                f'SELECT * FROM document_approvals {q} ORDER BY created_at DESC',
+                params
+            ).fetchall()
+            return jsonify({'success': True, 'approvals': [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/approvals', methods=['POST'])
+@login_required
+def api_approvals_create():
+    """Request approval for a document artifact."""
+    data = request.json or {}
+    required = ['artifact_type', 'artifact_id', 'approver_role']
+    if not all(data.get(f) for f in required):
+        return jsonify({'success': False,
+                        'error': 'artifact_type, artifact_id and approver_role are required'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            # Resolve artifact title
+            artifact_type = sanitize_input(data['artifact_type'], 50)
+            artifact_id   = int(data['artifact_id'])
+            title = ''
+            if artifact_type == 'policy':
+                row = conn.execute(
+                    'SELECT policy_name FROM policies WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = row['policy_name'] if row else ''
+            elif artifact_type == 'strategy':
+                row = conn.execute(
+                    'SELECT document_title FROM strategies WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = row['document_title'] if row else ''
+            elif artifact_type == 'audit':
+                row = conn.execute(
+                    'SELECT framework FROM audits WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = f"Audit — {row['framework']}" if row else ''
+            elif artifact_type == 'risk':
+                row = conn.execute(
+                    'SELECT asset_name, threat FROM risks WHERE id=? AND user_id=?',
+                    (artifact_id, session['user_id'])
+                ).fetchone()
+                title = f"Risk — {row['asset_name']}" if row else ''
+
+            conn.execute(
+                '''INSERT INTO document_approvals
+                   (user_id, artifact_type, artifact_id, artifact_title,
+                    approver_role, approver_name, status, comments)
+                   VALUES (?,?,?,?,?,?,?,?)''',
+                (session['user_id'], artifact_type, artifact_id,
+                 sanitize_input(data.get('artifact_title') or title, 300),
+                 sanitize_input(data['approver_role'], 100),
+                 sanitize_input(data.get('approver_name', ''), 200),
+                 'pending',
+                 sanitize_input(data.get('comments', ''), 1000))
+            )
+            conn.commit()
+            approval_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+
+        log_action(session['user_id'], 'request_approval',
+                   {'artifact_type': artifact_type, 'artifact_id': artifact_id,
+                    'approver_role': data['approver_role']})
+        return jsonify({'success': True, 'approval_id': approval_id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/approvals/<int:approval_id>', methods=['PUT'])
+@login_required
+def api_approvals_update(approval_id):
+    """Update approval status (approve / reject / request changes)."""
+    data = request.json or {}
+    new_status = sanitize_input(data.get('status', ''), 30)
+    if new_status not in ('approved', 'rejected', 'changes_requested', 'pending'):
+        return jsonify({'success': False, 'error': 'Invalid status'}), 400
+    try:
+        with closing(get_db_direct()) as conn:
+            existing = conn.execute(
+                'SELECT id FROM document_approvals WHERE id=? AND user_id=?',
+                (approval_id, session['user_id'])
+            ).fetchone()
+            if not existing:
+                return jsonify({'success': False, 'error': 'Approval record not found'}), 404
+            approved_at = None
+            if new_status == 'approved':
+                from datetime import datetime as _dt
+                approved_at = _dt.utcnow().isoformat()
+            conn.execute(
+                '''UPDATE document_approvals SET
+                   status=?, approver_name=?, comments=?,
+                   approved_at=COALESCE(?, approved_at)
+                   WHERE id=? AND user_id=?''',
+                (new_status,
+                 sanitize_input(data.get('approver_name', ''), 200),
+                 sanitize_input(data.get('comments', ''), 1000),
+                 approved_at,
+                 approval_id, session['user_id'])
+            )
+            conn.commit()
+        log_action(session['user_id'], f'approval_{new_status}',
+                   {'approval_id': approval_id})
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/approvals/summary', methods=['GET'])
+@login_required
+def api_approvals_summary():
+    """Return approval workflow summary stats."""
+    try:
+        with closing(get_db_direct()) as conn:
+            total   = conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=?',
+                                   (session['user_id'],)).fetchone()['c']
+            pending = conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="pending"',
+                                   (session['user_id'],)).fetchone()['c']
+            approved= conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="approved"',
+                                   (session['user_id'],)).fetchone()['c']
+            rejected= conn.execute('SELECT COUNT(*) as c FROM document_approvals WHERE user_id=? AND status="rejected"',
+                                   (session['user_id'],)).fetchone()['c']
+            recent  = conn.execute(
+                'SELECT artifact_type, artifact_title, approver_role, status, created_at '
+                'FROM document_approvals WHERE user_id=? ORDER BY created_at DESC LIMIT 5',
+                (session['user_id'],)
+            ).fetchall()
+        return jsonify({'success': True, 'total': total, 'pending': pending,
+                        'approved': approved, 'rejected': rejected,
+                        'recent': [dict(r) for r in recent]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

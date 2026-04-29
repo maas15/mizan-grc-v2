@@ -22,6 +22,7 @@
         <nav class="sidebar-nav">
             <a href="{{ url_for('profile_page', lang=lang) }}" class="sidebar-link"><i class="fas fa-user-cog"></i> {{ txt.profile }}</a>
             <a href="{{ url_for('document_history', lang=lang) }}" class="sidebar-link"><i class="fas fa-folder-open"></i> {{ txt.my_documents }}</a>
+            <a href="{{ url_for('policy_library', lang=lang) }}" class="sidebar-link"><i class="fas fa-book-open"></i> {% if is_rtl %}مكتبة السياسات{% else %}Policy Library{% endif %}</a>
         </nav>
         <!-- FIX 3: GRC Domains in sidebar -->
         <div class="sidebar-domains">
@@ -54,6 +55,46 @@
         </div>
 
         <!-- FIX 3: Domain Cards REMOVED from here — now in sidebar -->
+
+        <!-- ═══════════════════════════════════════════════ -->
+        <!-- GAP 5 — APPROVAL WORKFLOW WIDGET               -->
+        <!-- ═══════════════════════════════════════════════ -->
+        <div style="margin-top:1.5rem;" id="approval-widget">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.9rem;flex-wrap:wrap;gap:0.75rem;">
+                <h2 class="section-title" style="margin-bottom:0;">
+                    <i class="fas fa-signature" style="color:var(--accent);"></i>
+                    {% if is_rtl %}سير عمل الاعتماد{% else %}Approval Workflow{% endif %}
+                </h2>
+                <button class="btn btn-primary" onclick="openApprovalRequestModal()" style="padding:6px 16px;font-size:0.85rem;">
+                    <i class="fas fa-plus"></i> {% if is_rtl %}طلب اعتماد{% else %}Request Approval{% endif %}
+                </button>
+            </div>
+            <div id="approval-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:0.65rem;margin-bottom:1rem;">
+                <div style="background:var(--bg-sidebar);border-radius:10px;padding:0.65rem;text-align:center;border:1px solid var(--border-color);">
+                    <div style="font-size:1.3rem;font-weight:700;" id="appr-total">-</div>
+                    <div style="font-size:0.72rem;color:var(--text-secondary);">{% if is_rtl %}الكل{% else %}Total{% endif %}</div>
+                </div>
+                <div style="background:rgba(234,179,8,0.1);border-radius:10px;padding:0.65rem;text-align:center;border:1px solid rgba(234,179,8,0.2);">
+                    <div style="font-size:1.3rem;font-weight:700;color:#eab308;" id="appr-pending">-</div>
+                    <div style="font-size:0.72rem;color:var(--text-secondary);">{% if is_rtl %}انتظار{% else %}Pending{% endif %}</div>
+                </div>
+                <div style="background:rgba(34,197,94,0.1);border-radius:10px;padding:0.65rem;text-align:center;border:1px solid rgba(34,197,94,0.2);">
+                    <div style="font-size:1.3rem;font-weight:700;color:#22c55e;" id="appr-approved">-</div>
+                    <div style="font-size:0.72rem;color:var(--text-secondary);">{% if is_rtl %}معتمد{% else %}Approved{% endif %}</div>
+                </div>
+                <div style="background:rgba(239,68,68,0.1);border-radius:10px;padding:0.65rem;text-align:center;border:1px solid rgba(239,68,68,0.2);">
+                    <div style="font-size:1.3rem;font-weight:700;color:#ef4444;" id="appr-rejected">-</div>
+                    <div style="font-size:0.72rem;color:var(--text-secondary);">{% if is_rtl %}مرفوض{% else %}Rejected{% endif %}</div>
+                </div>
+            </div>
+            <!-- Recent approvals list -->
+            <div id="approval-list" style="display:grid;gap:0.5rem;">
+                <div style="text-align:center;padding:1.5rem;color:var(--text-secondary);font-size:0.85rem;">
+                    <i class="fas fa-signature" style="font-size:1.5rem;opacity:0.3;margin-bottom:0.5rem;display:block;"></i>
+                    {% if is_rtl %}لا توجد طلبات اعتماد بعد{% else %}No approval requests yet{% endif %}
+                </div>
+            </div>
+        </div>
 
         <!-- ═══════════════════════════════════════════════ -->
         <!-- UNIFIED RISK REGISTER (moved from profile)     -->
@@ -716,6 +757,178 @@ function buildDashCharts(){
     });
 }
 </script>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- GAP 5 — APPROVAL WORKFLOW JS + MODAL       -->
+<!-- ═══════════════════════════════════════════ -->
+<script>
+(function(){
+var isRtlDash = {{ 'true' if is_rtl else 'false' }};
+
+async function loadApprovals() {
+    try {
+        var r = await fetch('/api/approvals/summary');
+        var d = await r.json();
+        if (!d.success) return;
+        document.getElementById('appr-total').textContent = d.total;
+        document.getElementById('appr-pending').textContent = d.pending;
+        document.getElementById('appr-approved').textContent = d.approved;
+        document.getElementById('appr-rejected').textContent = d.rejected;
+
+        var list = document.getElementById('approval-list');
+        if (!d.recent || d.recent.length === 0) return;
+        var statusStyle = {
+            pending: 'background:#eab30822;color:#eab308',
+            approved: 'background:#22c55e22;color:#22c55e',
+            rejected: 'background:#ef444422;color:#ef4444',
+            changes_requested: 'background:#6366f122;color:#6366f1'
+        };
+        list.innerHTML = d.recent.map(function(a) {
+            return '<div style="display:flex;align-items:center;gap:0.75rem;padding:0.7rem 1rem;background:var(--bg-sidebar);border-radius:10px;border:1px solid var(--border-color);">' +
+                '<i class="fas fa-signature" style="color:var(--accent);font-size:1rem;flex-shrink:0;"></i>' +
+                '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:0.86rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + (a.artifact_title || a.artifact_type) + '</div>' +
+                '<div style="font-size:0.75rem;color:var(--text-secondary);">' + a.approver_role + ' · ' + a.artifact_type + '</div>' +
+                '</div>' +
+                '<span style="padding:3px 10px;border-radius:20px;font-size:0.73rem;white-space:nowrap;' + (statusStyle[a.status]||'') + '">' + a.status + '</span>' +
+                '<button onclick="openApprovalActModal(' + JSON.stringify(a).replace(/'/g,"&#39;") + ')" class="btn btn-secondary" style="padding:4px 10px;font-size:0.78rem;flex-shrink:0;"><i class="fas fa-edit"></i></button>' +
+                '</div>';
+        }).join('');
+    } catch(e) {}
+}
+
+window.openApprovalRequestModal = function() {
+    document.getElementById('appr-req-modal').style.display = 'flex';
+};
+
+window.openApprovalActModal = function(appr) {
+    document.getElementById('appr-act-id').value = appr.id || '';
+    document.getElementById('appr-act-status').value = 'approved';
+    document.getElementById('appr-act-name').value = '';
+    document.getElementById('appr-act-comments').value = '';
+    document.getElementById('appr-act-modal').style.display = 'flex';
+};
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadApprovals();
+
+    // Submit approval request
+    document.getElementById('appr-req-submit').addEventListener('click', async function() {
+        var artType = document.getElementById('appr-art-type').value;
+        var artId   = document.getElementById('appr-art-id').value.trim();
+        var role    = document.getElementById('appr-role').value;
+        var name    = document.getElementById('appr-approver-name').value.trim();
+        if (!artId) { alert(isRtlDash ? 'الرجاء إدخال معرف الوثيقة' : 'Please enter the document ID'); return; }
+        try {
+            var r = await fetch('/api/approvals', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ artifact_type: artType, artifact_id: artId, approver_role: role, approver_name: name })
+            });
+            var d = await r.json();
+            if (d.success) { document.getElementById('appr-req-modal').style.display = 'none'; loadApprovals(); if(window.showToast) showToast(isRtlDash?'تم إرسال طلب الاعتماد':'Approval request sent','success'); }
+            else alert(d.error || 'Error');
+        } catch(e) { alert(e.message); }
+    });
+
+    // Submit approval action
+    document.getElementById('appr-act-submit').addEventListener('click', async function() {
+        var id = document.getElementById('appr-act-id').value;
+        var status   = document.getElementById('appr-act-status').value;
+        var name     = document.getElementById('appr-act-name').value.trim();
+        var comments = document.getElementById('appr-act-comments').value.trim();
+        try {
+            var r = await fetch('/api/approvals/' + id, {
+                method: 'PUT',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ status, approver_name: name, comments })
+            });
+            var d = await r.json();
+            if (d.success) { document.getElementById('appr-act-modal').style.display = 'none'; loadApprovals(); if(window.showToast) showToast(isRtlDash?'تم تحديث الاعتماد':'Approval updated','success'); }
+            else alert(d.error || 'Error');
+        } catch(e) { alert(e.message); }
+    });
+});
+})();
+</script>
+
+<!-- Approval Request Modal -->
+<div id="appr-req-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(480px,94vw);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 style="margin:0;font-size:1rem;">{% if is_rtl %}طلب اعتماد وثيقة{% else %}Request Document Approval{% endif %}</h3>
+            <button onclick="document.getElementById('appr-req-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <div style="display:grid;gap:0.75rem;">
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}نوع الوثيقة{% else %}Document Type{% endif %}</label>
+                <select id="appr-art-type" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="policy">Policy</option>
+                    <option value="strategy">Strategy</option>
+                    <option value="audit">Audit</option>
+                    <option value="risk">Risk Assessment</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}معرف الوثيقة (ID){% else %}Document ID{% endif %}</label>
+                <input id="appr-art-id" type="number" min="1" placeholder="e.g. 42" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}دور المعتمد{% else %}Approver Role{% endif %}</label>
+                <select id="appr-role" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="CISO">CISO</option>
+                    <option value="Board of Directors">Board of Directors</option>
+                    <option value="CEO">CEO</option>
+                    <option value="CTO">CTO</option>
+                    <option value="DPO">DPO</option>
+                    <option value="Audit Committee">Audit Committee</option>
+                    <option value="Risk Committee">Risk Committee</option>
+                    <option value="Compliance Officer">Compliance Officer</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}اسم المعتمد (اختياري){% else %}Approver Name (optional){% endif %}</label>
+                <input id="appr-approver-name" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+        </div>
+        <button id="appr-req-submit" class="btn btn-primary" style="width:100%;margin-top:1rem;padding:11px;">
+            <i class="fas fa-paper-plane"></i> {% if is_rtl %}إرسال الطلب{% else %}Submit Request{% endif %}
+        </button>
+    </div>
+</div>
+
+<!-- Approval Action Modal -->
+<div id="appr-act-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border-radius:16px;padding:1.75rem;width:min(440px,94vw);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+            <h3 style="margin:0;font-size:1rem;">{% if is_rtl %}تحديث الاعتماد{% else %}Update Approval{% endif %}</h3>
+            <button onclick="document.getElementById('appr-act-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:var(--text-secondary);">✕</button>
+        </div>
+        <input type="hidden" id="appr-act-id">
+        <div style="display:grid;gap:0.75rem;">
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}القرار{% else %}Decision{% endif %}</label>
+                <select id="appr-act-status" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+                    <option value="approved">✅ Approved</option>
+                    <option value="rejected">❌ Rejected</option>
+                    <option value="changes_requested">🔄 Changes Requested</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}اسم المعتمد{% else %}Approver Name{% endif %}</label>
+                <input id="appr-act-name" type="text" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);">
+            </div>
+            <div class="form-group">
+                <label style="font-size:0.85rem;font-weight:600;">{% if is_rtl %}التعليقات{% else %}Comments{% endif %}</label>
+                <textarea id="appr-act-comments" rows="3" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border-color);background:var(--bg-sidebar);color:var(--text-primary);resize:vertical;"></textarea>
+            </div>
+        </div>
+        <button id="appr-act-submit" class="btn btn-primary" style="width:100%;margin-top:1rem;padding:11px;">
+            <i class="fas fa-check"></i> {% if is_rtl %}تأكيد{% else %}Confirm{% endif %}
+        </button>
+    </div>
+</div>
+
 <style>
 /* FIX 3: Sidebar domains styling */
 .sidebar-domains{padding:0 0.8rem;margin-bottom:1rem;}
