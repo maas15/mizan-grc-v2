@@ -304,28 +304,42 @@
     var rows = normalizeRows(headers, tableBlock.rows || []);
     var schema = tableSchemaName(headers);
 
+    // Helper: build a single summary chip
+    function chip(cls, count, label) {
+      return '<span class="summary-chip summary-chip-' + cls + '">' + count + ' ' + label + '</span>';
+    }
+
+    // Resolve priority column index by header name (not hard-coded position)
+    function priorityColIdx() {
+      for (var ci = 0; ci < headers.length; ci++) {
+        if (/^(priority|الأولوية)$/i.test((headers[ci] || '').trim())) return ci;
+      }
+      return 3; // fallback to index 3 for backward compatibility
+    }
+
     var chips = [];
 
     if (schema === 'gap-analysis') {
       var total = rows.length;
       if (!total) return '';
+      var priIdx = priorityColIdx();
       var counts = { critical: 0, high: 0, medium: 0, low: 0 };
       rows.forEach(function(r) {
-        var pri = (r[3] || '').trim().toLowerCase();
+        var pri = (r[priIdx] || '').trim().toLowerCase();
         if (/^(critical|حرج)$/.test(pri)) counts.critical++;
         else if (/^(high|عالي|عالية)$/.test(pri)) counts.high++;
         else if (/^(medium|متوسط)$/.test(pri)) counts.medium++;
         else if (/^(low|منخفض)$/.test(pri)) counts.low++;
       });
-      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'فجوة' : 'gaps') + '</span>');
-      if (counts.critical) chips.push('<span class="summary-chip summary-chip-critical">' + counts.critical + ' ' + (isRtl ? 'حرجة' : 'critical') + '</span>');
-      if (counts.high)     chips.push('<span class="summary-chip summary-chip-high">'     + counts.high     + ' ' + (isRtl ? 'عالية' : 'high') + '</span>');
-      if (counts.medium)   chips.push('<span class="summary-chip summary-chip-medium">'   + counts.medium   + ' ' + (isRtl ? 'متوسطة' : 'medium') + '</span>');
-      if (counts.low)      chips.push('<span class="summary-chip summary-chip-low">'      + counts.low      + ' ' + (isRtl ? 'منخفضة' : 'low') + '</span>');
+      chips.push(chip('total',    total,          isRtl ? 'فجوة'    : 'gaps'));
+      if (counts.critical) chips.push(chip('critical', counts.critical, isRtl ? 'حرجة'    : 'critical'));
+      if (counts.high)     chips.push(chip('high',     counts.high,     isRtl ? 'عالية'   : 'high'));
+      if (counts.medium)   chips.push(chip('medium',   counts.medium,   isRtl ? 'متوسطة'  : 'medium'));
+      if (counts.low)      chips.push(chip('low',      counts.low,      isRtl ? 'منخفضة' : 'low'));
     } else if (schema === 'kpi-summary') {
       var total = rows.length;
       if (!total) return '';
-      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'مؤشر' : 'KPIs') + '</span>');
+      chips.push(chip('total', total, isRtl ? 'مؤشر' : 'KPIs'));
       // Count KRI vs KPI if type column exists
       var typeColIdx = -1;
       headers.forEach(function(h, i) { if (/kri|kpi.*type|type.*kpi|النوع/i.test(h)) typeColIdx = i; });
@@ -333,10 +347,11 @@
         var kpiCount = 0, kriCount = 0;
         rows.forEach(function(r) {
           var t = (r[typeColIdx] || '').toLowerCase();
-          if (t.indexOf('kri') >= 0) kriCount++; else kpiCount++;
+          // Use word-boundary match to avoid false positives (e.g. 'skripta')
+          if (/\bkri\b/.test(t)) kriCount++; else kpiCount++;
         });
-        if (kpiCount) chips.push('<span class="summary-chip summary-chip-kpi">KPI ×' + kpiCount + '</span>');
-        if (kriCount) chips.push('<span class="summary-chip summary-chip-kri">KRI ×' + kriCount + '</span>');
+        if (kpiCount) chips.push(chip('kpi', kpiCount, 'KPI'));
+        if (kriCount) chips.push(chip('kri', kriCount, 'KRI'));
       }
     } else if (schema === 'pillar-initiatives' || schema === 'strategic-objectives') {
       var total = rows.length;
@@ -344,11 +359,11 @@
       var label = schema === 'strategic-objectives'
         ? (isRtl ? 'هدف استراتيجي' : 'objectives')
         : (isRtl ? 'مبادرة' : 'initiatives');
-      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + label + '</span>');
+      chips.push(chip('total', total, label));
     } else if (schema === 'key-risks') {
       var total = rows.length;
       if (!total) return '';
-      chips.push('<span class="summary-chip summary-chip-total">' + total + ' ' + (isRtl ? 'مخاطرة' : 'risks') + '</span>');
+      chips.push(chip('total', total, isRtl ? 'مخاطرة' : 'risks'));
     }
 
     if (!chips.length) return '';
