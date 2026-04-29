@@ -22488,21 +22488,23 @@ def repair_vision_objectives_if_insufficient(
         sector='Government'):
     """Deterministic repair for the Strategic Objectives (SO) table.
 
-    Inspects sections['vision'].  If count_valid_objective_rows() < 5,
-    replaces the existing SO table with a canonical 5-column table that
-    has at least 6 valid rows so the richness gate always passes.
+    Inspects sections['vision'].  If count_valid_objective_rows() < 6,
+    replaces the *entire* existing SO sub-section (the ### heading plus its
+    table) with a clean canonical 8-row Markdown pipe table.  No HTML, no
+    JSON, no AI calls.
 
     Column schema (Arabic):  | # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |
     Column schema (English): | # | Objective | Target Metric | Justification | Timeframe |
 
-    Returns the number of rows added (0 if section was already sufficient).
+    Returns the number of rows written (0 if section was already ≥ 6 rows).
+    Raises AssertionError if the post-repair count is still < 6.
     """
     frameworks = frameworks or ['NCA ECC']
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
     is_ar = (lang == 'ar')
 
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
-    if n_so >= 5:
+    if n_so >= 6:
         return 0
 
     vision_text = sections.get('vision', '') or ''
@@ -22588,58 +22590,52 @@ def repair_vision_objectives_if_insufficient(
             '|---|-----------|--------------|---------------|----------|\n'
         )
 
-    so_hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
+    # Remove the existing SO sub-section (### heading + table) entirely so we
+    # can replace it with the clean canonical table.  Match from the ### heading
+    # (if present) to avoid leaving a stale duplicate heading behind.
+    _so_section_re = _ts_re.compile(
+        r'^###\s+(?:الأهداف(?:\s+الاستراتيجية)?|Strategic\s+Objectives)[^\n]*$',
+        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+    )
+    _m = _so_section_re.search(vision_text)
+    if _m:
+        vision_text = vision_text[:_m.start()].rstrip()
+    else:
+        # Fall back: strip from the table-header row if the ### heading is absent.
+        _tbl_hdr_re = _ts_re.compile(
+            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+            _ts_re.IGNORECASE | _ts_re.MULTILINE,
+        )
+        _tm = _tbl_hdr_re.search(vision_text)
+        if _tm:
+            vision_text = vision_text[:_tm.start()].rstrip()
+
+    # Build canonical 8-row table.
+    new_rows = [
+        f'| {i + 1} | {obj} | {metric} | {just} | {tf} |'
+        for i, (obj, metric, just, tf) in enumerate(objectives_bank)
+    ]
+    sections['vision'] = (
+        vision_text.rstrip() + '\n\n' + hdr_line
+        + '\n'.join(new_rows) + '\n'
     )
 
-    # Parse existing valid row numbers so we continue numbering correctly.
-    _existing_nums = set()
-    for _cells in _ts_table_rows(vision_text, so_hdr_re):
-        if _cells and _cells[0].replace('.', '').isdigit():
-            _existing_nums.add(int(_cells[0]))
-    _next_num = max(_existing_nums) + 1 if _existing_nums else 1
-
-    vision_lc = vision_text.lower()
-    needed = max(6 - n_so, 0)  # ensure at least 6 total after repair
-
-    new_rows = []
-    for obj, metric, just, tf in objectives_bank:
-        if len(new_rows) >= needed:
-            break
-        _kws = obj.lower().split()[:3]
-        if any(len(k) > 3 and k in vision_lc for k in _kws):
-            continue
-        new_rows.append(f'| {_next_num} | {obj} | {metric} | {just} | {tf} |')
-        _next_num += 1
-
-    if not new_rows:
-        # All objectives already present by keyword but count still low —
-        # force-replace the SO table from the canonical bank.
-        if so_hdr_re.search(vision_text):
-            _lines = vision_text.split('\n')
-            for _i, _ln in enumerate(_lines):
-                if so_hdr_re.match(_ln.strip()):
-                    vision_text = '\n'.join(_lines[:_i]).rstrip()
-                    break
-        new_rows = [
-            f'| {i + 1} | {obj} | {metric} | {just} | {tf} |'
-            for i, (obj, metric, just, tf) in enumerate(objectives_bank[:6])
-        ]
-        sections['vision'] = (
-            vision_text.rstrip() + '\n\n' + hdr_line
-            + '\n'.join(new_rows) + '\n'
+    # Post-repair assertion — must never fail given the canonical bank above.
+    _n_after = count_valid_objective_rows(sections['vision'])
+    if _n_after < 6:
+        import logging as _logging
+        _logging.error(
+            'repair_vision_objectives_if_insufficient: assertion FAILED '
+            '(count=%d after repair). Vision preview: %r',
+            _n_after, sections['vision'][:600],
         )
-        return len(new_rows)
-
-    if so_hdr_re.search(vision_text):
-        sections['vision'] = _append_rows_under_header(
-            vision_text, so_hdr_re, new_rows)
-    else:
-        sections['vision'] = (
-            vision_text.rstrip() + '\n\n' + hdr_line
-            + '\n'.join(new_rows) + '\n'
+        raise AssertionError(
+            f'repair_vision_objectives_if_insufficient: expected ≥ 6 valid SO rows '
+            f'after repair; got {_n_after}. '
+            f'Check timeframe tokens in objectives_bank. '
+            f'Vision preview: {sections["vision"][:600]!r}'
         )
+
     return len(new_rows)
 
 
@@ -22742,266 +22738,283 @@ def repair_confidence_risk_section(
         conf = conf[:second_pos].rstrip()
         summary['dup_headings_removed'] = len(_risk_hdr_matches) - 1
 
-    # ── Step 2: Ensure CSF subsection with 5-column table ────────────────
-    csf_hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Factor|العامل)\s*\|',
-        _ts_re.IGNORECASE,
+    # ── Define canonical CSF and Risk banks ──────────────────────────────
+    if is_ar:
+        _csf_bank = [
+            ('دعم القيادة التنفيذية',
+             f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
+             'حرج',
+             'تقارير اجتماعات لجنة التوجيه'),
+            ('وضوح ملكية الضوابط',
+             'تعيين مالك لكل ضابط ومخرج تنفيذي مع مصفوفة RACI',
+             'حرج',
+             f'سجل الضوابط ومصفوفة RACI'),
+            (f'إطار حوكمة {domain} قابل للتشغيل',
+             'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
+             'عالٍ',
+             'محاضر الاجتماعات وسجل قرارات لجنة التوجيه'),
+            ('توفر الأدلة والتوثيق',
+             'حفظ أدلة التطبيق والاختبار والمراجعة بشكل منهجي',
+             'عالٍ',
+             'مستودع الأدلة وتقارير التدقيق'),
+            ('بيئة تقنية متكاملة',
+             f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
+             'متوسط',
+             'نسبة تغطية مصادر السجلات في SIEM'),
+        ]
+        _risk_bank = [
+            ('تأخر اعتماد نموذج الحوكمة',
+             'غياب هيكل حوكمة رسمي وبطء اتخاذ القرارات',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'الإدارة العليا',
+             'تنفيذ مبكر لورش العمل التنفيذية وعروض قيمة تعتمد على المخاطر',
+             'تأخر اعتماد ميثاق لجنة التوجيه',
+             'متوسط'),
+            ('نقص الكفاءات المتخصصة في الأمن السيبراني',
+             'سوق عمل متنافس وفجوة مهارات محلية',
+             'عالٍ', 'عالٍ', 'حرج',
+             'رئيس الأمن السيبراني',
+             'التوظيف المبكر واستخدام خدمات MSSP كحل مؤقت',
+             'تزايد الشواغر غير المملوءة في وحدة الأمن',
+             'عالٍ'),
+            ('عدم اكتمال جرد الأصول والأنظمة',
+             'غياب عملية جرد منهجية للأصول التقنية',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'تقنية المعلومات',
+             f'تنفيذ جرد أصول وربطه بإدارة الثغرات والمراقبة',
+             'أصول غير مصنفة أو غير مراقبة',
+             'متوسط'),
+            ('فشل تكامل SIEM مع مصادر السجلات الحرجة',
+             'تعقيد البيئة التقنية وتفاوت قدرات المورد',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'فريق SOC',
+             'تحديد مصادر السجلات الحرجة واختبار التكامل وحالات الاستخدام',
+             'انخفاض تغطية السجلات عن 80%',
+             'متوسط'),
+            ('تأخر تطبيق IAM/PAM/MFA',
+             'مقاومة المستخدمين وتعقيدات التكامل مع الأنظمة القديمة',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'مدير الهوية والوصول',
+             'تطبيق مرحلي للحسابات الحرجة مع برنامج إدارة تغيير',
+             'حسابات مميزة دون MFA أو مراجعة دورية',
+             'متوسط'),
+            ('عدم اختبار النسخ الاحتياطي والتعافي من الكوارث',
+             'غياب جدولة اختبارات DR إلزامية دورية',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'مدير البنية التحتية',
+             'تنفيذ اختبارات استعادة ربع سنوية وتوثيق النتائج',
+             'فشل اختبار الاستعادة أو تجاوز RTO',
+             'متوسط'),
+            ('ضعف جاهزية الاستجابة للحوادث',
+             'غياب خطة استجابة موثقة ومُختبرة',
+             'متوسط', 'عالٍ', 'عالٍ',
+             'رئيس الأمن السيبراني',
+             'اعتماد Playbooks وتنفيذ Tabletop Exercise',
+             'تأخر التصعيد أو عدم وضوح المسؤوليات',
+             'متوسط'),
+            (f'فجوات أدلة الامتثال لضوابط {fw_short}',
+             'ضعف التوثيق وعدم اتساق آليات جمع الأدلة',
+             'متوسط', 'متوسط', 'متوسط',
+             'فريق الحوكمة والامتثال',
+             'إنشاء مستودع أدلة وربطه بالضوابط والمتطلبات',
+             'ضوابط مطبقة دون دليل قابل للتدقيق',
+             'منخفض'),
+        ]
+    else:
+        _csf_bank = [
+            ('Executive Leadership Support',
+             f'Active sponsorship from {org_name} senior leadership '
+             f'to execute the {domain} strategy',
+             'Critical',
+             'Steering committee meeting reports'),
+            ('Control Ownership Clarity',
+             'Each control has an assigned owner with a clear RACI',
+             'Critical',
+             'Control register and RACI matrix'),
+            (f'Operable {domain} Governance Framework',
+             'Standing steering committee with clear decision rights',
+             'High',
+             'Meeting minutes and steering committee decision log'),
+            ('Evidence Availability',
+             'Systematic preservation of implementation and audit evidence',
+             'High',
+             'Evidence repository and audit reports'),
+            ('Integrated Technology Environment',
+             f'{domain} platforms integrated with operational systems '
+             'and unified logging',
+             'Medium',
+             'SIEM log-source coverage rate'),
+        ]
+        _risk_bank = [
+            ('Delayed Governance Model Approval',
+             'Absence of formal governance structure; slow decision-making',
+             'Medium', 'High', 'High',
+             'Senior Management',
+             'Early executive workshops and risk-based value briefings',
+             'Delay in steering committee charter approval',
+             'Medium'),
+            ('Lack of Specialised Cybersecurity Competencies',
+             'Competitive labour market and local skills gap',
+             'High', 'High', 'Critical',
+             'CISO',
+             'Early recruitment and interim MSSP services',
+             'Growing unfilled vacancies in security unit',
+             'High'),
+            ('Incomplete Asset and System Inventory',
+             'No systematic asset-discovery process in place',
+             'Medium', 'High', 'High',
+             'IT Operations Owner',
+             f'Run comprehensive asset discovery before applying {fw_short} controls',
+             'Gaps in asset-management reports',
+             'Medium'),
+            ('SIEM Integration Failure with Critical Log Sources',
+             'Complex tech environment and varying vendor capabilities',
+             'Medium', 'High', 'High',
+             'SOC Manager',
+             'Phased integration with per-source acceptance testing before go-live',
+             'Log-source coverage falling below 80%',
+             'Medium'),
+            ('Delayed IAM/PAM/MFA Rollout',
+             'User resistance and integration complexity with legacy systems',
+             'Medium', 'High', 'High',
+             'IAM Owner',
+             'Phased rollout for critical accounts with change management programme',
+             'PAM deployment phases behind schedule',
+             'Medium'),
+            ('Untested Backup and Disaster Recovery',
+             'Absence of mandatory periodic DR test scheduling',
+             'Medium', 'High', 'High',
+             'Infrastructure Manager',
+             'Schedule mandatory quarterly DR tests with results reporting',
+             'More than 90 days elapsed without a DR test',
+             'Medium'),
+            ('Weak Incident Response Readiness',
+             'No documented and tested incident response plan',
+             'Medium', 'High', 'High',
+             'CISO',
+             'Adopt Playbooks and conduct Tabletop Exercises',
+             'Delayed escalation or unclear responsibilities',
+             'Medium'),
+            (f'{fw_short} Compliance Evidence Gaps',
+             'Weak documentation and inconsistent evidence-collection practices',
+             'Medium', 'Medium', 'Medium',
+             'Governance and Compliance Team',
+             'Create evidence repository linked to controls and requirements',
+             'Controls applied without auditable evidence',
+             'Low'),
+        ]
+
+    # ── Step 2: Replace CSF subsection when insufficient ─────────────────
+    # Instead of appending rows to a potentially malformed table, cut from
+    # the CSF heading (or risk heading if CSF is missing) and replace the
+    # entire CSF block with the canonical bank.
+    _csf_heading_re = _ts_re.compile(
+        r'^###\s+(?:عوامل\s+النجاح\s+الحرجة|Critical\s+Success\s+Factors)[^\n]*$',
+        _ts_re.MULTILINE | _ts_re.IGNORECASE,
     )
     n_csf = _count_csf_rows(conf)
     if n_csf < _RICHNESS_MIN_CSF_ROWS:
-        csf_needed = _RICHNESS_MIN_CSF_ROWS - n_csf
-        if not csf_hdr_re.search(conf):
-            if is_ar:
-                conf = conf.rstrip() + (
-                    '\n\n### عوامل النجاح الحرجة\n\n'
-                    '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
-                    '|---|-------|-------|---------|-------------|\n'
-                )
-            else:
-                conf = conf.rstrip() + (
-                    '\n\n### Critical Success Factors\n\n'
-                    '| # | Factor | Description | Importance | Measurement Indicator |\n'
-                    '|---|--------|-------------|------------|----------------------|\n'
-                )
-        _csf_existing = {
-            int(c[0]) for c in _ts_table_rows(conf, csf_hdr_re)
-            if c and c[0].replace('.', '').isdigit()
-        }
-        _next_csf = max(_csf_existing) + 1 if _csf_existing else 1
+        _cm = _csf_heading_re.search(conf)
+        if _cm:
+            conf = conf[:_cm.start()].rstrip()
         if is_ar:
-            _csf_bank = [
-                ('دعم القيادة التنفيذية',
-                 f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
-                 'حرج',
-                 'تقارير اجتماعات لجنة التوجيه'),
-                ('توفر الموارد والكوادر المؤهلة',
-                 f'كفاءات بشرية قادرة على تشغيل ضوابط {fw_short} وإدارتها',
-                 'عالٍ',
-                 'مؤشر الشواغر المملوءة ونتائج تقييم الكفاءة'),
-                (f'إطار حوكمة {domain} قابل للتشغيل',
-                 'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
-                 'عالٍ',
-                 'محاضر الاجتماعات وسجل قرارات لجنة التوجيه'),
-                ('تمويل كافٍ ومستقر',
-                 'ميزانية متعددة السنوات مرتبطة بأولويات خطة المعالجة',
-                 'عالٍ',
-                 'التزام الميزانية السنوي مقارنةً بالخطة'),
-                ('بيئة تقنية متكاملة',
-                 f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
-                 'متوسط',
-                 'نسبة تغطية مصادر السجلات في SIEM'),
-            ]
-            _csf_new = [
-                f'| {_next_csf + i} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                for i, r in enumerate(_csf_bank[:csf_needed])
-            ]
+            _csf_block = (
+                '\n\n### عوامل النجاح الحرجة\n\n'
+                '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
+                '|---|-------|-------|---------|-------------|\n'
+                + '\n'.join(
+                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
+                    for i, r in enumerate(_csf_bank)
+                ) + '\n'
+            )
         else:
-            _csf_bank = [
-                ('Executive Leadership Support',
-                 f'Active sponsorship from {org_name} senior leadership '
-                 f'to execute the {domain} strategy',
-                 'Critical',
-                 'Steering committee meeting reports'),
-                ('Qualified Resources and Talent',
-                 f'Competent personnel to operate and govern {fw_short} controls',
-                 'High',
-                 'Vacancy fill rate and competency assessment results'),
-                (f'Operable {domain} Governance Framework',
-                 'Standing steering committee with clear decision rights',
-                 'High',
-                 'Meeting minutes and steering committee decision log'),
-                ('Stable Multi-Year Funding',
-                 'Multi-year budget tied to remediation plan priorities',
-                 'High',
-                 'Annual budget commitment vs plan'),
-                ('Integrated Technology Environment',
-                 f'{domain} platforms integrated with operational systems '
-                 'and unified logging',
-                 'Medium',
-                 'SIEM log-source coverage rate'),
-            ]
-            _csf_new = [
-                f'| {_next_csf + i} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                for i, r in enumerate(_csf_bank[:csf_needed])
-            ]
-        conf = _append_rows_under_header(conf, csf_hdr_re, _csf_new)
-        summary['csf_rows_added'] = len(_csf_new)
+            _csf_block = (
+                '\n\n### Critical Success Factors\n\n'
+                '| # | Factor | Description | Importance | Measurement Indicator |\n'
+                '|---|--------|-------------|------------|----------------------|\n'
+                + '\n'.join(
+                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
+                    for i, r in enumerate(_csf_bank)
+                ) + '\n'
+            )
+        conf = conf.rstrip() + _csf_block
+        summary['csf_rows_added'] = len(_csf_bank)
 
-    # ── Step 3: Ensure risk subsection with 10-column table (≥ 6 rows) ──
-    risk_hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-        _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    # ── Step 3: Replace risk subsection when insufficient ────────────────
+    # Cut from the risk heading and replace the entire block with the
+    # canonical 8-row bank so n_risk ≥ 6 is guaranteed.
+    _risk_heading_re = _ts_re.compile(
+        r'^###\s+(?:المخاطر\s+الرئيسية|المخاطر\s+الاستراتيجية|Key\s+Risks)[^\n]*$',
+        _ts_re.MULTILINE | _ts_re.IGNORECASE,
     )
     _RISK_REPAIR_MIN = 6
     n_risks = _count_risk_rows_with_mitigation(conf)
     if n_risks < _RISK_REPAIR_MIN:
-        risks_needed = _RISK_REPAIR_MIN - n_risks
-        if not risk_hdr_re.search(conf):
-            if is_ar:
-                conf = conf.rstrip() + (
-                    '\n\n### المخاطر الرئيسية\n\n'
-                    '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر'
-                    ' | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
-                    '|---|-------|-------|-----------|--------|-------------|'
-                    '--------|-------------|-----------------|---------------|\n'
-                )
-            else:
-                conf = conf.rstrip() + (
-                    '\n\n### Key Risks\n\n'
-                    '| # | Risk | Root Cause | Likelihood | Impact | Risk Level'
-                    ' | Owner | Treatment Plan | Warning Indicator | Residual Risk |\n'
-                    '|---|------|-----------|-----------|--------|----------|'
-                    '-----|--------------|-----------------|---------------|\n'
-                )
-        _risk_existing = {
-            int(c[0]) for c in _ts_table_rows(conf, risk_hdr_re)
-            if c and c[0].replace('.', '').isdigit()
-        }
-        _next_risk = max(_risk_existing) + 1 if _risk_existing else 1
-        conf_lc = conf.lower()
+        _rm = _risk_heading_re.search(conf)
+        if _rm:
+            conf = conf[:_rm.start()].rstrip()
         if is_ar:
-            _risk_bank = [
-                ('تأخر اعتماد نموذج الحوكمة',
-                 'غياب هيكل حوكمة رسمي وبطء اتخاذ القرارات',
-                 'متوسط', 'عالٍ', 'عالٍ',
-                 f'مسؤول {domain}',
-                 'تنفيذ مبكر لورش العمل التنفيذية وعروض قيمة تعتمد على المخاطر',
-                 'تأخر اعتماد ميثاق لجنة التوجيه',
-                 'متوسط'),
-                ('نقص الكفاءات المتخصصة في الأمن السيبراني',
-                 'سوق عمل متنافس وفجوة مهارات محلية',
-                 'عالٍ', 'عالٍ', 'حرج',
-                 'مدير الموارد البشرية',
-                 'التوظيف المبكر واستخدام خدمات MSSP كحل مؤقت',
-                 'تزايد الشواغر غير المملوءة في وحدة الأمن',
-                 'متوسط'),
-                ('عدم اكتمال جرد الأصول والأنظمة',
-                 'غياب عملية جرد منهجية للأصول التقنية',
-                 'متوسط', 'متوسط', 'متوسط',
-                 'مسؤول العمليات التقنية',
-                 f'إجراء جرد شامل للأصول كأول خطوة قبل تطبيق ضوابط {fw_short}',
-                 'فجوات في تقارير إدارة الأصول',
-                 'منخفض'),
-                ('فشل تكامل SIEM مع مصادر السجلات الحرجة',
-                 'تعقيد البيئة التقنية وتفاوت قدرات المورد',
-                 'متوسط', 'عالٍ', 'عالٍ',
-                 'مدير SOC',
-                 'تنفيذ مرحلي مع اختبار قبول لكل مصدر قبل الاعتماد',
-                 'انخفاض نسبة تغطية مصادر السجلات عن 80%',
-                 'منخفض'),
-                ('تأخر تطبيق IAM/PAM/MFA',
-                 'مقاومة المستخدمين وتعقيدات التكامل مع الأنظمة القديمة',
-                 'متوسط', 'متوسط', 'متوسط',
-                 'مسؤول IAM',
-                 'برنامج إدارة تغيير مع رعاية تنفيذية واضحة',
-                 'تأخر مراحل نشر PAM عن الجدول المحدد',
-                 'منخفض'),
-                ('عدم اختبار النسخ الاحتياطي والتعافي من الكوارث',
-                 'غياب جدولة اختبارات DR إلزامية دورية',
-                 'عالٍ', 'حرج', 'حرج',
-                 'مسؤول استمرارية الأعمال',
-                 'جدولة اختبارات DR إلزامية ربع سنوية مع تقارير نتائج',
-                 'مرور أكثر من 90 يوماً دون اختبار DR',
-                 'متوسط'),
-                ('ضعف جاهزية الاستجابة للحوادث',
-                 'غياب خطة استجابة موثقة ومُختبرة',
-                 'عالٍ', 'عالٍ', 'عالٍ',
-                 'مسؤول أمن المعلومات',
-                 'تطوير واعتماد واختبار خطة الاستجابة للحوادث سنوياً',
-                 'عدم وجود خطة استجابة مُختبرة حديثاً',
-                 'متوسط'),
-                (f'فجوات أدلة الامتثال لضوابط {fw_short} و NCA DCC',
-                 'ضعف التوثيق وعدم اتساق آليات جمع الأدلة',
-                 'متوسط', 'عالٍ', 'عالٍ',
-                 'مسؤول الامتثال',
-                 'تطوير إطار أدلة الامتثال وإجراء مراجعات دورية',
-                 'نتائج تدقيق داخلي سلبية قبل مراجعة التدقيق الرسمي',
-                 'منخفض'),
-            ]
-        else:
-            _risk_bank = [
-                ('Delayed Governance Model Approval',
-                 'Absence of formal governance structure; slow decision-making',
-                 'Medium', 'High', 'High',
-                 f'{domain} Owner',
-                 'Early executive workshops and risk-based value briefings',
-                 'Delay in steering committee charter approval',
-                 'Medium'),
-                ('Lack of Specialised Cybersecurity Competencies',
-                 'Competitive labour market and local skills gap',
-                 'High', 'High', 'Critical',
-                 'HR Manager',
-                 'Early recruitment and interim MSSP services',
-                 'Growing unfilled vacancies in security unit',
-                 'Medium'),
-                ('Incomplete Asset and System Inventory',
-                 'No systematic asset-discovery process in place',
-                 'Medium', 'Medium', 'Medium',
-                 'IT Operations Owner',
-                 f'Run comprehensive asset discovery before applying {fw_short} controls',
-                 'Gaps in asset-management reports',
-                 'Low'),
-                ('SIEM Integration Failure with Critical Log Sources',
-                 'Complex tech environment and varying vendor capabilities',
-                 'Medium', 'High', 'High',
-                 'SOC Manager',
-                 'Phased integration with per-source acceptance testing before go-live',
-                 'Log-source coverage falling below 80%',
-                 'Low'),
-                ('Delayed IAM/PAM/MFA Rollout',
-                 'User resistance and integration complexity with legacy systems',
-                 'Medium', 'Medium', 'Medium',
-                 'IAM Owner',
-                 'Change management programme with clear executive sponsorship',
-                 'PAM deployment phases behind schedule',
-                 'Low'),
-                ('Untested Backup and Disaster Recovery',
-                 'Absence of mandatory periodic DR test scheduling',
-                 'High', 'Critical', 'Critical',
-                 'BCM Owner',
-                 'Schedule mandatory quarterly DR tests with results reporting',
-                 'More than 90 days elapsed without a DR test',
-                 'Medium'),
-                ('Weak Incident Response Readiness',
-                 'No documented and tested incident response plan',
-                 'High', 'High', 'High',
-                 'CISO',
-                 'Develop, approve, and annually test the incident response plan',
-                 'No recently tested IR plan in place',
-                 'Medium'),
-                (f'{fw_short} and NCA DCC Compliance Evidence Gaps',
-                 'Weak documentation and inconsistent evidence-collection practices',
-                 'Medium', 'High', 'High',
-                 'Compliance Owner',
-                 'Develop a compliance evidence framework with periodic reviews',
-                 'Negative internal audit findings before formal audit review',
-                 'Low'),
-            ]
-        new_risk_rows = []
-        for entry in _risk_bank:
-            if len(new_risk_rows) >= risks_needed:
-                break
-            _kw = entry[0].lower().split()[:3]
-            if any(len(k) > 3 and k in conf_lc for k in _kw):
-                continue
-            if is_ar:
-                _rn, _risk, _cause, _lk, _imp, _lvl, _owner, _plan, _warn, _res = (
-                    _next_risk,) + entry
-            else:
-                _rn, _risk, _cause, _lk, _imp, _lvl, _owner, _plan, _warn, _res = (
-                    _next_risk,) + entry
-            new_risk_rows.append(
-                f'| {_rn} | {_risk} | {_cause} | {_lk} | {_imp} | {_lvl}'
-                f' | {_owner} | {_plan} | {_warn} | {_res} |'
+            _risk_block = (
+                '\n\n### المخاطر الرئيسية\n\n'
+                '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر'
+                ' | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
+                '|---|-------|-------|-----------|--------|-------------|'
+                '--------|-------------|-----------------|---------------|\n'
+                + '\n'.join(
+                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
+                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
+                    for i, r in enumerate(_risk_bank)
+                ) + '\n'
             )
-            _next_risk += 1
-            conf_lc += ' ' + entry[0].lower()
-
-        if new_risk_rows:
-            conf = _append_rows_under_header(conf, risk_hdr_re, new_risk_rows)
-            summary['risk_rows_added'] = len(new_risk_rows)
+        else:
+            _risk_block = (
+                '\n\n### Key Risks\n\n'
+                '| # | Risk | Root Cause | Likelihood | Impact | Risk Level'
+                ' | Owner | Treatment Plan | Warning Indicator | Residual Risk |\n'
+                '|---|------|-----------|-----------|--------|----------|'
+                '-----|--------------|-----------------|---------------|\n'
+                + '\n'.join(
+                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
+                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
+                    for i, r in enumerate(_risk_bank)
+                ) + '\n'
+            )
+        conf = conf.rstrip() + _risk_block
+        summary['risk_rows_added'] = len(_risk_bank)
 
     sections['confidence'] = conf
+
+    # ── Post-repair assertions ────────────────────────────────────────────
+    _n_csf_after = _count_csf_rows(conf)
+    _n_risk_after = _count_risk_rows_with_mitigation(conf)
+    _n_risk_hdrs = len(_ts_re.findall(
+        r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
+        conf, _ts_re.IGNORECASE,
+    ))
+    _csf_present = bool(_csf_heading_re.search(conf))
+    _risk_present = bool(_risk_heading_re.search(conf))
+    if (_n_csf_after < _RICHNESS_MIN_CSF_ROWS
+            or _n_risk_after < _RISK_REPAIR_MIN
+            or not _csf_present
+            or not _risk_present
+            or _n_risk_hdrs > 1):
+        import logging as _logging
+        _logging.error(
+            'repair_confidence_risk_section: assertion FAILED '
+            'csf=%d risk=%d risk_hdrs=%d csf_present=%s risk_present=%s. '
+            'Preview: %r',
+            _n_csf_after, _n_risk_after, _n_risk_hdrs,
+            _csf_present, _risk_present, conf[:600],
+        )
+        raise AssertionError(
+            f'repair_confidence_risk_section: post-repair assertions failed. '
+            f'csf_rows={_n_csf_after} (min {_RICHNESS_MIN_CSF_ROWS}), '
+            f'risk_rows={_n_risk_after} (min {_RISK_REPAIR_MIN}), '
+            f'risk_headings={_n_risk_hdrs} (must be 1), '
+            f'csf_present={_csf_present}, risk_present={_risk_present}. '
+            f'Preview: {conf[:600]!r}'
+        )
+
     return summary
 
 
@@ -30799,6 +30812,85 @@ The confidence score is based on a comprehensive assessment of the organization'
                         ]
                         if _fixed_parts_dr:
                             content = '\n\n'.join(_fixed_parts_dr)
+
+                        # ── HARD ASSERTIONS after deterministic repair ──────
+                        # These assertions verify that the repair functions
+                        # actually produced valid content before the audit gate
+                        # runs.  Any failure here surfaces a clear diagnostic
+                        # 422 rather than a confusing "audit failed" message.
+                        try:
+                            _pa_so = count_valid_objective_rows(
+                                sections.get('vision', '') or '')
+                            _pa_conf = sections.get('confidence', '') or ''
+                            _pa_risk_rows = _count_risk_rows_with_mitigation(
+                                _pa_conf)
+                            _pa_csf_present = bool(_ts_re.search(
+                                r'###\s+(?:عوامل\s+النجاح\s+الحرجة|'
+                                r'Critical\s+Success\s+Factors)',
+                                _pa_conf, _ts_re.IGNORECASE,
+                            ))
+                            _pa_risk_present = bool(_ts_re.search(
+                                r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
+                                _pa_conf, _ts_re.IGNORECASE,
+                            ))
+                            _pa_risk_hdr_count = len(_ts_re.findall(
+                                r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
+                                _pa_conf, _ts_re.IGNORECASE,
+                            ))
+                            _pa_failures = []
+                            if _pa_so < 6:
+                                _pa_failures.append(
+                                    f'vision_so_rows={_pa_so} (need ≥ 6)')
+                            if not _pa_csf_present:
+                                _pa_failures.append('confidence_csf_heading_missing')
+                            if not _pa_risk_present:
+                                _pa_failures.append('confidence_risk_heading_missing')
+                            if _pa_risk_hdr_count != 1:
+                                _pa_failures.append(
+                                    f'confidence_risk_heading_count='
+                                    f'{_pa_risk_hdr_count} (must be 1)')
+                            if _pa_risk_rows < 6:
+                                _pa_failures.append(
+                                    f'confidence_risk_rows={_pa_risk_rows}'
+                                    f' (need ≥ 6)')
+                            if _pa_failures:
+                                _pa_msg = (
+                                    'Post-repair assertions failed: '
+                                    + ', '.join(_pa_failures)
+                                )
+                                print(
+                                    f'[STRATEGY-GATE] save_decision=BLOCKED '
+                                    f'reason=post_repair_assertion '
+                                    f'failures={_pa_failures}',
+                                    flush=True,
+                                )
+                                return jsonify({
+                                    'success': False,
+                                    'strategy_id': None,
+                                    'error': (
+                                        _pa_msg
+                                        if lang == 'en' else
+                                        'فشل فحص ما بعد الإصلاح: '
+                                        + '، '.join(_pa_failures)
+                                        + '. يُرجى إعادة التوليد.'
+                                    ),
+                                    'post_repair_assertion_failures': _pa_failures,
+                                }), 422
+                            print(
+                                '[STRATEGY-DIAG] post_repair_assertions_passed '
+                                f'so_rows={_pa_so} '
+                                f'risk_rows={_pa_risk_rows} '
+                                f'csf_present={_pa_csf_present} '
+                                f'risk_present={_pa_risk_present} '
+                                f'risk_hdr_count={_pa_risk_hdr_count}',
+                                flush=True,
+                            )
+                        except (ValueError, KeyError) as _pae:
+                            print(
+                                f'[STRATEGY-DIAG] post_repair_assertion_failed: '
+                                f'{_pae}',
+                                flush=True,
+                            )
 
                     # ── POST-NORMALIZATION RE-AUDIT (prompt clause F) ───
                     # The convergence loop ran BEFORE final AR
