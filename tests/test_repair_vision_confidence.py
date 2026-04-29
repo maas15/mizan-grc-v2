@@ -618,7 +618,7 @@ def _make_malformed_risk_only_confidence():
     )
 
 
-class TestDeterministicRepairGuarantees(unittest.TestCase):
+class TestVisionConfidenceRepairThresholdAndReplacement(unittest.TestCase):
     """Tests for the new deterministic-repair behaviour introduced to fix the
     final-audit failure: threshold raised from 5→6, blocks replaced entirely."""
 
@@ -664,14 +664,9 @@ class TestDeterministicRepairGuarantees(unittest.TestCase):
         )
 
     @_skip_if_no_app
-    def test_repair_raises_assertion_on_impossible_input(self):
-        """repair_vision_objectives_if_insufficient raises AssertionError when
-        it would produce fewer than 6 valid rows — proves the assertion fires."""
-        # This is a smoke test: the canonical bank always produces 8 valid
-        # rows so the assertion never fires in normal operation.  We verify
-        # that when n_so >= 6 the function returns 0 (fast-path), so the
-        # assertion path is only exercised by an actually-thin input.
-        # A 6-row vision must return 0 (no repair).
+    def test_six_row_vision_not_repaired_above_threshold(self):
+        """A vision with exactly 6 valid SO rows must not be altered
+        (threshold is 6, so n_so >= 6 returns 0 immediately)."""
         rich_vision = (
             '## 1. الرؤية والأهداف الاستراتيجية\n\n'
             '### الأهداف الاستراتيجية\n\n'
