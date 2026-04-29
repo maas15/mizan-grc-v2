@@ -745,6 +745,541 @@ class TestValidatorPillarInitiativeCheck(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# New Test 1: environment section cannot be labeled as gap analysis
+# ---------------------------------------------------------------------------
+
+class TestEnvironmentNotMislabeledAsGapAnalysis(unittest.TestCase):
+    """1. validate_section_context_alignment detects & repairs environment
+    section mislabeled as gap analysis.
+    """
+
+    @_skip_if_no_app
+    def test_environment_mislabeled_as_gaps_detected(self):
+        """Environment section body starting with 'تحليل الفجوات' heading
+        must be detected as a misalignment.
+        """
+        sections = {
+            'environment': (
+                '## 3. تحليل الفجوات\n\n'
+                'هذا المحتوى يصف البيئة التنظيمية والتهديدات السيبرانية.\n\n'
+                'تواجه المنظمة تهديدات متعددة من برامج الفدية والتصيد الاحتيالي.\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        tags = [i[0] for i in issues]
+        self.assertTrue(
+            any('environment' in t and ('gap' in t or 'gaps' in t) for t in tags),
+            f'Expected environment mislabeled as gaps defect; got: {tags}',
+        )
+
+    @_skip_if_no_app
+    def test_environment_correct_heading_no_issue(self):
+        """Correctly labeled environment section must not trigger issues."""
+        sections = {
+            'environment': (
+                '## 3. البيئة التنظيمية والتهديدات\n\n'
+                'تواجه المنظمة تهديدات متعددة من برامج الفدية والتصيد الاحتيالي.\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        env_tags = [i[0] for i in issues if 'environment' in i[0]]
+        self.assertEqual(env_tags, [],
+                         f'Correct environment heading should not trigger issues: {env_tags}')
+
+
+# ---------------------------------------------------------------------------
+# New Test 2: roadmap section cannot be labeled as KPIs
+# ---------------------------------------------------------------------------
+
+class TestRoadmapNotMislabeledAsKpis(unittest.TestCase):
+    """2. validate_section_context_alignment detects roadmap section labeled
+    as مؤشرات الأداء الرئيسية.
+    """
+
+    @_skip_if_no_app
+    def test_roadmap_mislabeled_as_kpis_detected(self):
+        sections = {
+            'roadmap': (
+                '## 5. مؤشرات الأداء الرئيسية\n\n'
+                '| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n'
+                '|---|--------|---------|---------------|--------|\n'
+                '| 1 | تأسيس الحوكمة | CISO | الشهر 1-3 | الميثاق |\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        tags = [i[0] for i in issues]
+        self.assertTrue(
+            any('roadmap' in t and 'kpi' in t for t in tags),
+            f'Expected roadmap mislabeled as KPIs defect; got: {tags}',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test 3: KPI section cannot contain roadmap table columns
+# ---------------------------------------------------------------------------
+
+class TestKpisCannotContainRoadmapColumns(unittest.TestCase):
+    """3. validate_section_context_alignment detects roadmap columns in KPI
+    section table header.
+    """
+
+    @_skip_if_no_app
+    def test_kpi_with_roadmap_columns_detected(self):
+        sections = {
+            'kpis': (
+                '## 6. مؤشرات الأداء الرئيسية\n\n'
+                '| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n'
+                '|---|--------|---------|---------------|--------|\n'
+                '| 1 | مراجعة الحوكمة | CISO | الشهر 1-6 | تقرير |\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        tags = [i[0] for i in issues]
+        self.assertIn(
+            'kpis_contains_roadmap_columns', tags,
+            f'Expected kpis_contains_roadmap_columns; got: {tags}',
+        )
+
+    @_skip_if_no_app
+    def test_kpi_with_correct_columns_no_issue(self):
+        sections = {
+            'kpis': (
+                '## 6. مؤشرات الأداء الرئيسية\n\n'
+                '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | الإطار الزمني |\n'
+                '|---|-------------|-----------------|----------------|----------------|\n'
+                '| 1 | نسبة تطبيق الضوابط | ≥ 95% | (المطبّق ÷ الإجمالي) × 100 | خلال 12 شهراً |\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        kpi_tags = [i[0] for i in issues if 'kpi' in i[0].lower()]
+        self.assertNotIn(
+            'kpis_contains_roadmap_columns', kpi_tags,
+            'Correct KPI columns should not trigger defect',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test 4: confidence section splits success factors and risks
+# ---------------------------------------------------------------------------
+
+class TestConfidenceSectionSplit(unittest.TestCase):
+    """4. enforce_cybersecurity_technical_depth ensures confidence section has
+    separate عوامل النجاح and المخاطر الرئيسية subsections.
+    """
+
+    @_skip_if_no_app
+    def test_confidence_split_injected_when_missing(self):
+        import re as _re
+        sections = {
+            'confidence': (
+                '## 7. تقييم الثقة والمخاطر\n\n'
+                '**درجة الثقة:** 70%\n\n'
+                'توجد مخاطر تشغيلية تحتاج معالجة.\n'
+            ),
+        }
+        _APP.enforce_cybersecurity_technical_depth(
+            sections, lang='ar',
+            generation_mode='consulting',
+        )
+        conf = sections.get('confidence', '')
+        has_csf = bool(_re.search(r'###\s*عوامل\s+النجاح', conf))
+        has_risk = bool(_re.search(r'###\s*المخاطر\s+الرئيسية', conf))
+        self.assertTrue(has_csf, 'Expected "عوامل النجاح الحرجة" subsection after split')
+        self.assertTrue(has_risk, 'Expected "المخاطر الرئيسية" subsection after split')
+
+    @_skip_if_no_app
+    def test_confidence_with_both_subsections_not_duplicated(self):
+        """If both CSF and risk subsections already exist, must not be duplicated."""
+        import re as _re
+        original = (
+            '## 7. تقييم الثقة والمخاطر\n\n'
+            '**درجة الثقة:** 65%\n\n'
+            '### عوامل النجاح الحرجة:\n\n'
+            '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
+            '|---|-------|-------|--------|-------------|\n'
+            '| 1 | دعم القيادة | التزام الإدارة | حرج | قرارات المجلس |\n\n'
+            '### المخاطر الرئيسية:\n\n'
+            '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+            '|---|--------|-----------|--------|-------------|\n'
+            '| 1 | تأخر الميزانية | متوسط | عالٍ | جدولة مبكرة |\n'
+        )
+        sections = {'confidence': original}
+        _APP.enforce_cybersecurity_technical_depth(sections, lang='ar')
+        conf = sections.get('confidence', '')
+        n_csf = len(_re.findall(r'###\s*عوامل\s+النجاح', conf))
+        n_risk = len(_re.findall(r'###\s*المخاطر\s+الرئيسية', conf))
+        self.assertEqual(n_csf, 1, f'CSF header must appear exactly once; found {n_csf}')
+        self.assertEqual(n_risk, 1, f'Risk header must appear exactly once; found {n_risk}')
+
+
+# ---------------------------------------------------------------------------
+# New Test 5: duplicate "المخاطر الرئيسية" heading is removed
+# ---------------------------------------------------------------------------
+
+class TestDuplicateRiskHeaderRemoved(unittest.TestCase):
+    """5. validate_section_context_alignment collapses duplicate
+    "المخاطر الرئيسية" headings in the confidence section.
+    """
+
+    @_skip_if_no_app
+    def test_duplicate_risk_header_detected(self):
+        sections = {
+            'confidence': (
+                '## 7. تقييم الثقة والمخاطر\n\n'
+                '### المخاطر الرئيسية:\n\n'
+                '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+                '|---|--------|-----------|--------|-------------|\n'
+                '| 1 | خطر أول | متوسط | عالٍ | معالجة |\n\n'
+                '### المخاطر الرئيسية:\n\n'
+                '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+                '|---|--------|-----------|--------|-------------|\n'
+                '| 2 | خطر ثاني | عالٍ | عالٍ | معالجة أخرى |\n'
+            ),
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        tags = [i[0] for i in issues]
+        self.assertIn(
+            'duplicate_risk_header', tags,
+            f'Expected duplicate_risk_header issue; got: {tags}',
+        )
+
+    @_skip_if_no_app
+    def test_duplicate_risk_header_repaired(self):
+        """After validate_section_context_alignment, only one risk header remains."""
+        import re as _re
+        sections = {
+            'confidence': (
+                '## 7. تقييم الثقة والمخاطر\n\n'
+                '### المخاطر الرئيسية:\n\n'
+                '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+                '|---|--------|-----------|--------|-------------|\n'
+                '| 1 | خطر أول | متوسط | عالٍ | معالجة |\n\n'
+                '### المخاطر الرئيسية:\n\n'
+                '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+                '|---|--------|-----------|--------|-------------|\n'
+                '| 2 | خطر ثاني | عالٍ | عالٍ | معالجة أخرى |\n'
+            ),
+        }
+        _APP.validate_section_context_alignment(sections, lang='ar')
+        conf = sections.get('confidence', '')
+        n_risk_hdrs = len(_re.findall(r'###\s*المخاطر\s+الرئيسية', conf))
+        self.assertEqual(n_risk_hdrs, 1,
+                         f'Expected 1 risk header after repair; found {n_risk_hdrs}')
+
+
+# ---------------------------------------------------------------------------
+# New Test 6: Arabic cybersecurity strategy includes at least 8 technical
+# capabilities
+# ---------------------------------------------------------------------------
+
+class TestArabicCybersecurityCapabilities(unittest.TestCase):
+    """6. Arabic cybersecurity strategy must mention key technical capabilities."""
+
+    @_skip_if_no_app
+    def test_strategy_with_all_capabilities_no_cap_defect(self):
+        """Strategy with all 8 capabilities must not trigger missing-cap defect."""
+        sections = {
+            'vision': (
+                'IAM PAM MFA توعية تصيد استجابة حوادث SIEM SOC '
+                'ثغرات نسخ احتياطي تعافي حماية البيانات تشفير موردين '
+                'أطراف ثالثة سلسلة الإمداد\n\n'
+                '| # | الهدف | مؤشر | مبرر | الإطار الزمني |\n'
+                '|---|-------|------|------|---------------|\n'
+                '| 1 | هدف 1 | 100% | مبرر | خلال 12 شهراً |\n'
+                '| 2 | هدف 2 | ≥95% | مبرر | خلال 12 شهراً |\n'
+                '| 3 | هدف 3 | MTTD | مبرر | خلال 9 أشهر |\n'
+                '| 4 | هدف 4 | ≥90% | مبرر | خلال 12 شهراً |\n'
+            ),
+            'pillars': '',
+            'environment': '',
+            'gaps': (
+                '| # | الفجوة | الوصف | الأولوية | الحالة |\n'
+                '|---|-------|-------|---------|--------|\n'
+                '| 1 | فجوة أ | وصف | حرجة | مفتوحة |\n'
+                '| 2 | فجوة ب | وصف | عالية | مفتوحة |\n'
+            ),
+            'roadmap': (
+                '| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n'
+                '|---|--------|---------|---------------|--------|\n'
+                '| 1 | نشاط 1 | CISO | الشهر 1-3 | مخرج 1 |\n'
+                '| 2 | نشاط 2 | IT | الشهر 3-6 | مخرج 2 |\n'
+                '| 3 | نشاط 3 | SOC | الشهر 4-9 | مخرج 3 |\n'
+                '| 4 | نشاط 4 | HR | الشهر 6-12 | مخرج 4 |\n'
+            ),
+            'kpis': (
+                '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | الإطار الزمني |\n'
+                '|---|-------------|-----------------|----------------|----------------|\n'
+                '| 1 | مؤشر 1 | ≥95% | حساب | خلال 12 شهراً |\n'
+                '| 2 | مؤشر 2 | ≥90% | حساب | خلال 9 أشهر |\n'
+                '| 3 | مؤشر 3 | ≤4 | حساب | خلال 6 أشهر |\n'
+                '| 4 | مؤشر 4 | 100% | حساب | خلال 6 أشهر |\n'
+            ),
+            'confidence': (
+                '**درجة الثقة:** 65%\n\n'
+                '### مبررات التقييم\n\nمبررات.\n\n'
+                '### عوامل النجاح الحرجة:\n\n'
+                '| # | العامل | الوصف | الأهمية |\n'
+                '|---|-------|-------|--------|\n'
+                '| 1 | دعم | وصف | حرج |\n'
+                '| 2 | موارد | وصف | عالٍ |\n'
+                '| 3 | ميزانية | وصف | عالٍ |\n'
+                '| 4 | تقنية | وصف | متوسط |\n'
+                '### المخاطر الرئيسية:\n\n'
+                '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+                '|---|--------|-----------|--------|-------------|\n'
+                '| 1 | خطر 1 | متوسط | عالٍ | معالجة 1 |\n'
+                '| 2 | خطر 2 | متوسط | عالٍ | معالجة 2 |\n'
+                '| 3 | خطر 3 | عالٍ | عالٍ | معالجة 3 |\n'
+                '| 4 | خطر 4 | متوسط | متوسط | معالجة 4 |\n'
+            ),
+        }
+        defects = _APP.validate_arabic_strategy_semantic_richness(
+            sections, lang='ar', doc_subtype='technical')
+        defect_tags = [d[0] for d in defects]
+        self.assertNotIn(
+            'cybersecurity_capabilities_missing', defect_tags,
+            f'Strategy with all caps should not flag missing; defects: {defect_tags}',
+        )
+
+    @_skip_if_no_app
+    def test_empty_strategy_flags_missing_capabilities(self):
+        """Thin strategy with no capability keywords must trigger the defect."""
+        sections = {k: '' for k in
+                    ('vision', 'pillars', 'environment', 'gaps',
+                     'roadmap', 'kpis', 'confidence')}
+        defects = _APP.validate_arabic_strategy_semantic_richness(
+            sections, lang='ar', doc_subtype='technical')
+        defect_tags = [d[0] for d in defects]
+        self.assertIn(
+            'cybersecurity_capabilities_missing', defect_tags,
+            f'Empty strategy should flag missing capabilities; defects: {defect_tags}',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test 7: gap guides are not identical repeated templates
+# ---------------------------------------------------------------------------
+
+class TestGapGuidesUnique(unittest.TestCase):
+    """7. Gap guides generated for different gap types must not be identical."""
+
+    @_skip_if_no_app
+    def test_governance_and_iam_guides_differ(self):
+        sections_gov = {'gaps': (
+            '## 4. تحليل الفجوات\n\n'
+            '| # | الفجوة | الوصف | الأولوية | الحالة |\n'
+            '|---|-------|-------|---------|--------|\n'
+            '| 1 | حوكمة | غياب لجنة الحوكمة الرسمية | حرجة | مفتوحة |\n'
+        )}
+        sections_iam = {'gaps': (
+            '## 4. تحليل الفجوات\n\n'
+            '| # | الفجوة | الوصف | الأولوية | الحالة |\n'
+            '|---|-------|-------|---------|--------|\n'
+            '| 1 | إدارة الهوية | غياب PAM وMFA | حرجة | مفتوحة |\n'
+        )}
+        _APP.ensure_gap_guide_coverage(
+            sections_gov, 'ar', 'Cyber Security', 'NCA ECC')
+        _APP.ensure_gap_guide_coverage(
+            sections_iam, 'ar', 'Cyber Security', 'NCA ECC')
+        gov_guide = sections_gov.get('gaps', '')
+        iam_guide = sections_iam.get('gaps', '')
+        # Both must have guide content
+        self.assertIn('دليل', gov_guide, 'Governance gap should have guide')
+        self.assertIn('دليل', iam_guide, 'IAM gap should have guide')
+        # They must not be identical
+        self.assertNotEqual(
+            gov_guide.strip(), iam_guide.strip(),
+            'Governance and IAM gap guides must not be identical',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test 8: preview/PDF/DOCX content has no trace comments
+# ---------------------------------------------------------------------------
+
+class TestNoTraceCommentsInExport(unittest.TestCase):
+    """8. Synthesized output from enforce_cybersecurity_technical_depth must
+    contain no trace comments.
+    """
+
+    @_skip_if_no_app
+    def test_cyber_depth_enrichment_no_trace_comments(self):
+        sections = {k: '' for k in
+                    ('vision', 'pillars', 'environment', 'gaps',
+                     'roadmap', 'kpis', 'confidence')}
+        _APP.enforce_cybersecurity_technical_depth(
+            sections, lang='ar',
+            generation_mode='consulting',
+        )
+        for key, val in sections.items():
+            self.assertFalse(
+                _has_trace_comments(val or ''),
+                f'Section "{key}" has trace comments after cyber depth enrichment',
+            )
+
+    @_skip_if_no_app
+    def test_reapply_canonical_headings_no_trace_in_heading(self):
+        sections = {
+            'environment': (
+                '## 3. تحليل الفجوات <!-- trace:section=environment;src=ai;key=h1 -->\n\n'
+                'بيئة تنظيمية وتهديدات.\n'
+            ),
+        }
+        _APP._reapply_canonical_section_headings(sections, lang='ar')
+        env = sections.get('environment', '')
+        self.assertIn('البيئة التنظيمية', env,
+                      'Canonical heading must be applied')
+        heading_line = env.splitlines()[0] if env else ''
+        self.assertFalse(
+            _has_trace_comments(heading_line),
+            'Canonical heading line must not contain trace comments',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test 9: python -m py_compile app.py passes (re-verified after new code)
+# ---------------------------------------------------------------------------
+
+class TestPyCompileAfterNewCode(unittest.TestCase):
+    """9. app.py must still compile after all new code was added."""
+
+    def test_app_py_compiles_with_new_functions(self):
+        import py_compile
+        app_path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        try:
+            py_compile.compile(app_path, doraise=True)
+        except py_compile.PyCompileError as exc:
+            self.fail(f'app.py has a syntax error: {exc}')
+
+
+# ---------------------------------------------------------------------------
+# New Test 10: existing trace-table-safety tests still pass (re-import guard)
+# ---------------------------------------------------------------------------
+
+class TestExistingTraceTableSafetyStillPass(unittest.TestCase):
+    """10. The core trace-table safety helpers still work correctly after
+    new code was added.
+    """
+
+    def test_strip_trace_comment_semicolon_format(self):
+        if not _USING_REAL_APP:
+            self.skipTest('app.py not importable')
+        new_style = '<!-- trace:section=vision;src=ai;key=row_1 -->'
+        result = _APP._strip_trace_comments(f'text {new_style} more')
+        self.assertNotIn('trace:', result)
+
+    def test_strip_trace_comment_pipe_format(self):
+        if not _USING_REAL_APP:
+            self.skipTest('app.py not importable')
+        old_style = '<!-- trace:section=vision|src=ai|key=row_1 -->'
+        result = _APP._strip_trace_comments(f'text {old_style} more')
+        self.assertNotIn('trace:', result)
+
+    def test_count_valid_objective_rows_unchanged(self):
+        if not _USING_REAL_APP:
+            self.skipTest('app.py not importable')
+        table = (
+            '### Strategic Objectives\n\n'
+            '| # | Objective | Target Metric | Justification | Timeframe |\n'
+            '|---|-----------|---------------|---------------|----------|\n'
+            '| 1 | Governance | 100% | Required | 12 months |\n'
+            '| 2 | Awareness | 90% | Phishing risk | 6 months |\n'
+            '| 3 | Monitoring | SIEM≥95% | Detection gaps | 18 months |\n'
+            '| 4 | Compliance | 100% | Regulatory | 24 months |\n'
+        )
+        n = _APP.count_valid_objective_rows(table)
+        self.assertGreaterEqual(n, 4, f'Expected ≥4 SO rows; got {n}')
+
+
+# ---------------------------------------------------------------------------
+# New Test: validate_section_context_alignment — clean input returns no issues
+# ---------------------------------------------------------------------------
+
+class TestSectionAlignmentCleanInput(unittest.TestCase):
+    """validate_section_context_alignment returns no serious issues for
+    properly assembled sections.
+    """
+
+    @_skip_if_no_app
+    def test_clean_sections_no_alignment_issues(self):
+        sections = {
+            'vision': '## 1. الرؤية والأهداف الاستراتيجية\n\nمحتوى الرؤية.\n',
+            'pillars': '## 2. الركائز الاستراتيجية\n\nمحتوى الركائز.\n',
+            'environment': '## 3. البيئة التنظيمية والتهديدات\n\nمحتوى البيئة.\n',
+            'gaps': (
+                '## 4. تحليل الفجوات\n\n'
+                '| # | الفجوة | الوصف | الأولوية | الحالة |\n'
+                '|---|-------|-------|---------|--------|\n'
+                '| 1 | فجوة | وصف | عالية | مفتوحة |\n'
+            ),
+            'roadmap': '## 5. خارطة الطريق التنفيذية\n\nمحتوى الخارطة.\n',
+            'kpis': (
+                '## 6. مؤشرات الأداء الرئيسية\n\n'
+                '| # | وصف المؤشر | القيمة | الإطار الزمني |\n'
+                '|---|------------|--------|---------------|\n'
+                '| 1 | امتثال | ≥95% | خلال 12 شهراً |\n'
+            ),
+            'confidence': '## 7. تقييم الثقة والمخاطر\n\n**درجة الثقة:** 70%\n',
+        }
+        issues = _APP.validate_section_context_alignment(sections, lang='ar')
+        # Exclude heading-mismatch issues triggered by _CANONICAL_SECTION_HEADINGS
+        # comparison (those are validated separately); focus on cross-section problems
+        serious_issues = [
+            i for i in issues
+            if not i[0].endswith('_canonical_heading_mismatch')
+        ]
+        self.assertEqual(
+            serious_issues, [],
+            f'Clean sections should have no cross-section alignment issues: {issues}',
+        )
+
+
+# ---------------------------------------------------------------------------
+# New Test: enforce_cybersecurity_technical_depth return value shape
+# ---------------------------------------------------------------------------
+
+class TestCyberDepthEnrichmentReturnValue(unittest.TestCase):
+    """enforce_cybersecurity_technical_depth returns the expected dict shape."""
+
+    @_skip_if_no_app
+    def test_returns_dict_with_expected_keys(self):
+        sections = {k: '' for k in
+                    ('vision', 'pillars', 'environment', 'gaps',
+                     'roadmap', 'kpis', 'confidence')}
+        result = _APP.enforce_cybersecurity_technical_depth(
+            sections, lang='ar',
+            generation_mode='consulting',
+        )
+        self.assertIsInstance(result, dict)
+        for key in ('depth_summary', 'heading_repairs',
+                    'alignment_issues', 'capability_gaps'):
+            self.assertIn(key, result, f'Missing key "{key}" in result')
+
+    @_skip_if_no_app
+    def test_canonical_headings_reapplied_after_enrichment(self):
+        """After enforce_cybersecurity_technical_depth, wrong headings are replaced."""
+        sections = {
+            'environment': (
+                '## 3. تحليل الفجوات\n\n'
+                'بيئة وتهديدات سيبرانية.\n'
+            ),
+            'roadmap': (
+                '## 5. مؤشرات الأداء الرئيسية\n\n'
+                '| # | النشاط | المسؤول | المخرج |\n'
+                '|---|--------|---------|-------|\n'
+                '| 1 | نشاط | CISO | مخرج |\n'
+            ),
+        }
+        _APP.enforce_cybersecurity_technical_depth(sections, lang='ar')
+        env = sections.get('environment', '')
+        roadmap = sections.get('roadmap', '')
+        self.assertIn('البيئة التنظيمية', env,
+                      'Environment must have canonical heading after enrichment')
+        self.assertIn('خارطة الطريق', roadmap,
+                      'Roadmap must have canonical heading after enrichment')
+
+
 if __name__ == '__main__':
     print(f'Using real app.py: {_USING_REAL_APP}')
     unittest.main(verbosity=2)
