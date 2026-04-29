@@ -1105,8 +1105,6 @@ class TestNoTraceCommentsInExport(unittest.TestCase):
 
     @_skip_if_no_app
     def test_cyber_depth_enrichment_no_trace_comments(self):
-        import re as _re
-        _trace_re = _re.compile(r'<!--\s*trace:[^>]*?-->', _re.IGNORECASE)
         sections = {k: '' for k in
                     ('vision', 'pillars', 'environment', 'gaps',
                      'roadmap', 'kpis', 'confidence')}
@@ -1116,14 +1114,12 @@ class TestNoTraceCommentsInExport(unittest.TestCase):
         )
         for key, val in sections.items():
             self.assertFalse(
-                bool(_trace_re.search(val or '')),
+                _has_trace_comments(val or ''),
                 f'Section "{key}" has trace comments after cyber depth enrichment',
             )
 
     @_skip_if_no_app
     def test_reapply_canonical_headings_no_trace_in_heading(self):
-        import re as _re
-        _trace_re = _re.compile(r'<!--\s*trace:[^>]*?-->', _re.IGNORECASE)
         sections = {
             'environment': (
                 '## 3. تحليل الفجوات <!-- trace:section=environment;src=ai;key=h1 -->\n\n'
@@ -1136,7 +1132,7 @@ class TestNoTraceCommentsInExport(unittest.TestCase):
                       'Canonical heading must be applied')
         heading_line = env.splitlines()[0] if env else ''
         self.assertFalse(
-            bool(_trace_re.search(heading_line)),
+            _has_trace_comments(heading_line),
             'Canonical heading line must not contain trace comments',
         )
 
