@@ -3338,6 +3338,210 @@ def strategy_filename_slug(domain_raw: str) -> str:
     """
     return f"{domain_slug(domain_raw)}_strategy"
 
+
+# ── Strict domain resolution (must NOT silently fall back to cyber) ─────────
+class DomainResolutionError(ValueError):
+    """Raised when a strategy-generation/export request is missing or has an
+    unrecognised domain. Strategy generation, preview, PDF, DOCX and final
+    audit MUST surface this error rather than silently default to Cyber
+    Security. Only UI placeholders may use ``normalize_domain`` directly.
+    """
+
+
+def normalize_domain_strict(raw) -> str:
+    """Like ``normalize_domain`` but raises ``DomainResolutionError`` for
+    missing or unrecognised input instead of defaulting to ``cyber``.
+
+    Use this in any code path that produces strategy content, preview
+    payloads, exports (PDF/DOCX), or final audit. UI placeholders that
+    legitimately have no active document may continue to use
+    ``normalize_domain``.
+    """
+    if raw is None:
+        raise DomainResolutionError("domain is required")
+    if not isinstance(raw, str):
+        raise DomainResolutionError(f"domain must be a string, got {type(raw).__name__}")
+    s = raw.strip()
+    if not s:
+        raise DomainResolutionError("domain is required")
+    code = _DOMAIN_CODE_MAP.get(s) or _DOMAIN_CODE_MAP.get(s.lower())
+    if code:
+        return code
+    lower = s.lower()
+    for key, val in _DOMAIN_CODE_MAP.items():
+        if key.lower() == lower:
+            return val
+    raise DomainResolutionError(
+        f"unrecognised domain: {raw!r}. "
+        f"Allowed: {sorted(set(_DOMAIN_CODE_MAP.values()))}"
+    )
+
+
+# Forbidden cross-domain term lists per canonical domain code.
+# Used by validate_domain_isolation() and ai_repair_strategy_section() to
+# detect/prevent cyber contamination of non-cyber strategies (and vice versa).
+# Terms here are matched case-insensitively as substrings; callers may
+# selectively suppress a term if the user explicitly selected a framework
+# whose vocabulary legitimately includes it (e.g. NCA ECC for an ERM doc
+# whose declared scope is cyber risk).
+_DOMAIN_FORBIDDEN_TERMS: dict = {
+    "cyber": [
+        # Cyber strategies should not be owned by these non-cyber bodies as
+        # the *primary* operating model (cross-functional support is fine).
+        "Data Governance Committee", "لجنة حوكمة البيانات",
+        "AI Ethics Board", "مجلس أخلاقيات",
+        "Digital Transformation Office", "مكتب التحول الرقمي",
+    ],
+    "data": [
+        "NCA ECC", "NCA DCC", "MFA", " PAM ", " SIEM", " SOC ",
+        " EDR", " XDR", "MTTD", "MTTR", "phishing", "التصيد",
+        "CISO", "CSIRT", "Security Operations Center",
+        "الأمن السيبراني",
+    ],
+    "ai": [
+        "NCA ECC", "NCA DCC", "MFA", " PAM ", " SIEM", " SOC ",
+        " EDR", " XDR", "MTTD", "MTTR", "phishing", "التصيد",
+        "CISO", "CSIRT", "Security Operations Center",
+    ],
+    "dt": [
+        "NCA ECC", "NCA DCC", "MFA", " PAM ", " SIEM", " SOC ",
+        " EDR", " XDR", "MTTD", "MTTR", "phishing", "التصيد",
+        "CISO", "CSIRT", "Security Operations Center",
+    ],
+    "erm": [
+        # ERM may legitimately discuss cyber risk; only flag when those terms
+        # become the *primary* framework, which we proxy via NCA ECC/DCC + SOC.
+        "NCA ECC", "NCA DCC", " SIEM", " SOC ", " EDR", " XDR",
+        "MTTD", "MTTR", "phishing simulation", "محاكاة التصيد",
+    ],
+    "global": [
+        # Global Standards must not blindly inject NCA ECC/DCC.
+        "NCA ECC", "NCA DCC",
+    ],
+}
+
+# Allowed capability vocabulary per domain (for AI repair prompts).
+_DOMAIN_CAPABILITY_VOCAB: dict = {
+    "cyber": [
+        "governance", "threat management", "vulnerability management",
+        "identity & access", "incident response", "SOC operations",
+        "third-party cyber risk", "secure development", "cloud security",
+    ],
+    "data": [
+        "data governance", "data quality", "data catalog", "metadata",
+        "data lineage", "data privacy", "data retention",
+        "data stewardship", "master data management", "data issue resolution",
+    ],
+    "ai": [
+        "AI governance", "model inventory", "model risk management",
+        "bias testing", "explainability", "human oversight",
+        "AI incident management", "model monitoring",
+        "training-data quality", "ethical approvals",
+    ],
+    "dt": [
+        "digital service adoption", "process automation",
+        "cloud / service availability", "integration & API governance",
+        "user satisfaction", "service maturity",
+        "digital project delivery",
+    ],
+    "erm": [
+        "risk register completeness", "risk appetite breaches",
+        "KRI reporting", "mitigation plan closure",
+        "risk assessments", "board reporting",
+        "incident & loss events",
+    ],
+    "global": [
+        "standards conformance", "certification readiness",
+        "audit findings closure", "control coverage",
+        "documentation completeness", "training & competence",
+    ],
+}
+
+# Default role vocabulary per domain (owners/stewards in tables).
+_DOMAIN_ROLE_VOCAB: dict = {
+    "cyber":  ["CISO", "SOC Manager", "Cybersecurity Governance Lead"],
+    "data":   ["Chief Data Officer", "Data Protection Officer (DPO)",
+               "Data Governance Committee", "Data Steward"],
+    "ai":     ["Head of AI Governance", "AI Ethics Officer",
+               "Model Risk Manager", "AI Compliance Lead"],
+    "dt":     ["Chief Digital Officer", "Digital Transformation Office",
+               "Innovation Lead"],
+    "erm":    ["Chief Risk Officer (CRO)", "Risk Management Committee",
+               "Risk Owner", "Risk Analyst"],
+    "global": ["Chief Compliance Officer (CCO)", "Standards Liaison",
+               "Audit Coordinator"],
+}
+
+
+def get_strategy_domain_context(domain, lang: str = "en",
+                                selected_frameworks=None) -> dict:
+    """Return the canonical context bundle for a strategy domain.
+
+    This is the single source of truth used by:
+      * AI prompt builders (per-section + repair)
+      * ``validate_domain_isolation`` (forbidden-term checks)
+      * Per-domain validation rules
+
+    Raises ``DomainResolutionError`` for missing/unknown domains so that
+    strategy-generation paths cannot silently fall back to Cyber Security.
+
+    Returns a dict with keys::
+
+        code                  - canonical domain code (cyber/data/ai/dt/erm/global)
+        display_en            - canonical English display name
+        display_ar            - canonical Arabic display name
+        display               - language-appropriate display name
+        lang                  - 'en' or 'ar'
+        selected_frameworks   - list[str], may be empty
+        forbidden_terms       - list[str] cross-domain leakage terms (case-insensitive)
+        allowed_capabilities  - list[str] vocab the AI may draw from
+        role_vocab            - list[str] default owners/stewards
+        validation_rules      - dict of per-domain numeric requirements
+    """
+    code = normalize_domain_strict(domain)
+    selected_frameworks = list(selected_frameworks or [])
+    # If a selected framework legitimately contains a "forbidden" term we
+    # remove it from the forbidden list (e.g. user explicitly picks NCA ECC
+    # for an ERM doc whose scope is cyber risk).
+    forbidden = list(_DOMAIN_FORBIDDEN_TERMS.get(code, []))
+    fw_blob = " ".join(selected_frameworks).lower()
+    forbidden = [t for t in forbidden if t.strip().lower() not in fw_blob]
+    return {
+        "code":                 code,
+        "display_en":           _DOMAIN_DISPLAY_EN[code],
+        "display_ar":           _DOMAIN_DISPLAY_AR[code],
+        "display":              _DOMAIN_DISPLAY_AR[code] if lang == "ar" else _DOMAIN_DISPLAY_EN[code],
+        "lang":                 "ar" if lang == "ar" else "en",
+        "selected_frameworks":  selected_frameworks,
+        "forbidden_terms":      forbidden,
+        "allowed_capabilities": list(_DOMAIN_CAPABILITY_VOCAB.get(code, [])),
+        "role_vocab":           list(_DOMAIN_ROLE_VOCAB.get(code, [])),
+        "validation_rules": {
+            "min_kpi_rows":            6,
+            "min_objective_rows":      5,
+            "min_risk_rows":           5,
+            "min_pillar_initiatives":  3,
+        },
+    }
+
+
+def resolve_export_domain(raw, artifact_type: str = "strategy") -> str:
+    """Resolve a domain for PDF/DOCX/share export endpoints.
+
+    For ``artifact_type='strategy'`` the domain is required and must be a
+    recognised value — this prevents exports from silently defaulting to
+    Cyber Security. For non-strategy artifacts (policies, gap remediation,
+    etc.) returns the input unchanged.
+
+    Returns the canonical English display name on success.
+    Raises ``DomainResolutionError`` on missing/unknown strategy domain.
+    """
+    if (artifact_type or "strategy") != "strategy":
+        return (raw or "").strip()
+    code = normalize_domain_strict((raw or "").strip() or None)
+    return _DOMAIN_DISPLAY_EN[code]
+
+
 # ── END canonical domain registry ────────────────────────────────────────────
 
 # ============================================================================
@@ -12566,8 +12770,14 @@ def api_generate_strategy_async():
     if not data.get('domain'):
         return jsonify({'error': 'domain required'}), 400
 
-    # Enforce usage limit synchronously before spawning the thread
-    domain   = data.get('domain', 'Cyber Security')
+    # Enforce usage limit synchronously before spawning the thread.
+    # Strict resolution — strategy generation must NEVER silently default to
+    # Cyber Security. (See get_strategy_domain_context / normalize_domain_strict.)
+    try:
+        _dcode = normalize_domain_strict(data.get('domain'))
+        domain = _DOMAIN_DISPLAY_EN[_dcode]
+    except DomainResolutionError as _de:
+        return jsonify({'error': str(_de)}), 400
     user_id  = session.get('user_id', 1)
     try:
         can_generate, used, limit = check_usage_limit(user_id, 'strategies', domain)
@@ -26194,7 +26404,13 @@ def api_generate_strategy():
     
     try:
         data = request.json
-        domain = data.get('domain', 'Cyber Security')
+        # Strict domain resolution — never silently default to Cyber Security
+        # for strategy generation. See get_strategy_domain_context().
+        try:
+            _dcode = normalize_domain_strict(data.get('domain') if data else None)
+            domain = _DOMAIN_DISPLAY_EN[_dcode]
+        except DomainResolutionError as _de:
+            return jsonify({'success': False, 'error': str(_de)}), 400
         print(f"DEBUG: Domain = {domain}", flush=True)
 
         # Board Summary mode — skips per-gap/per-KPI guide injection
@@ -36664,7 +36880,12 @@ def api_generate_pdf_async():
     org_name = data.get('org_name', '').strip()
     sector   = data.get('sector', '').strip()
     doc_type = data.get('doc_type', 'Strategy Document')
-    domain   = data.get('domain', '')
+    # Strict resolution — never silently default to Cyber Security on export.
+    try:
+        domain = resolve_export_domain(data.get('domain', ''),
+                                       data.get('artifact_type', 'strategy'))
+    except DomainResolutionError as _de:
+        return jsonify({'error': f'PDF export: {_de}'}), 400
 
     if not content:
         return jsonify({'error': 'No content'}), 400
@@ -36825,7 +37046,12 @@ def api_generate_docx_async():
     org_name = data.get('org_name', '').strip()
     sector   = data.get('sector', '').strip()
     doc_type = data.get('doc_type', 'Strategy Document')
-    domain   = data.get('domain', '')
+    # Strict resolution — never silently default to Cyber Security on export.
+    try:
+        domain = resolve_export_domain(data.get('domain', ''),
+                                       data.get('artifact_type', 'strategy'))
+    except DomainResolutionError as _de:
+        return jsonify({'error': f'DOCX export: {_de}'}), 400
 
     if not content:
         return jsonify({'error': 'No content'}), 400
@@ -38114,7 +38340,12 @@ def api_generate_docx():
     org_name = data.get('org_name', '').strip()
     sector   = data.get('sector', '').strip()
     doc_type = data.get('doc_type', 'Strategy Document')
-    domain   = data.get('domain', '')
+    # Strict resolution — never silently default to Cyber Security on export.
+    try:
+        domain = resolve_export_domain(data.get('domain', ''),
+                                       data.get('artifact_type', 'strategy'))
+    except DomainResolutionError as _de:
+        return jsonify({'error': f'DOCX export: {_de}'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _art_id   = data.get('artifact_id')
@@ -38215,6 +38446,14 @@ def api_generate_pdf():
     sector_pdf   = data.get('sector', '').strip()
     doc_type_pdf = data.get('doc_type', 'Strategy Document')
     domain_pdf   = data.get('domain', '').strip()
+    # Strict resolution for exports — never silently default to Cyber Security.
+    # When the artifact is a strategy, missing/unknown domain is a hard error.
+    if data.get('artifact_type', 'strategy') == 'strategy':
+        try:
+            _dcp = normalize_domain_strict(domain_pdf or None)
+            domain_pdf = _DOMAIN_DISPLAY_EN[_dcp]
+        except DomainResolutionError as _de:
+            return jsonify({'error': f'PDF export: {_de}'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _gen_mode_p = data.get('generation_mode', 'drafting')
