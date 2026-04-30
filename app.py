@@ -12894,7 +12894,9 @@ def api_generate_strategy_async():
         _dcode = normalize_domain_strict(data.get('domain'))
         domain = _DOMAIN_DISPLAY_EN[_dcode]
     except DomainResolutionError as _de:
-        return jsonify({'error': str(_de)}), 400
+        print(f"[DOMAIN] strategy generation rejected: {_de}", flush=True)
+        return jsonify({'error': 'Missing or unsupported strategy domain. '
+                                  'Please select a valid domain.'}), 400
     user_id  = session.get('user_id', 1)
     try:
         can_generate, used, limit = check_usage_limit(user_id, 'strategies', domain)
@@ -26888,7 +26890,12 @@ def api_generate_strategy():
             _dcode = normalize_domain_strict(data.get('domain') if data else None)
             domain = _DOMAIN_DISPLAY_EN[_dcode]
         except DomainResolutionError as _de:
-            return jsonify({'success': False, 'error': str(_de)}), 400
+            print(f"[DOMAIN] async strategy rejected: {_de}", flush=True)
+            return jsonify({
+                'success': False,
+                'error': 'Missing or unsupported strategy domain. '
+                         'Please select a valid domain.',
+            }), 400
         print(f"DEBUG: Domain = {domain}", flush=True)
 
         # Board Summary mode — skips per-gap/per-KPI guide injection
@@ -37425,7 +37432,9 @@ def api_generate_pdf_async():
         domain = resolve_export_domain(data.get('domain', ''),
                                        data.get('artifact_type', 'strategy'))
     except DomainResolutionError as _de:
-        return jsonify({'error': f'PDF export: {_de}'}), 400
+        print(f"[DOMAIN] PDF async export rejected: {_de}", flush=True)
+        return jsonify({'error': 'Missing or unsupported strategy domain '
+                                  'for PDF export.'}), 400
 
     if not content:
         return jsonify({'error': 'No content'}), 400
@@ -37591,7 +37600,9 @@ def api_generate_docx_async():
         domain = resolve_export_domain(data.get('domain', ''),
                                        data.get('artifact_type', 'strategy'))
     except DomainResolutionError as _de:
-        return jsonify({'error': f'DOCX export: {_de}'}), 400
+        print(f"[DOMAIN] DOCX async export rejected: {_de}", flush=True)
+        return jsonify({'error': 'Missing or unsupported strategy domain '
+                                  'for DOCX export.'}), 400
 
     if not content:
         return jsonify({'error': 'No content'}), 400
@@ -38885,7 +38896,9 @@ def api_generate_docx():
         domain = resolve_export_domain(data.get('domain', ''),
                                        data.get('artifact_type', 'strategy'))
     except DomainResolutionError as _de:
-        return jsonify({'error': f'DOCX export: {_de}'}), 400
+        print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
+        return jsonify({'error': 'Missing or unsupported strategy domain '
+                                  'for DOCX export.'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _art_id   = data.get('artifact_id')
@@ -39136,7 +39149,9 @@ def api_generate_pdf():
             _dcp = normalize_domain_strict(domain_pdf or None)
             domain_pdf = _DOMAIN_DISPLAY_EN[_dcp]
         except DomainResolutionError as _de:
-            return jsonify({'error': f'PDF export: {_de}'}), 400
+            print(f"[DOMAIN] PDF export rejected: {_de}", flush=True)
+            return jsonify({'error': 'Missing or unsupported strategy domain '
+                                      'for PDF export.'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _gen_mode_p = data.get('generation_mode', 'drafting')

@@ -23,9 +23,12 @@ import unittest
 os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key')
 os.environ.setdefault('DATABASE_URL', 'sqlite:///tmp/test_pdf_safety.db')
+# Force AI providers OFF (consistent with tests/test_domain_isolation.py).
 os.environ['OPENAI_API_KEY']    = ''
 os.environ['ANTHROPIC_API_KEY'] = ''
 os.environ['GOOGLE_API_KEY']    = ''
+os.environ['GROQ_API_KEY']      = ''
+os.environ['DEEPSEEK_API_KEY']  = ''
 
 _APP = None
 try:
