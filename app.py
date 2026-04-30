@@ -22660,8 +22660,8 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
     Each tuple: (objective, target, justification, timeframe).
     Falls back to cybersecurity bank when domain is not specifically mapped.
     """
-    dl = (domain or '').lower()
-    if 'artificial' in dl or ' ai' in dl or dl == 'ai':
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
         return [
             (f'تأسيس إطار حوكمة الذكاء الاصطناعي وفق {fw_short}',
              '100% اعتماد إطار الحوكمة وتفعيل لجنة التوجيه',
@@ -22688,7 +22688,7 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
              'الحفاظ على دقة النماذج واكتشاف التدهور مبكراً',
              'خلال 18 شهراً'),
         ]
-    if 'data' in dl:
+    if _dc == 'data':
         return [
             (f'تأسيس إطار حوكمة البيانات وفق {fw_short}',
              '100% اعتماد إطار حوكمة البيانات وتفعيل لجنة التوجيه',
@@ -22715,7 +22715,7 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
              'تلبية المتطلبات القانونية والتنظيمية للاحتفاظ',
              'خلال 12 أشهر'),
         ]
-    if 'enterprise risk' in dl or 'erm' in dl:
+    if _dc == 'erm':
         return [
             (f'تأسيس إطار إدارة المخاطر المؤسسية وفق {fw_short}',
              '100% اعتماد إطار إدارة المخاطر وتفعيل لجنة المخاطر',
@@ -22742,7 +22742,7 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
              'تحقيق مستوى المخاطر المتبقية ضمن شهية المؤسسة',
              'خلال 18 أشهر'),
         ]
-    if 'digital' in dl:
+    if _dc == 'dt':
         return [
             (f'تأسيس إطار حوكمة التحول الرقمي وفق {fw_short}',
              '100% اعتماد إطار الحوكمة وتفعيل لجنة التحول الرقمي',
@@ -22769,7 +22769,7 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
              'التحقق من تحقيق الأهداف وتصحيح المسار',
              'خلال 18 أشهر'),
         ]
-    if 'global' in dl or 'standards' in dl:
+    if _dc == 'global':
         return [
             (f'الامتثال لمتطلبات {fw_short} الدولية',
              f'≥ 95% امتثال لجميع متطلبات {fw_short}',
@@ -22835,8 +22835,8 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
 
 def _build_domain_so_bank_en(domain, fw_short, sector):
     """Return English Strategic Objective tuples for the given domain."""
-    dl = (domain or '').lower()
-    if 'artificial' in dl or ' ai' in dl or dl == 'ai':
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
         return [
             (f'Establish AI Governance Framework per {fw_short}',
              '100% governance framework adopted; AI steering committee active',
@@ -22863,7 +22863,7 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
              'Maintain accuracy and detect model degradation proactively',
              'Within 18 months'),
         ]
-    if 'data' in dl:
+    if _dc == 'data':
         return [
             (f'Establish Data Governance Framework per {fw_short}',
              '100% data governance framework adopted; data council active',
@@ -22890,7 +22890,7 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
              'Meet legal and regulatory retention obligations',
              'Within 12 months'),
         ]
-    if 'enterprise risk' in dl or 'erm' in dl:
+    if _dc == 'erm':
         return [
             (f'Establish ERM Framework per {fw_short}',
              '100% ERM framework adopted; risk committee active',
@@ -22917,7 +22917,7 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
              'Achieve residual risk levels within the organisation\'s risk appetite',
              'Within 18 months'),
         ]
-    if 'digital' in dl:
+    if _dc == 'dt':
         return [
             (f'Establish Digital Transformation Governance per {fw_short}',
              '100% governance framework adopted; digital committee active',
@@ -22944,7 +22944,7 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
              'Verify objectives achieved and course-correct where needed',
              'Within 18 months'),
         ]
-    if 'global' in dl or 'standards' in dl:
+    if _dc == 'global':
         return [
             (f'{fw_short} International Standards Compliance',
              f'≥ 95% compliance with all {fw_short} requirements',
@@ -23011,8 +23011,8 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
 def _build_domain_kpi_bank_ar(domain, fw_short):
     """Return Arabic KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
     for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
-    dl = (domain or '').lower()
-    if 'artificial' in dl or ' ai' in dl or dl == 'ai':
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
         return [
             (f'نسبة النماذج المُقيَّمة لمخاطر الذكاء الاصطناعي',
              '≥ 95%',
@@ -23064,7 +23064,7 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
              'شهري',
              'خلال 9 أشهر'),
         ]
-    if 'data' in dl:
+    if _dc == 'data':
         return [
             (f'نسبة دقة البيانات في الأنظمة الحيوية',
              '≥ 95%',
@@ -23109,7 +23109,7 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
              'ربع سنوي',
              'خلال 18 أشهر'),
         ]
-    if 'enterprise risk' in dl or 'erm' in dl:
+    if _dc == 'erm':
         return [
             ('نسبة اكتمال سجل المخاطر المؤسسي',
              '100%',
@@ -23154,7 +23154,7 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
              'سنوي',
              'خلال 18 أشهر'),
         ]
-    if 'digital' in dl:
+    if _dc == 'dt':
         return [
             ('نسبة رقمنة العمليات الحيوية',
              '≥ 80%',
@@ -23199,7 +23199,7 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
              'شهري',
              'خلال 9 أشهر'),
         ]
-    if 'global' in dl or 'standards' in dl:
+    if _dc == 'global':
         return [
             (f'نسبة الامتثال لمتطلبات {fw_short}',
              '≥ 95%',
@@ -23322,8 +23322,8 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
 def _build_domain_kpi_bank_en(domain, fw_short):
     """Return English KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
     for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
-    dl = (domain or '').lower()
-    if 'artificial' in dl or ' ai' in dl or dl == 'ai':
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
         return [
             ('AI Model Risk Assessment Coverage',
              '≥ 95%',
@@ -23375,7 +23375,7 @@ def _build_domain_kpi_bank_en(domain, fw_short):
              'Monthly',
              'Within 9 months'),
         ]
-    if 'data' in dl:
+    if _dc == 'data':
         return [
             ('Critical System Data Accuracy Rate',
              '≥ 95%',
@@ -23420,7 +23420,7 @@ def _build_domain_kpi_bank_en(domain, fw_short):
              'Quarterly',
              'Within 18 months'),
         ]
-    if 'enterprise risk' in dl or 'erm' in dl:
+    if _dc == 'erm':
         return [
             ('Enterprise Risk Register Completeness',
              '100%',
@@ -23465,7 +23465,7 @@ def _build_domain_kpi_bank_en(domain, fw_short):
              'Annual',
              'Within 18 months'),
         ]
-    if 'digital' in dl:
+    if _dc == 'dt':
         return [
             ('Core Process Digitalisation Rate',
              '≥ 80%',
@@ -23510,7 +23510,7 @@ def _build_domain_kpi_bank_en(domain, fw_short):
              'Monthly',
              'Within 9 months'),
         ]
-    if 'global' in dl or 'standards' in dl:
+    if _dc == 'global':
         return [
             (f'{fw_short} Compliance Rate',
              '≥ 95%',
