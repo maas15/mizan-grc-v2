@@ -37424,10 +37424,22 @@ class _DurableExportStore:
 
     def _path(self, task_id: str) -> str:
         # Defensive: only allow the chars uuid4 can produce, to avoid any
-        # path traversal if a caller ever passes user input here.
+        # path traversal if a caller ever passes user input here. Followed
+        # by an explicit realpath-containment check so the resolved file
+        # cannot escape self._DIR even via symlinks or odd inputs.
         import re, os as _os
         safe = re.sub(r'[^A-Za-z0-9_\-]', '', str(task_id or ''))[:128]
-        return _os.path.join(self._DIR, f'{self._PREFIX}{safe}.json')
+        if not safe:
+            raise ValueError('invalid task_id')
+        candidate = _os.path.join(self._DIR, f'{self._PREFIX}{safe}.json')
+        # Use normpath (not realpath) for the containment check so the
+        # comparison is purely textual after sanitisation — robust and
+        # statically analysable.
+        resolved_dir = _os.path.normpath(self._DIR)
+        resolved = _os.path.normpath(candidate)
+        if _os.path.dirname(resolved) != resolved_dir:
+            raise ValueError('path escapes export-store directory')
+        return resolved
 
     def __setitem__(self, task_id: str, entry: dict) -> None:
         import json, os as _os, tempfile as _tf
@@ -37440,8 +37452,8 @@ class _DurableExportStore:
                  for k, v in (entry or {}).items()},
                 ensure_ascii=False,
             )
-        target = self._path(task_id)
         try:
+            target = self._path(task_id)
             fd, tmp_path = _tf.mkstemp(prefix=self._PREFIX, suffix='.json.tmp',
                                        dir=self._DIR)
             try:
@@ -37458,8 +37470,8 @@ class _DurableExportStore:
 
     def get(self, task_id: str, default=None):
         import json, os as _os
-        path = self._path(task_id)
         try:
+            path = self._path(task_id)
             if not _os.path.exists(path):
                 return default
             with open(path, 'r', encoding='utf-8') as fh:
