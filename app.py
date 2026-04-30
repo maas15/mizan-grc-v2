@@ -3542,6 +3542,123 @@ def resolve_export_domain(raw, artifact_type: str = "strategy") -> str:
     return _DOMAIN_DISPLAY_EN[code]
 
 
+class DomainContaminationError(RuntimeError):
+    """Raised when a strategy section contains terms that belong to a
+    different domain than the one selected by the user, after AI repair has
+    already been attempted. The caller is expected to surface this clearly
+    rather than silently substitute Cyber Security defaults.
+    """
+
+
+def validate_domain_isolation(sections: dict, domain_context: dict,
+                              keys_to_check=None) -> list:
+    """Detect cross-domain contamination in generated strategy sections.
+
+    Returns a list of contamination records, each shaped:
+        {
+          "section":      "<section_key>",
+          "domain":       "<canonical-code>",
+          "found_terms":  ["NCA ECC", "MFA", ...],
+        }
+
+    Empty list ⇒ no contamination detected. Caller may then either:
+      1. Ignore (e.g. domain == 'cyber' and the forbidden list is non-cyber).
+      2. Call ``ai_repair_strategy_section`` once for each contaminated
+         section, re-validate, and on persistent contamination raise
+         ``DomainContaminationError``.
+
+    Matching rules:
+      * Case-insensitive substring match against ``forbidden_terms``.
+      * Terms shorter than 3 chars are ignored to avoid false positives.
+      * Terms whose lowercase form already appears in the user-selected
+        frameworks (handled by ``get_strategy_domain_context``) are NOT in
+        the forbidden list, so they cannot trigger a hit.
+    """
+    if not isinstance(sections, dict) or not isinstance(domain_context, dict):
+        return []
+    forbidden = [t for t in (domain_context.get("forbidden_terms") or [])
+                 if t and len(t.strip()) >= 3]
+    if not forbidden:
+        return []
+    keys_to_check = keys_to_check or [
+        "vision", "pillars", "environment", "gaps", "roadmap", "kpis", "confidence",
+    ]
+    domain_code = domain_context.get("code", "")
+    contamination = []
+    for sk in keys_to_check:
+        text = sections.get(sk) or ""
+        if not text:
+            continue
+        text_lc = text.lower()
+        found = []
+        for term in forbidden:
+            t_lc = term.strip().lower()
+            if t_lc and t_lc in text_lc:
+                found.append(term.strip())
+        if found:
+            contamination.append({
+                "section":     sk,
+                "domain":      domain_code,
+                "found_terms": found,
+            })
+    return contamination
+
+
+def repair_domain_contamination(sections: dict, domain_context: dict,
+                                lang: str,
+                                org_name: str = "The Organization",
+                                sector: str = "Government",
+                                generation_mode: str = "consulting",
+                                diagnostic_context: str = "") -> dict:
+    """Run validate_domain_isolation, then for each contaminated section make
+    ONE ai_repair_strategy_section call and revalidate.
+
+    On success returns ``{"repaired": [keys...], "remaining": []}``.
+    On persistent contamination raises ``DomainContaminationError`` listing
+    the contaminated terms — never silently substitutes cyber defaults.
+    """
+    initial = validate_domain_isolation(sections, domain_context)
+    if not initial:
+        return {"repaired": [], "remaining": []}
+    repaired_keys = []
+    for record in initial:
+        sk = record["section"]
+        try:
+            new_text = ai_repair_strategy_section(
+                section_key=sk,
+                sections=sections,
+                lang=lang,
+                domain_context=domain_context,
+                org_name=org_name,
+                sector=sector,
+                generation_mode=generation_mode,
+                diagnostic_context=diagnostic_context,
+                validation_error=(
+                    f"section contained forbidden cross-domain terms: "
+                    f"{record['found_terms'][:6]}"
+                ),
+            )
+            if new_text:
+                sections[sk] = new_text
+                repaired_keys.append(sk)
+        except RepairError as _re:
+            print(f"[DOMAIN-ISO] AI repair unavailable for section={sk!r}: {_re}",
+                  flush=True)
+            # Continue to next section — final post-validate will raise.
+    remaining = validate_domain_isolation(sections, domain_context)
+    if remaining:
+        # List the persistent contamination in the exception so callers and
+        # logs can act on it. Caller MUST NOT swallow this and substitute
+        # cyber defaults.
+        details = "; ".join(
+            f"{r['section']}={r['found_terms'][:4]}" for r in remaining
+        )
+        raise DomainContaminationError(
+            f"persistent domain contamination after AI repair: {details}"
+        )
+    return {"repaired": repaired_keys, "remaining": []}
+
+
 # ── END canonical domain registry ────────────────────────────────────────────
 
 # ============================================================================
@@ -33220,6 +33337,65 @@ The confidence score is based on a comprehensive assessment of the organization'
                         if _fixed_parts_dr:
                             content = '\n\n'.join(_fixed_parts_dr)
 
+                        # ── DOMAIN ISOLATION CHECK (problem statement PART 5) ─
+                        # Run after deterministic repairs and BEFORE the
+                        # post-normalization audit gate / sections_json save.
+                        # On contamination: one AI repair attempt per section,
+                        # then re-validate. Persistent contamination raises
+                        # DomainContaminationError — we surface it instead of
+                        # silently injecting cyber defaults.
+                        try:
+                            _diso_dctx = get_strategy_domain_context(
+                                domain, lang,
+                                _final_ctx.get('frameworks', []),
+                            )
+                            _diso_initial = validate_domain_isolation(
+                                sections, _diso_dctx)
+                            if _diso_initial:
+                                print(
+                                    f'[STRATEGY-DIAG] domain_contamination_detected='
+                                    f'{[(r["section"], r["found_terms"][:3]) for r in _diso_initial]}',
+                                    flush=True,
+                                )
+                                try:
+                                    _diso_result = repair_domain_contamination(
+                                        sections, _diso_dctx, lang,
+                                        org_name=_final_ctx.get('org_name', 'The Organization'),
+                                        sector=_final_ctx.get('sector', 'Government'),
+                                        generation_mode=_final_ctx.get(
+                                            'generation_mode', _generation_mode),
+                                    )
+                                    if _diso_result.get('repaired'):
+                                        print(
+                                            f'[STRATEGY-DIAG] domain_contamination_repaired='
+                                            f'{_diso_result["repaired"]}',
+                                            flush=True,
+                                        )
+                                        _re_parts = [
+                                            sections[sk] for sk in _section_order_r
+                                            if sections.get(sk) and sections[sk].strip()
+                                        ]
+                                        if _re_parts:
+                                            content = '\n\n'.join(_re_parts)
+                                except DomainContaminationError as _dce:
+                                    print(
+                                        f'[STRATEGY-DIAG] domain_contamination_persistent: '
+                                        f'{_dce}',
+                                        flush=True,
+                                    )
+                                    # Non-fatal here — the audit gate / final
+                                    # validation will reject the strategy
+                                    # downstream, surfacing the issue to the
+                                    # user without silent cyber substitution.
+                        except DomainResolutionError:
+                            pass  # legacy callers without explicit domain
+                        except Exception as _diso_e:
+                            print(
+                                f'[STRATEGY-DIAG] domain_isolation_check_failed: '
+                                f'{_diso_e}',
+                                flush=True,
+                            )
+
                         # ── POST-REPAIR EN RESIDUE SWEEP ────────────────────
                         # repair_confidence_risk_section and
                         # repair_kpi_section_if_missing_frequency can
@@ -38787,6 +38963,149 @@ def api_generate_docx():
         import traceback; print(traceback.format_exc(), flush=True)
         return jsonify({'error': f'Document generation failed: {str(e)}'}), 500
 
+# ── PDF table / story sanitisers (problem statement PART 7) ─────────────────
+# These helpers normalise Table input data and Spacer/flowable dimensions
+# BEFORE handing them to ReportLab. They prevent the
+#   "'<' not supported between instances of 'NoneType' and 'NoneType'"
+# error that occurs when ReportLab's layout engine compares None cell heights
+# or None column widths during page packing.
+
+def _sanitize_table_for_reportlab(rows, available_width=None,
+                                  col_widths=None,
+                                  table_index=None,
+                                  section_heading=None):
+    """Normalise raw table data so ReportLab can render it safely.
+
+    Returns (normalised_rows, normalised_col_widths). Always returns a
+    rectangular ``list[list[str]]`` matrix and (when ``available_width`` is
+    given) a list of finite positive floats for ``colWidths`` whose length
+    equals the column count.
+
+    Rules applied:
+      * Each row is converted to ``list``; non-list rows become a single-cell row.
+      * Every ``None`` cell becomes ``''`` (empty string).
+      * Each row is padded or truncated to the maximum column count.
+      * Rows whose every cell is empty/whitespace-only are dropped — except
+        the header row, which is always preserved at index 0.
+      * If ``col_widths`` is missing, contains ``None``/non-numeric/<= 0
+        values, or has the wrong length, equal widths are recomputed from
+        ``available_width / col_count``.
+      * If ``available_width`` is also unusable, falls back to A4 content
+        width (≈ 17.5cm).
+
+    Returns
+    -------
+    (rows, col_widths) : (list[list[str]], list[float] | None)
+        ``col_widths`` is ``None`` only when neither ``col_widths`` nor
+        ``available_width`` were provided.
+    """
+    # ── Coerce rows to a 2-D list of strings ────────────────────────────────
+    if not rows or not isinstance(rows, (list, tuple)):
+        return [['']], (col_widths if col_widths else None)
+    norm = []
+    for r in rows:
+        if r is None:
+            norm.append([''])
+        elif isinstance(r, (list, tuple)):
+            norm.append([('' if c is None else c) for c in r])
+        else:
+            norm.append([('' if r is None else r)])
+    # ── Compute target column count from the widest row ─────────────────────
+    col_count = max((len(r) for r in norm), default=1)
+    if col_count <= 0:
+        col_count = 1
+    # ── Pad / truncate each row to col_count ────────────────────────────────
+    rect = []
+    for idx, r in enumerate(norm):
+        if len(r) < col_count:
+            r = list(r) + [''] * (col_count - len(r))
+        elif len(r) > col_count:
+            r = list(r)[:col_count]
+        rect.append(r)
+    # ── Drop fully-empty rows except header (index 0) ───────────────────────
+    cleaned = [rect[0]] if rect else []
+    for r in rect[1:]:
+        if any(str(c).strip() != '' for c in r):
+            cleaned.append(r)
+    if not cleaned:
+        cleaned = [[''] * col_count]
+    # ── Validate / recompute col_widths ─────────────────────────────────────
+    def _is_finite_positive(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return False
+        if f != f or f <= 0 or f == float('inf'):
+            return False
+        return True
+
+    out_widths = None
+    if col_widths is not None:
+        if (not isinstance(col_widths, (list, tuple))
+                or len(col_widths) != col_count
+                or not all(_is_finite_positive(w) for w in col_widths)):
+            # Bad: recompute equal widths
+            base = available_width
+            if not _is_finite_positive(base):
+                # A4 minus 3cm side margins ≈ 17.5cm  → ~496pt
+                base = 17.5 * 28.35
+            out_widths = [float(base) / col_count] * col_count
+            try:
+                print(
+                    f"[PDF-SANITIZE] table_index={table_index} "
+                    f"section={section_heading!r} "
+                    f"col_count={col_count} row_count={len(cleaned)} "
+                    f"recomputed_col_widths=True base={base}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+        else:
+            out_widths = [float(w) for w in col_widths]
+    elif available_width is not None and _is_finite_positive(available_width):
+        out_widths = [float(available_width) / col_count] * col_count
+    # Final assert: lengths must match
+    if out_widths is not None:
+        assert len(out_widths) == col_count, \
+            f"colWidths length {len(out_widths)} != col_count {col_count}"
+    return cleaned, out_widths
+
+
+def _sanitize_pdf_story(story):
+    """Drop ``None`` flowables and validate ``Spacer`` dimensions in-place.
+
+    Returns the cleaned list (a new list — caller may swap for the original
+    so the rebuild path uses the sanitised story).
+    """
+    try:
+        from reportlab.platypus import Spacer
+    except Exception:
+        Spacer = None  # type: ignore
+    out = []
+    for fl in (story or []):
+        if fl is None:
+            continue
+        if Spacer is not None and isinstance(fl, Spacer):
+            try:
+                _w_raw = getattr(fl, 'width', None)
+                _h_raw = getattr(fl, 'height', None)
+                if _w_raw is None or _h_raw is None:
+                    raise ValueError("invalid")
+                w = float(_w_raw)
+                h = float(_h_raw)
+                if w != w or h != h or w <= 0 or h <= 0:
+                    raise ValueError("invalid")
+            except Exception:
+                # Replace with a safe 6pt vertical spacer.
+                try:
+                    out.append(Spacer(1, 6))
+                    continue
+                except Exception:
+                    continue
+        out.append(fl)
+    return out
+
+
 @app.route('/api/generate-pdf', methods=['POST'])
 @login_required
 def api_generate_pdf():
@@ -40538,6 +40857,21 @@ def api_generate_pdf():
                     _B4_ACCENT = colors.HexColor('#D04A02')
                     _B4_ALT    = colors.HexColor('#F8F9FA')
                     _B4_RULE   = colors.HexColor('#D1D5DB')
+                    # Sanitise table data + col widths just before computing
+                    # styling commands and handing to ReportLab — prevents
+                    # NoneType comparison errors during page packing
+                    # (problem statement PART 7).
+                    try:
+                        wrapped_data, col_widths = _sanitize_table_for_reportlab(
+                            wrapped_data,
+                            available_width=available_width,
+                            col_widths=col_widths,
+                            table_index=len(story),
+                            section_heading=last_pdf_section_heading,
+                        )
+                    except Exception as _san_e:
+                        print(f"[PDF-SANITIZE] table sanitisation failed: "
+                              f"{_san_e}", flush=True)
                     _n_data_rows = len(wrapped_data)
                     _b4_cmds = [
                         # Header
@@ -40841,39 +41175,107 @@ def api_generate_pdf():
             canvas_obj.restoreState()
 
         # Build PDF
+        # Sanitise the story flowables (drop None, validate Spacer dims) before
+        # the build attempt so the layout engine can't trip over invalid
+        # objects. (problem statement PART 7)
+        try:
+            story = _sanitize_pdf_story(story)
+        except Exception as _ss_e:
+            print(f"[PDF-BUILD] story sanitisation failed: {_ss_e}", flush=True)
+
         # Wrap doc.build() in a try-except to catch ReportLab layout errors
-        # (e.g. TypeError: '>' not supported between NoneType and NoneType
-        # from KPMG panel or other complex Table cells) and retry with a
-        # simplified story that strips problematic flowables.
+        # (e.g. TypeError: '<' not supported between NoneType and NoneType
+        # from a malformed Table cell) and retry with FRESH buffer + FRESH
+        # SimpleDocTemplate + per-table sanitised story. Per-table failure
+        # → only that single table becomes a visible diagnostic placeholder
+        # (see _sanitize_table_for_reportlab); we never replace ALL tables
+        # with `[Table]`.
         try:
             doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
-        except TypeError as _te:
-            print(f'[PDF-BUILD] TypeError in doc.build, retrying with '
-                  f'simplified story: {_te}', flush=True)
-            # Strip all Table flowables from the story and replace with
-            # a warning paragraph, then retry.  This avoids any Table
-            # that might carry a None-height cell.
+        except (TypeError, ValueError, AttributeError) as _te:
             import traceback as _tb
-            _tb.print_exc()
-            _simple_story = []
-            for _fl in story:
+            _tb_str = _tb.format_exc()
+            print(f'[PDF-BUILD] {type(_te).__name__} during doc.build — '
+                  f'rebuilding with sanitised story: {_te}', flush=True)
+            print(_tb_str, flush=True)
+            # Sanitise each Table flowable in-place before retry. We log per-
+            # table diagnostics (index, col count, row count, header row) so
+            # rendering issues can be debugged without dropping all tables.
+            _sanitised_story = []
+            for _idx, _fl in enumerate(story or []):
+                if _fl is None:
+                    continue
                 if isinstance(_fl, Table):
-                    # Replace each complex table with a plain paragraph
-                    # describing that the table could not be rendered.
                     try:
-                        _simple_story.append(Paragraph(
-                            '[Table]', normal_style if not is_arabic
-                            else ParagraphStyle(
-                                'FallbackNormal',
-                                parent=kpmg_panel_body_style,
-                            )))
-                    except Exception:
-                        pass
+                        _orig_data = getattr(_fl, '_cellvalues', None) or []
+                        _orig_cw   = getattr(_fl, '_argW', None) or None
+                        _hdr_row   = (
+                            [str(c) for c in _orig_data[0]]
+                            if _orig_data else []
+                        )
+                        _new_data, _new_cw = _sanitize_table_for_reportlab(
+                            _orig_data,
+                            available_width=available_width,
+                            col_widths=_orig_cw if isinstance(_orig_cw, (list, tuple)) else None,
+                            table_index=_idx,
+                            section_heading='retry',
+                        )
+                        print(
+                            f"[PDF-BUILD] retry sanitised table_index={_idx} "
+                            f"col_count={len(_new_data[0]) if _new_data else 0} "
+                            f"row_count={len(_new_data)} "
+                            f"col_widths={_new_cw} "
+                            f"header={_hdr_row[:9]}",
+                            flush=True,
+                        )
+                        _new_table = Table(_new_data, colWidths=_new_cw, repeatRows=1)
+                        # Reapply the original style (best-effort — original
+                        # `_argW` may also have changed).
+                        try:
+                            _orig_style = getattr(_fl, '_argStyle', None)
+                            if _orig_style is not None:
+                                _new_table.setStyle(_orig_style)
+                        except Exception:
+                            pass
+                        _sanitised_story.append(_new_table)
+                    except Exception as _t_re:
+                        # Last resort: replace just THIS one table with a
+                        # diagnostic paragraph (not a global [Table] sweep).
+                        print(
+                            f"[PDF-BUILD] retry: table_index={_idx} "
+                            f"unrecoverable — substituting placeholder: {_t_re}",
+                            flush=True,
+                        )
+                        try:
+                            _sanitised_story.append(Paragraph(
+                                '[Table render failed — see logs]',
+                                normal_style if not is_arabic
+                                else ParagraphStyle(
+                                    'FallbackNormal',
+                                    parent=kpmg_panel_body_style,
+                                )))
+                        except Exception:
+                            pass
                 else:
-                    _simple_story.append(_fl)
-            # Re-build with simple story; any remaining error propagates
+                    _sanitised_story.append(_fl)
+            _sanitised_story = _sanitize_pdf_story(_sanitised_story)
+            # Fresh buffer + fresh SimpleDocTemplate so we don't reuse a
+            # partially-written file pointer / packed pages.
+            try:
+                buffer.close()
+            except Exception:
+                pass
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=A4,
+                rightMargin=1.5*cm,
+                leftMargin=1.5*cm,
+                topMargin=2.8*cm,
+                bottomMargin=2.4*cm,
+            )
             doc.build(
-                _simple_story,
+                _sanitised_story,
                 onFirstPage=_on_page_combined,
                 onLaterPages=_on_page_combined,
             )
