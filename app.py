@@ -18156,31 +18156,57 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
                 out.append(body)
             out.append('')
             continue
-        # Synthesize a deterministic guide
+        # Synthesize a deterministic type-specific guide using the same
+        # gap-type classification and 6-step templates as ensure_gap_guide_coverage.
+        _gap_nm  = r[0] if r else ''
+        _gap_dsc = r[1] if len(r) > 1 else ''
+        _gap_pri = r[2] if len(r) > 2 else ''
         if is_ar:
-            out.extend([
-                f'#### دليل تنفيذ الفجوة رقم {idx}: {r[0]}',
+            _gtype = _gap_type(_gap_nm, _gap_dsc, True)
+            _steps = _gap_guide_steps_ar(_gtype, domain, fw_short, _gap_nm)
+            _pri_label = {'حرج': '🔴 حرجة', 'عالي': '🟠 عالية', 'عالية': '🟠 عالية',
+                          'متوسط': '🟡 متوسطة', 'منخفض': '🟢 منخفضة'}.get(
+                _gap_pri.strip() if _gap_pri else '',
+                f'الأولوية: {_gap_pri}' if _gap_pri else '')
+            _guide_block = [
+                f'#### دليل تنفيذ الفجوة رقم {idx}: {_gap_nm}',
+                '',
+            ]
+            if _gap_dsc and _gap_dsc != '—':
+                _guide_block.append(f'**السياق:** {_gap_dsc}')
+            if _pri_label:
+                _guide_block.append(f'**الأولوية:** {_pri_label}')
+            _guide_block.extend([
                 '',
                 '| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |',
                 '|--------|---------|---------|----------------|--------|',
-                f'| 1 | التقييم التفصيلي | فريق {domain} | الشهر 1 | تقرير التقييم |',
-                f'| 2 | تصميم خطة المعالجة | رئيس {domain} | شهر 2-3 | خطة المعالجة المعتمدة |',
-                f'| 3 | تنفيذ الضوابط | فريق {domain} | شهر 4-6 | ضوابط مطبقة |',
-                f'| 4 | التحقق والإغلاق | رئيس {domain} | شهر 7 | تقرير الإغلاق |',
-                '',
             ])
+            _guide_block.extend(_steps)
+            _guide_block.append('')
+            out.extend(_guide_block)
         else:
-            out.extend([
-                f'#### Gap #{idx} Implementation Guide: {r[0]}',
+            _gtype = _gap_type(_gap_nm, _gap_dsc, False)
+            _steps = _gap_guide_steps_en(_gtype, domain, fw_short, _gap_nm)
+            _pri_label = {'critical': '🔴 Critical', 'high': '🟠 High',
+                          'medium': '🟡 Medium', 'low': '🟢 Low'}.get(
+                (_gap_pri or '').strip().lower(),
+                f'Priority: {_gap_pri}' if _gap_pri else '')
+            _guide_block = [
+                f'#### Gap #{idx} Implementation Guide: {_gap_nm}',
                 '',
-                '| Step | Action | Owner | Timeframe | Output |',
-                '|------|--------|-------|-----------|--------|',
-                f'| 1 | Detailed assessment | {domain} Team | Month 1 | Assessment report |',
-                f'| 2 | Remediation plan design | {domain} Lead | Month 2-3 | Approved plan |',
-                f'| 3 | Control implementation | {domain} Team | Month 4-6 | Deployed controls |',
-                f'| 4 | Validation & closure | {domain} Lead | Month 7 | Closure report |',
+            ]
+            if _gap_dsc and _gap_dsc != '—':
+                _guide_block.append(f'**Context:** {_gap_dsc}')
+            if _pri_label:
+                _guide_block.append(f'**Priority:** {_pri_label}')
+            _guide_block.extend([
                 '',
+                '| Step | Action | Owner | Timeline | Output |',
+                '|------|--------|-------|----------|--------|',
             ])
+            _guide_block.extend(_steps)
+            _guide_block.append('')
+            out.extend(_guide_block)
 
     sections['gaps'] = '\n'.join(out).rstrip() + '\n'
     summary['rebuilt'] = True
@@ -18619,7 +18645,7 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
         if not any(('governance' in t and 'structure' in t) or
                    ('حوكمة' in t and ('هيكل' in t or 'بنية' in t))
                    for t in preserved_titles_lc):
-            picked.append(gov_pillar)
+            picked.insert(0, gov_pillar)  # governance must be Pillar 1
             summary['governance_pillar_injected'] = True
 
     # ── Technology-gap priority pillar (prompt Part 2B)
@@ -18900,7 +18926,16 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
     picked = _dedup_by_desc(picked, is_ar)
     # Normalize ALL pillars (preserved + picked) sequentially so every heading
     # in the output section matches _PILLAR_HEADING_RE_GLOBAL.
-    _all_pillars = _normalize_pillar_titles(_preserved_dicts + picked, is_ar)
+    # When a governance pillar was explicitly injected it must be Pillar 1
+    # (الركيزة الأولى), so we place it at the very front of the combined list
+    # ahead of any AI-preserved pillars that were already present.
+    if summary['governance_pillar_injected'] and picked:
+        _gov_picked = [picked[0]]
+        _rest_picked = picked[1:]
+        _all_pillars = _normalize_pillar_titles(
+            _gov_picked + _preserved_dicts + _rest_picked, is_ar)
+    else:
+        _all_pillars = _normalize_pillar_titles(_preserved_dicts + picked, is_ar)
 
     if is_ar:
         out = ['## 2. الركائز الاستراتيجية', '']
@@ -22620,6 +22655,981 @@ def _add_pillar_initiative_rows(body, needed, is_ar, domain='Cyber Security',
     return '\n'.join(lines)
 
 
+def _build_domain_so_bank_ar(domain, fw_short, sector):
+    """Return a list of Arabic Strategic Objective (SO) tuples for the given domain.
+    Each tuple: (objective, target, justification, timeframe).
+    Falls back to cybersecurity bank when domain is not specifically mapped.
+    """
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
+        return [
+            (f'تأسيس إطار حوكمة الذكاء الاصطناعي وفق {fw_short}',
+             '100% اعتماد إطار الحوكمة وتفعيل لجنة التوجيه',
+             f'متطلب {fw_short} — غياب هيكل حوكمة رسمي للذكاء الاصطناعي',
+             'خلال 6 أشهر'),
+            ('إدارة مخاطر النماذج والتحيز في الذكاء الاصطناعي',
+             '≥ 95% نسبة النماذج المُقيَّمة لمخاطر التحيز والجودة',
+             'تقليل مخاطر اتخاذ القرار القائمة على نماذج معيبة',
+             'خلال 9 أشهر'),
+            (f'الامتثال لأخلاقيات الذكاء الاصطناعي ومعايير {fw_short}',
+             '100% الموافقة الأخلاقية لجميع حالات الاستخدام',
+             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
+             'خلال 12 شهراً'),
+            ('حوكمة البيانات لتدريب النماذج والاستدلال',
+             '100% تصنيف بيانات التدريب ومصادر البيانات',
+             'ضمان سلامة النماذج وصحة مخرجات الذكاء الاصطناعي',
+             'خلال 9 أشهر'),
+            ('شفافية الذكاء الاصطناعي وقابلية التفسير',
+             '100% من النماذج الإنتاجية موثقة وقابلة للتفسير',
+             'الامتثال لمتطلبات الشفافية وبناء ثقة المستفيدين',
+             'خلال 12 أشهر'),
+            ('رصد أداء النماذج وانجراف البيانات',
+             '100% من النماذج الإنتاجية مع رصد مستمر',
+             'الحفاظ على دقة النماذج واكتشاف التدهور مبكراً',
+             'خلال 18 شهراً'),
+        ]
+    if _dc == 'data':
+        return [
+            (f'تأسيس إطار حوكمة البيانات وفق {fw_short}',
+             '100% اعتماد إطار حوكمة البيانات وتفعيل لجنة التوجيه',
+             f'متطلب {fw_short} — غياب هيكل حوكمة رسمي للبيانات',
+             'خلال 6 أشهر'),
+            ('جودة البيانات والنسب والتصنيف',
+             '≥ 95% نسبة دقة البيانات في الأنظمة الحيوية',
+             'تحسين موثوقية التقارير وقرارات الأعمال',
+             'خلال 9 أشهر'),
+            (f'الامتثال لمتطلبات حماية البيانات في {fw_short}',
+             '100% تصنيف البيانات الحساسة وتطبيق ضوابط الحماية',
+             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
+             'خلال 12 أشهر'),
+            ('كتالوج البيانات وإدارة البيانات الرئيسية',
+             '100% أصول البيانات الحيوية مُسجَّلة في الكتالوج',
+             'تمكين صانعي القرار من اكتشاف البيانات واستخدامها',
+             'خلال 12 أشهر'),
+            ('أتمتة جودة البيانات والرصد المستمر',
+             '≥ 90% نسبة اكتشاف مشاكل جودة البيانات آلياً',
+             'تقليل معالجة البيانات اليدوية وتحسين الكفاءة',
+             'خلال 18 أشهر'),
+            ('الامتثال لمتطلبات الأرشفة والاحتفاظ بالبيانات',
+             '100% الالتزام بسياسات دورة حياة البيانات',
+             'تلبية المتطلبات القانونية والتنظيمية للاحتفاظ',
+             'خلال 12 أشهر'),
+        ]
+    if _dc == 'erm':
+        return [
+            (f'تأسيس إطار إدارة المخاطر المؤسسية وفق {fw_short}',
+             '100% اعتماد إطار إدارة المخاطر وتفعيل لجنة المخاطر',
+             f'متطلب {fw_short} — غياب إطار متكامل لإدارة المخاطر',
+             'خلال 6 أشهر'),
+            ('بناء سجل المخاطر المؤسسي وتحديثه دورياً',
+             '100% تغطية وحدات الأعمال بسجل المخاطر',
+             'تحقيق رؤية شاملة للمخاطر عبر المؤسسة',
+             'خلال 9 أشهر'),
+            (f'الامتثال لمتطلبات {fw_short} في قطاع {sector}',
+             f'≥ 95% امتثال لمتطلبات {fw_short}',
+             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
+             'خلال 12 أشهر'),
+            ('إدارة مخاطر الأطراف الثالثة والموردين',
+             '100% تقييم الموردين الحرجين قبل التعاقد',
+             'تقليل مخاطر الإمداد والتعرض للمخاطر الخارجية',
+             'خلال 12 أشهر'),
+            ('تقارير المخاطر لمجلس الإدارة والإدارة التنفيذية',
+             'تقرير مخاطر ربع سنوي لمجلس الإدارة',
+             'تعزيز ثقافة الوعي بالمخاطر في قيادة المؤسسة',
+             'خلال 9 أشهر'),
+            ('خطط معالجة المخاطر وقياس الفاعلية',
+             '100% المخاطر المحرجة لها خطة معالجة معتمدة',
+             'تحقيق مستوى المخاطر المتبقية ضمن شهية المؤسسة',
+             'خلال 18 أشهر'),
+        ]
+    if _dc == 'dt':
+        return [
+            (f'تأسيس إطار حوكمة التحول الرقمي وفق {fw_short}',
+             '100% اعتماد إطار الحوكمة وتفعيل لجنة التحول الرقمي',
+             f'متطلب {fw_short} — غياب إطار حوكمة رسمي للتحول الرقمي',
+             'خلال 6 أشهر'),
+            ('رقمنة العمليات الحيوية وأتمتتها',
+             '≥ 80% من العمليات الحيوية مؤتمتة ورقمية',
+             'تحسين الكفاءة وتقليل التكاليف التشغيلية',
+             'خلال 18 أشهر'),
+            (f'الامتثال لمعايير {fw_short} في التحول الرقمي',
+             f'≥ 95% امتثال لمتطلبات {fw_short}',
+             f'الامتثال التنظيمي والتقني لقطاع {sector}',
+             'خلال 12 أشهر'),
+            ('اعتماد الحوسبة السحابية وإدارة البنية التحتية',
+             '≥ 70% من الأنظمة على البنية السحابية',
+             'تعزيز المرونة والقدرة على التوسع',
+             'خلال 24 شهراً'),
+            ('رفع الكفاءة الرقمية للكوادر البشرية',
+             '≥ 90% من الموظفين حاصلون على تأهيل رقمي',
+             'بناء القدرات الداخلية لقيادة التحول',
+             'خلال 12 أشهر'),
+            ('قياس أثر التحول الرقمي وتحسينه المستمر',
+             'لوحة قياس رقمية تُحدَّث شهرياً',
+             'التحقق من تحقيق الأهداف وتصحيح المسار',
+             'خلال 18 أشهر'),
+        ]
+    if _dc == 'global':
+        return [
+            (f'الامتثال لمتطلبات {fw_short} الدولية',
+             f'≥ 95% امتثال لجميع متطلبات {fw_short}',
+             f'الامتثال التنظيمي والتقني للمعايير الدولية',
+             'خلال 12 أشهر'),
+            ('تأسيس إطار حوكمة المعايير وإدارة الامتثال',
+             '100% اعتماد إطار الحوكمة وتفعيل لجنة الامتثال',
+             'ضمان الاتساق التنظيمي وتقليل مخاطر الغرامات',
+             'خلال 6 أشهر'),
+            ('برنامج التدقيق الداخلي وتقييم الامتثال',
+             'تدقيق داخلي ربع سنوي لجميع المعايير المطبقة',
+             'اكتشاف الفجوات مبكراً وتصحيح المسار',
+             'خلال 9 أشهر'),
+            ('حوكمة الموردين وفق المعايير الدولية',
+             '100% تقييم الموردين الحرجين وفق المعايير المطبقة',
+             'تقليل مخاطر الامتثال عبر سلسلة الإمداد',
+             'خلال 12 أشهر'),
+            ('رفع وعي المعايير وبناء الكفاءات الداخلية',
+             '≥ 90% إكمال تدريب المعايير للموظفين المعنيين',
+             'بناء ثقافة الامتثال وتقليل الاعتماد الخارجي',
+             'خلال 9 أشهر'),
+            ('إعداد تقارير الامتثال لمجلس الإدارة والجهات التنظيمية',
+             'تقرير امتثال ربع سنوي وتقرير سنوي شامل',
+             'الشفافية مع الجهات التنظيمية وثقة المستفيدين',
+             'خلال 18 أشهر'),
+        ]
+    # Cyber Security (default)
+    return [
+        ('نموذج حوكمة الأمن السيبراني',
+         '100% نضج هيكل الحوكمة',
+         f'متطلب {fw_short} وغياب هيكل حوكمة رسمي',
+         'خلال 6 أشهر'),
+        (f'تطبيق ضوابط {fw_short}',
+         f'≥ 95% نسبة تطبيق ضوابط {fw_short} مع أدلة تدقيق',
+         f'امتثال تنظيمي إلزامي لقطاع {sector}',
+         'خلال 12 أشهر'),
+        ('إدارة الهوية والوصول المميز (IAM/PAM)',
+         '100% تغطية الحسابات المميزة بـPAM و100% MFA',
+         'تقليل مخاطر الوصول غير المصرح به',
+         'خلال 9 أشهر'),
+        ('مراقبة SIEM واستجابة للحوادث',
+         'MTTD ≤ 60 دقيقة، MTTR ≤ 4 ساعات',
+         'ثغرات الكشف المُشخَّصة في التقييم',
+         'خلال 12 أشهر'),
+        ('إدارة الثغرات والتصحيح',
+         '100% إغلاق الثغرات الحرجة خلال 30 يوماً',
+         'تقليل سطح الهجوم المعرّض',
+         'خلال 6 أشهر'),
+        ('النسخ الاحتياطي والتعافي من الكوارث',
+         '100% نجاح اختبارات استعادة النسخ الاحتياطي',
+         'ضمان استمرارية الأعمال في حالات الطوارئ',
+         'خلال 9 أشهر'),
+        ('التوعية ومحاكاة التصيد',
+         '≥ 90% اجتياز التدريب، ≤ 5% معدل وقوع التصيد',
+         'تقليل المخاطر البشرية للحوادث السيبرانية',
+         'خلال 12 أشهر'),
+        ('مخاطر الأطراف الثالثة',
+         '100% تقييم الموردين الحرجين',
+         'إغلاق فجوة سلسلة الإمداد الرقمية',
+         'خلال 18 أشهر'),
+    ]
+
+
+def _build_domain_so_bank_en(domain, fw_short, sector):
+    """Return English Strategic Objective tuples for the given domain."""
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
+        return [
+            (f'Establish AI Governance Framework per {fw_short}',
+             '100% governance framework adopted; AI steering committee active',
+             f'{fw_short} requirement; no formal AI governance structure exists',
+             'Within 6 months'),
+            ('AI Model Risk Management & Bias Mitigation',
+             '≥ 95% of production models assessed for bias and quality risk',
+             'Reduce decision risk from biased or underperforming models',
+             'Within 9 months'),
+            (f'AI Ethics & {fw_short} Compliance',
+             '100% ethical review approved for all active AI use cases',
+             f'Mandatory regulatory compliance for {sector} sector',
+             'Within 12 months'),
+            ('Data Governance for AI Training & Inference',
+             '100% training datasets classified and lineage documented',
+             'Ensure model integrity and validity of AI outputs',
+             'Within 9 months'),
+            ('AI Transparency & Explainability',
+             '100% of production models documented with interpretability notes',
+             'Satisfy transparency requirements and build stakeholder trust',
+             'Within 12 months'),
+            ('Continuous Model Performance Monitoring & Drift Detection',
+             '100% of production models with live monitoring dashboards',
+             'Maintain accuracy and detect model degradation proactively',
+             'Within 18 months'),
+        ]
+    if _dc == 'data':
+        return [
+            (f'Establish Data Governance Framework per {fw_short}',
+             '100% data governance framework adopted; data council active',
+             f'{fw_short} requirement; no formal data governance exists',
+             'Within 6 months'),
+            ('Data Quality, Lineage & Classification',
+             '≥ 95% data accuracy in critical systems',
+             'Improve reporting reliability and business decisions',
+             'Within 9 months'),
+            (f'Data Protection Compliance per {fw_short}',
+             '100% sensitive data classified and protection controls applied',
+             f'Mandatory regulatory compliance for {sector} sector',
+             'Within 12 months'),
+            ('Data Catalogue & Master Data Management',
+             '100% critical data assets registered in data catalogue',
+             'Enable data discovery and trusted consumption by decision-makers',
+             'Within 12 months'),
+            ('Data Quality Automation & Continuous Monitoring',
+             '≥ 90% of data quality issues detected automatically',
+             'Reduce manual data handling and improve operational efficiency',
+             'Within 18 months'),
+            ('Archiving & Retention Policy Compliance',
+             '100% adherence to data lifecycle and retention policies',
+             'Meet legal and regulatory retention obligations',
+             'Within 12 months'),
+        ]
+    if _dc == 'erm':
+        return [
+            (f'Establish ERM Framework per {fw_short}',
+             '100% ERM framework adopted; risk committee active',
+             f'{fw_short} requirement; no integrated enterprise risk framework',
+             'Within 6 months'),
+            ('Enterprise Risk Register — Build & Maintain',
+             '100% of business units covered in the risk register',
+             'Achieve a consolidated view of risk across the organisation',
+             'Within 9 months'),
+            (f'{fw_short} Regulatory Compliance for {sector}',
+             f'≥ 95% compliance with {fw_short} requirements',
+             f'Mandatory regulatory compliance for {sector} sector',
+             'Within 12 months'),
+            ('Third-Party & Supplier Risk Management',
+             '100% of critical suppliers assessed before contracting',
+             'Reduce supply-chain and third-party risk exposure',
+             'Within 12 months'),
+            ('Risk Reporting to Board & Executive Management',
+             'Quarterly risk reports delivered to the Board',
+             'Embed risk awareness culture in organisational leadership',
+             'Within 9 months'),
+            ('Risk Treatment Plans & Effectiveness Measurement',
+             '100% of critical risks have an approved treatment plan',
+             'Achieve residual risk levels within the organisation\'s risk appetite',
+             'Within 18 months'),
+        ]
+    if _dc == 'dt':
+        return [
+            (f'Establish Digital Transformation Governance per {fw_short}',
+             '100% governance framework adopted; digital committee active',
+             f'{fw_short} requirement; no formal DT governance structure',
+             'Within 6 months'),
+            ('Core Process Digitalisation & Automation',
+             '≥ 80% of critical processes automated/digital',
+             'Improve operational efficiency and reduce manual costs',
+             'Within 18 months'),
+            (f'{fw_short} Compliance for Digital Initiatives',
+             f'≥ 95% compliance with {fw_short}',
+             f'Mandatory regulatory and technical compliance for {sector}',
+             'Within 12 months'),
+            ('Cloud Adoption & Infrastructure Modernisation',
+             '≥ 70% of systems migrated to cloud infrastructure',
+             'Improve scalability, resilience and cost efficiency',
+             'Within 24 months'),
+            ('Digital Capability Building for Workforce',
+             '≥ 90% of staff hold a validated digital skills qualification',
+             'Build internal capability to sustain the transformation',
+             'Within 12 months'),
+            ('Digital Impact Measurement & Continuous Improvement',
+             'Monthly digital dashboard updated and reviewed',
+             'Verify objectives achieved and course-correct where needed',
+             'Within 18 months'),
+        ]
+    if _dc == 'global':
+        return [
+            (f'{fw_short} International Standards Compliance',
+             f'≥ 95% compliance with all {fw_short} requirements',
+             f'Regulatory and technical compliance with international standards',
+             'Within 12 months'),
+            ('Standards Governance & Compliance Management Framework',
+             '100% governance framework adopted; compliance committee active',
+             'Ensure organisational consistency and reduce regulatory penalties',
+             'Within 6 months'),
+            ('Internal Audit & Compliance Assessment Programme',
+             'Quarterly internal audits across all applicable standards',
+             'Early detection of gaps and timely course correction',
+             'Within 9 months'),
+            ('Supplier Governance per International Standards',
+             '100% critical suppliers assessed against applicable standards',
+             'Reduce compliance risk across the supply chain',
+             'Within 12 months'),
+            ('Standards Awareness & Internal Capability Building',
+             '≥ 90% completion of standards training for relevant staff',
+             'Build a compliance culture and reduce external dependency',
+             'Within 9 months'),
+            ('Compliance Reporting to Board & Regulators',
+             'Quarterly compliance report; annual comprehensive review',
+             'Transparency with regulators and stakeholder confidence',
+             'Within 18 months'),
+        ]
+    # Cyber Security (default)
+    return [
+        ('Cybersecurity Governance Operating Model',
+         '100% governance structure maturity',
+         f'{fw_short} requirement; no formal governance structure exists',
+         'Within 6 months'),
+        (f'{fw_short} Control Implementation',
+         f'≥ 95% {fw_short} control implementation rate with audit evidence',
+         f'Mandatory regulatory compliance for {sector} sector',
+         'Within 12 months'),
+        ('Identity & Privileged Access Management (IAM/PAM)',
+         '100% privileged account PAM coverage + 100% MFA',
+         'Reduce risk of unauthorised access',
+         'Within 9 months'),
+        ('SIEM/SOC Monitoring & Incident Response',
+         'MTTD ≤ 60 min, MTTR ≤ 4 hrs',
+         'Detection gaps identified in assessment',
+         'Within 12 months'),
+        ('Vulnerability & Patch Management',
+         '100% critical vulnerability closure within 30 days',
+         'Reduce exposed attack surface',
+         'Within 6 months'),
+        ('Backup, DR & Cyber Resilience',
+         '100% backup restore test success rate',
+         'Ensure business continuity in emergencies',
+         'Within 9 months'),
+        ('Awareness & Phishing Resilience',
+         '≥ 90% training pass rate, ≤ 5% phishing click rate',
+         'Reduce human risk factor for cyber incidents',
+         'Within 12 months'),
+        ('Third-Party / Supply-Chain Cyber Risk',
+         '100% critical supplier assessment coverage',
+         'Close digital supply-chain cyber exposure',
+         'Within 18 months'),
+    ]
+
+
+def _build_domain_kpi_bank_ar(domain, fw_short):
+    """Return Arabic KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
+    for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
+        return [
+            (f'نسبة النماذج المُقيَّمة لمخاطر الذكاء الاصطناعي',
+             '≥ 95%',
+             '(النماذج المُقيَّمة ÷ الإجمالي) × 100',
+             'سجل النماذج',
+             f'رئيس {domain}',
+             'ربع سنوي',
+             'خلال 12 شهراً'),
+            ('نسبة حالات الاستخدام الحاصلة على الموافقة الأخلاقية',
+             '100%',
+             '(المعتمدة أخلاقياً ÷ الإجمالي) × 100',
+             'سجل حوكمة الذكاء الاصطناعي',
+             'لجنة الأخلاقيات',
+             'ربع سنوي',
+             'خلال 9 أشهر'),
+            ('دقة النماذج الإنتاجية',
+             '≥ 90%',
+             '(التنبؤات الصحيحة ÷ الإجمالي) × 100',
+             'منصة رصد النماذج',
+             f'فريق {domain}',
+             'شهري',
+             'خلال 6 أشهر'),
+            ('نسبة تغطية بيانات التدريب المصنّفة',
+             '100%',
+             '(مجموعات البيانات المصنّفة ÷ الإجمالي) × 100',
+             'كتالوج البيانات',
+             'مسؤول البيانات',
+             'ربع سنوي',
+             'خلال 9 أشهر'),
+            (f'نسبة امتثال نماذج الذكاء الاصطناعي لـ {fw_short}',
+             '≥ 95%',
+             '(النماذج الممتثلة ÷ الإجمالي) × 100',
+             f'سجل ضوابط {fw_short}',
+             'مسؤول الامتثال',
+             'نصف سنوي',
+             'خلال 12 شهراً'),
+            ('انجراف النماذج الإنتاجية (Model Drift)',
+             '≤ 5% انجراف',
+             'متوسط انحراف معيار التنبؤات خلال الفترة',
+             'منصة رصد النماذج',
+             f'فريق {domain}',
+             'شهري',
+             'خلال 12 شهراً'),
+            ('وقت الاستجابة للحوادث المرتبطة بالذكاء الاصطناعي',
+             '≤ 24 ساعة',
+             'متوسط زمن حل الحوادث ÷ عدد الحوادث',
+             'سجل الحوادث',
+             f'رئيس {domain}',
+             'شهري',
+             'خلال 9 أشهر'),
+        ]
+    if _dc == 'data':
+        return [
+            (f'نسبة دقة البيانات في الأنظمة الحيوية',
+             '≥ 95%',
+             '(السجلات الصحيحة ÷ الإجمالي) × 100',
+             'أداة جودة البيانات',
+             'مسؤول جودة البيانات',
+             'شهري',
+             'خلال 9 أشهر'),
+            ('نسبة تغطية كتالوج البيانات',
+             '100% أصول البيانات الحيوية',
+             '(الأصول المُسجَّلة ÷ الإجمالي) × 100',
+             'كتالوج البيانات',
+             'مسؤول البيانات',
+             'ربع سنوي',
+             'خلال 12 شهراً'),
+            (f'نسبة امتثال حماية البيانات لـ {fw_short}',
+             '≥ 95%',
+             '(الضوابط المطبّقة ÷ الإجمالي) × 100',
+             f'سجل ضوابط {fw_short}',
+             'مسؤول الامتثال',
+             'ربع سنوي',
+             'خلال 12 شهراً'),
+            ('نسبة مشكلات جودة البيانات المكتشفة آلياً',
+             '≥ 90%',
+             '(المكتشفة آلياً ÷ الإجمالي) × 100',
+             'أداة مراقبة جودة البيانات',
+             'مسؤول جودة البيانات',
+             'شهري',
+             'خلال 9 أشهر'),
+            ('وقت الاستجابة لمشكلات جودة البيانات',
+             '≤ 48 ساعة للمشاكل الحرجة',
+             'متوسط زمن المعالجة ÷ عدد الحوادث',
+             'نظام تتبع الحوادث',
+             'مسؤول البيانات',
+             'شهري',
+             'خلال 6 أشهر'),
+            ('نسبة إغلاق فجوات حوكمة البيانات',
+             '100%',
+             '(الفجوات المغلقة ÷ الإجمالي) × 100',
+             'سجل الفجوات',
+             f'رئيس {domain}',
+             'ربع سنوي',
+             'خلال 18 أشهر'),
+        ]
+    if _dc == 'erm':
+        return [
+            ('نسبة اكتمال سجل المخاطر المؤسسي',
+             '100%',
+             '(المخاطر الموثقة ÷ المحددة) × 100',
+             'نظام إدارة المخاطر',
+             'مسؤول المخاطر',
+             'ربع سنوي',
+             'خلال 9 أشهر'),
+            ('نسبة المخاطر الحرجة التي لها خطط معالجة معتمدة',
+             '100%',
+             '(ذات خطة ÷ الإجمالي الحرجة) × 100',
+             'سجل المخاطر',
+             'مسؤول المخاطر',
+             'ربع سنوي',
+             'خلال 12 أشهر'),
+            (f'نسبة الامتثال لإطار {fw_short}',
+             '≥ 95%',
+             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
+             f'سجل ضوابط {fw_short}',
+             'مسؤول الامتثال',
+             'نصف سنوي',
+             'خلال 12 أشهر'),
+            ('مؤشر اختراق شهية المخاطر',
+             '≤ 5% تجاوز',
+             '(المخاطر المتجاوزة للحد ÷ الإجمالي) × 100',
+             'نظام إدارة المخاطر',
+             'مسؤول المخاطر',
+             'شهري',
+             'خلال 9 أشهر'),
+            ('نسبة إغلاق حوادث المخاطر في الوقت المحدد',
+             '≥ 90%',
+             '(المُغلق في الموعد ÷ الإجمالي) × 100',
+             'سجل الحوادث',
+             'مسؤول المخاطر',
+             'شهري',
+             'خلال 6 أشهر'),
+            ('نسبة تقييم الموردين الحرجين',
+             '100%',
+             '(المُقيَّم ÷ الإجمالي) × 100',
+             'سجل الموردين',
+             'مسؤول سلسلة الإمداد',
+             'سنوي',
+             'خلال 18 أشهر'),
+        ]
+    if _dc == 'dt':
+        return [
+            ('نسبة رقمنة العمليات الحيوية',
+             '≥ 80%',
+             '(العمليات المرقمنة ÷ الإجمالي) × 100',
+             'سجل المشاريع الرقمية',
+             f'رئيس {domain}',
+             'ربع سنوي',
+             'خلال 24 شهراً'),
+            ('نسبة اعتماد الحوسبة السحابية',
+             '≥ 70%',
+             '(الأنظمة السحابية ÷ الإجمالي) × 100',
+             'سجل البنية التحتية',
+             'مدير تقنية المعلومات',
+             'ربع سنوي',
+             'خلال 24 شهراً'),
+            (f'نسبة الامتثال لمعايير {fw_short}',
+             '≥ 95%',
+             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
+             f'سجل ضوابط {fw_short}',
+             'مسؤول الامتثال',
+             'نصف سنوي',
+             'خلال 12 أشهر'),
+            ('نسبة الموظفين الحاصلين على تأهيل رقمي',
+             '≥ 90%',
+             '(المؤهَّلون ÷ الإجمالي) × 100',
+             'سجل التدريب',
+             'مدير الموارد البشرية',
+             'سنوي',
+             'خلال 12 أشهر'),
+            ('رضا المستخدمين عن الخدمات الرقمية',
+             '≥ 85% رضا',
+             'متوسط تقييمات الاستبيانات الدورية',
+             'نظام قياس رضا المستخدم',
+             f'رئيس {domain}',
+             'ربع سنوي',
+             'خلال 18 أشهر'),
+            ('معدل توافر الخدمات الرقمية الحيوية',
+             '≥ 99.5%',
+             '(وقت التشغيل الفعلي ÷ الإجمالي) × 100',
+             'منصة مراقبة الأداء',
+             'مدير تقنية المعلومات',
+             'شهري',
+             'خلال 9 أشهر'),
+        ]
+    if _dc == 'global':
+        return [
+            (f'نسبة الامتثال لمتطلبات {fw_short}',
+             '≥ 95%',
+             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
+             f'سجل ضوابط {fw_short}',
+             'مسؤول الامتثال',
+             'ربع سنوي',
+             'خلال 12 أشهر'),
+            ('عدد نتائج التدقيق الحرجة المفتوحة',
+             '≤ 2 نتيجة حرجة مفتوحة',
+             'عدد النتائج الحرجة غير المغلقة',
+             'تقارير التدقيق',
+             'مسؤول الامتثال',
+             'ربع سنوي',
+             'خلال 9 أشهر'),
+            ('نسبة إغلاق نتائج التدقيق في الوقت المحدد',
+             '≥ 90%',
+             '(المُغلق في الموعد ÷ الإجمالي) × 100',
+             'نظام تتبع التدقيق',
+             'مسؤول الامتثال',
+             'ربع سنوي',
+             'خلال 6 أشهر'),
+            ('نسبة تقييم الموردين وفق المعايير المطبقة',
+             '100% الموردين الحرجين',
+             '(المُقيَّم ÷ الإجمالي) × 100',
+             'سجل الموردين',
+             'مسؤول سلسلة الإمداد',
+             'سنوي',
+             'خلال 12 أشهر'),
+            ('نسبة إكمال تدريب المعايير للموظفين المعنيين',
+             '≥ 90%',
+             '(المُتدرَّبون ÷ المستهدفون) × 100',
+             'سجل التدريب',
+             'مدير الموارد البشرية',
+             'سنوي',
+             'خلال 9 أشهر'),
+            ('نسبة المتطلبات التنظيمية المُبلَّغ عنها للجهات',
+             '100%',
+             '(المُبلَّغ عنه ÷ الإجمالي المطلوب) × 100',
+             'سجل الامتثال التنظيمي',
+             'مسؤول الامتثال',
+             'ربع سنوي',
+             'خلال 12 أشهر'),
+        ]
+    # Cyber Security (default)
+    return [
+        (f'نسبة تطبيق ضوابط {fw_short}',
+         '≥ 95%',
+         '(المطبّق ÷ الإجمالي) × 100',
+         f'سجل ضوابط {fw_short}',
+         'مسؤول الامتثال',
+         'ربع سنوي',
+         'خلال 12 شهراً'),
+        ('نسبة تغطية MFA للحسابات المميزة',
+         '100%',
+         '(الحسابات المحمية ÷ الإجمالي) × 100',
+         'نظام إدارة الهوية',
+         'مسؤول IAM',
+         'شهري',
+         'خلال 6 أشهر'),
+        ('اكتمال مراجعة الوصول المميز',
+         '100% دورياً',
+         '(المراجعات المكتملة ÷ المجدولة) × 100',
+         'سجل مراجعة الوصول',
+         'مسؤول PAM',
+         'ربع سنوي',
+         'خلال 9 أشهر'),
+        ('إغلاق الثغرات الحرجة (SLA 30 يوماً)',
+         '100% خلال 30 يوماً',
+         '(المُغلقة في الموعد ÷ الإجمالي) × 100',
+         'نظام إدارة الثغرات',
+         'مسؤول العمليات',
+         'شهري',
+         'خلال 6 أشهر'),
+        ('تغطية مصادر السجلات في SIEM',
+         '≥ 90%',
+         '(المصادر المُدمجة ÷ الإجمالي) × 100',
+         'منصة SIEM',
+         'مدير SOC',
+         'شهري',
+         'خلال 9 أشهر'),
+        ('متوسط زمن الكشف MTTD',
+         '≤ 60 دقيقة',
+         'مجموع أوقات الكشف ÷ عدد الحوادث',
+         'تقارير SOC',
+         'مدير SOC',
+         'شهري',
+         'خلال 12 شهراً'),
+        ('متوسط زمن الاستجابة MTTR',
+         '≤ 4 ساعات',
+         'مجموع أوقات الاستجابة ÷ عدد الحوادث',
+         'نظام تتبع الحوادث',
+         'مسؤول الاستجابة',
+         'شهري',
+         'خلال 12 شهراً'),
+        ('معدل فشل محاكاة التصيد',
+         '≤ 5%',
+         '(الضحايا ÷ المستهدفين) × 100',
+         'منصة محاكاة التصيد',
+         'مسؤول التوعية',
+         'ربع سنوي',
+         'خلال 12 شهراً'),
+        ('نسبة نجاح اختبار استعادة النسخ الاحتياطي',
+         '100%',
+         '(نجاح الاختبار ÷ الإجمالي) × 100',
+         'سجلات اختبار DR',
+         'مسؤول الاستمرارية',
+         'نصف سنوي',
+         'خلال 9 أشهر'),
+        ('تغطية تقييم مخاطر الأطراف الثالثة',
+         '100% الموردين الحرجين',
+         '(المُقيَّم ÷ الإجمالي) × 100',
+         'سجل الموردين',
+         'مسؤول المخاطر',
+         'سنوي',
+         'خلال 18 أشهر'),
+    ]
+
+
+def _build_domain_kpi_bank_en(domain, fw_short):
+    """Return English KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
+    for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
+    _dc = normalize_domain(domain or '')
+    if _dc == 'ai':
+        return [
+            ('AI Model Risk Assessment Coverage',
+             '≥ 95%',
+             '(Models assessed ÷ Total) × 100',
+             'Model registry',
+             f'{domain} Lead',
+             'Quarterly',
+             'Within 12 months'),
+            ('Ethical Review Approval Rate for AI Use Cases',
+             '100%',
+             '(Ethically approved ÷ Total) × 100',
+             'AI governance register',
+             'Ethics Committee',
+             'Quarterly',
+             'Within 9 months'),
+            ('Production Model Accuracy',
+             '≥ 90%',
+             '(Correct predictions ÷ Total) × 100',
+             'Model monitoring platform',
+             f'{domain} Team',
+             'Monthly',
+             'Within 6 months'),
+            ('Training Data Classification Coverage',
+             '100%',
+             '(Classified datasets ÷ Total) × 100',
+             'Data catalogue',
+             'Data Steward',
+             'Quarterly',
+             'Within 9 months'),
+            (f'{fw_short} AI Model Compliance Rate',
+             '≥ 95%',
+             '(Compliant models ÷ Total) × 100',
+             f'{fw_short} control register',
+             'Compliance Officer',
+             'Semi-annual',
+             'Within 12 months'),
+            ('Production Model Drift Rate',
+             '≤ 5% drift',
+             'Mean prediction deviation over the review period',
+             'Model monitoring platform',
+             f'{domain} Team',
+             'Monthly',
+             'Within 12 months'),
+            ('Mean Time to Resolve AI-Related Incidents',
+             '≤ 24 hours',
+             'Sum of resolution times ÷ Incident count',
+             'Incident register',
+             f'{domain} Lead',
+             'Monthly',
+             'Within 9 months'),
+        ]
+    if _dc == 'data':
+        return [
+            ('Critical System Data Accuracy Rate',
+             '≥ 95%',
+             '(Correct records ÷ Total) × 100',
+             'Data quality tool',
+             'Data Quality Manager',
+             'Monthly',
+             'Within 9 months'),
+            ('Data Catalogue Coverage',
+             '100% of critical data assets',
+             '(Registered assets ÷ Total) × 100',
+             'Data catalogue',
+             'Data Steward',
+             'Quarterly',
+             'Within 12 months'),
+            (f'{fw_short} Data Protection Compliance Rate',
+             '≥ 95%',
+             '(Implemented controls ÷ Total) × 100',
+             f'{fw_short} control register',
+             'Compliance Officer',
+             'Quarterly',
+             'Within 12 months'),
+            ('Automated Data Quality Issue Detection Rate',
+             '≥ 90%',
+             '(Auto-detected issues ÷ Total) × 100',
+             'Data monitoring tool',
+             'Data Quality Manager',
+             'Monthly',
+             'Within 9 months'),
+            ('Data Quality Incident Mean Resolution Time',
+             '≤ 48 hours for critical issues',
+             'Sum of resolution times ÷ Incident count',
+             'Incident tracking system',
+             'Data Steward',
+             'Monthly',
+             'Within 6 months'),
+            ('Data Governance Gap Closure Rate',
+             '100%',
+             '(Closed gaps ÷ Total) × 100',
+             'Gap register',
+             f'{domain} Lead',
+             'Quarterly',
+             'Within 18 months'),
+        ]
+    if _dc == 'erm':
+        return [
+            ('Enterprise Risk Register Completeness',
+             '100%',
+             '(Documented risks ÷ Identified) × 100',
+             'Risk management system',
+             'Risk Officer',
+             'Quarterly',
+             'Within 9 months'),
+            ('Critical Risk Treatment Plan Coverage',
+             '100%',
+             '(Risks with plan ÷ Total critical) × 100',
+             'Risk register',
+             'Risk Officer',
+             'Quarterly',
+             'Within 12 months'),
+            (f'{fw_short} Framework Compliance Rate',
+             '≥ 95%',
+             '(Compliant requirements ÷ Total) × 100',
+             f'{fw_short} control register',
+             'Compliance Officer',
+             'Semi-annual',
+             'Within 12 months'),
+            ('Risk Appetite Breach Indicator',
+             '≤ 5% breach rate',
+             '(Risks exceeding threshold ÷ Total) × 100',
+             'Risk management system',
+             'Risk Officer',
+             'Monthly',
+             'Within 9 months'),
+            ('Risk Incident On-Time Closure Rate',
+             '≥ 90%',
+             '(Closed on-time ÷ Total) × 100',
+             'Incident register',
+             'Risk Officer',
+             'Monthly',
+             'Within 6 months'),
+            ('Critical Supplier Assessment Coverage',
+             '100% of critical suppliers',
+             '(Assessed ÷ Total) × 100',
+             'Supplier register',
+             'Supply Chain Manager',
+             'Annual',
+             'Within 18 months'),
+        ]
+    if _dc == 'dt':
+        return [
+            ('Core Process Digitalisation Rate',
+             '≥ 80%',
+             '(Digitalised processes ÷ Total) × 100',
+             'Digital project register',
+             f'{domain} Lead',
+             'Quarterly',
+             'Within 24 months'),
+            ('Cloud Adoption Rate',
+             '≥ 70%',
+             '(Cloud systems ÷ Total) × 100',
+             'Infrastructure register',
+             'IT Director',
+             'Quarterly',
+             'Within 24 months'),
+            (f'{fw_short} Standards Compliance Rate',
+             '≥ 95%',
+             '(Compliant requirements ÷ Total) × 100',
+             f'{fw_short} control register',
+             'Compliance Officer',
+             'Semi-annual',
+             'Within 12 months'),
+            ('Digital Skills Certification Rate',
+             '≥ 90%',
+             '(Certified staff ÷ Total) × 100',
+             'Training register',
+             'HR Director',
+             'Annual',
+             'Within 12 months'),
+            ('Digital Service User Satisfaction',
+             '≥ 85% satisfied',
+             'Mean score from periodic user surveys',
+             'User satisfaction system',
+             f'{domain} Lead',
+             'Quarterly',
+             'Within 18 months'),
+            ('Critical Digital Service Availability',
+             '≥ 99.5%',
+             '(Actual uptime ÷ Total) × 100',
+             'Performance monitoring platform',
+             'IT Director',
+             'Monthly',
+             'Within 9 months'),
+        ]
+    if _dc == 'global':
+        return [
+            (f'{fw_short} Compliance Rate',
+             '≥ 95%',
+             '(Compliant requirements ÷ Total) × 100',
+             f'{fw_short} control register',
+             'Compliance Officer',
+             'Quarterly',
+             'Within 12 months'),
+            ('Open Critical Audit Findings',
+             '≤ 2 open critical findings',
+             'Count of unresolved critical findings',
+             'Audit reports',
+             'Compliance Officer',
+             'Quarterly',
+             'Within 9 months'),
+            ('Audit Finding On-Time Closure Rate',
+             '≥ 90%',
+             '(Closed on-time ÷ Total) × 100',
+             'Audit tracking system',
+             'Compliance Officer',
+             'Quarterly',
+             'Within 6 months'),
+            ('Critical Supplier Standards Assessment Coverage',
+             '100% of critical suppliers',
+             '(Assessed ÷ Total) × 100',
+             'Supplier register',
+             'Supply Chain Manager',
+             'Annual',
+             'Within 12 months'),
+            ('Standards Training Completion Rate (Relevant Staff)',
+             '≥ 90%',
+             '(Trained ÷ Targeted) × 100',
+             'Training register',
+             'HR Director',
+             'Annual',
+             'Within 9 months'),
+            ('Regulatory Reporting Completeness',
+             '100%',
+             '(Reports submitted ÷ Required) × 100',
+             'Regulatory compliance register',
+             'Compliance Officer',
+             'Quarterly',
+             'Within 12 months'),
+        ]
+    # Cyber Security (default)
+    return [
+        (f'{fw_short} Control Compliance Rate',
+         '≥ 95%',
+         '(Implemented ÷ Total) × 100',
+         f'{fw_short} control register',
+         'Compliance Officer',
+         'Quarterly',
+         'Within 12 months'),
+        ('MFA Coverage Rate (Privileged Accounts)',
+         '100%',
+         '(Protected accounts ÷ Total) × 100',
+         'Identity management system',
+         'IAM Owner',
+         'Monthly',
+         'Within 6 months'),
+        ('Privileged Access Review Completion',
+         '100% quarterly',
+         '(Reviews completed ÷ Scheduled) × 100',
+         'Access review register',
+         'PAM Owner',
+         'Quarterly',
+         'Within 9 months'),
+        ('Critical Vulnerability Remediation SLA (30 days)',
+         '100% within 30 days',
+         '(Closed on-time ÷ Total) × 100',
+         'Vulnerability management system',
+         'Operations Owner',
+         'Monthly',
+         'Within 6 months'),
+        ('SIEM Log-Source Coverage',
+         '≥ 90%',
+         '(Integrated sources ÷ Total) × 100',
+         'SIEM platform',
+         'SOC Manager',
+         'Monthly',
+         'Within 9 months'),
+        ('Mean Time to Detect (MTTD)',
+         '≤ 60 minutes',
+         'Sum of detection times ÷ Incident count',
+         'SOC reports',
+         'SOC Manager',
+         'Monthly',
+         'Within 12 months'),
+        ('Mean Time to Respond (MTTR)',
+         '≤ 4 hours',
+         'Sum of response times ÷ Incident count',
+         'Incident tracking system',
+         'IR Owner',
+         'Monthly',
+         'Within 12 months'),
+        ('Phishing Simulation Failure Rate',
+         '≤ 5%',
+         '(Victims ÷ Targeted) × 100',
+         'Phishing simulation platform',
+         'Awareness Owner',
+         'Quarterly',
+         'Within 12 months'),
+        ('Backup Restore Test Success Rate',
+         '100%',
+         '(Successful tests ÷ Total) × 100',
+         'DR test records',
+         'BCM Owner',
+         'Semi-annual',
+         'Within 9 months'),
+        ('Third-Party Cyber Assessment Coverage',
+         '100% critical suppliers',
+         '(Assessed ÷ Total) × 100',
+         'Supplier register',
+         'Risk Owner',
+         'Annual',
+         'Within 18 months'),
+    ]
+
+
 def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                                       fw_short='NCA ECC', sector='General',
                                       org_name='The Organization',
@@ -22709,77 +23719,11 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                 _existing_so_nums.add(int(_cells[0]))
         _next_so = max(_existing_so_nums) + 1 if _existing_so_nums else 1
 
-        # Canonical cybersecurity objectives bank (bilingual)
+        # Canonical objectives bank — domain-aware
         if is_ar:
-            _so_bank = [
-                ('نموذج حوكمة الأمن السيبراني',
-                 '100% نضج هيكل الحوكمة',
-                 f'متطلب {fw_short} وغياب هيكل حوكمة رسمي',
-                 'خلال 6 أشهر'),
-                (f'تطبيق ضوابط {fw_short}',
-                 f'≥ 95% نسبة تطبيق ضوابط {fw_short} مع أدلة تدقيق',
-                 f'امتثال تنظيمي إلزامي لقطاع {sector}',
-                 'خلال 12 شهراً'),
-                ('إدارة الهوية والوصول المميز (IAM/PAM)',
-                 '100% تغطية الحسابات المميزة بـPAM و100% MFA',
-                 'تقليل مخاطر الوصول غير المصرح به',
-                 'خلال 9 أشهر'),
-                ('مراقبة SIEM واستجابة للحوادث',
-                 f'MTTD ≤ 60 دقيقة، MTTR ≤ 4 ساعات',
-                 'ثغرات الكشف المُشخَّصة في التقييم',
-                 'خلال 12 شهراً'),
-                ('إدارة الثغرات والتصحيح',
-                 '100% إغلاق الثغرات الحرجة خلال 30 يوماً',
-                 'تقليل سطح الهجوم المعرّض',
-                 'خلال 6 أشهر'),
-                ('النسخ الاحتياطي والتعافي من الكوارث',
-                 '100% نجاح اختبارات استعادة النسخ الاحتياطي',
-                 'ضمان استمرارية الأعمال في حالات الطوارئ',
-                 'خلال 9 أشهر'),
-                ('التوعية ومحاكاة التصيد',
-                 '≥ 90% اجتياز التدريب، ≤ 5% معدل وقوع التصيد',
-                 'تقليل المخاطر البشرية للحوادث السيبرانية',
-                 'خلال 12 شهراً'),
-                ('مخاطر الأطراف الثالثة',
-                 '100% تقييم الموردين الحرجين',
-                 'إغلاق فجوة سلسلة الإمداد الرقمية',
-                 'خلال 18 شهراً'),
-            ]
+            _so_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
         else:
-            _so_bank = [
-                ('Cybersecurity Governance Operating Model',
-                 '100% governance structure maturity',
-                 f'{fw_short} requirement; no formal governance structure exists',
-                 'Within 6 months'),
-                (f'{fw_short} Control Implementation',
-                 f'≥ 95% {fw_short} control implementation rate with audit evidence',
-                 f'Mandatory regulatory compliance for {sector} sector',
-                 'Within 12 months'),
-                ('Identity & Privileged Access Management (IAM/PAM)',
-                 '100% privileged account PAM coverage + 100% MFA',
-                 'Reduce risk of unauthorised access',
-                 'Within 9 months'),
-                ('SIEM/SOC Monitoring & Incident Response',
-                 'MTTD ≤ 60 min, MTTR ≤ 4 hrs',
-                 'Detection gaps identified in assessment',
-                 'Within 12 months'),
-                ('Vulnerability & Patch Management',
-                 '100% critical vulnerability closure within 30 days',
-                 'Reduce exposed attack surface',
-                 'Within 6 months'),
-                ('Backup, DR & Cyber Resilience',
-                 '100% backup restore test success rate',
-                 'Ensure business continuity in emergencies',
-                 'Within 9 months'),
-                ('Awareness & Phishing Resilience',
-                 '≥ 90% training pass rate, ≤ 5% phishing click rate',
-                 'Reduce human risk factor for cyber incidents',
-                 'Within 12 months'),
-                ('Third-Party / Supply-Chain Cyber Risk',
-                 '100% critical supplier assessment coverage',
-                 'Close digital supply-chain cyber exposure',
-                 'Within 18 months'),
-            ]
+            _so_bank = _build_domain_so_bank_en(domain, fw_short, sector)
 
         # Pick rows not already represented (keyword dedup)
         _so_text_lc = _so_text.lower()
@@ -22818,152 +23762,11 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
         _next_kpi = max(_existing_kpi_nums) + 1 if _existing_kpi_nums else 1
         _kpi_text_lc = _kpi_text.lower()
 
+        # KPI bank — domain-aware
         if is_ar:
-            _kpi_bank = [
-                (f'نسبة تطبيق ضوابط {fw_short}',
-                 '≥ 95%',
-                 '(المطبّق ÷ الإجمالي) × 100',
-                 f'سجل ضوابط {fw_short}',
-                 'مسؤول الامتثال',
-                 'ربع سنوي',
-                 'خلال 12 شهراً'),
-                ('نسبة تغطية MFA للحسابات المميزة',
-                 '100%',
-                 '(الحسابات المحمية ÷ الإجمالي) × 100',
-                 'نظام إدارة الهوية',
-                 'مسؤول IAM',
-                 'شهري',
-                 'خلال 6 أشهر'),
-                ('اكتمال مراجعة الوصول المميز',
-                 '100% دورياً',
-                 '(المراجعات المكتملة ÷ المجدولة) × 100',
-                 'سجل مراجعة الوصول',
-                 'مسؤول PAM',
-                 'ربع سنوي',
-                 'خلال 9 أشهر'),
-                ('إغلاق الثغرات الحرجة (SLA 30 يوماً)',
-                 '100% خلال 30 يوماً',
-                 '(المُغلقة في الموعد ÷ الإجمالي) × 100',
-                 'نظام إدارة الثغرات',
-                 'مسؤول العمليات',
-                 'شهري',
-                 'خلال 6 أشهر'),
-                ('تغطية مصادر السجلات في SIEM',
-                 '≥ 90%',
-                 '(المصادر المُدمجة ÷ الإجمالي) × 100',
-                 'منصة SIEM',
-                 'مدير SOC',
-                 'شهري',
-                 'خلال 9 أشهر'),
-                ('متوسط زمن الكشف MTTD',
-                 '≤ 60 دقيقة',
-                 'مجموع أوقات الكشف ÷ عدد الحوادث',
-                 'تقارير SOC',
-                 'مدير SOC',
-                 'شهري',
-                 'خلال 12 شهراً'),
-                ('متوسط زمن الاستجابة MTTR',
-                 '≤ 4 ساعات',
-                 'مجموع أوقات الاستجابة ÷ عدد الحوادث',
-                 'نظام تتبع الحوادث',
-                 'مسؤول الاستجابة',
-                 'شهري',
-                 'خلال 12 شهراً'),
-                ('معدل فشل محاكاة التصيد',
-                 '≤ 5%',
-                 '(الضحايا ÷ المستهدفين) × 100',
-                 'منصة محاكاة التصيد',
-                 'مسؤول التوعية',
-                 'ربع سنوي',
-                 'خلال 12 شهراً'),
-                ('نسبة نجاح اختبار استعادة النسخ الاحتياطي',
-                 '100%',
-                 '(نجاح الاختبار ÷ الإجمالي) × 100',
-                 'سجلات اختبار DR',
-                 'مسؤول الاستمرارية',
-                 'نصف سنوي',
-                 'خلال 9 أشهر'),
-                ('تغطية تقييم مخاطر الأطراف الثالثة',
-                 '100% الموردين الحرجين',
-                 '(المُقيَّم ÷ الإجمالي) × 100',
-                 'سجل الموردين',
-                 'مسؤول المخاطر',
-                 'سنوي',
-                 'خلال 18 شهراً'),
-            ]
+            _kpi_bank = _build_domain_kpi_bank_ar(domain, fw_short)
         else:
-            _kpi_bank = [
-                (f'{fw_short} Control Compliance Rate',
-                 '≥ 95%',
-                 '(Implemented ÷ Total) × 100',
-                 f'{fw_short} control register',
-                 'Compliance Officer',
-                 'Quarterly',
-                 'Within 12 months'),
-                ('MFA Coverage Rate (Privileged Accounts)',
-                 '100%',
-                 '(Protected accounts ÷ Total) × 100',
-                 'Identity management system',
-                 'IAM Owner',
-                 'Monthly',
-                 'Within 6 months'),
-                ('Privileged Access Review Completion',
-                 '100% quarterly',
-                 '(Reviews completed ÷ Scheduled) × 100',
-                 'Access review register',
-                 'PAM Owner',
-                 'Quarterly',
-                 'Within 9 months'),
-                ('Critical Vulnerability Remediation SLA (30 days)',
-                 '100% within 30 days',
-                 '(Closed on-time ÷ Total) × 100',
-                 'Vulnerability management system',
-                 'Operations Owner',
-                 'Monthly',
-                 'Within 6 months'),
-                ('SIEM Log-Source Coverage',
-                 '≥ 90%',
-                 '(Integrated sources ÷ Total) × 100',
-                 'SIEM platform',
-                 'SOC Manager',
-                 'Monthly',
-                 'Within 9 months'),
-                ('Mean Time to Detect (MTTD)',
-                 '≤ 60 minutes',
-                 'Sum of detection times ÷ Incident count',
-                 'SOC reports',
-                 'SOC Manager',
-                 'Monthly',
-                 'Within 12 months'),
-                ('Mean Time to Respond (MTTR)',
-                 '≤ 4 hours',
-                 'Sum of response times ÷ Incident count',
-                 'Incident tracking system',
-                 'IR Owner',
-                 'Monthly',
-                 'Within 12 months'),
-                ('Phishing Simulation Failure Rate',
-                 '≤ 5%',
-                 '(Victims ÷ Targeted) × 100',
-                 'Phishing simulation platform',
-                 'Awareness Owner',
-                 'Quarterly',
-                 'Within 12 months'),
-                ('Backup Restore Test Success Rate',
-                 '100%',
-                 '(Successful tests ÷ Total) × 100',
-                 'DR test records',
-                 'BCM Owner',
-                 'Semi-annual',
-                 'Within 9 months'),
-                ('Third-Party Cyber Assessment Coverage',
-                 '100% critical suppliers',
-                 '(Assessed ÷ Total) × 100',
-                 'Supplier register',
-                 'Risk Owner',
-                 'Annual',
-                 'Within 18 months'),
-            ]
+            _kpi_bank = _build_domain_kpi_bank_en(domain, fw_short)
 
         _kpi_rows_new = []
         for _row in _kpi_bank:
@@ -23159,6 +23962,48 @@ def repair_vision_objectives_if_insufficient(
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
     is_ar = (lang == 'ar')
 
+    vision_text = sections.get('vision', '') or ''
+
+    # Ensure the vision section explicitly mentions الرؤية / Vision.
+    # This runs regardless of SO row count so even documents with enough
+    # objectives still get the vision keyword if it was omitted by the AI.
+    if is_ar:
+        _vision_kw = 'الرؤية'
+        _vision_stmt = (
+            f'\n**الرؤية:** تسعى {org_name} إلى بناء وضع متين ورائد في مجال {domain} '
+            f'متوائم مع متطلبات {fw_short}، وإغلاق الفجوات الحرجة المُشخَّصة '
+            f'وتحقيق نتائج امتثال قابلة للقياس تُعزز ثقة المستفيدين وتدعم '
+            f'استمرارية الأعمال في قطاع {sector}.\n'
+        )
+    else:
+        _vision_kw = 'Vision'
+        _vision_stmt = (
+            f'\n**Vision:** {org_name} aims to establish a robust, leading posture in '
+            f'{domain} aligned with {fw_short}, closing the critical gaps identified in '
+            f'the diagnostic and delivering measurable compliance outcomes that build '
+            f'stakeholder confidence and support business continuity in the {sector} sector.\n'
+        )
+    if vision_text.strip() and _vision_kw not in vision_text:
+        # Inject before the first ### heading (objectives sub-section) or at the top
+        _first_sub = _ts_re.search(r'^###', vision_text, _ts_re.MULTILINE)
+        if _first_sub:
+            vision_text = (
+                vision_text[:_first_sub.start()].rstrip()
+                + '\n' + _vision_stmt + '\n'
+                + vision_text[_first_sub.start():]
+            )
+        else:
+            _first_tbl = _ts_re.search(r'^\|', vision_text, _ts_re.MULTILINE)
+            if _first_tbl:
+                vision_text = (
+                    vision_text[:_first_tbl.start()].rstrip()
+                    + '\n' + _vision_stmt + '\n'
+                    + vision_text[_first_tbl.start():]
+                )
+            else:
+                vision_text = vision_text.rstrip() + '\n' + _vision_stmt
+        sections['vision'] = vision_text
+
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so >= 6:
         return 0
@@ -23166,80 +24011,14 @@ def repair_vision_objectives_if_insufficient(
     vision_text = sections.get('vision', '') or ''
 
     if is_ar:
-        objectives_bank = [
-            ('إنشاء نموذج تشغيل لحوكمة الأمن السيبراني',
-             '100% نضج هيكل الحوكمة وتفعيل لجنة التوجيه',
-             f'متطلب {fw_short} — غياب هيكل حوكمة رسمي',
-             'خلال 6 أشهر'),
-            (f'تطبيق ضوابط {fw_short} و NCA DCC',
-             f'≥ 95% نسبة تطبيق ضوابط {fw_short} مع أدلة تدقيق',
-             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
-             'خلال 12 شهراً'),
-            ('تفعيل IAM/PAM/MFA وإدارة الوصول المميز',
-             '100% تغطية الحسابات المميزة بـPAM و100% MFA لجميع المستخدمين',
-             'تقليل مخاطر الوصول غير المصرح به والانتحال',
-             'خلال 9 أشهر'),
-            ('تشغيل SIEM/SOC والرصد الأمني المستمر',
-             'MTTD ≤ 60 دقيقة وMTTR ≤ 4 ساعات',
-             'إغلاق فجوات الكشف المحددة في تقرير التقييم',
-             'خلال 12 شهراً'),
-            ('إدارة الثغرات والتحديثات الأمنية',
-             '100% إغلاق الثغرات الحرجة خلال 30 يوماً',
-             'تقليص سطح الهجوم المعرّض للخطر',
-             'خلال 6 أشهر'),
-            ('حماية البيانات والتصنيف والتشفير/DLP',
-             '100% تصنيف البيانات الحساسة وتفعيل DLP على القنوات الرئيسية',
-             'الامتثال لمتطلبات حوكمة البيانات وحماية المعلومات',
-             'خلال 12 شهراً'),
-            ('الاستجابة للحوادث والمرونة السيبرانية',
-             'خطة استجابة معتمدة ومُختبرة مع نجاح 100% في اختبارات DR',
-             'ضمان استمرارية الأعمال وتقليل أثر الحوادث',
-             'خلال 9 أشهر'),
-            ('رفع الوعي الأمني وإدارة مخاطر الأطراف الثالثة',
-             '≥ 90% اجتياز التدريب السنوي و100% تقييم الموردين الحرجين',
-             'تقليل عامل الخطر البشري وفجوات سلسلة الإمداد الرقمية',
-             'خلال 18 شهراً'),
-        ]
+        objectives_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
         hdr_line = (
             '### الأهداف الاستراتيجية\n\n'
             '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
             '|---|-------|-----------------|--------|---------------|\n'
         )
     else:
-        objectives_bank = [
-            ('Cybersecurity Governance Operating Model',
-             '100% governance structure maturity; steering committee active',
-             f'{fw_short} requirement; no formal governance structure exists',
-             'Within 6 months'),
-            (f'{fw_short} and NCA DCC Control Implementation',
-             f'≥ 95% {fw_short} control implementation rate with audit evidence',
-             f'Mandatory regulatory compliance for {sector} sector',
-             'Within 12 months'),
-            ('IAM/PAM/MFA — Privileged Access Management',
-             '100% privileged account PAM coverage + 100% MFA for all users',
-             'Reduce unauthorised access and impersonation risk',
-             'Within 9 months'),
-            ('SIEM/SOC Activation and Continuous Security Monitoring',
-             'MTTD ≤ 60 min, MTTR ≤ 4 hrs',
-             'Close detection gaps identified in assessment report',
-             'Within 12 months'),
-            ('Vulnerability and Patch Management',
-             '100% critical vulnerability closure within 30 days',
-             'Reduce exposed attack surface',
-             'Within 6 months'),
-            ('Data Protection, Classification, Encryption/DLP',
-             '100% sensitive data classified; DLP active on primary channels',
-             'Comply with data governance and information protection requirements',
-             'Within 12 months'),
-            ('Incident Response and Cyber Resilience',
-             'Approved and tested IR plan; 100% DR test success rate',
-             'Ensure business continuity and minimise incident impact',
-             'Within 9 months'),
-            ('Security Awareness and Third-Party Risk Management',
-             '≥ 90% annual training pass rate; 100% critical supplier assessment',
-             'Reduce human risk factor and digital supply-chain exposure',
-             'Within 18 months'),
-        ]
+        objectives_bank = _build_domain_so_bank_en(domain, fw_short, sector)
         hdr_line = (
             '### Strategic Objectives\n\n'
             '| # | Objective | Target Metric | Justification | Timeframe |\n'
@@ -37549,9 +38328,14 @@ def api_generate_pdf():
                     
                     from reportlab.pdfbase.pdfmetrics import stringWidth
                     reshaped = arabic_reshaper.reshape(text)
-                    
+
+                    # Guard against None col_width (can happen when table column
+                    # count mismatches the col_widths list in edge cases).
+                    if col_width is None or col_width <= 0:
+                        return get_display(reshaped)
+
                     # Check if fits in one line
-                    total_w = stringWidth(reshaped, arabic_font_name, font_size)
+                    total_w = stringWidth(reshaped, arabic_font_name, font_size) or 0
                     cell_width = col_width - 16  # subtract padding + safety margin
                     if total_w <= cell_width:
                         return get_display(reshaped)
@@ -37560,11 +38344,11 @@ def api_generate_pdf():
                     words = reshaped.split(' ')
                     lines = []
                     current_line_words = []
-                    current_width = 0
-                    space_width = stringWidth(' ', arabic_font_name, font_size)
+                    current_width = 0.0
+                    space_width = stringWidth(' ', arabic_font_name, font_size) or 0.0
                     
                     for word in words:
-                        word_width = stringWidth(word, arabic_font_name, font_size)
+                        word_width = stringWidth(word, arabic_font_name, font_size) or 0.0
                         test_width = current_width + word_width + (space_width if current_line_words else 0)
                         
                         if test_width > cell_width and current_line_words:
