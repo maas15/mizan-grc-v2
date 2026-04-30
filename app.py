@@ -17932,7 +17932,14 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
         k for k, v in challenge_flags.items()
         if v and not coverage.get(k, False)
     ]
-    below_min = len(rows_before) < _RICHNESS_MIN_GAP_ROWS
+    # Consulting-mode / no-structure orgs require a higher gap floor so the
+    # AI's thin output (often just 2-3 rows) is expanded to reflect the real
+    # diagnostic depth expected in a consulting-grade deliverable.
+    _mode_lc_g = str(generation_mode).lower()
+    _effective_min_gaps = _RICHNESS_MIN_GAP_ROWS
+    if _mode_lc_g in ('consulting', 'assurance') or org_structure_is_none:
+        _effective_min_gaps = max(_effective_min_gaps, 5)
+    below_min = len(rows_before) < _effective_min_gaps
     if (not needs_inject_structural and not needs_challenge_injection
             and not below_min and not diagnostic_gaps):
         summary['rows_after'] = len(rows_before)
@@ -18068,7 +18075,7 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
         rows_out.append([title, desc or title, prio, stat])
         summary['diagnostic_gaps_used'] += 1
 
-    # 4. Generic-bank top-up ONLY if we are still below minimum.
+    # 4. Generic-bank top-up ONLY if we are still below effective minimum.
     _generic_bank_ar = [
         ['ضعف الضوابط التقنية الأساسية',
          (f'ضوابط {fw_short} الأساسية غير مطبقة بالكامل في {org_name}، '
@@ -18081,6 +18088,22 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
         ['غياب خطط استمرارية الأعمال',
          (f'خطط استمرارية الأعمال الخاصة بـ{domain} غير مكتملة أو غير '
           f'مختبرة في {org_name}.'),
+         'متوسطة', 'مفتوحة'],
+        ['غياب سياسات وإجراءات موثقة',
+         (f'لا تمتلك {org_name} حزمة سياسات وإجراءات {domain} موثقة '
+          f'ومعتمدة تغطي متطلبات {fw_short} التشغيلية.'),
+         'عالية', 'مفتوحة'],
+        ['قصور في إدارة الهويات والوصول',
+         (f'غياب آليات فعّالة لإدارة الهويات والوصول في بيئة {org_name}، '
+          f'مما يرفع من مستوى مخاطر {domain} وفق {fw_short}.'),
+         'عالية', 'مفتوحة'],
+        ['غياب برنامج تدريب وتوعية أمنية',
+         (f'لا يوجد في {org_name} برنامج توعية وتدريب منتظم لرفع كفاءة '
+          f'الكوادر في مجال {domain} ومتطلبات {fw_short}.'),
+         'متوسطة', 'مفتوحة'],
+        ['ضعف إدارة أصول {domain}',
+         (f'جرد أصول {domain} في {org_name} غير مكتمل أو غير محدث، '
+          f'مما يعيق الامتثال لمتطلبات {fw_short} ذات الصلة.'),
          'متوسطة', 'مفتوحة'],
     ]
     _generic_bank_en = [
@@ -18096,10 +18119,26 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
          (f'{domain}-specific business continuity plans at {org_name} are '
           f'incomplete or untested.'),
          'Medium', 'Open'],
+        ['Absence of documented policies and procedures',
+         (f'{org_name} lacks an approved set of {domain} policies and '
+          f'procedures covering {fw_short} operational requirements.'),
+         'High', 'Open'],
+        ['Identity & access management deficiency',
+         (f'No effective IAM controls are in place at {org_name}, '
+          f'increasing {domain} risk exposure per {fw_short}.'),
+         'High', 'Open'],
+        ['No formal security awareness & training programme',
+         (f'{org_name} has no regular security awareness programme to '
+          f'build workforce competence in {domain} and {fw_short} requirements.'),
+         'Medium', 'Open'],
+        [f'{domain} asset inventory gap',
+         (f'The {domain} asset inventory at {org_name} is incomplete or '
+          f'outdated, impeding compliance with relevant {fw_short} controls.'),
+         'Medium', 'Open'],
     ]
     generic_bank = _generic_bank_ar if is_ar else _generic_bank_en
     gi = 0
-    while len(rows_out) < _RICHNESS_MIN_GAP_ROWS and gi < len(generic_bank):
+    while len(rows_out) < _effective_min_gaps and gi < len(generic_bank):
         candidate = generic_bank[gi]
         dup = any(candidate[0].lower() in (r[0] or '').lower()
                   or (r[0] or '').lower() in candidate[0].lower()
@@ -18280,26 +18319,37 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
         return summary
     if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
             and org_structure_is_none):
-        # Look for an existing governance/structure pillar. If one exists,
-        # early-return. If not, rebuild to inject it.
+        # Only early-return if the FIRST pillar's heading explicitly
+        # carries governance/structure tokens.  Checking the whole
+        # section body was too broad: NCA ECC strategies mention
+        # 'حوكمة' in every pillar's narrative, causing a false-positive
+        # that skipped the governance-pillar injection and left the
+        # document starting with الركيزة الثانية.
         _gov_tokens_ar = ('الحوكمة', 'حوكمة', 'الهيكل', 'هيكل',
                           'الهيكلة', 'هيكلة', 'اللجنة', 'لجنة',
                           'التوجيه', 'توجيه')
         _gov_tokens_en = ('governance', 'structure', 'steering',
                           'committee', 'organizational',
                           'reporting model', 'org design')
-        _has_gov = False
-        _pl = pillars.lower()
-        for t in _gov_tokens_en:
-            if t in _pl:
-                _has_gov = True
-                break
-        if not _has_gov:
-            for t in _gov_tokens_ar:
-                if t in pillars:
-                    _has_gov = True
+        _has_gov_first = False
+        _first_matches = list(_PILLAR_HEADING_RE_GLOBAL.finditer(pillars))
+        if not _first_matches:
+            _first_matches = list(_ts_re.finditer(
+                r'^###[^#\n][^\n]*$', pillars, _ts_re.MULTILINE))
+        if _first_matches:
+            _first_m = _first_matches[0]
+            # Extract ONLY the first pillar heading line for governance check
+            _first_heading = pillars[_first_m.start():_first_m.end()].lower()
+            for t in _gov_tokens_en:
+                if t in _first_heading:
+                    _has_gov_first = True
                     break
-        if _has_gov:
+            if not _has_gov_first:
+                for t in _gov_tokens_ar:
+                    if t in pillars[_first_m.start():_first_m.end()]:
+                        _has_gov_first = True
+                        break
+        if _has_gov_first:
             summary['pillars_after'] = n_before
             return summary
         # else: fall through to rebuild, injecting governance pillar
@@ -24006,6 +24056,45 @@ def repair_vision_objectives_if_insufficient(
 
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so >= 6:
+        # Even when SO rows are sufficient, ensure the subheading
+        # "### الأهداف الاستراتيجية" / "### Strategic Objectives" is
+        # present IMMEDIATELY BEFORE the table so readers can identify it.
+        # The AI sometimes omits the subheading and writes the table directly
+        # after the vision narrative (arabic-preview52 issue).
+        _vision_chk = sections.get('vision', '') or ''
+        if is_ar:
+            _so_subhdr_re = _ts_re.compile(
+                r'^###\s+(?:الأهداف(?:\s+الاستراتيجية)?)[^\n]*$',
+                _ts_re.MULTILINE | _ts_re.IGNORECASE,
+            )
+            _so_tbl_re = _ts_re.compile(
+                r'^\|\s*#\s*\|\s*(?:الهدف|الأهداف)[^\n]*$',
+                _ts_re.MULTILINE | _ts_re.IGNORECASE,
+            )
+            _canonical_subhdr = '### الأهداف الاستراتيجية'
+        else:
+            _so_subhdr_re = _ts_re.compile(
+                r'^###\s+(?:Strategic\s+)?Objectives[^\n]*$',
+                _ts_re.MULTILINE | _ts_re.IGNORECASE,
+            )
+            _so_tbl_re = _ts_re.compile(
+                r'^\|\s*#\s*\|\s*Objective[^\n]*$',
+                _ts_re.MULTILINE | _ts_re.IGNORECASE,
+            )
+            _canonical_subhdr = '### Strategic Objectives'
+        _tbl_m = _so_tbl_re.search(_vision_chk)
+        if _tbl_m:
+            # Check the 200 chars before the table header for a subheading
+            _pre = _vision_chk[max(0, _tbl_m.start() - 200):_tbl_m.start()]
+            if not _so_subhdr_re.search(_pre):
+                # Subheading is missing before the table — insert it
+                _ins_pos = _tbl_m.start()
+                _vision_chk = (
+                    _vision_chk[:_ins_pos].rstrip()
+                    + '\n\n' + _canonical_subhdr + '\n\n'
+                    + _vision_chk[_ins_pos:]
+                )
+                sections['vision'] = _vision_chk
         return 0
 
     vision_text = sections.get('vision', '') or ''
@@ -38552,57 +38641,55 @@ def api_generate_pdf():
         # Labels that trigger the shaded-panel treatment. Declared as a
         # plain-dict literal at shared scope so it cannot become unset on
         # any code path through api_generate_pdf.
+        # NOTE: labels are stored WITHOUT trailing colons so the
+        # `raw_text.strip().rstrip(':').lower()` lookup works for both
+        # "Vision:" and "Vision" inputs.
         _KPMG_CALLOUT_LABELS = {
             'strategic mandate', 'compliance north star',
-            'investment justification', 'vision:', 'vision',
+            'investment justification', 'vision', 'vision:',
             'الولاية الاستراتيجية', 'النجم الشمالي للامتثال',
-            'مبرر الاستثمار', 'الرؤية الاستراتيجية:', 'الرؤية:',
+            'مبرر الاستثمار', 'الرؤية الاستراتيجية', 'الرؤية',
         }
         def _make_kpmg_panel(label_txt, body_txt, avail_w):
-            """Return a KPMG-style shaded callout panel (label + body)."""
+            """Return a KPMG-style shaded callout panel (label + body).
+
+            Uses a simple single-column Table so ReportLab can always
+            compute deterministic row heights without KeepInFrame.
+            KeepInFrame inside a Table cell caused
+            `TypeError: '>' not supported between instances of
+            'NoneType' and 'NoneType'` in ReportLab 4.x when the
+            inner flowable returned an ambiguous height.
+            """
             from reportlab.lib.colors import HexColor as _HC
-            from reportlab.platypus import Spacer as _Spacer
             PANEL_BG   = _HC('#F3F4F6')
             BORDER_COL = _HC('#1D2B4F')
-            # Use a Spacer cell instead of an empty string to guarantee
-            # ReportLab 4.x can always compute a deterministic row height.
-            # An empty string '' with rowHeights=[None] can leave the height
-            # as None internally, causing max(None, None) → TypeError during
-            # doc.build() when two cells both fail height computation.
-            accent = Table([[_Spacer(5, 1)]], colWidths=[5])
-            accent.setStyle(TableStyle([
-                ('BACKGROUND',    (0,0),(0,0), BORDER_COL),
-                ('TOPPADDING',    (0,0),(0,0), 0),
-                ('BOTTOMPADDING', (0,0),(0,0), 0),
-                ('LEFTPADDING',   (0,0),(0,0), 0),
-                ('RIGHTPADDING',  (0,0),(0,0), 0),
-            ]))
-            text_w = avail_w - 5 - 8
+            text_w = max(avail_w - 24, 50)  # content width minus padding
             if is_arabic:
                 _lbl = process_arabic(label_txt, arabic_font_bold, 10)
                 _bdy = process_arabic(body_txt,  arabic_font_name, 10)
             else:
                 _lbl = label_txt
                 _bdy = body_txt
-            _cells = []
-            if _lbl.strip():
-                _cells.append(Paragraph(f'<b>{_lbl}</b>', kpmg_panel_label_style))
-            if _bdy.strip():
-                _cells.append(Paragraph(_bdy, kpmg_panel_body_style))
-            from reportlab.platypus import KeepInFrame as _KIF
-            kif = _KIF(text_w, 800, _cells, mode='shrink')
-            outer = Table([[accent, kif]], colWidths=[5, text_w])
-            outer.setStyle(TableStyle([
-                ('BACKGROUND',    (1,0),(1,0), PANEL_BG),
-                ('TOPPADDING',    (0,0),(-1,-1), 10),
-                ('BOTTOMPADDING', (0,0),(-1,-1), 10),
-                ('LEFTPADDING',   (1,0),(1,0), 12),
-                ('RIGHTPADDING',  (1,0),(1,0), 12),
-                ('LEFTPADDING',   (0,0),(0,0), 0),
-                ('RIGHTPADDING',  (0,0),(0,0), 0),
-                ('VALIGN',        (0,0),(-1,-1), 'TOP'),
+            rows = []
+            if _lbl and _lbl.strip():
+                rows.append([Paragraph(
+                    f'<b>{_lbl}</b>', kpmg_panel_label_style)])
+            if _bdy and _bdy.strip():
+                rows.append([Paragraph(_bdy, kpmg_panel_body_style)])
+            if not rows:
+                return None
+            panel = Table(rows, colWidths=[text_w])
+            panel.setStyle(TableStyle([
+                ('BACKGROUND',    (0, 0), (-1, -1), PANEL_BG),
+                ('LEFTPADDING',   (0, 0), (-1, -1), 12),
+                ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
+                ('TOPPADDING',    (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+                # Left accent stripe via a thick left border
+                ('LINEBEFORE',    (0, 0), (0, -1), 4, BORDER_COL),
             ]))
-            return outer
+            return panel
 
         story = []
 
@@ -40047,11 +40134,12 @@ def api_generate_pdf():
                     _panel_body = ' '.join(_panel_body_lines)
                     try:
                         _panel = _make_kpmg_panel(raw_text, _panel_body, doc.width)
-                        story.append(Spacer(1, 0.12*inch))
-                        story.append(_panel)
-                        story.append(Spacer(1, 0.08*inch))
-                        i = _j
-                        continue
+                        if _panel is not None:
+                            story.append(Spacer(1, 0.12*inch))
+                            story.append(_panel)
+                            story.append(Spacer(1, 0.08*inch))
+                            i = _j
+                            continue
                     except Exception as _pe:
                         print(f"KPMG panel (non-fatal): {_pe}", flush=True)
                 text = process_arabic(raw_text, arabic_font_bold, 11) if is_arabic else raw_text
@@ -40150,7 +40238,42 @@ def api_generate_pdf():
             canvas_obj.restoreState()
 
         # Build PDF
-        doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
+        # Wrap doc.build() in a try-except to catch ReportLab layout errors
+        # (e.g. TypeError: '>' not supported between NoneType and NoneType
+        # from KPMG panel or other complex Table cells) and retry with a
+        # simplified story that strips problematic flowables.
+        try:
+            doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
+        except TypeError as _te:
+            print(f'[PDF-BUILD] TypeError in doc.build, retrying with '
+                  f'simplified story: {_te}', flush=True)
+            # Strip all Table flowables from the story and replace with
+            # a warning paragraph, then retry.  This avoids any Table
+            # that might carry a None-height cell.
+            import traceback as _tb
+            _tb.print_exc()
+            _simple_story = []
+            for _fl in story:
+                if isinstance(_fl, Table):
+                    # Replace each complex table with a plain paragraph
+                    # describing that the table could not be rendered.
+                    try:
+                        _simple_story.append(Paragraph(
+                            '[Table]', normal_style if not is_arabic
+                            else ParagraphStyle(
+                                'FallbackNormal',
+                                parent=kpmg_panel_body_style,
+                            )))
+                    except Exception:
+                        pass
+                else:
+                    _simple_story.append(_fl)
+            # Re-build with simple story; any remaining error propagates
+            doc.build(
+                _simple_story,
+                onFirstPage=_on_page_combined,
+                onLaterPages=_on_page_combined,
+            )
         buffer.seek(0)
         
         from flask import send_file
