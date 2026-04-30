@@ -37394,11 +37394,91 @@ def api_test_docx():
         traceback.print_exc()
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
-# ── Async DOCX export store ────────────────────────────────────────────────────
-# Keyed by task_id → {'status': 'pending'|'done'|'error', 'tmp': path, 'filename': ...}
-# Background thread writes here; polling/download endpoints read it.
-# /tmp is shared across Gunicorn workers on the same Render instance.
-_export_store: dict = {}
+# ── Async export task store (cross-worker durable) ────────────────────────────
+# Keyed by task_id → {'status': 'pending'|'done'|'error', 'tmp': path,
+#                     'filename': ..., 'fmt': 'pdf'|'docx', 'error': ...}
+#
+# In a multi-worker Gunicorn deployment (Render), the worker that starts the
+# background build is rarely the same worker that handles the subsequent
+# /api/export-status/<task_id> and /api/export-download/<task_id> requests.
+# An in-memory dict per-process therefore loses the entry on the polling
+# worker → status 404 → frontend shows the generic Arabic retry toast.
+#
+# Fix: persist each task entry as a small JSON sidecar file in /tmp keyed by
+# task_id. /tmp is shared across all Gunicorn workers on the same Render
+# instance. We expose a minimal dict-like facade so that every existing call
+# site (assignment, .get(k), .get(k, default)) keeps working unchanged.
+class _DurableExportStore:
+    """Tiny filesystem-backed dict facade for async export task state.
+
+    Only implements the operations actually used at call sites:
+      store[task_id] = entry
+      store.get(task_id)
+      store.get(task_id, default)
+
+    Each entry is a small JSON-serialisable dict. Writes are atomic
+    (write-then-rename) so a concurrent reader never sees a half-written file.
+    """
+    _DIR = '/tmp'
+    _PREFIX = 'mizan_export_state_'
+
+    def _path(self, task_id: str) -> str:
+        # Defensive: only allow the chars uuid4 can produce, to avoid any
+        # path traversal if a caller ever passes user input here.
+        import re, os as _os
+        safe = re.sub(r'[^A-Za-z0-9_\-]', '', str(task_id or ''))[:128]
+        return _os.path.join(self._DIR, f'{self._PREFIX}{safe}.json')
+
+    def __setitem__(self, task_id: str, entry: dict) -> None:
+        import json, os as _os, tempfile as _tf
+        try:
+            payload = json.dumps(entry or {}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # Fallback: coerce non-serialisable values to strings.
+            payload = json.dumps(
+                {k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                 for k, v in (entry or {}).items()},
+                ensure_ascii=False,
+            )
+        target = self._path(task_id)
+        try:
+            fd, tmp_path = _tf.mkstemp(prefix=self._PREFIX, suffix='.json.tmp',
+                                       dir=self._DIR)
+            try:
+                with _os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                    fh.write(payload)
+                _os.replace(tmp_path, target)
+            except Exception:
+                try: _os.unlink(tmp_path)
+                except Exception: pass
+                raise
+        except Exception as e:
+            # Never let store-write failures crash the background thread.
+            print(f'[EXPORT-STORE] write failed for {task_id}: {e}', flush=True)
+
+    def get(self, task_id: str, default=None):
+        import json, os as _os
+        path = self._path(task_id)
+        try:
+            if not _os.path.exists(path):
+                return default
+            with open(path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else default
+        except Exception as e:
+            print(f'[EXPORT-STORE] read failed for {task_id}: {e}', flush=True)
+            return default
+
+    def __getitem__(self, task_id: str):
+        v = self.get(task_id)
+        if v is None:
+            raise KeyError(task_id)
+        return v
+
+    def __contains__(self, task_id: str) -> bool:
+        return self.get(task_id) is not None
+
+_export_store = _DurableExportStore()
 
 
 @app.route('/api/generate-pdf-async', methods=['POST'])
