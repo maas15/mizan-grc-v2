@@ -129,7 +129,23 @@ _RICH_KPIS_AR = (
 )
 
 
-def _make_sections(*, vision='', kpis=''):
+# Rich confidence section (5 risk rows) so PR-5B.6C.1 Section D AI-first
+# risk top-up becomes a no-op for SO/KPI-focused tests.
+_RICH_CONFIDENCE_AR = (
+    "## 7. تقييم الثقة والمخاطر\n\n"
+    "**درجة الثقة:** 65%\n\n"
+    "### المخاطر الرئيسية:\n\n"
+    "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+    "|---|--------|-----------|--------|-------------|\n"
+    "| 1 | تأخر اعتماد الحوكمة | متوسط | عالٍ | ورش تنفيذية مبكرة |\n"
+    "| 2 | محدودية الميزانية | متوسط | عالٍ | جدولة متعددة السنوات |\n"
+    "| 3 | عدم اكتمال جرد الأصول | متوسط | متوسط | جرد شامل قبل التطبيق |\n"
+    "| 4 | فجوات الكفاءات | عالٍ | عالٍ | برامج تدريب وتوظيف |\n"
+    "| 5 | تأخر تكامل الأنظمة | متوسط | عالٍ | تنفيذ مرحلي مع اختبار قبول |\n"
+)
+
+
+def _make_sections(*, vision='', kpis='', confidence=None):
     return {
         'vision': vision,
         'pillars': '',
@@ -137,7 +153,7 @@ def _make_sections(*, vision='', kpis=''):
         'gaps': '',
         'roadmap': '',
         'kpis': kpis,
-        'confidence': '',
+        'confidence': _RICH_CONFIDENCE_AR if confidence is None else confidence,
     }
 
 

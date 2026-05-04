@@ -21808,109 +21808,69 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
             sections.get('kpis', '') or '')
         summary['kpi_rows_added'] = max(0, _n_kpi_after - _n_kpi)
 
-    # ── D. Risk register depth ──────────────────────────────────────────────
+    # ── D. Risk register depth ── (PR-5B.6C.1: AI-first) ───────────────────
+    # Deterministic AR/EN risk-bank top-up has been replaced with a
+    # delegation to ``ai_repair_strategy_section(section_key="confidence")``.
+    # Cyber-specific literals (SIEM Integration Failure, IAM/PAM, Untested
+    # Backup/DR, Third-Party Cyber Exposure, نقص الكفاءات السيبرانية, MSSP,
+    # …) are no longer injected into the Key Risks table regardless of the
+    # active domain. On AI-repair failure, invalid repaired output, or
+    # strict-domain resolution failure, a ``RepairError`` annotated with
+    # ``section='confidence'`` is raised so the caller's
+    # ``_mark_synth_failed`` / final-audit gate (PR-5B.5F1) blocks the
+    # strategy. ``sections['confidence']`` is left UNCHANGED on failure.
     _MIN_RISK_DEPTH = 5
-    _conf_text = sections.get('confidence', '') or ''
-    _n_risk = _count_risk_rows_with_mitigation(_conf_text)
-    if _n_risk < _MIN_RISK_DEPTH:
-        _risk_to_add = _MIN_RISK_DEPTH - _n_risk
-        _risk_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE | _ts_re.MULTILINE,
-        )
-        _existing_risk_nums = set()
-        for _cells in _ts_table_rows(_conf_text, _risk_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_risk_nums.add(int(_cells[0]))
-        _next_risk = max(_existing_risk_nums) + 1 if _existing_risk_nums else 1
-        _conf_text_lc = _conf_text.lower()
-
-        if is_ar:
-            _risk_bank = [
-                ('تأخر اعتماد الحوكمة',
-                 'متوسط', 'عالٍ',
-                 'تنفيذ مبكر لورش العمل التنفيذية وعروض القيمة المعتمدة على المخاطر'),
-                ('محدودية الميزانية',
-                 'متوسط', 'عالٍ',
-                 'جدولة ميزانية متعددة السنوات وتحديد أولويات وفق درجة المخاطر'),
-                ('نقص الكفاءات السيبرانية المتخصصة',
-                 'عالٍ', 'عالٍ',
-                 'التوظيف المبكر وتوظيف خدمات MSSP كحل مؤقت'),
-                ('عدم اكتمال جرد الأصول',
-                 'متوسط', 'متوسط',
-                 f'إجراء جرد شامل للأصول كأول خطوة قبل تطبيق ضوابط {fw_short}'),
-                ('مقاومة نشر IAM/PAM',
-                 'متوسط', 'متوسط',
-                 'برنامج إدارة تغيير مع رعاية تنفيذية واضحة'),
-                ('فشل تكامل SIEM',
-                 'متوسط', 'عالٍ',
-                 'تنفيذ مرحلي مع اختبار قبول لكل مصدر سجلات قبل الاعتماد'),
-                ('عدم اختبار النسخ الاحتياطي/DR',
-                 'عالٍ', 'حرج',
-                 'جدولة اختبارات DR إلزامية ربع سنوية مع تقارير نتائج'),
-                ('مخاطر الأطراف الثالثة',
-                 'عالٍ', 'عالٍ',
-                 'تقييم الموردين الحرجين قبل التعاقد وشروط أمنية تعاقدية'),
-            ]
-        else:
-            _risk_bank = [
-                ('Delayed Governance Approval',
-                 'Medium', 'High',
-                 'Early executive workshops and risk-based value briefings'),
-                ('Insufficient Budget',
-                 'Medium', 'High',
-                 'Multi-year budget scheduling with risk-priority sequencing'),
-                ('Lack of Qualified Cybersecurity Staff',
-                 'High', 'High',
-                 'Early recruitment and interim MSSP services'),
-                ('Incomplete Asset Inventory',
-                 'Medium', 'Medium',
-                 f'Run comprehensive asset discovery before applying {fw_short} controls'),
-                ('IAM/PAM Rollout Resistance',
-                 'Medium', 'Medium',
-                 'Change management programme with clear executive sponsorship'),
-                ('SIEM Integration Failure',
-                 'Medium', 'High',
-                 'Phased integration with per-source acceptance testing before go-live'),
-                ('Untested Backup/DR',
-                 'High', 'Critical',
-                 'Schedule mandatory quarterly DR tests with results reporting'),
-                ('Third-Party Cyber Exposure',
-                 'High', 'High',
-                 'Pre-contract supplier assessments and cybersecurity contractual clauses'),
-            ]
-
-        _risk_rows_new = []
-        for _r in _risk_bank:
-            if len(_risk_rows_new) >= _risk_to_add:
-                break
-            _rw = _r[0].lower().split()[:3]
-            if any(len(k) > 3 and k in _conf_text_lc for k in _rw):
-                continue
-            _risk_rows_new.append(
-                f'| {_next_risk} | {_r[0]} | {_r[1]} | {_r[2]} | {_r[3]} |'
+    _conf_text_before = sections.get('confidence', '') or ''
+    _n_risk_before = _count_risk_rows_with_mitigation(_conf_text_before)
+    if _n_risk_before < _MIN_RISK_DEPTH:
+        try:
+            _conf_domain_context = get_strategy_domain_context(
+                domain, lang,
+                selected_frameworks=[fw_short] if fw_short else None,
             )
-            _next_risk += 1
+        except DomainResolutionError as _de:
+            _err = RepairError(
+                f'enforce_technical_strategy_depth[D]: cannot resolve '
+                f'domain context for {domain!r}: {_de}'
+            )
+            setattr(_err, 'section', 'confidence')
+            raise _err
 
-        if _risk_rows_new:
-            # Ensure the risk table skeleton exists first
-            if not _risk_hdr.search(_conf_text):
-                if is_ar:
-                    _conf_text += (
-                        "\n\n### المخاطر الرئيسية:\n\n"
-                        "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                        "|---|--------|-----------|--------|-------------|\n"
-                    )
-                else:
-                    _conf_text += (
-                        "\n\n### Key Risks:\n\n"
-                        "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                        "|---|------|------------|--------|-----------------|\n"
-                    )
-                sections['confidence'] = _conf_text
-            sections['confidence'] = _append_rows_under_header(
-                sections['confidence'], _risk_hdr, _risk_rows_new)
-            summary['risk_rows_added'] = len(_risk_rows_new)
+        try:
+            _conf_repaired = ai_repair_strategy_section(
+                section_key='confidence',
+                sections=sections,
+                lang=lang,
+                domain_context=_conf_domain_context,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=generation_mode,
+                validation_error=(
+                    f'risk_rows_insufficient:{_n_risk_before}/{_MIN_RISK_DEPTH}'
+                ),
+                min_rows=_MIN_RISK_DEPTH,
+            )
+        except RepairError as _conf_re:
+            setattr(_conf_re, 'section', 'confidence')
+            raise
+
+        # Validate the AI-repaired confidence section BEFORE assignment.
+        # Reject if it contains fewer than ``_MIN_RISK_DEPTH`` risk rows
+        # with a mitigation column. Heading / domain-isolation / forbidden-
+        # term checks are already enforced inside ``ai_repair_strategy_section``.
+        _n_risk_after = _count_risk_rows_with_mitigation(_conf_repaired or '')
+        if _n_risk_after < _MIN_RISK_DEPTH:
+            _err = RepairError(
+                f'enforce_technical_strategy_depth[D]: AI-repaired '
+                f'confidence has {_n_risk_after}/{_MIN_RISK_DEPTH} '
+                f'risk rows with mitigation'
+            )
+            setattr(_err, 'section', 'confidence')
+            raise _err
+
+        sections['confidence'] = _conf_repaired
+        summary['risk_rows_added'] = max(0, _n_risk_after - _n_risk_before)
 
     # ── E. Cybersecurity capability coverage check ──────────────────────────
     if _mode_lc in ('consulting', 'assurance'):

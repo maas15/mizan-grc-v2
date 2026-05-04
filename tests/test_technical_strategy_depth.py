@@ -106,6 +106,50 @@ _PR5F2_MOCKED_KPIS = (
 )
 
 
+# Canonical AR risk-table fixture used by the PR-5B.6C.1 AI-first
+# Section D mock. Five substantive risk rows (Risk + Likelihood + Impact +
+# Mitigation), all non-placeholder, satisfy
+# ``_count_risk_rows_with_mitigation >= 5``.
+_PR6C1_MOCKED_CONFIDENCE_AR = (
+    "## 7. تقييم الثقة والمخاطر\n\n"
+    "**درجة الثقة:** 65%\n\n"
+    "### المخاطر الرئيسية:\n\n"
+    "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+    "|---|--------|-----------|--------|-------------|\n"
+    "| 1 | تأخر اعتماد الحوكمة | متوسط | عالٍ | ورش تنفيذية مبكرة |\n"
+    "| 2 | محدودية الميزانية | متوسط | عالٍ | جدولة متعددة السنوات |\n"
+    "| 3 | عدم اكتمال جرد الأصول | متوسط | متوسط | جرد شامل قبل التطبيق |\n"
+    "| 4 | فجوات الكفاءات | عالٍ | عالٍ | برامج تدريب وتوظيف |\n"
+    "| 5 | تأخر تكامل الأنظمة | متوسط | عالٍ | تنفيذ مرحلي مع اختبار قبول |\n"
+)
+_PR6C1_MOCKED_CONFIDENCE_EN = (
+    "## 7. Confidence & Risk Assessment\n\n"
+    "**Confidence Score:** 65%\n\n"
+    "### Key Risks:\n\n"
+    "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
+    "|---|------|------------|--------|-----------------|\n"
+    "| 1 | Delayed Governance Approval | Medium | High | Early executive workshops |\n"
+    "| 2 | Insufficient Budget | Medium | High | Multi-year budget scheduling |\n"
+    "| 3 | Incomplete Asset Inventory | Medium | Medium | Comprehensive asset discovery |\n"
+    "| 4 | Capability Gaps | High | High | Recruitment and training programmes |\n"
+    "| 5 | Integration Delays | Medium | High | Phased rollout with acceptance testing |\n"
+)
+
+
+def _mock_ai_repair_section(section_key, sections, lang, **_kwargs):
+    """PR-5B.6C.1: Section D delegates to ``ai_repair_strategy_section``
+    with ``section_key='confidence'``. Return a canonical rich confidence
+    section so depth-pass tests that incidentally trigger Section D
+    succeed without a live AI provider. For other section keys, raise
+    ``RepairError`` to mirror "no provider configured".
+    """
+    if section_key == 'confidence':
+        return (_PR6C1_MOCKED_CONFIDENCE_AR if lang == 'ar'
+                else _PR6C1_MOCKED_CONFIDENCE_EN)
+    raise _APP.RepairError(
+        f'_mock_ai_repair_section: no fixture for section_key={section_key!r}')
+
+
 def _mock_synth_objectives(sections, lang, **_kwargs):
     sections['vision'] = _PR5F2_MOCKED_VISION
 
@@ -117,11 +161,12 @@ def _mock_synth_kpis(sections, lang, **_kwargs):
 
 def setUpModule():
     """Monkey-patch the AI synth helpers used by
-    ``enforce_technical_strategy_depth`` (PR-5B.5F2)."""
+    ``enforce_technical_strategy_depth`` (PR-5B.5F2 + PR-5B.6C.1)."""
     if _APP is None:
         return
     for _name, _fn in (('synthesize_objectives_depth', _mock_synth_objectives),
-                       ('synthesize_kpi_depth', _mock_synth_kpis)):
+                       ('synthesize_kpi_depth', _mock_synth_kpis),
+                       ('ai_repair_strategy_section', _mock_ai_repair_section)):
         if hasattr(_APP, _name):
             _orig = getattr(_APP, _name)
             _PR5F2_PATCHES.append((_name, _orig))
