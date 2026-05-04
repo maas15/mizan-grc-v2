@@ -152,7 +152,7 @@ class TestSynthesizeObjectivesAIFirstPR5B5A(unittest.TestCase):
     def test_domain_so_banks_are_not_called(self):
         """_build_domain_so_bank_ar/_en must not be invoked from
         synthesize_objectives_depth (deterministic banks are removed)."""
-        sections = {'vision': '## 1. Vision\n\nemtpy\n'}
+        sections = {'vision': '## 1. Vision\n\nempty\n'}
         with patch.object(_APP, 'ai_repair_strategy_section',
                           return_value=_REPAIRED_VISION_EN), \
              patch.object(_APP, '_build_domain_so_bank_ar') as mock_ar, \
