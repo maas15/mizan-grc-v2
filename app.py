@@ -18517,6 +18517,29 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
 # (initial / developing / defined / managed / optimized) when present.
 # ────────────────────────────────────────────────────────────────────────────
 
+def _mark_synth_failed(container, section, error):
+    """Record a fail-closed synthesis failure (PR-5B.5F1).
+
+    Writes into ``container['synth_status'][section] = 'failed'`` and emits a
+    ``[STRATEGY-DIAG] synth_failed:<section>`` log line.  ``container`` is the
+    request-scoped dict carried by ``_apply_final_synthesis_pass`` (its
+    ``summary`` return value), ``converge_strategy_sections`` (its ``log``
+    return value), or the request-local ``_synth_status`` dict used by the
+    depth-safety top-up site.
+
+    This helper exists ONLY for `RepairError` raised by
+    ``synthesize_objectives_depth`` / ``synthesize_kpi_depth`` /
+    ``synthesize_roadmap_depth``.  Generic ``Exception`` paths keep their
+    legacy log-and-continue behavior and MUST NOT call this helper, so that
+    programming bugs do not get conflated with AI repair unavailability.
+    """
+    if container is None or not isinstance(container, dict):
+        return
+    status = container.setdefault('synth_status', {})
+    status[section] = 'failed'
+    print(f'[STRATEGY-DIAG] synth_failed:{section}: {error}', flush=True)
+
+
 def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
     """Run all four semantic-richness synthesizers on the final canonical
     payload. Returns a dict of {synth_name: result} summarizing what was
@@ -18528,7 +18551,7 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
     org_name     = ctx.get('org_name', 'The Organization')
     maturity     = ctx.get('maturity', 'initial')
     gen_mode     = ctx.get('generation_mode', 'drafting')
-    summary = {}
+    summary = {'synth_status': {}}
     # 0a. Strategic Objectives — rebuild canonically with diagnostic-
     # driven injection. Runs first so downstream pillars/roadmap/KPI
     # can thematically align (though today they don't explicitly
@@ -18543,6 +18566,14 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             maturity=maturity, generation_mode=gen_mode)
         if _obj_result and _obj_result.get('rebuilt'):
             summary['objectives'] = _obj_result
+    except RepairError as _ore:
+        # PR-5B.5F1: AI repair unavailable — fail closed. The
+        # post-normalization save gate consults summary['synth_status']
+        # via the request-local _synth_status dict and refuses to save
+        # the strategy. No deterministic fallback rows are inserted.
+        _mark_synth_failed(summary, 'vision', _ore)
+        print(f'[STRATEGY-DIAG] final_synth_objectives_failed: {_ore}',
+              flush=True)
     except Exception as _oe:
         print(f'[STRATEGY-DIAG] final_synth_objectives_failed: {_oe}',
               flush=True)
@@ -18610,6 +18641,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             sector=sector, org_name=org_name)
         if _rm_added:
             summary['roadmap_rows_added'] = _rm_added
+    except RepairError as _rre:
+        # PR-5B.5F1: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'roadmap', _rre)
+        print(f'[STRATEGY-DIAG] final_synth_roadmap_failed: {_rre}',
+              flush=True)
     except Exception as _sre:
         print(f'[STRATEGY-DIAG] final_synth_roadmap_failed: {_sre}',
               flush=True)
@@ -18630,6 +18666,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             sector=sector, org_name=org_name)
         if _kpi_added:
             summary['kpi_rows_added'] = _kpi_added
+    except RepairError as _kre:
+        # PR-5B.5F1: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'kpis', _kre)
+        print(f'[STRATEGY-DIAG] final_synth_kpi_failed: {_kre}',
+              flush=True)
     except Exception as _ske:
         print(f'[STRATEGY-DIAG] final_synth_kpi_failed: {_ske}',
               flush=True)
@@ -18741,12 +18782,19 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _final_strategy_audit(sections, lang, doc_subtype=None):
+def _final_strategy_audit(sections, lang, doc_subtype=None, synth_status=None):
     """Audit sections against the SAME thresholds the save gates use.
     Returns a list of (section_key, defect_tag, count_observed,
     threshold) tuples. Empty list = sections meet all thresholds.
 
     Reuses existing counters; does NOT reimplement counting logic.
+
+    PR-5B.5F1: when ``synth_status`` is provided (a request-scoped dict
+    mapping section name -> status string), any entry whose value is
+    ``'failed'`` adds a synthetic ``synth_failed:<section>`` defect so
+    the post-normalization save gate refuses to ship a strategy whose
+    AI repair pass raised ``RepairError``.  No deterministic fallback
+    rows are inserted; the caller MUST regenerate.
     """
     defects = []
     if doc_subtype == 'board':
@@ -18828,6 +18876,13 @@ def _final_strategy_audit(sections, lang, doc_subtype=None):
                             n_risk, _RICHNESS_MIN_RISK_ROWS))
     except Exception:
         pass
+    # PR-5B.5F1: surface synth_failed:<section> defects so the
+    # post-normalization save gate blocks strategies whose AI repair
+    # raised RepairError.
+    if synth_status and isinstance(synth_status, dict):
+        for _sec, _st in synth_status.items():
+            if _st == 'failed':
+                defects.append((_sec, f'synth_failed:{_sec}', 0, 1))
     return defects
 
 
@@ -18861,6 +18916,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         'progress': False,
         'converged': False,
         'cycles': [],
+        'synth_status': {},
     }
     initial = _final_strategy_audit(sections, lang, doc_subtype)
     log['initial_defects'] = [(s, t, c, m) for s, t, c, m in initial]
@@ -18877,6 +18933,18 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         failing_keys = {d[0] for d in
                         _final_strategy_audit(sections, lang, doc_subtype)}
         if not failing_keys:
+            # PR-5B.5F1: same fail-closed guard as the post-cycle
+            # re-audit branch below — do not claim convergence if a
+            # prior cycle's synth raised RepairError.
+            if log.get('synth_status'):
+                log['converged'] = False
+                log['final_defects'] = [
+                    (sec, f'synth_failed:{sec}', 0, 1)
+                    for sec, st in log['synth_status'].items()
+                    if st == 'failed'
+                ]
+                log['cycles'].append(cycle)
+                break
             log['converged'] = True
             log['final_defects'] = []
             log['cycles'].append(cycle)
@@ -18942,6 +19010,13 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     sections.get('vision', '') or '')
                 cycle['repairs'].append(
                     f'objectives:{_v_before}->{_v_after}')
+            except RepairError as _vre:
+                # PR-5B.5F1: AI repair unavailable — fail closed for this
+                # section. The convergence loop must NOT report a clean
+                # converged=True when any synth_status entry is failed,
+                # and the post-normalization save gate refuses the save.
+                _mark_synth_failed(log, 'vision', _vre)
+                cycle['repairs'].append(f'objectives_failed:{_vre}')
             except Exception as _e:
                 cycle['repairs'].append(f'objectives_failed:{_e}')
         if 'pillars' in failing_keys:
@@ -19043,12 +19118,21 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     org_name=ctx.get('org_name', 'The Organization'),
                 )
                 cycle['repairs'].append('roadmap')
+            except RepairError as _rre:
+                # PR-5B.5F1: see vision branch above.
+                _mark_synth_failed(log, 'roadmap', _rre)
+                cycle['repairs'].append(f'roadmap_failed:{_rre}')
             except Exception as _e:
                 cycle['repairs'].append(f'roadmap_failed:{_e}')
         if 'kpis' in failing_keys:
             # KPI repair is special: re-canonicalize via rebuild
             # function which both synthesizes rows AND collapses any
             # duplicate main-table headers.
+            # PR-5B.5F1: rebuild_canonical_kpi_section is schema-only and
+            # safe to run regardless of AI repair outcome — it is intentionally
+            # NOT inside the synth try-block so a RepairError from
+            # synthesize_kpi_depth does not skip canonical schema cleanup.
+            _kpi_synth_failed = False
             try:
                 synthesize_kpi_depth(
                     sections, lang, domain=domain, fw_short=fw_short,
@@ -19060,11 +19144,21 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     sector=ctx.get('sector', 'General'),
                     org_name=ctx.get('org_name', 'The Organization'),
                 )
-                rebuild_canonical_kpi_section(
-                    sections, lang, domain, fw_short)
-                cycle['repairs'].append('kpis')
+            except RepairError as _kre:
+                # PR-5B.5F1: see vision branch above.
+                _mark_synth_failed(log, 'kpis', _kre)
+                cycle['repairs'].append(f'kpis_failed:{_kre}')
+                _kpi_synth_failed = True
             except Exception as _e:
                 cycle['repairs'].append(f'kpis_failed:{_e}')
+                _kpi_synth_failed = True
+            try:
+                rebuild_canonical_kpi_section(
+                    sections, lang, domain, fw_short)
+                if not _kpi_synth_failed:
+                    cycle['repairs'].append('kpis')
+            except Exception as _rce:
+                cycle['repairs'].append(f'kpis_rebuild_failed:{_rce}')
         if 'confidence' in failing_keys:
             try:
                 synthesize_confidence_depth(
@@ -19083,6 +19177,19 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         log['cycles'].append(cycle)
 
         if not post:
+            # PR-5B.5F1: do not report convergence as clean when any
+            # synthesizer raised RepairError during this cycle/run. The
+            # post-normalization save gate consumes log['synth_status']
+            # and refuses to save such strategies.
+            if log.get('synth_status'):
+                log['converged'] = False
+                log['final_defects'] = [
+                    (sec, f'synth_failed:{sec}', 0, 1)
+                    for sec, st in log['synth_status'].items()
+                    if st == 'failed'
+                ]
+                log['progress'] = (len(post) < prev_defect_count)
+                break
             log['converged'] = True
             log['final_defects'] = []
             log['progress'] = (len(post) < prev_defect_count)
@@ -31960,6 +32067,12 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # synthesizer would skip, and then resection would
                     # move the gap table out leaving env thin. Running
                     # synthesis here closes that edge case.
+                    # PR-5B.5F1: request-scoped fail-closed status dict.
+                    # Defined OUTSIDE the synthesis try-block so the
+                    # later roadmap depth-safety top-up and post-
+                    # normalization save gate can read it even if the
+                    # synthesis pass raised an early exception.
+                    _synth_status = {}
                     try:
                         # Build the authoritative diagnostic model (prompt
                         # Part 1). This is the single source of truth for
@@ -31988,11 +32101,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _diag_model['generation_mode'] = _generation_mode
                         log_diagnostic_model(_diag_model, tag='pre_synth')
                         _final_ctx = diagnostic_model_to_ctx(_diag_model)
+                        # PR-5B.5F1 status dict already initialized above.
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
                             print(f'[STRATEGY-DIAG] final_synthesis_pass='
                                   f'{_final_synth}', flush=True)
+                            for _sec, _st in (
+                                    _final_synth.get('synth_status') or {}
+                            ).items():
+                                if _st == 'failed':
+                                    _synth_status[_sec] = 'failed'
                             # Rebuild content once more so the pre-gate
                             # diagnostic + validators below see the
                             # synthesized payload.
@@ -32189,6 +32308,18 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     org_name=_final_ctx.get(
                                         'org_name', 'The Organization'),
                                 )
+                            except RepairError as _rtre:
+                                # PR-5B.5F1: AI repair unavailable for the
+                                # roadmap top-up — fail closed via the
+                                # request-scoped _synth_status; the post-
+                                # normalization save gate refuses to save.
+                                try:
+                                    _mark_synth_failed(
+                                        _synth_status, 'roadmap', _rtre)
+                                except Exception:
+                                    pass
+                                print(f'[STRATEGY-DIAG] roadmap_topup_failed: '
+                                      f'{_rtre}', flush=True)
                             except Exception as _rte:
                                 print(f'[STRATEGY-DIAG] roadmap_topup_failed: '
                                       f'{_rte}', flush=True)
@@ -32229,6 +32360,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 ctx=_final_ctx, doc_subtype=doc_subtype,
                                 max_iter=3,
                             )
+                            # PR-5B.5F1: merge convergence-time synth
+                            # failures into the request-scoped
+                            # _synth_status so the post-normalization
+                            # save gate sees them.
+                            for _sec, _st in (
+                                    _converge.get('synth_status') or {}
+                            ).items():
+                                if _st == 'failed':
+                                    _synth_status[_sec] = 'failed'
                             print(
                                 '[STRATEGY-CONVERGE] '
                                 f'iterations={_converge["iterations"]} '
@@ -32678,7 +32818,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     if doc_subtype != 'board':
                         try:
                             _post_norm_defects = _final_strategy_audit(
-                                sections, lang, doc_subtype)
+                                sections, lang, doc_subtype,
+                                synth_status=_synth_status)
                             print(
                                 '[STRATEGY-DIAG] post_normalization_audit '
                                 f'defects={_post_norm_defects}',
