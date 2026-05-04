@@ -22218,6 +22218,16 @@ def _count_pillar_initiative_rows(pillar_body):
     return count
 
 
+# PR-5B.5F4: Quarantine flag for the four legacy deterministic SO/KPI bank
+# helpers below.  Production code paths were migrated to AI-first synthesis
+# in PR-5B.5F2 (enforce_technical_strategy_depth) and PR-5B.5F3
+# (repair_vision_objectives_if_insufficient / repair_kpi_section_if_missing_frequency),
+# so these helpers now have zero production call sites.  The flag stays
+# False to fail-fast if any caller is reintroduced; bodies are preserved
+# unchanged below the guard for one release cycle before deletion (PR-5B.5F5).
+_LEGACY_DETERMINISTIC_BANKS_ENABLED = False
+
+
 def _add_pillar_initiative_rows(body, needed, is_ar, domain='Cyber Security',
                                  fw_short='NCA ECC', pillar_title=''):
     """Append `needed` extra initiative rows to an existing pillar body.
@@ -22286,6 +22296,11 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
     Each tuple: (objective, target, justification, timeframe).
     Falls back to cybersecurity bank when domain is not specifically mapped.
     """
+    if not _LEGACY_DETERMINISTIC_BANKS_ENABLED:
+        raise RuntimeError(
+            "_build_domain_so_bank_ar is quarantined (PR-5B.5F4); "
+            "use AI-first repair via synthesize_objectives_depth"
+        )
     _dc = normalize_domain(domain or '')
     if _dc == 'ai':
         return [
@@ -22461,6 +22476,11 @@ def _build_domain_so_bank_ar(domain, fw_short, sector):
 
 def _build_domain_so_bank_en(domain, fw_short, sector):
     """Return English Strategic Objective tuples for the given domain."""
+    if not _LEGACY_DETERMINISTIC_BANKS_ENABLED:
+        raise RuntimeError(
+            "_build_domain_so_bank_en is quarantined (PR-5B.5F4); "
+            "use AI-first repair via synthesize_objectives_depth"
+        )
     _dc = normalize_domain(domain or '')
     if _dc == 'ai':
         return [
@@ -22637,6 +22657,11 @@ def _build_domain_so_bank_en(domain, fw_short, sector):
 def _build_domain_kpi_bank_ar(domain, fw_short):
     """Return Arabic KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
     for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
+    if not _LEGACY_DETERMINISTIC_BANKS_ENABLED:
+        raise RuntimeError(
+            "_build_domain_kpi_bank_ar is quarantined (PR-5B.5F4); "
+            "use AI-first repair via synthesize_kpi_depth"
+        )
     _dc = normalize_domain(domain or '')
     if _dc == 'ai':
         return [
@@ -22948,6 +22973,11 @@ def _build_domain_kpi_bank_ar(domain, fw_short):
 def _build_domain_kpi_bank_en(domain, fw_short):
     """Return English KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
     for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
+    if not _LEGACY_DETERMINISTIC_BANKS_ENABLED:
+        raise RuntimeError(
+            "_build_domain_kpi_bank_en is quarantined (PR-5B.5F4); "
+            "use AI-first repair via synthesize_kpi_depth"
+        )
     _dc = normalize_domain(domain or '')
     if _dc == 'ai':
         return [
