@@ -281,7 +281,11 @@ class TestStaticZeroProductionCallsites(unittest.TestCase):
                       + details)
 
     def test_quarantine_flag_is_false(self):
-        self.assertIs(_APP._LEGACY_DETERMINISTIC_BANKS_ENABLED, False)
+        # PR-5B.5H: helpers and the _LEGACY_DETERMINISTIC_BANKS_ENABLED
+        # flag are deleted entirely. The contract previously expressed by
+        # "flag exists and is False" is now strictly stronger: the flag
+        # name must not exist on the module at all.
+        self.assertFalse(hasattr(_APP, '_LEGACY_DETERMINISTIC_BANKS_ENABLED'))
 
 
 # ---------------------------------------------------------------------------
