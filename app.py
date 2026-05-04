@@ -16467,352 +16467,80 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
                                  diagnostic_gaps=None,
                                  maturity='initial',
                                  generation_mode='drafting'):
-    """Diagnostic-driven Strategic Objectives synth.
+    """AI-first Strategic Objectives synthesis (PR-5B.5A).
 
-    Ensures the vision section contains a Strategic Objectives table with
-    ≥ 3 substantive rows. Contract (prompt Part 2A):
-      - If org_structure_is_none=True, at least one objective addresses
-        governance-structure establishment.
-      - For each true challenge_flag, an objective targets that theme
-        (e.g. awareness → 'raise workforce awareness to X%').
-      - Existing substantive objectives are preserved; synth only fills
-        gaps below the richness bar or missing thematic coverage.
+    Behaviour:
+      * If ``sections['vision']`` already has
+        ``>= _RICHNESS_MIN_SO_ROWS`` valid Strategic Objective rows
+        (``count_valid_objective_rows``), return unchanged with
+        ``rebuilt=False``. AI repair is not invoked.
+      * Otherwise, call :func:`ai_repair_strategy_section` with
+        ``section_key='vision'``, validate the repaired markdown, and
+        replace ``sections['vision']`` with the repaired text.
+      * On AI failure or invalid repaired output, raise
+        :class:`RepairError`. No deterministic priority bank is used,
+        no top-up rows are appended, and ``_build_domain_so_bank_ar``
+        / ``_build_domain_so_bank_en`` are never called.
 
-    Returns dict with rebuilt/preserved/injected details.
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` / ``maturity`` / ``generation_mode``
+    parameters are retained for signature compatibility with the
+    pipeline call sites; ``generation_mode`` is forwarded to the AI
+    repair prompt.
+
+    Returns dict with keys ``rebuilt`` (bool), ``preserved`` (int —
+    valid SO row count before repair), and, on success,
+    ``total_after`` (int — valid SO row count after AI repair).
     """
     summary = {'rebuilt': False, 'preserved': 0, 'injected': []}
     vision = sections.get('vision', '') or ''
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
+    n_so = count_valid_objective_rows(vision)
+    summary['preserved'] = n_so
 
-    # Existing objectives — parse + dedupe
-    # MULTILINE is REQUIRED here: the same `hdr` regex is used twice —
-    # by `_ts_table_rows` (which strips per line, so MULTILINE is moot)
-    # AND by `hdr.search(vision)` below at the canonical-replace branch
-    # (which needs `^` to match at any line start). Without MULTILINE
-    # the search returns None for any vision text where the table is
-    # not at character 0, the synth falls into the "no existing table"
-    # branch, and APPENDS a second `### Strategic Objectives` heading
-    # + table below the original — violating the prompt's clause 6
-    # "no duplicate objectives table".
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-        _ts_re.IGNORECASE | _ts_re.MULTILINE,
-    )
-    # Must be identical to the tf_re in count_valid_objective_rows so
-    # that `len(existing_rows)` == count_valid_objective_rows() and the
-    # early-return gate never fires while the audit gate still fails.
-    # Singular forms (month/year/week/day) are already covered by the
-    # plural-or-singular alternatives (months?/years?/weeks?/days?).
-    # Bound the leading digit group to \d{1,6} (any real timeframe fits
-    # within 6 digits) so the NFA does not need to try all O(n) split
-    # points when the input contains a long run of digit characters.
-    tf_re = _ts_re.compile(
-        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
-        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d{1,6}'
-        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
-        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
-        _ts_re.IGNORECASE,
-    )
-    existing_rows = []  # list of cell-lists (without #)
-    for cells in _ts_table_rows(vision, hdr):
-        if len(cells) != 5:
-            continue
-        if not cells[0].replace('.', '').isdigit():
-            continue
-        if any(_ts_is_placeholder(cells[i]) for i in (1, 2, 3)):
-            continue
-        if not tf_re.search(cells[4] or ''):
-            continue
-        if tf_re.search(cells[1] or ''):
-            continue
-        existing_rows.append(list(cells[1:]))
-    summary['preserved'] = len(existing_rows)
-
-    # Determine what's needed
-    _existing_blob = ' | '.join(' '.join(str(c) for c in r)
-                                 for r in existing_rows)
-
-    def _mentions(row_blob, en_tokens, ar_tokens):
-        tl = row_blob.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in row_blob:
-                return True
-        return False
-
-    coverage = {
-        'structural': _mentions(_existing_blob,
-            ('governance', 'structure', 'committee', 'charter',
-             'org design'),
-            ('حوكمة', 'هيكل', 'لجنة', 'ميثاق', 'توجيه')),
-        'awareness': _mentions(_existing_blob,
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _mentions(_existing_blob,
-            ('soc', 'siem', 'incident', 'detection', 'response'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'suppliers': _mentions(_existing_blob,
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _mentions(_existing_blob,
-            ('compliance', 'audit'),
-            ('امتثال', 'تدقيق')),
-    }
-
-    need_structural = (org_structure_is_none and not coverage['structural'])
-    need_challenges = [k for k, v in challenge_flags.items()
-                       if v and not coverage.get(k, False)]
-    # Use richness threshold so synth fires when below the gate's bar
-    # (4), not the older 3-row contract.
-    below_min = len(existing_rows) < max(3, _RICHNESS_MIN_SO_ROWS)
-
-    if not need_structural and not need_challenges and not below_min:
-        summary['rebuilt'] = False
+    # Threshold: sufficient if the vision already meets the richness
+    # gate's minimum (no AI call needed).
+    if n_so >= _RICHNESS_MIN_SO_ROWS:
         return summary
 
-    # Priority-objective bank — each row is a full 4-tuple
-    # (objective, target_metric, justification, timeframe)
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'إنشاء هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                'اعتماد ميثاق اللجنة وهيكل RACI',
-                f'يغلق فجوة البنية التنظيمية المشخّصة - أساس {fw_short}',
-                'خلال 6 أشهر',
-            ),
-            'awareness': (
-                f'رفع نسبة اجتياز التوعية بـ{domain} لكوادر {org_name}',
-                '≥ 90%',
-                'يغلق فجوة الوعي المشخّصة في التشخيص',
-                'خلال 9 أشهر',
-            ),
-            'incident_response': (
-                f'تشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                'اعتماد كتيب الاستجابة وتشغيل SOC',
-                f'يغلق فجوة الاستجابة وفق {fw_short}',
-                'خلال 12 شهراً',
-            ),
-            'staffing': (
-                f'بناء الكفاءات المتخصصة في {domain}',
-                'سد 80% من الشواغر المتخصصة',
-                'يعالج نقص الكوادر المشخّص',
-                'خلال 18 شهراً',
-            ),
-            'suppliers': (
-                f'تفعيل إدارة مخاطر الأطراف الثالثة',
-                '100% من الموردين الحرجين مُقيّمون',
-                f'يعالج فجوة مخاطر سلسلة الإمداد وفق {fw_short}',
-                'خلال 12 شهراً',
-            ),
-            'compliance': (
-                f'الامتثال الكامل لمتطلبات {fw_short}',
-                '100% من الضوابط المطبقة مع أدلة تدقيق',
-                'يعالج فجوة إثبات الامتثال',
-                'خلال 12 شهراً',
-            ),
-            'baseline': (
-                f'تنفيذ خط الأساس لضوابط {fw_short}',
-                '100% من ضوابط الأولوية العليا مطبقة',
-                'يعالج فجوات النضج الأولية',
-                'خلال 12 شهراً',
-            ),
-        }
-    else:
-        priority_bank = {
-            'structural': (
-                f'Establish formal {domain} governance structure at {org_name}',
-                'Approved committee charter + RACI',
-                f'Closes diagnosed structural gap — foundation for {fw_short}',
-                'Within 6 months',
-            ),
-            'awareness': (
-                f'Raise {domain} awareness pass rate across {org_name} workforce',
-                '≥ 90%',
-                'Closes diagnosed awareness gap',
-                'Within 9 months',
-            ),
-            'incident_response': (
-                f'Operationalize {domain} detection & incident response',
-                'Approved IR runbook + operational SOC',
-                f'Closes IR capability gap per {fw_short}',
-                'Within 12 months',
-            ),
-            'staffing': (
-                f'Build specialist {domain} workforce capability',
-                '80% of specialist roles filled',
-                'Addresses diagnosed staffing shortage',
-                'Within 18 months',
-            ),
-            'suppliers': (
-                'Activate third-party risk management',
-                '100% of critical suppliers assessed',
-                f'Closes supply-chain risk gap per {fw_short}',
-                'Within 12 months',
-            ),
-            'compliance': (
-                f'Full {fw_short} compliance',
-                '100% controls implemented with audit evidence',
-                'Closes compliance-evidence gap',
-                'Within 12 months',
-            ),
-            'baseline': (
-                f'Implement {fw_short} control baseline',
-                '100% of highest-priority controls deployed',
-                'Addresses foundational maturity gaps',
-                'Within 12 months',
-            ),
-        }
-
-    new_rows = []
-    if need_structural:
-        new_rows.append(priority_bank['structural'])
-        summary['injected'].append('structural')
-    for k in need_challenges:
-        if k in priority_bank:
-            new_rows.append(priority_bank[k])
-            summary['injected'].append(k)
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or '').strip()
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        if not title:
-            continue
-        # Skip if already covered
-        tl = title.lower()
-        if (tl in _existing_blob.lower()
-                or any(tl in str(nr[0]).lower() for nr in new_rows)):
-            continue
-        if is_ar:
-            new_rows.append((
-                f'معالجة: {title}',
-                '100% إغلاق',
-                f'ناتج مباشر عن تشخيص {org_name}',
-                'خلال 12 شهراً',
-            ))
-        else:
-            new_rows.append((
-                f'Remediate: {title}',
-                '100% closure',
-                f'Direct outcome of {org_name} diagnostic',
-                'Within 12 months',
-            ))
-        summary['injected'].append(f'dx:{title[:30]}')
-
-    # ── Top-up to RICHNESS threshold (prompt clause 3) ─────────
-    # The richness gate requires _RICHNESS_MIN_SO_ROWS (4) substantive
-    # SO rows; the previous "below 3" top-up loop only ever filled to
-    # 3, so a clean run with no diagnostic challenges still 422'd at
-    # so_rows_insufficient_for_richness. Fix: iterate the priority
-    # bank in a deterministic diagnostic-relevance order, skipping
-    # entries already chosen, so the top-up emits DISTINCT rows
-    # aligned to existing context (not duplicate baseline filler).
-    _topup_order = ('baseline', 'compliance', 'structural', 'awareness',
-                    'incident_response', 'staffing', 'suppliers')
-    _already = {tuple(r) for r in new_rows}
-    _i = 0
-    _min_target = max(3, _RICHNESS_MIN_SO_ROWS)
-    while ((len(existing_rows) + len(new_rows)) < _min_target
-           and _i < len(_topup_order) * 2):
-        _key = _topup_order[_i % len(_topup_order)]
-        _i += 1
-        _row = priority_bank.get(_key)
-        if not _row or tuple(_row) in _already:
-            continue
-        new_rows.append(_row)
-        _already.add(tuple(_row))
-        summary['injected'].append(f'topup:{_key}')
-
-    # Now rebuild the vision section. Strategy: preserve everything in
-    # vision BEFORE the Strategic Objectives table, replace the objectives
-    # table canonically, and preserve everything AFTER (rare).
-    if is_ar:
-        obj_heading = '### الأهداف الاستراتيجية'
-        obj_header = '| # | الهدف الاستراتيجي | المقياس المستهدف | المبرر | الإطار الزمني |'
-        obj_sep = '|---|-------------------|-------------------|--------|----------------|'
-    else:
-        obj_heading = '### Strategic Objectives'
-        obj_header = '| # | Objective | Target Metric | Justification | Timeframe |'
-        obj_sep = '|---|-----------|---------------|---------------|-----------|'
-
-    # Find existing objectives-table span to replace
-    obj_hdr_m = hdr.search(vision)
-    if obj_hdr_m:
-        # Find where the table ends (first non-pipe line after header)
-        before_table = vision[:obj_hdr_m.start()]
-        # Trim trailing whitespace + optional preceding ### heading line
-        # so we can re-emit obj_heading consistently
-        _head_m = _ts_re.search(
-            r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
-            r'[^\n]*\n',
-            before_table, _ts_re.IGNORECASE,
+    # Insufficient — AI-first repair. Build the canonical domain context
+    # and delegate to the single-call repair helper. No deterministic
+    # bank, no top-up.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain or 'Cyber Security', lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-        if _head_m:
-            before_table = before_table[:_head_m.start()]
-        # Walk from table header to end of table
-        _pos = obj_hdr_m.start()
-        _lines = vision[_pos:].split('\n')
-        _i = 0
-        while _i < len(_lines):
-            s = _lines[_i].strip()
-            if s.startswith('|') and s.endswith('|'):
-                _i += 1
-                continue
-            if s == '':
-                # allow one blank then stop
-                _i += 1
-                break
-            break
-        after_table = '\n'.join(_lines[_i:])
-        pre_block = before_table.rstrip()
-    else:
-        # No existing objectives table — but a stale `### Strategic
-        # Objectives` heading (without a table) may exist from an
-        # earlier malformed AI emission. Strip it so the canonical
-        # emit below does not produce a duplicate heading. Without
-        # this, repair would APPEND `### الأهداف الاستراتيجية` AND its
-        # canonical table BELOW the orphan heading, violating prompt
-        # clause 6 ("no duplicate objective headers/tables").
-        pre_block = vision.rstrip()
-        _orphan_m = _ts_re.search(
-            r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
-            r'[^\n]*(?:\n[^\n#|]*)*',
-            pre_block, _ts_re.IGNORECASE,
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_objectives_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
-        if _orphan_m:
-            pre_block = (pre_block[:_orphan_m.start()]
-                         + pre_block[_orphan_m.end():]).rstrip()
-        after_table = ''
 
-    # Emit canonical objectives block
-    all_rows = existing_rows + [list(t) for t in new_rows]
-    out = []
-    if pre_block:
-        out.append(pre_block)
-        out.append('')
-    out.append(obj_heading)
-    out.append('')
-    out.append(obj_header)
-    out.append(obj_sep)
-    for idx, r in enumerate(all_rows, start=1):
-        # Ensure 4 cells
-        while len(r) < 4:
-            r.append('—')
-        out.append('| ' + ' | '.join([str(idx)] + [str(c) for c in r[:4]]) + ' |')
-    out.append('')
-    if after_table.strip():
-        out.append(after_table.rstrip())
+    repaired = ai_repair_strategy_section(
+        section_key='vision',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity=maturity,
+        generation_mode=generation_mode,
+        validation_error=(
+            f'so_rows_insufficient:{n_so}/{_RICHNESS_MIN_SO_ROWS}'
+        ),
+    )
 
-    sections['vision'] = '\n'.join(out).rstrip() + '\n'
+    n_after = count_valid_objective_rows(repaired)
+    if n_after < _RICHNESS_MIN_SO_ROWS:
+        raise RepairError(
+            f'synthesize_objectives_depth: AI-repaired vision has '
+            f'{n_after}/{_RICHNESS_MIN_SO_ROWS} valid Strategic '
+            f'Objective rows'
+        )
+
+    sections['vision'] = repaired
     summary['rebuilt'] = True
-    summary['total_after'] = len(all_rows)
+    summary['total_after'] = n_after
     return summary
 
 
