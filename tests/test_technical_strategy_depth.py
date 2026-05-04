@@ -293,6 +293,9 @@ class TestRoadmapColumns(unittest.TestCase):
 
     @_skip_if_no_app
     def test_roadmap_has_required_columns(self):
+        """PR-5B.5C: AI-first contract — when the roadmap section is
+        below the floor and no AI provider is configured, the synth
+        must raise RepairError instead of inserting deterministic rows."""
         sections = {
             'roadmap': (
                 '## 5. خارطة طريق التنفيذ\n\n'
@@ -300,33 +303,26 @@ class TestRoadmapColumns(unittest.TestCase):
                 '|---|--------|---------|---------------|--------|\n'
             )
         }
-        _APP.synthesize_roadmap_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-        )
-        roadmap = sections.get('roadmap', '')
-        n_rows = _APP._count_substantive_roadmap_rows(roadmap)
-        self.assertGreaterEqual(
-            n_rows, 4,
-            f'Expected ≥4 roadmap rows, got {n_rows}',
-        )
-        # Check all 4 key column types are present
-        hdr_re = re.compile(
-            r'^\|\s*#\s*\|\s*(?:النشاط|Activity)\s*\|',
-            re.IGNORECASE | re.MULTILINE,
-        )
-        self.assertIsNotNone(hdr_re.search(roadmap),
-                             'Roadmap must have # | Activity/النشاط header')
+        before = sections['roadmap']
+        with self.assertRaises(_APP.RepairError):
+            _APP.synthesize_roadmap_depth(
+                sections, lang='ar',
+                domain='Cyber Security', fw_short='NCA ECC',
+            )
+        # No deterministic rows were inserted.
+        self.assertEqual(sections['roadmap'], before)
 
     @_skip_if_no_app
     def test_roadmap_english_minimum_rows(self):
+        """PR-5B.5C: AI-first contract — empty roadmap with no AI
+        provider must raise RepairError, not synthesize fallback rows."""
         sections = {'roadmap': ''}
-        _APP.synthesize_roadmap_depth(
-            sections, lang='en',
-            domain='Cyber Security', fw_short='NCA ECC',
-        )
-        n_rows = _APP._count_substantive_roadmap_rows(sections.get('roadmap', ''))
-        self.assertGreaterEqual(n_rows, 4, f'EN roadmap: expected ≥4 rows, got {n_rows}')
+        with self.assertRaises(_APP.RepairError):
+            _APP.synthesize_roadmap_depth(
+                sections, lang='en',
+                domain='Cyber Security', fw_short='NCA ECC',
+            )
+        self.assertEqual(sections['roadmap'], '')
 
 
 # ---------------------------------------------------------------------------

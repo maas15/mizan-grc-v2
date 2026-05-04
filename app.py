@@ -16553,502 +16553,88 @@ def synthesize_roadmap_depth(sections, lang, domain='Cyber Security',
                              technologies=None,
                              sector='General',
                              org_name='The Organization'):
-    """Diagnostic-driven roadmap row synthesis.
+    """AI-first roadmap synthesis (PR-5B.5C).
 
-    Prepends PRIORITY rows reflecting diagnosed signals BEFORE the generic
-    template bank:
-      - If org_structure_is_none=True: a governance-setup row is injected
-        at position 1 (earliest timeframe).
-      - For each true challenge_flag (awareness/incident_response/
-        staffing/suppliers/compliance): matching activity row is injected
-        when absent.
-      - If diagnostic_gaps list provided: each entry becomes a row.
-    After priority rows, generic templates fill any remaining slots to
-    reach the richness minimum.
+    Behaviour:
+      * If ``sections['roadmap']`` already has ``>= floor`` substantive
+        rows (``_count_substantive_roadmap_rows``), return ``0`` and
+        leave ``sections['roadmap']`` unchanged. AI repair is not
+        invoked.
+      * Otherwise, strict-resolve the domain context (no silent
+        Cyber-Security fallback) and call
+        :func:`ai_repair_strategy_section` with
+        ``section_key='roadmap'``. Validate that the repaired markdown
+        contains ``>= floor`` substantive roadmap rows, replace
+        ``sections['roadmap']`` with the repaired text, and return the
+        number of valid repaired rows.
+      * On AI failure, domain-resolution failure, or invalid repaired
+        output, raise :class:`RepairError`. No deterministic priority
+        bank, no generic templates, no header skeleton, no
+        diagnostic-gap "Remediate:" / "معالجة:" rows are emitted, and
+        ``sections['roadmap']`` is not mutated.
 
-    generation_mode affects padding above the minimum:
-      drafting  → min
-      consulting → min + 1
-      assurance → min + 2
-    Returns count of rows added.
+    The roadmap floor is mode-aware:
+        ``drafting``    -> ``_RICHNESS_MIN_ROADMAP_ROWS``
+        ``consulting``  -> ``_RICHNESS_MIN_ROADMAP_ROWS + 2``
+        ``assurance``   -> ``_RICHNESS_MIN_ROADMAP_ROWS + 3``
+
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` / ``technologies`` parameters are
+    retained for signature compatibility with the pipeline call sites.
     """
     roadmap = sections.get('roadmap', '') or ''
-    current = _count_substantive_roadmap_rows(roadmap)
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
-    technologies = technologies or []
 
-    # Existing roadmap coverage check (same pattern as gaps synth): does a
-    # substantive row already address each diagnostic signal? Used to
-    # avoid double-injection and to determine whether to force synthesis
-    # even when count ≥ minimum (governance-is-none contract).
-    def _row_mentions(row_text, en_tokens, ar_tokens):
-        tl = row_text.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in row_text:
-                return True
-        return False
-
-    # Parse existing rows to check signal coverage.
-    _simple_hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|',
-        _ts_re.IGNORECASE,
-    )
-    existing_rows_text = []
-    for cells in _ts_table_rows(roadmap, _simple_hdr):
-        if cells and cells[0].replace('.', '').isdigit():
-            existing_rows_text.append(' '.join(str(c) for c in cells))
-    _existing_blob = ' | '.join(existing_rows_text)
-
-    coverage = {
-        'structural': _row_mentions(_existing_blob,
-            ('governance', 'structure', 'steering', 'committee',
-             'organizational', 'charter', 'org design'),
-            ('حوكمة', 'هيكل', 'لجنة', 'ميثاق', 'توجيه')),
-        'awareness': _row_mentions(_existing_blob,
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _row_mentions(_existing_blob,
-            ('soc', 'siem', 'incident', 'detection', 'response'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'staffing': _row_mentions(_existing_blob,
-            ('staff', 'hiring', 'recruit', 'skill'),
-            ('تعيين', 'كوادر', 'كفاءات', 'مهارات')),
-        'suppliers': _row_mentions(_existing_blob,
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _row_mentions(_existing_blob,
-            ('audit', 'evidence', 'compliance'),
-            ('تدقيق', 'أدلة', 'امتثال')),
-        'continuity': _row_mentions(_existing_blob,
-            ('continuity', 'bcp', 'disaster recovery', 'resilience', 'backup'),
-            ('استمرارية', 'التعافي', 'الكوارث', 'النسخ الاحتياطي')),
-        'monitoring': _row_mentions(_existing_blob,
-            ('monitoring', 'observability', 'visibility',
-             'continuous monitoring'),
-            ('رصد', 'المراقبة المستمرة', 'الرؤية')),
-    }
-    # Decide which priority rows are needed
-    priority_slots = []
-    if org_structure_is_none and not coverage['structural']:
-        priority_slots.append('structural')
-    for k in ('awareness', 'incident_response', 'staffing',
-              'suppliers', 'compliance', 'continuity', 'monitoring'):
-        if challenge_flags.get(k) and not coverage.get(k, False):
-            priority_slots.append(k)
-    # Technology-gap priority (Part 2E: "if technologies selected are
-    # weak / missing, roadmap must include targeted implementation or
-    # enhancement steps"). Uses the synth's own tech detection since
-    # ctx might not have it.
-    _tech_blob_rm = ' '.join(str(t).lower() for t in (technologies or []))
-    _rm_has = {
-        'siem': any(k in _tech_blob_rm for k in
-                    ('siem', 'splunk', 'sentinel', 'qradar')),
-        'edr':  any(k in _tech_blob_rm for k in
-                    ('edr', 'xdr', 'crowdstrike', 'sentinelone')),
-        'iam':  any(k in _tech_blob_rm for k in
-                    ('iam', 'okta', 'active directory', 'azure ad')),
-        'backup': any(k in _tech_blob_rm for k in
-                      ('backup', 'veeam', 'commvault')),
-    }
-    _rm_missing_key = [k for k, v in _rm_has.items() if not v]
-    # Only add technology priority slot if NOT already covered by
-    # an existing row AND ≥ 2 key categories missing (or nothing selected)
-    _tech_covered_in_roadmap = (
-        'siem' in _existing_blob.lower()
-        or 'edr' in _existing_blob.lower()
-        or 'نشر' in _existing_blob  # "deploy" in Arabic
-    )
-    if ((not technologies or len(_rm_missing_key) >= 2)
-            and not _tech_covered_in_roadmap):
-        priority_slots.append('technology_gap')
-
-    # If count already meets minimum AND no priority injection is needed,
-    # short-circuit.
     _mode_lc = str(generation_mode).lower()
-    _is_consulting_roadmap = _mode_lc in ('consulting', 'assurance')
     needed_floor = _RICHNESS_MIN_ROADMAP_ROWS
     if _mode_lc == 'consulting':
-        needed_floor += 2   # Gap 5: raise consulting floor (was +1)
+        needed_floor += 2
     elif _mode_lc == 'assurance':
-        needed_floor += 3   # assurance gets even more depth
-    if (current >= needed_floor and not priority_slots
-            and not diagnostic_gaps):
+        needed_floor += 3
+
+    current = _count_substantive_roadmap_rows(roadmap)
+
+    if current >= needed_floor:
         return 0
 
-    # Gap 5: consulting/assurance mode uses specific named roles (CISO, DPO,
-    # etc.) and quantified deliverables (≥ X% of Y classified, etc.) rather
-    # than generic "Team" owners and "Approved document" deliverables.
-    if _is_consulting_roadmap:
-        if is_ar:
-            priority_bank = {
-                'structural': (
-                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                    f'المدير التنفيذي / CISO',
-                    'الشهر 1 إلى الشهر 3',
-                    (f'ميثاق لجنة حوكمة معتمد + مصفوفة RACI كاملة لأدوار {domain} '
-                     f'+ تعيين CISO رسمياً — يغلق فجوة الهيكل البنيوي ({fw_short})'),
-                ),
-                'awareness': (
-                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                    'مسؤول الموارد البشرية + CISO',
-                    'الشهر 2 إلى الشهر 9',
-                    f'≥ 90% من الكوادر يجتازون التدريب + ≤ 5% معدل الوقوع بالتصيد',
-                ),
-                'incident_response': (
-                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                    'CISO + مسؤول SOC',
-                    'الشهر 2 إلى الشهر 6',
-                    (f'SOC عامل 24/7 (MTTD ≤ 60 دق) + SIEM منتج + '
-                     f'كتيب الاستجابة معتمد وفق {fw_short}'),
-                ),
-                'staffing': (
-                    f'بناء الكفاءات المتخصصة في {domain}',
-                    'مسؤول الموارد البشرية',
-                    'الشهر 3 إلى الشهر 12',
-                    '≥ 80% من الشواغر المتخصصة مشغولة + خطط تطوير مهني موثقة',
-                ),
-                'suppliers': (
-                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                    'مسؤول مخاطر الأطراف الثالثة (TPRM) / DPO',
-                    'الشهر 4 إلى الشهر 10',
-                    f'100% من الموردين الحرجين مُقيَّمون وفق {fw_short} + نماذج تعاقدية معتمدة',
-                ),
-                'compliance': (
-                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                    'مسؤول الحوكمة والمخاطر والامتثال (GRC)',
-                    'الشهر 3 إلى الشهر 9',
-                    '100% من الضوابط الحرجة موثقة بأدلة تدقيق + تقارير ربعية للإدارة العليا',
-                ),
-                'continuity': (
-                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                    'مسؤول الاستمرارية التشغيلية + مدير تقنية المعلومات',
-                    'الشهر 4 إلى الشهر 12',
-                    ('خطة BCP/DR معتمدة + ≥ 2 اختبار تعافٍ سنوي + '
-                     '100% تغطية الأصول الحيوية بنسخ احتياطية مُختبَرة'),
-                ),
-                'monitoring': (
-                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                    'CISO + مهندس المراقبة الأمنية',
-                    'الشهر 2 إلى الشهر 8',
-                    ('≥ 95% تغطية الأصول الحيوية بالرصد الآني + '
-                     f'لوحات مراقبة تشغيلية وفق {fw_short}'),
-                ),
-                'technology_gap': (
-                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                    'مدير تقنية المعلومات + CISO',
-                    'الشهر 1 إلى الشهر 9',
-                    ('SIEM/EDR/IAM/Backup منتجة ومدمجة + '
-                     f'أدلة تشغيل موثقة وفق {fw_short}'),
-                ),
-            }
-        else:
-            priority_bank = {
-                'structural': (
-                    f'Establish formal {domain} governance structure for {org_name}',
-                    'CEO / CISO', 'Months 1-3',
-                    (f'Approved governance committee charter + full RACI matrix '
-                     f'for {domain} roles + formal CISO appointment — '
-                     f'satisfies {fw_short} governance domain'),
-                ),
-                'awareness': (
-                    f'{domain} awareness & security training programme for {org_name} staff',
-                    'CISO / HR Director', 'Months 2-9',
-                    f'≥ 90% of staff pass annual training; ≤ 5% phishing simulation click-rate',
-                ),
-                'incident_response': (
-                    f'Establish SOC and {domain} detection/response capability',
-                    'CISO / SOC Manager', 'Months 2-6',
-                    (f'24/7 SOC operational (MTTD ≤ 60 min; MTTR ≤ 4 hrs) + '
-                     f'production SIEM + approved {fw_short}-compliant IR runbook'),
-                ),
-                'staffing': (
-                    f'Build {domain} specialist workforce at {org_name}',
-                    'HR Director', 'Months 3-12',
-                    f'≥ 80% of specialist {domain} roles filled + documented development plans',
-                ),
-                'suppliers': (
-                    f'Launch third-party risk management programme at {org_name}',
-                    'TPRM Lead / DPO', 'Months 4-10',
-                    f'100% of critical suppliers assessed per {fw_short} controls + approved contract templates',
-                ),
-                'compliance': (
-                    f'Build {fw_short} compliance-evidence system',
-                    'GRC Director', 'Months 3-9',
-                    f'100% of critical controls documented with audit evidence + quarterly executive reporting',
-                ),
-                'continuity': (
-                    f'Activate business continuity & DR framework at {org_name}',
-                    'COO / IT Director', 'Months 4-12',
-                    ('Approved BCP/DR plan + ≥ 2 recovery tests per year + '
-                     '100% of critical assets covered by tested backup procedures'),
-                ),
-                'monitoring': (
-                    f'Build continuous monitoring capability for {domain} assets',
-                    'CISO / Security Architect', 'Months 2-8',
-                    (f'≥ 95% of critical assets under real-time monitoring + '
-                     f'operational dashboards aligned to {fw_short}'),
-                ),
-                'technology_gap': (
-                    f'Acquire and deploy missing foundational {domain} technical capabilities',
-                    'CIO / CISO', 'Months 1-9',
-                    (f'SIEM/EDR/IAM/Backup production-ready + integrated + '
-                     f'documented per {fw_short} technical controls'),
-                ),
-            }
-    else:
-        # Drafting-mode priority bank — generic owners and deliverables
-        if is_ar:
-            priority_bank = {
-                'structural': (
-                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                    f'رئيس {org_name}',
-                    'الشهر 1 إلى الشهر 3',
-                    (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
-                     f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
-                ),
-                'awareness': (
-                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                    'الموارد البشرية',
-                    'الشهر 2 إلى الشهر 9',
-                    'مسار تدريبي معتمد + سجل الاجتياز الدوري',
-                ),
-                'incident_response': (
-                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                    f'عمليات {domain}',
-                    'الشهر 2 إلى الشهر 6',
-                    (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
-                     f'لحوادث {domain}'),
-                ),
-                'staffing': (
-                    f'بناء الكفاءات المتخصصة في {domain}',
-                    'الموارد البشرية + التدريب',
-                    'الشهر 3 إلى الشهر 12',
-                    'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
-                ),
-                'suppliers': (
-                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                    f'إدارة {domain}',
-                    'الشهر 4 إلى الشهر 10',
-                    f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
-                ),
-                'compliance': (
-                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                    'الحوكمة والامتثال',
-                    'الشهر 3 إلى الشهر 9',
-                    'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
-                ),
-                'continuity': (
-                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                    f'إدارة {domain} وتقنية المعلومات',
-                    'الشهر 4 إلى الشهر 12',
-                    ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
-                     'مستودع نسخ احتياطي منتظم'),
-                ),
-                'monitoring': (
-                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                    f'عمليات {domain}',
-                    'الشهر 2 إلى الشهر 8',
-                    ('لوحات مراقبة حية + تغطية رصد كاملة + '
-                     'إجراءات استجابة مرتبطة'),
-                ),
-                'technology_gap': (
-                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                    f'تقنية المعلومات و{domain}',
-                    'الشهر 1 إلى الشهر 9',
-                    ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
-                     'مع أدلة التشغيل'),
-                ),
-            }
-        else:
-            priority_bank = {
-                'structural': (
-                    f'Establish formal {domain} governance structure for {org_name}',
-                    f'{org_name} CEO', 'Months 1-3',
-                    (f'Approved committee charter + org structure + RACI '
-                     f'matrix — closes structural gap'),
-                ),
-                'awareness': (
-                    f'{domain} awareness & training programme for {org_name} staff',
-                    'HR', 'Months 2-9',
-                    'Approved training curriculum + periodic pass-rate records',
-                ),
-                'incident_response': (
-                    f'Establish SOC and {domain} detection/response capability',
-                    f'{domain} Operations', 'Months 2-6',
-                    f'24/7 SOC + production SIEM + {domain} IR runbook',
-                ),
-                'staffing': (
-                    f'Build {domain} specialist workforce',
-                    'HR + Training', 'Months 3-12',
-                    'Hiring plan + certifications + professional-development track',
-                ),
-                'suppliers': (
-                    f'Launch third-party risk management programme at {org_name}',
-                    f'{domain} Management', 'Months 4-10',
-                    f'{fw_short}-aligned supplier assessment register + contracts',
-                ),
-                'compliance': (
-                    f'Build {fw_short} compliance-evidence system',
-                    'GRC', 'Months 3-9',
-                    'Audit-evidence repository + periodic reporting plan',
-                ),
-                'continuity': (
-                    f'Activate business continuity & DR framework at {org_name}',
-                    f'{domain} Management + IT', 'Months 4-12',
-                    ('Approved BCP/DR plan + periodic recovery testing + '
-                     'regular backup repository'),
-                ),
-                'monitoring': (
-                    f'Build continuous monitoring capability for {domain} assets',
-                    f'{domain} Operations', 'Months 2-8',
-                    ('Live monitoring dashboards + full detection coverage + '
-                     'linked response procedures'),
-                ),
-                'technology_gap': (
-                    f'Acquire and deploy missing foundational technical capabilities',
-                    f'IT + {domain}', 'Months 1-9',
-                    ('Production tech capabilities: SIEM/EDR/IAM/Backup '
-                     'integrated and tested with operations runbooks'),
-                ),
-            }
-
-    # Build new rows: priority first, then diagnostic_gaps entries, then
-    # generic fill.
-    has_header = bool(_ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|\s*(?:Owner|المسؤول)\s*\|',
-        _ts_re.IGNORECASE | _ts_re.MULTILINE,
-    ).search(roadmap))
-    existing_row_nums = set()
-    if has_header:
-        for cells in _ts_table_rows(roadmap, _simple_hdr):
-            if cells and cells[0].replace('.', '').isdigit():
-                existing_row_nums.add(int(cells[0]))
-    next_n = max(existing_row_nums) + 1 if existing_row_nums else 1
-
-    templates_ar = [
-        (f'تنفيذ موجة المعالجة الأولى وإغلاق الفجوات الحرجة',
-         f'تقنية المعلومات', 'الشهر 4 إلى الشهر 9',
-         'أدلة إغلاق الضوابط الحرجة'),
-        (f'إجراء تقييم الضوابط وفق {fw_short} وإصدار خطة المعالجة',
-         'فريق الحوكمة والامتثال', 'الشهر 3 إلى الشهر 6',
-         'تقرير التقييم وخطة المعالجة'),
-        (f'تطوير قدرات المراقبة المستمرة وتكامل الأدوات',
-         f'عمليات {domain}', 'الشهر 5 إلى الشهر 10',
-         'لوحات المراقبة التشغيلية'),
-        # ── Additional context-driven substantive templates (prompt
-        # clause 2 + 5) so the floor (4) is always reachable even
-        # when no priority slots and no diagnostic_gaps fire.
-        (f'إعداد سياسات وإجراءات {domain} وفق متطلبات {fw_short}',
-         f'فريق الحوكمة في {org_name}', 'الشهر 2 إلى الشهر 5',
-         'حزمة سياسات وإجراءات معتمدة قابلة للتدقيق'),
-        (f'تنفيذ برنامج التدقيق الداخلي والتقارير التنفيذية لـ{domain}',
-         'التدقيق الداخلي', 'الشهر 6 إلى الشهر 12',
-         'تقارير تدقيق ربعية وخطط معالجة موثقة'),
-        (f'إدارة سجل المخاطر التشغيلية لـ{domain} في قطاع {sector}',
-         f'إدارة المخاطر في {org_name}', 'الشهر 1 إلى الشهر 12',
-         'سجل مخاطر مُحدَّث + خطة استجابة مفعَّلة'),
-    ]
-    templates_en = [
-        ('Execute first remediation wave and close critical gaps',
-         'IT Operations', 'Months 4-9', 'Critical-control closure evidence'),
-        (f'Conduct {fw_short} control assessment and produce remediation plan',
-         'GRC Team', 'Months 3-6', 'Assessment report & remediation plan'),
-        ('Develop continuous monitoring capability and tool integration',
-         f'{domain} Operations', 'Months 5-10', 'Operational monitoring dashboards'),
-        # Additional context-driven substantive templates
-        (f'Develop {domain} policies and procedures aligned to {fw_short}',
-         f'{org_name} Governance', 'Months 2-5',
-         'Approved auditable policy + procedures pack'),
-        (f'Run internal audit programme and executive reporting for {domain}',
-         'Internal Audit', 'Months 6-12',
-         'Quarterly audit reports + documented remediation plans'),
-        (f'Operate {domain} risk register for the {sector} sector',
-         f'{org_name} Risk Management', 'Months 1-12',
-         'Live risk register + active response plan'),
-    ]
-    generic_templates = templates_ar if is_ar else templates_en
-
-    # Assemble new_tuples (activity, owner, timeline, deliverable)
-    new_tuples = []
-    for slot in priority_slots:
-        new_tuples.append(priority_bank[slot])
-
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-            if not title:
-                continue
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        # Skip if existing rows or priority rows already cover it
-        tl = title.lower()
-        dup = (_row_mentions(_existing_blob, (tl,), (title,)) or
-               any(tl in t[0].lower() for t in new_tuples))
-        if dup:
-            continue
-        if is_ar:
-            new_tuples.append((
-                f'معالجة: {title}',
-                f'فريق {domain}',
-                'الشهر 3 إلى الشهر 9',
-                f'أدلة إغلاق الفجوة وفق {fw_short}',
-            ))
-        else:
-            new_tuples.append((
-                f'Remediate: {title}',
-                f'{domain} Team', 'Months 3-9',
-                f'Gap-closure evidence aligned to {fw_short}',
-            ))
-
-    # Fill to reach the floor
-    gi = 0
-    while (current + len(new_tuples)) < needed_floor and gi < len(generic_templates):
-        new_tuples.append(generic_templates[gi])
-        gi += 1
-
-    if not new_tuples:
-        return 0
-
-    # If no header, inject one
-    if not has_header:
-        if is_ar:
-            skeleton = (
-                ('## 5. خارطة طريق التنفيذ\n\n' if '## 5' not in roadmap else '')
-                + '| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n'
-                + '|---|--------|---------|---------------|--------|\n'
-            )
-        else:
-            skeleton = (
-                ('## 5. Implementation Roadmap\n\n' if '## 5' not in roadmap else '')
-                + '| # | Activity | Owner | Timeline | Deliverable |\n'
-                + '|---|----------|-------|----------|-------------|\n'
-            )
-        roadmap = roadmap.rstrip() + ('\n\n' if roadmap.strip() else '') + skeleton
-
-    # Append rows
-    lines = roadmap.split('\n')
-    insert_after = len(lines) - 1
-    for idx in range(len(lines) - 1, -1, -1):
-        s = lines[idx].strip()
-        if s.startswith('|') and s.endswith('|'):
-            insert_after = idx
-            break
-
-    new_rows = []
-    for offset, tpl in enumerate(new_tuples):
-        new_rows.append(
-            f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} | {tpl[3]} |'
+    # Insufficient -- AI-first repair. Strict domain resolution: do
+    # NOT silently default to Cyber Security if domain is missing or
+    # invalid; surface a RepairError instead.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain,
+            lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-    lines = lines[:insert_after + 1] + new_rows + lines[insert_after + 1:]
-    sections['roadmap'] = '\n'.join(lines)
-    return len(new_rows)
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_roadmap_depth: cannot resolve domain context '
+            f'for {domain!r}: {_de}'
+        )
+
+    repaired = ai_repair_strategy_section(
+        section_key='roadmap',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity='',
+        generation_mode=generation_mode,
+        validation_error=(
+            f'roadmap_rows_insufficient:{current}/{needed_floor}'
+        ),
+        min_rows=needed_floor,
+    )
+
+    n_after = _count_substantive_roadmap_rows(repaired)
+    if n_after < needed_floor:
+        raise RepairError(
+            f'synthesize_roadmap_depth: AI-repaired roadmap invalid '
+            f'(rows={n_after}/{needed_floor})'
+        )
+
+    sections['roadmap'] = repaired
+    return n_after
 
 
 def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
@@ -23939,6 +23525,21 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "with 6 columns:\n"
             "| # | Risk | Likelihood | Impact | Owner | Treatment Strategy |\n"
             "Generate at least {min_rows} risk rows; do not duplicate the heading."
+        ),
+    },
+    "roadmap": {
+        "ar": (
+            "أرجع قسم \"## 5. خارطة الطريق التنفيذية\" فقط، باستخدام "
+            "جدول Markdown ذي 5 أعمدة بالضبط بالترتيب التالي:\n"
+            "| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n"
+            "أنشئ على الأقل {min_rows} صفًا. لا تُدرج رؤوسًا أخرى ولا أقسامًا أخرى."
+        ),
+        "en": (
+            "Return ONLY the '## 5. Implementation Roadmap' section as "
+            "a Markdown pipe table with EXACTLY 5 columns in this order:\n"
+            "| # | Activity | Owner | Timeline | Deliverable |\n"
+            "Generate at least {min_rows} rows. Do not include other "
+            "headings or other sections."
         ),
     },
 }
