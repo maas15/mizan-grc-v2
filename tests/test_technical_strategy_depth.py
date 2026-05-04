@@ -262,39 +262,55 @@ class TestPillarInitiativeDepth(unittest.TestCase):
 
     @_skip_if_no_app
     def test_synthesized_pillars_have_three_initiatives(self):
-        """synthesize_pillars_depth() on thin input must build 3-init pillars."""
+        """PR-5B.6B: synthesize_pillars_depth is now AI-first. With no AI
+        provider configured (mocked), an empty pillars section triggers
+        ai_repair_strategy_section() which raises RepairError. The
+        contract guarantees that no deterministic bank pillars are
+        inserted when AI is unavailable — the section is left untouched
+        and the caller surfaces the failure (annotated
+        section='pillars')."""
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-            sector='Government', org_name='Test Org',
-        )
-        pillars = _parse_pillars(sections.get('pillars', ''))
-        self.assertGreaterEqual(len(pillars), 3,
-                                'Expected ≥3 pillars from synthesizer')
-        for title, body in pillars:
-            n = _count_initiative_rows(body)
-            self.assertGreaterEqual(
-                n, 3,
-                f'Synthesized pillar "{title}" has {n} initiative(s); expected ≥3',
-            )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError) as _ctx:
+                _APP.synthesize_pillars_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                    sector='Government', org_name='Test Org',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
+        self.assertEqual(getattr(_ctx.exception, 'section', None),
+                         'pillars')
+        self.assertEqual(sections.get('pillars', ''), '')
 
     @_skip_if_no_app
     def test_english_synthesized_pillars_have_three_initiatives(self):
+        """PR-5B.6B: see Arabic counterpart above."""
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='en',
-            domain='Cyber Security', fw_short='NCA ECC',
-            sector='Government', org_name='Test Org',
-        )
-        pillars = _parse_pillars(sections.get('pillars', ''))
-        self.assertGreaterEqual(len(pillars), 3)
-        for title, body in pillars:
-            n = _count_initiative_rows(body)
-            self.assertGreaterEqual(
-                n, 3,
-                f'EN pillar "{title}" has {n} initiative(s); expected ≥3',
-            )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError) as _ctx:
+                _APP.synthesize_pillars_depth(
+                    sections, lang='en',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                    sector='Government', org_name='Test Org',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
+        self.assertEqual(getattr(_ctx.exception, 'section', None),
+                         'pillars')
+        self.assertEqual(sections.get('pillars', ''), '')
 
     @_skip_if_no_app
     def test_already_rich_pillars_untouched(self):
@@ -538,14 +554,30 @@ class TestNoTraceComments(unittest.TestCase):
 
     @_skip_if_no_app
     def test_synthesized_pillars_have_no_trace_comments(self):
+        # PR-5B.6B: synthesize_pillars_depth is now AI-first. With no AI
+        # provider available (mocked), an empty pillars section triggers
+        # ai_repair_strategy_section() which raises RepairError. The
+        # contract guarantees that no deterministic cyber-default rows
+        # / trace comments are inserted when AI is unavailable — the
+        # section is left untouched and the caller surfaces the failure.
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-        )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError):
+                _APP.synthesize_pillars_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
         self.assertFalse(
             _has_trace_comments(sections.get('pillars', '')),
-            'Synthesized pillars contain trace comments',
+            'Untouched pillars section must not contain trace comments',
         )
 
     @_skip_if_no_app

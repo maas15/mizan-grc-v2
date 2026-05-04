@@ -17733,30 +17733,40 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                               org_structure_is_none=False,
                               challenge_flags=None,
                               technologies=None):
-    """If the Strategic Pillars section has fewer than
-    _RICHNESS_MIN_PILLARS_LOCAL substantive pillars, REBUILD it
-    canonically from structured data. Preserves existing substantive
-    pillars verbatim; fills the remaining slots from a deterministic
-    bank of domain-relevant consultancy-grade pillar templates.
+    """AI-first Strategic Pillars synthesis (PR-5B.6B).
 
-    Diagnostic-aware priority (prompt Part 2B):
-      - If org_structure_is_none=True, a GOVERNANCE-STRUCTURE pillar is
-        prepended first (before any other bank entry) because the user
-        explicitly reported no defined organizational structure.
-      - If maturity='initial', the pillar set prioritizes baseline
-        establishment over optimization — governance + operational
-        controls first, detection/TPRM/awareness after.
-      - If challenge_flags indicate awareness/IR/TPRM/staffing gaps,
-        the pillar pick-order weights those pillars higher.
+    Behaviour:
+      * If ``sections['pillars']`` already has
+        ``>= _RICHNESS_MIN_PILLARS_LOCAL`` substantive pillars (each with
+        a substantive initiative table) AND the
+        ``org_structure_is_none`` governance-pillar contract is
+        satisfied, return unchanged with ``rebuilt=False``. AI repair
+        is not invoked.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no ``domain or 'Cyber
+        Security'`` fallback), call
+        :func:`ai_repair_strategy_section` with
+        ``section_key='pillars'``, validate the repaired markdown, and
+        replace ``sections['pillars']`` with the repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid
+        repaired output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'pillars')``. No deterministic pillar
+        bank is used, no governance / technology-priority / maturity
+        templates are injected, and ``sections['pillars']`` is left
+        unchanged on failure.
 
-    Rebuild — not patch — matches the prompt's "if pillars are thin,
-    rebuild them" directive. Returns dict with:
-      - pillars_before / pillars_after
-      - rebuilt: bool
-      - preserved_titles: list of AI-pillar titles kept
-      - synthesized_titles: list of deterministic-pillar titles added
-      - governance_pillar_injected: True when org_structure_is_none
-        triggered the structural governance pillar
+    The legacy ``diagnostic_gaps`` / ``risks`` / ``objectives`` /
+    ``challenge_flags`` / ``technologies`` parameters are retained for
+    signature compatibility with the pipeline call sites.
+    ``maturity`` and ``generation_mode`` are forwarded to the AI repair
+    prompt.
+
+    Returns dict with keys ``rebuilt`` (bool), ``preserved_titles``
+    (list — substantive AI pillar titles before repair),
+    ``synthesized_titles`` (list, empty post-AI-first migration),
+    ``governance_pillar_injected`` (bool, always False post-AI-first
+    migration), ``pillars_before`` (int), and, on success,
+    ``pillars_after`` (int — substantive pillar count after AI repair).
     """
     summary = {'rebuilt': False, 'preserved_titles': [],
                'synthesized_titles': [],
@@ -17764,36 +17774,22 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
     pillars = sections.get('pillars', '') or ''
     n_before = _count_substantive_pillars(pillars)
     summary['pillars_before'] = n_before
-    # Even when n_before >= minimum, we STILL need to check that the
-    # org_structure_is_none contract is satisfied — the prompt says
-    # "if there is no defined organizational structure, one pillar must
-    # explicitly address governance structure". If the existing pillars
-    # don't contain a governance/structure pillar, we must rebuild to
-    # inject one. Detect that below before early-returning.
-    #
-    # ALSO (gate alignment): if `n_before` counted narrative-only
-    # pillars via `_count_substantive_pillars`'s ≥80-char fallback,
-    # those would later FAIL the integrity gate's per-pillar
-    # initiative-table check. Re-count strictly here using the gate-
-    # aligned helper so synth doesn't bail when initiative tables are
-    # missing.
-    _existing_with_init = sum(
-        1 for (_t, _b) in _extract_existing_pillars(pillars)
-        if _pillar_has_substantive_initiative(_b)
-    )
-    n_before_strict = _existing_with_init
-    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
-            and not org_structure_is_none):
-        summary['pillars_after'] = n_before
-        return summary
-    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
-            and org_structure_is_none):
-        # Only early-return if the FIRST pillar's heading explicitly
-        # carries governance/structure tokens.  Checking the whole
-        # section body was too broad: NCA ECC strategies mention
-        # 'حوكمة' in every pillar's narrative, causing a false-positive
-        # that skipped the governance-pillar injection and left the
-        # document starting with الركيزة الثانية.
+
+    # Strict gate-aligned count: each counted pillar must carry a
+    # substantive initiative table row, mirroring the integrity-gate
+    # `pillars_missing_substantive_initiative` check.
+    existing = _extract_existing_pillars(pillars)
+    preserved = [(t, b) for (t, b) in existing
+                 if _pillar_has_substantive_initiative(b)]
+    n_before_strict = len(preserved)
+    summary['preserved_titles'] = [t for t, _ in preserved]
+
+    # Governance-pillar contract: when org_structure_is_none, the FIRST
+    # pillar's heading must explicitly carry governance / structure
+    # tokens. Otherwise we treat the section as failing-the-contract
+    # and trigger AI repair even when the count is sufficient.
+    _gov_contract_ok = True
+    if org_structure_is_none:
         _gov_tokens_ar = ('الحوكمة', 'حوكمة', 'الهيكل', 'هيكل',
                           'الهيكلة', 'هيكلة', 'اللجنة', 'لجنة',
                           'التوجيه', 'توجيه')
@@ -17807,697 +17803,83 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 r'^###[^#\n][^\n]*$', pillars, _ts_re.MULTILINE))
         if _first_matches:
             _first_m = _first_matches[0]
-            # Extract ONLY the first pillar heading line for governance check
             _first_heading = pillars[_first_m.start():_first_m.end()].lower()
-            for t in _gov_tokens_en:
-                if t in _first_heading:
-                    _has_gov_first = True
-                    break
-            if not _has_gov_first:
-                for t in _gov_tokens_ar:
-                    if t in pillars[_first_m.start():_first_m.end()]:
-                        _has_gov_first = True
-                        break
-        if _has_gov_first:
-            summary['pillars_after'] = n_before
-            return summary
-        # else: fall through to rebuild, injecting governance pillar
+            if any(t in _first_heading for t in _gov_tokens_en):
+                _has_gov_first = True
+            elif any(t in pillars[_first_m.start():_first_m.end()]
+                     for t in _gov_tokens_ar):
+                _has_gov_first = True
+        _gov_contract_ok = _has_gov_first
 
-    is_ar = (lang == 'ar')
-    diagnostic_gaps = diagnostic_gaps or []
-    risks = risks or []
-    objectives = objectives or []
-    challenge_flags = challenge_flags or {}
-    technologies = technologies or []
+    # Sufficient pillars + governance-pillar contract satisfied → no-op.
+    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
+            and _gov_contract_ok):
+        summary['pillars_after'] = n_before
+        return summary
 
-    # Extract any existing pillars from the section — keep the substantive
-    # ones, discard the thin ones.
-    # PRESERVE FILTER: align with integrity gate. The gate at the save
-    # path requires every counted pillar to have a substantive
-    # initiative table row (`pillars_missing_substantive_initiative`).
-    # The previous filter used `_pillar_is_substantive` which accepted
-    # narrative-only pillars (≥80 chars). Those passed the synth's
-    # internal counter but failed the downstream gate. Now: require
-    # a substantive initiative table — so narrative-only `### الركيزة`
-    # entries get dropped here and the slot is filled by a bank pillar
-    # that carries a proper initiative table.
-    existing = _extract_existing_pillars(pillars)
-    preserved = [(t, b) for (t, b) in existing
-                 if _pillar_has_substantive_initiative(b)]
-    summary['preserved_titles'] = [t for t, _ in preserved]
-
-    # Deterministic consultancy-grade pillar bank. Each pillar is designed
-    # to pass _count_substantive_pillars — it has an initiative row AND a
-    # narrative body well over 80 chars. Content references the user's
-    # domain / framework / sector / organization. Each pillar carries
-    # 3 initiative rows so synthesized pillars pass the 3+ initiative
-    # depth check without requiring a separate enrichment pass.
-    if is_ar:
-        pillar_bank = [
-            {
-                'title': f'الركيزة الأولى: الحوكمة والامتثال وإدارة مخاطر {domain}',
-                'narrative': (
-                    f"تؤسس هذه الركيزة إطار حوكمة {domain} الرسمي لـ{org_name} "
-                    f"بما يحقق الامتثال لمتطلبات {fw_short} في قطاع {sector}. "
-                    "تشمل ميثاق الأمن السيبراني، وصلاحيات لجنة التوجيه، ومصفوفة "
-                    "RACI، وسجل الضوابط، ومسارات التصعيد، وإعداد التقارير الدورية "
-                    "للإدارة العليا، وربط القرارات بالأولويات المؤسسية."
-                ),
-                'initiatives': [
-                    (
-                        f'ميثاق الأمن السيبراني ولجنة الحوكمة',
-                        f'إعداد ميثاق {domain} المعتمد وتشكيل لجنة توجيه برئاسة تنفيذية مع اختصاصات واضحة وجداول اجتماعات دورية',
-                        f'ميثاق {domain} المعتمد + اختصاصات لجنة الحوكمة + محاضر الاجتماعات الربعية',
-                    ),
-                    (
-                        f'مصفوفة RACI وإطار السياسات',
-                        f'توثيق مصفوفة RACI لأدوار {domain} ومسؤولياتها وإعداد حزمة السياسات والإجراءات وفق {fw_short}',
-                        f'مصفوفة RACI المعتمدة + سياسة {domain} الرئيسية + الإجراءات التشغيلية',
-                    ),
-                    (
-                        f'سجل ضوابط {fw_short} وسجل المخاطر',
-                        f'بناء سجل ضوابط {fw_short} المُرقَّم وربطه بسجل مخاطر {domain} مع خطط معالجة موثقة',
-                        f'سجل ضوابط {fw_short} + سجل مخاطر نشط + خطط المعالجة الموثقة',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الثانية: الحماية التقنية والهندسة الأمنية',
-                'narrative': (
-                    f"تُحكم هذه الركيزة الضوابط التقنية الأساسية في بنية {org_name} "
-                    f"بما يشمل إدارة الهوية والوصول المميز (IAM/PAM)، ونشر منصات "
-                    f"الحماية المتطورة (EDR/XDR)، وتطبيق ضوابط حماية البيانات، "
-                    f"وذلك وفق خط الأساس الذي يفرضه {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        'إدارة الهوية والوصول المميز (IAM/PAM)',
-                        'جرد الحسابات المميزة وتطبيق المصادقة متعددة العوامل (MFA) ونشر حل PAM مع آليات مراجعة الوصول الدورية',
-                        'قاموس هويات المستخدمين + خطة نشر PAM/MFA + سجل مراجعة الوصول',
-                    ),
-                    (
-                        'نشر منصات الحماية (EDR/XDR)',
-                        f'تطبيق خط الأساس الأمني للنهايات والشبكات عبر نشر EDR/XDR مع ضوابط {fw_short} التشغيلية',
-                        'سياسة تكوين النهايات + خط الأساس الأمني EDR/XDR + سجل تغطية الأجهزة',
-                    ),
-                    (
-                        'حماية البيانات والتصنيف',
-                        f'تنفيذ مخطط تصنيف البيانات وضوابط التشفير وسياسات DLP وفق متطلبات {fw_short}',
-                        'مخطط تصنيف البيانات + سياسة التشفير + قواعد DLP المفعَّلة',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الثالثة: الكشف والاستجابة والمرونة السيبرانية',
-                'narrative': (
-                    f"ترفع هذه الركيزة قدرة {org_name} على الكشف المبكر والاستجابة "
-                    f"الفعّالة لحوادث {domain}، بما يشمل تفعيل SIEM، وإعداد كتب "
-                    "الاستجابة للحوادث، وتفعيل برنامج إدارة الثغرات، وضمان استمرارية "
-                    "الأعمال والتعافي من الكوارث."
-                ),
-                'initiatives': [
-                    (
-                        'SIEM وكتالوج حالات الاستخدام',
-                        f'ربط مصادر السجلات بمنصة SIEM وتطوير كتالوج حالات استخدام الكشف المرتبطة بتهديدات {sector}',
-                        'مصادر السجلات المُدمجة + كتالوج حالات SIEM + مصفوفة التصعيد',
-                    ),
-                    (
-                        'كتب الاستجابة للحوادث',
-                        f'إعداد كتب تشغيل الاستجابة للحوادث الحرجة وإجراء تمارين محاكاة دورية وفق متطلبات {fw_short}',
-                        'كتب الاستجابة المعتمدة + تقارير تمارين المحاكاة + مؤشرات MTTD/MTTR',
-                    ),
-                    (
-                        'إدارة الثغرات والنسخ الاحتياطي',
-                        f'تطبيق إجراء إدارة الثغرات والتصحيح مع اختبارات استعادة النسخ الاحتياطي بشكل دوري',
-                        'سجل الثغرات + تقارير اختبار الاستعادة + أدلة النسخ الاحتياطي',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الرابعة: الثقافة والقدرات والضمان المستمر',
-                'narrative': (
-                    f"تُطوّر هذه الركيزة كفاءات {org_name} في مجال {domain}، وتُعزّز "
-                    "ثقافة الأمن السيبراني عبر برامج التوعية ومحاكاة التصيد، وإدارة "
-                    "مخاطر الأطراف الثالثة، والضمان المستمر عبر التدقيق الداخلي."
-                ),
-                'initiatives': [
-                    (
-                        'برنامج التوعية ومحاكاة التصيد',
-                        f'تطوير برنامج توعية {domain} المتدرج مع تمارين محاكاة التصيد ومقاييس فعالية التدريب',
-                        'خطة حملة التوعية + تقارير محاكاة التصيد + معدلات الاجتياز',
-                    ),
-                    (
-                        'تقييم مخاطر الأطراف الثالثة',
-                        f'تطبيق نموذج تقييم {domain} للموردين الحرجين وفق {fw_short} مع متطلبات تعاقدية واضحة',
-                        'نموذج تقييم الأطراف الثالثة + سجل مخاطر الموردين + الشروط التعاقدية',
-                    ),
-                    (
-                        'التدقيق الداخلي والضمان المستمر',
-                        f'تشغيل دورة تدقيق داخلي دورية لضوابط {fw_short} مع إصدار تقارير تنفيذية ربعية',
-                        'تقارير التدقيق الداخلي + خطط المعالجة + لوحة متابعة الامتثال',
-                    ),
-                ],
-            },
-        ]
-    else:
-        pillar_bank = [
-            {
-                'title': f'Pillar 1: {domain} Governance, Compliance & Risk Management',
-                'narrative': (
-                    f"This pillar establishes {org_name}'s formal {domain} "
-                    f"governance framework aligned to {fw_short} obligations "
-                    f"in the {sector} sector. It covers the cybersecurity "
-                    "charter, steering-committee authority, RACI matrix, "
-                    "control register, escalation paths, and periodic "
-                    "executive reporting."
-                ),
-                'initiatives': [
-                    (
-                        f'{domain} Charter & Governance Committee',
-                        f'Prepare the approved {domain} charter and form an executive-chaired steering committee with clear ToR and quarterly meeting schedule',
-                        f'Approved {domain} charter + Committee ToR + Quarterly meeting minutes',
-                    ),
-                    (
-                        f'RACI Matrix & Policy Framework',
-                        f'Document RACI matrix for {domain} roles and produce a policy/procedure pack aligned to {fw_short}',
-                        f'Approved RACI matrix + {domain} master policy + Operating procedures',
-                    ),
-                    (
-                        f'{fw_short} Control Register & Risk Register',
-                        f'Build a numbered {fw_short} control register and link it to a live {domain} risk register with documented remediation plans',
-                        f'{fw_short} control register + Live risk register + Documented remediation plans',
-                    ),
-                ],
-            },
-            {
-                'title': f'Pillar 2: Technical Protection & Security Engineering',
-                'narrative': (
-                    f"This pillar hardens the core technical controls in "
-                    f"{org_name}'s infrastructure, covering IAM/PAM, "
-                    "EDR/XDR deployment, data protection and classification, "
-                    f"all aligned to the {fw_short} control baseline."
-                ),
-                'initiatives': [
-                    (
-                        'Identity & Privileged Access Management (IAM/PAM)',
-                        'Inventory privileged accounts, enforce MFA, and deploy a PAM solution with periodic access-review cycles',
-                        'Identity inventory + PAM/MFA deployment plan + Access review register',
-                    ),
-                    (
-                        'EDR/XDR Deployment Baseline',
-                        f'Apply the endpoint and network security baseline by deploying EDR/XDR with {fw_short} operational controls',
-                        'Endpoint configuration policy + EDR/XDR security baseline + Device coverage register',
-                    ),
-                    (
-                        'Data Protection & Classification',
-                        f'Implement a data classification scheme, encryption controls, and DLP policies per {fw_short} requirements',
-                        'Data classification scheme + Encryption policy + Active DLP rules',
-                    ),
-                ],
-            },
-            {
-                'title': 'Pillar 3: Detection, Response & Cyber Resilience',
-                'narrative': (
-                    f"This pillar raises {org_name}'s capacity for early "
-                    f"detection and effective response to {domain} incidents, "
-                    "through SIEM activation, incident response playbooks, "
-                    "vulnerability management, and backup/DR resilience."
-                ),
-                'initiatives': [
-                    (
-                        'SIEM Use-Case Catalogue',
-                        f'Connect log sources to the SIEM platform and develop a detection use-case catalogue linked to {sector} threat scenarios',
-                        'Integrated log sources + SIEM use-case catalogue + Escalation matrix',
-                    ),
-                    (
-                        'Incident Response Playbooks',
-                        f'Develop critical incident response playbooks and run periodic simulation exercises per {fw_short} requirements',
-                        'Approved IR playbooks + Simulation exercise reports + MTTD/MTTR metrics',
-                    ),
-                    (
-                        'Vulnerability Management & Backup/DR',
-                        f'Implement a vulnerability and patch management procedure with periodic backup restore testing',
-                        'Vulnerability register + Restore test reports + Backup evidence',
-                    ),
-                ],
-            },
-            {
-                'title': f'Pillar 4: Culture, Capabilities & Continuous Assurance',
-                'narrative': (
-                    f"This pillar develops {org_name}'s {domain} competency "
-                    "through tiered awareness programmes, phishing simulations, "
-                    "third-party cyber risk management, and continuous "
-                    "assurance through internal audit."
-                ),
-                'initiatives': [
-                    (
-                        f'{domain} Awareness & Phishing Simulation',
-                        f'Develop a tiered {domain} awareness programme with phishing simulations and training effectiveness metrics',
-                        'Awareness campaign plan + Phishing simulation reports + Pass-rate metrics',
-                    ),
-                    (
-                        'Third-Party Cyber Risk Assessment',
-                        f'Apply a {domain} assessment template for critical suppliers under {fw_short} with clear contractual requirements',
-                        'Third-party assessment template + Supplier risk register + Contractual clauses',
-                    ),
-                    (
-                        f'Internal Audit & Continuous Assurance',
-                        f'Run a periodic internal audit cycle for {fw_short} controls with quarterly executive reporting',
-                        'Internal audit reports + Remediation plans + Compliance dashboard',
-                    ),
-                ],
-            },
-        ]
-
-    # Keep existing substantive pillars first (up to 5); fill remaining
-    # slots from the bank, skipping any whose title collides with an
-    # already-kept pillar.
-    preserved_titles_lc = {t.lower().strip() for t, _ in preserved}
-    needed = _RICHNESS_MIN_PILLARS_LOCAL - len(preserved)
-    # Synthesize at least `needed`, optionally +1 for consulting / +2 for
-    # assurance to leave depth margin.
-    _mode_lc = str(generation_mode).lower()
-    if _mode_lc == 'consulting':
-        needed += 1
-    elif _mode_lc == 'assurance':
-        needed += 2
-
-    picked = []
-
-    # Diagnostic-aware prepend: if org_structure_is_none, ensure the very
-    # first synthesized pillar addresses governance structure explicitly,
-    # regardless of bank ordering. Prompt Part 2B: "if there is no defined
-    # organizational structure, one pillar must explicitly address
-    # governance structure / org design / committee / reporting model".
-    if org_structure_is_none:
-        if is_ar:
-            gov_pillar = {
-                'title': (f'الركيزة الأولى: إنشاء هيكل حوكمة {domain} — '
-                          f'الأساس المؤسسي المفقود'),
-                'narrative': (
-                    f"كشف التشخيص أن {org_name} لا يمتلك هيكلاً تنظيمياً "
-                    f"معرّفاً لإدارة {domain}. تعالج هذه الركيزة هذا الغياب "
-                    f"الهيكلي — وهو الأولوية القصوى قبل أي استثمار في "
-                    f"الضوابط التشغيلية — عبر إنشاء لجنة الحوكمة، "
-                    f"وتوصيف المسؤوليات، واعتماد ميثاق رسمي لـ{domain} "
-                    f"وفق متطلبات {fw_short}. بدون هذا الهيكل، لا يمكن "
-                    "تطبيق باقي الركائز بصورة مستدامة."
-                ),
-                'initiatives': [
-                    (
-                        f'تأسيس هيكل حوكمة {domain} الرسمي',
-                        f'تشكيل لجنة حوكمة {domain} برئاسة تنفيذية مع ميثاق '
-                        f'معتمد يحدد الصلاحيات والمسؤوليات ومسارات التصعيد',
-                        f'ميثاق لجنة الحوكمة + هيكل تنظيمي معتمد + '
-                        f'مصفوفة RACI لأدوار {domain}',
-                    ),
-                    (
-                        f'سياسات وإجراءات {domain}',
-                        f'إعداد حزمة السياسات والإجراءات الرئيسية لـ{domain} وفق متطلبات {fw_short} مع آليات مراجعة دورية',
-                        f'حزمة سياسات {domain} المعتمدة + جدول المراجعة السنوي',
-                    ),
-                    (
-                        f'سجل ضوابط {fw_short}',
-                        f'بناء سجل ضوابط {fw_short} مُرقَّم مع تحديد المسؤول عن كل ضابط وحالة التطبيق',
-                        f'سجل ضوابط {fw_short} + مسؤولو الضوابط + لوحة حالة الامتثال',
-                    ),
-                ],
-            }
-        else:
-            gov_pillar = {
-                'title': (f'Pillar 1: Establish {domain} Governance '
-                          f'Structure — the Missing Foundation'),
-                'narrative': (
-                    f"The diagnostic identified that {org_name} has no "
-                    f"defined organizational structure for {domain}. "
-                    f"This pillar closes that structural gap — the "
-                    f"highest-priority move before any investment in "
-                    f"operational controls — by establishing the "
-                    f"governance committee, responsibility definitions, "
-                    f"and a formal {domain} charter aligned to {fw_short} "
-                    "obligations. Without this structure, no other pillar "
-                    "can be executed sustainably."
-                ),
-                'initiatives': [
-                    (
-                        f'Establish formal {domain} governance structure',
-                        f'Form executive-chaired {domain} governance committee '
-                        'with approved charter defining authority, '
-                        'responsibilities, and escalation paths',
-                        f'Committee charter + approved org structure + '
-                        f'RACI matrix for {domain} roles',
-                    ),
-                    (
-                        f'{domain} Policies & Procedures',
-                        f'Develop the core {domain} policy and procedure pack per {fw_short} with periodic review mechanisms',
-                        f'Approved {domain} policy pack + Annual review schedule',
-                    ),
-                    (
-                        f'{fw_short} Control Register',
-                        f'Build a numbered {fw_short} control register assigning an owner and implementation status to each control',
-                        f'{fw_short} control register + Control owners + Compliance status dashboard',
-                    ),
-                ],
-            }
-        # Only inject if preserved pillars don't already contain one
-        _gov_t = gov_pillar['title'].lower()
-        if not any(('governance' in t and 'structure' in t) or
-                   ('حوكمة' in t and ('هيكل' in t or 'بنية' in t))
-                   for t in preserved_titles_lc):
-            picked.insert(0, gov_pillar)  # governance must be Pillar 1
-            summary['governance_pillar_injected'] = True
-
-    # ── Technology-gap priority pillar (prompt Part 2B)
-    # If the user's tech selections are MISSING in ≥ 2 key categories,
-    # inject a pillar focused on that foundational capability build-out.
-    # Key categories: siem (monitoring), edr (endpoint), iam (identity).
-    # This runs AFTER governance-injection so the governance pillar
-    # retains the #1 slot when both apply.
-    _key_tech_missing = sum(
-        1 for cat in ('siem', 'edr', 'iam', 'backup')
-        if cat in (technologies or []) and False  # legacy guard
-    )
-    # Correct derivation — technologies param is the raw list. We need
-    # tech_gaps from ctx. Pull from synthesizer signature:
-    _tech_gaps_from_ctx = []
-    # The signature won't have tech_gaps directly; we derive it locally
-    # by scanning the `technologies` list for presence markers.
-    _tech_blob_syn = ' '.join(str(t).lower() for t in (technologies or []))
-    _has = {
-        'siem': any(k in _tech_blob_syn for k in
-                    ('siem', 'splunk', 'sentinel', 'qradar')),
-        'edr':  any(k in _tech_blob_syn for k in
-                    ('edr', 'xdr', 'crowdstrike', 'sentinelone',
-                     'defender for endpoint')),
-        'iam':  any(k in _tech_blob_syn for k in
-                    ('iam', 'okta', 'active directory', 'azure ad')),
-        'backup': any(k in _tech_blob_syn for k in
-                      ('backup', 'veeam', 'commvault', 'rubrik')),
-    }
-    _missing_key = [k for k, v in _has.items() if not v]
-    # Only inject tech-priority pillar if the user reported no
-    # technologies at all OR ≥ 2 key categories are missing.
-    _tech_priority_needed = (
-        not technologies or len(_missing_key) >= 2
-    )
-    if _tech_priority_needed:
-        _missing_str_ar = '، '.join({
-            'siem': 'منصة SIEM للمراقبة',
-            'edr':  'حماية نقاط النهاية EDR/XDR',
-            'iam':  'إدارة الهوية والوصول',
-            'backup': 'حلول النسخ الاحتياطي والتعافي',
-        }.get(k, k) for k in _missing_key)
-        _missing_str_en = ', '.join({
-            'siem': 'SIEM monitoring',
-            'edr':  'EDR/XDR endpoint protection',
-            'iam':  'identity & access management',
-            'backup': 'backup & recovery',
-        }.get(k, k) for k in _missing_key)
-        if is_ar:
-            tech_pillar = {
-                'title': (f'بناء القدرات التقنية الأساسية المفقودة في '
-                          f'{org_name}'),
-                'narrative': (
-                    f"كشف التشخيص غياب قدرات تقنية أساسية في {org_name} "
-                    f"تشمل: {_missing_str_ar}. تعالج هذه الركيزة هذا "
-                    "النقص عبر تصميم وبناء ونشر هذه القدرات بصورة "
-                    f"متكاملة مع متطلبات {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        f'نشر القدرات التقنية الأساسية المفقودة',
-                        (f'تنفيذ مشاريع اقتناء/نشر/تكامل لـ: {_missing_str_ar} '
-                         f'مع ربطها بأُطر الحوكمة والتشغيل'),
-                        ('قدرات تقنية منتجة مع أدلة الاختبار والتشغيل الدوري'),
-                    ),
-                    (
-                        'خطة تكامل الأدوات والأنظمة',
-                        f'تصميم خطة التكامل بين القدرات المنشورة ومنظومة ضوابط {fw_short}',
-                        'خطة التكامل المعتمدة + اختبارات القبول',
-                    ),
-                    (
-                        'توثيق خط الأساس التقني',
-                        'توثيق إعدادات الأمان الافتراضية وخط الأساس التقني لجميع القدرات',
-                        'وثيقة خط الأساس التقني + سجل الاختلافات',
-                    ),
-                ],
-            }
-        else:
-            tech_pillar = {
-                'title': (f'Build missing foundational technical capabilities '
-                          f'at {org_name}'),
-                'narrative': (
-                    f"Diagnostic identified that {org_name} lacks core "
-                    f"technical capabilities including: {_missing_str_en}. "
-                    "This pillar closes that gap through acquisition, "
-                    "deployment and integration of these capabilities "
-                    f"aligned to {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        'Deploy missing foundational technical capabilities',
-                        (f'Execute acquisition/deployment/integration for: '
-                         f'{_missing_str_en} with governance + operations '
-                         'integration'),
-                        ('Production capabilities with test evidence and '
-                         'periodic operations runbook'),
-                    ),
-                    (
-                        'Tool & System Integration Plan',
-                        f'Design an integration plan linking deployed capabilities to the {fw_short} control framework',
-                        'Approved integration plan + Acceptance test results',
-                    ),
-                    (
-                        'Technical Baseline Documentation',
-                        'Document default security configurations and technical baseline for all new capabilities',
-                        'Technical baseline document + Deviation register',
-                    ),
-                ],
-            }
-        picked.append(tech_pillar)
-        summary['technology_priority_pillar_injected'] = True
-        summary['missing_tech_categories'] = _missing_key
-
-    # ── Maturity-conditioned bank ordering (prompt Part 2B)
-    # If maturity is initial/ad-hoc, the bank picks must PRIORITIZE
-    # baseline / foundational pillars before optimization pillars. We
-    # reorder pillar_bank so baseline-focused entries come first, then
-    # detection, then optimization.
-    _baseline_kw = (
-        'baseline', 'foundational', 'operational controls',
-        'governance', 'الضوابط التشغيلية', 'الأساس', 'الحوكمة',
-    )
-    _optim_kw = (
-        'optimization', 'optimize', 'advanced', 'continuous improvement',
-        'التحسين', 'التحسين المستمر', 'المتقدم',
-    )
-    _maturity_lc = str(maturity).lower().strip()
-    if _maturity_lc in ('initial', 'ad-hoc', 'ad hoc'):
-        def _pbank_priority(pb):
-            tl = pb['title'].lower()
-            # Lower sort-key wins — baseline first, optim last.
-            if any(k in tl for k in _baseline_kw):
-                return 0
-            if any(k in tl for k in _optim_kw):
-                return 2
-            return 1
-        pillar_bank = sorted(pillar_bank, key=_pbank_priority)
-        summary['maturity_reordered'] = True
-
-    for pbank in pillar_bank:
-        if any(t.lower() in pbank['title'].lower() or
-               pbank['title'].lower() in t.lower()
-               for t in preserved_titles_lc):
-            continue
-        # Skip if the governance pillar already covers governance
-        if (summary['governance_pillar_injected']
-                and ('Governance' in pbank['title']
-                     or 'الحوكمة' in pbank['title'])):
-            continue
-        picked.append(pbank)
-        if len(picked) >= needed:
-            break
-
-    # Build the canonical section
-    # ── ORDINAL NORMALIZATION (pillar validator alignment) ───────
-    # The validator regex at `_count_substantive_pillars` requires
-    # pillar headings to match the pattern
-    #   ### (Pillar \d*|Strategic Pillar \d*|الركيزة[...]\s*\d*)
-    # Historically, the governance-priority pillar emitted a title
-    # like "الركيزة الأولى: ..." (word ordinal), and the technology-
-    # gap pillar emitted "بناء القدرات التقنية..." (no ordinal
-    # prefix at all). The latter was NOT matched by the validator
-    # — that's the documented production failure
-    # `pillars_below_richness_minimum_2/3`. Additionally, the bank
-    # entries also carry "الأولى"/"Pillar 1:" in their titles, so
-    # after governance-injection we had duplicate "الأولى"/"Pillar 1"
-    # labels.
-    #
-    # Fix: build the final `picked` list (preserved + gov + tech +
-    # bank), then REWRITE each pillar's title to use a clean
-    # sequential ordinal prefix in the target language. The original
-    # descriptive part of the title is preserved — only the ordinal
-    # prefix is normalized.
-    def _normalize_pillar_titles(plist, is_ar_lang):
-        """Rewrite each pillar's title to `### الركيزة N: <desc>` /
-        `### Pillar N: <desc>`. Strips any existing ordinal prefix
-        (including word ordinals) so the final order is sequential
-        and the validator regex matches every entry."""
-        # Patterns that may lead an existing title and should be
-        # stripped before re-prefixing.
-        _strip_ar = _ts_re.compile(
-            r'^\s*(?:الركيزة(?:\s+الاستراتيجية)?'
-            r'(?:\s+(?:الأولى|الثانية|الثالثة|الرابعة|الخامسة|'
-            r'السادسة|السابعة))?\s*\d*)\s*[:：\-—]?\s*',
+    # Insufficient or contract-failing — AI-first repair. Strict-resolve
+    # domain context (no ``domain or 'Cyber Security'`` fallback). Annotate
+    # any failure with ``section='pillars'`` so the production caller's
+    # ``except RepairError`` branch can route through ``_mark_synth_failed``
+    # (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-        _strip_en = _ts_re.compile(
-            r'^\s*(?:Strategic\s+)?Pillar\s*\d*\s*[:\-—]?\s*',
-            _ts_re.IGNORECASE,
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_pillars_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
-        _num_ar = {1: 'الأولى', 2: 'الثانية', 3: 'الثالثة',
-                   4: 'الرابعة', 5: 'الخامسة', 6: 'السادسة',
-                   7: 'السابعة'}
-        for i, p in enumerate(plist, start=1):
-            raw = p.get('title', '') or ''
-            desc = _strip_ar.sub('', raw) if is_ar_lang else \
-                   _strip_en.sub('', raw)
-            desc = desc.strip(' :：-—')
-            if not desc:
-                desc = raw.strip()
-            if is_ar_lang:
-                word = _num_ar.get(i, str(i))
-                p['title'] = f'الركيزة {word}: {desc}'
-            else:
-                p['title'] = f'Pillar {i}: {desc}'
-        return plist
+        setattr(_err, 'section', 'pillars')
+        raise _err
 
-    # ── DEDUPLICATE by descriptive title (after ordinal strip) ───
-    # Prevents the case where gov-priority pillar's descriptive part
-    # overlaps with bank pillar 1's (both contain "governance"). The
-    # threshold is deliberately STRICT — we only drop when the
-    # descriptive parts are essentially the same topic, not just
-    # sharing one-or-two common words. Over-aggressive dedup would
-    # drop legitimately different pillars like the tech-capability
-    # pillar next to the governance one.
-    def _dedup_by_desc(plist, is_ar_lang):
-        _strip_ar = _ts_re.compile(
-            r'^\s*(?:الركيزة(?:\s+الاستراتيجية)?'
-            r'(?:\s+(?:الأولى|الثانية|الثالثة|الرابعة|الخامسة|'
-            r'السادسة|السابعة))?\s*\d*)\s*[:：\-—]?\s*',
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='pillars',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=(
+                f'pillars_insufficient:{n_before_strict}/'
+                f'{_RICHNESS_MIN_PILLARS_LOCAL}'
+                + ('' if _gov_contract_ok else ',governance_pillar_missing')
+            ),
         )
-        _strip_en = _ts_re.compile(
-            r'^\s*(?:Strategic\s+)?Pillar\s*\d*\s*[:\-—]?\s*',
-            _ts_re.IGNORECASE,
+    except RepairError as _re:
+        setattr(_re, 'section', 'pillars')
+        raise
+
+    # Validate the repaired markdown BEFORE assignment. Reject if the
+    # AI returned fewer than _RICHNESS_MIN_PILLARS_LOCAL substantive
+    # pillars or any counted pillar lacks a substantive initiative
+    # table row. Heading / domain isolation is already enforced inside
+    # ``ai_repair_strategy_section``.
+    n_after = _count_substantive_pillars(repaired)
+    repaired_pillars = _extract_existing_pillars(repaired)
+    _with_init = sum(
+        1 for (_t, _b) in repaired_pillars
+        if _pillar_has_substantive_initiative(_b)
+    )
+    if (n_after < _RICHNESS_MIN_PILLARS_LOCAL
+            or _with_init < _RICHNESS_MIN_PILLARS_LOCAL):
+        _err = RepairError(
+            f'synthesize_pillars_depth: AI-repaired pillars has '
+            f'{n_after}/{_RICHNESS_MIN_PILLARS_LOCAL} substantive '
+            f'pillars and {_with_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
+            f'with substantive initiative tables'
         )
-        # Low-signal stopwords that should not contribute to similarity.
-        _stop = {
-            'the', 'and', 'for', 'of', 'at', 'to', 'a', 'an', 'in', 'on',
-            'with', 'by', 'establish', 'build', 'missing', 'foundational',
-            'cyber', 'security',
-            'في', 'من', 'على', 'إلى', 'عبر', 'مع', 'بناء', 'إنشاء',
-            'المفقودة', 'الأساسية',
-        }
-        seen = []   # list of (descriptive_lc, significant_word_set)
-        out = []
-        for p in plist:
-            raw = p.get('title', '') or ''
-            desc = (_strip_ar.sub('', raw) if is_ar_lang
-                     else _strip_en.sub('', raw))
-            desc_lc = desc.strip(' :：-—').lower()
-            my_sig = {w for w in desc_lc.split()
-                      if w and len(w) > 2 and w not in _stop}
-            is_dup = False
-            for (kept_desc, kept_sig) in seen:
-                # Rule 1: exact 25-char prefix match → dup
-                if (desc_lc[:25] and kept_desc[:25]
-                        and desc_lc[:25] == kept_desc[:25]):
-                    is_dup = True
-                    break
-                # Rule 2: significant-word overlap ≥ 60% of smaller
-                # set AND ≥ 3 shared words (too-small sets give
-                # unreliable ratios).
-                if my_sig and kept_sig:
-                    inter = my_sig & kept_sig
-                    smaller = min(len(my_sig), len(kept_sig))
-                    if (smaller >= 3 and len(inter) >= 3
-                            and len(inter) / smaller >= 0.60):
-                        is_dup = True
-                        break
-            if is_dup:
-                continue
-            seen.append((desc_lc, my_sig))
-            out.append(p)
-        return out
+        setattr(_err, 'section', 'pillars')
+        raise _err
 
-    # Apply dedup + ordinal rewrite in order.
-    # KEY FIX (root-cause): preserved pillar titles may be non-canonical
-    # (e.g., AI-generated headings like "### Governance Strategy" that lack
-    # the "Pillar N:" / "الركيزة N:" prefix). _PILLAR_HEADING_RE_GLOBAL —
-    # used by _final_strategy_audit and the pre-save integrity gate — ONLY
-    # matches canonical prefixes; when at least one canonical heading is
-    # already present the fallback to ###\s+ does NOT fire, so non-canonical
-    # preserved headings are invisible to the audit. This causes the gate to
-    # see fewer than 3 valid pillars even though the synth built 3.
-    # Fix: wrap preserved (title, body) pairs into dicts so they can be
-    # processed by _normalize_pillar_titles together with picked, giving ALL
-    # pillars a canonical "Pillar N:" / "الركيزة N:" heading before output.
-    _preserved_dicts = [{'title': t, '_body': b} for t, b in preserved]
-    picked = _dedup_by_desc(picked, is_ar)
-    # Normalize ALL pillars (preserved + picked) sequentially so every heading
-    # in the output section matches _PILLAR_HEADING_RE_GLOBAL.
-    # When a governance pillar was explicitly injected it must be Pillar 1
-    # (الركيزة الأولى), so we place it at the very front of the combined list
-    # ahead of any AI-preserved pillars that were already present.
-    if summary['governance_pillar_injected'] and picked:
-        _gov_picked = [picked[0]]
-        _rest_picked = picked[1:]
-        _all_pillars = _normalize_pillar_titles(
-            _gov_picked + _preserved_dicts + _rest_picked, is_ar)
-    else:
-        _all_pillars = _normalize_pillar_titles(_preserved_dicts + picked, is_ar)
-
-    if is_ar:
-        out = ['## 2. الركائز الاستراتيجية', '']
-        for p in _all_pillars:
-            out.append('### ' + p['title'])
-            out.append('')
-            if '_body' in p:
-                # Preserved pillar: emit the original AI body verbatim
-                # (already contains a substantive initiative table).
-                out.append(p['_body'].strip())
-            else:
-                out.append(p['narrative'])
-                out.append('')
-                out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
-                out.append('|---|---------|-------|----------------|')
-                # Emit all initiatives (3 per bank pillar for technical depth)
-                _inits = p.get('initiatives') or [p['initiative']]
-                for _i, _init in enumerate(_inits, 1):
-                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
-                summary['synthesized_titles'].append(p['title'])
-            out.append('')
-    else:
-        out = ['## 2. Strategic Pillars', '']
-        for p in _all_pillars:
-            out.append('### ' + p['title'])
-            out.append('')
-            if '_body' in p:
-                out.append(p['_body'].strip())
-            else:
-                out.append(p['narrative'])
-                out.append('')
-                out.append('| # | Initiative | Description | Expected Deliverable |')
-                out.append('|---|-----------|-------------|---------------------|')
-                # Emit all initiatives (3 per bank pillar for technical depth)
-                _inits = p.get('initiatives') or [p['initiative']]
-                for _i, _init in enumerate(_inits, 1):
-                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
-                summary['synthesized_titles'].append(p['title'])
-            out.append('')
-
-    sections['pillars'] = '\n'.join(out).rstrip() + '\n'
+    sections['pillars'] = repaired
     summary['rebuilt'] = True
-    summary['pillars_after'] = _count_substantive_pillars(sections['pillars'])
+    summary['pillars_after'] = n_after
     return summary
 
 
@@ -18613,6 +17995,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             technologies=ctx.get('technologies', []))
         if _pillars_result and _pillars_result.get('rebuilt'):
             summary['pillars'] = _pillars_result
+    except RepairError as _pre:
+        # PR-5B.6B: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'pillars', _pre)
+        print(f'[STRATEGY-DIAG] final_synth_pillars_failed: {_pre}',
+              flush=True)
     except Exception as _pe:
         print(f'[STRATEGY-DIAG] final_synth_pillars_failed: {_pe}',
               flush=True)
@@ -19071,6 +18458,12 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                             if i + 1 < len(_p_matches_a)
                             else len(_pillars_text_after)]))
                 cycle['repairs'].append(f'pillars:{_p_before}->{_p_after}')
+            except RepairError as _pre:
+                # PR-5B.6B: AI repair unavailable / invalid output —
+                # fail closed and surface to the post-normalization
+                # gate via the request-scoped ``log`` container.
+                _mark_synth_failed(log, 'pillars', _pre)
+                cycle['repairs'].append(f'pillars_failed:{_pre}')
             except Exception as _e:
                 cycle['repairs'].append(f'pillars_failed:{_e}')
         if 'environment' in failing_keys:
@@ -22634,6 +22027,45 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "headings or other sections."
         ),
     },
+    "pillars": {
+        "ar": (
+            "أرجع فقط القسم المسمى \"## 2. الركائز الاستراتيجية\".\n"
+            "لكل ركيزة استخدم تنسيق العنوان التالي: "
+            "\"### الركيزة N: عنوان الركيزة\".\n"
+            "يجب أن تتضمن كل ركيزة جدول Markdown أنبوبي بأربعة أعمدة بالضبط:\n"
+            "| # | المبادرة | الوصف | المخرج المتوقع |\n"
+            "ويجب أن يحتوي كل جدول على صف فاصل:\n"
+            "|---|---------|-------|----------------|\n"
+            "أنشئ على الأقل {min_rows} ركائز.\n"
+            "يجب أن تتضمن كل ركيزة صف مبادرة جوهري واحد على الأقل.\n"
+            "يجب أن يتضمن كل صف مبادرة:\n"
+            "- قيمة رقمية في عمود #\n"
+            "- اسم مبادرة محدد\n"
+            "- وصفًا جوهريًا\n"
+            "- مخرجًا متوقعًا قابلًا للقياس\n"
+            "لا تُدرج عناوين أقسام أخرى. "
+            "لا تُدرج خلايا نائبة أو خلايا فارغة أو حشوًا عامًا."
+        ),
+        "en": (
+            "Return ONLY the section named \"## 2. Strategic Pillars\".\n"
+            "For each pillar, use this heading format: "
+            "\"### Pillar N: pillar title\".\n"
+            "Each pillar must include a Markdown pipe table with EXACTLY "
+            "4 columns:\n"
+            "| # | Initiative | Description | Expected Deliverable |\n"
+            "Each table must have a separator row:\n"
+            "|---|------------|-------------|----------------------|\n"
+            "Generate at least {min_rows} pillars.\n"
+            "Each pillar must have at least one substantive initiative row.\n"
+            "Each initiative row must include:\n"
+            "- numeric # value\n"
+            "- specific initiative name\n"
+            "- substantive description\n"
+            "- measurable expected deliverable\n"
+            "Do not include other section headings. "
+            "Do not include placeholder cells, empty cells, or generic filler."
+        ),
+    },
 }
 
 # Canonical section heading per (key, lang). Used to validate that the
@@ -22718,6 +22150,7 @@ def ai_repair_strategy_section(
             "kpis":       rules.get("min_kpi_rows", 6),
             "vision":     rules.get("min_objective_rows", 5),
             "confidence": rules.get("min_risk_rows", 5),
+            "pillars":    rules.get("min_pillars", _RICHNESS_MIN_PILLARS_LOCAL),
         }.get(section_key, 5)
     schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
 
@@ -31068,6 +30501,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     technologies=_final_ctx.get(
                                         'technologies', []),
                                 )
+                            except RepairError as _ptre:
+                                # PR-5B.6B: AI repair unavailable —
+                                # fail closed via request-scoped
+                                # _synth_status; the post-normalization
+                                # gate refuses to save the strategy.
+                                _mark_synth_failed(
+                                    _synth_status, 'pillars', _ptre)
+                                print(f'[STRATEGY-DIAG] pillars_topup_failed: '
+                                      f'{_ptre}', flush=True)
                             except Exception as _pte:
                                 print(f'[STRATEGY-DIAG] pillars_topup_failed: '
                                       f'{_pte}', flush=True)
