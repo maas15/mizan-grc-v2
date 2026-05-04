@@ -23328,107 +23328,67 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                 parts.append(heading + body)
             sections['pillars'] = ''.join(parts)
 
-    # ── B. Strategic Objectives depth ───────────────────────────────────────
+    # ── B. Strategic Objectives depth ── (PR-5B.5F2: AI-first) ─────────────
+    # Deterministic SO bank top-up has been replaced with a delegation to
+    # ``synthesize_objectives_depth``.  On AI-repair failure the caller's
+    # post-normalization save gate (PR-5B.5F1) blocks the strategy.  The
+    # ``_build_domain_so_bank_ar/en`` helpers are no longer called from this
+    # function (they remain referenced by ``repair_vision_objectives_if_insufficient``,
+    # which is intentionally out of scope for PR-5B.5F2).
     _MIN_SO_DEPTH = 5   # consulting-grade minimum for cybersecurity
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _MIN_SO_DEPTH:
-        _so_to_add = _MIN_SO_DEPTH - n_so
-        _so_text = sections.get('vision', '') or ''
-        # Parse existing row numbers to continue numbering
-        _so_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _existing_so_nums = set()
-        for _cells in _ts_table_rows(_so_text, _so_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_so_nums.add(int(_cells[0]))
-        _next_so = max(_existing_so_nums) + 1 if _existing_so_nums else 1
-
-        # Canonical objectives bank — domain-aware
-        if is_ar:
-            _so_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
-        else:
-            _so_bank = _build_domain_so_bank_en(domain, fw_short, sector)
-
-        # Pick rows not already represented (keyword dedup)
-        _so_text_lc = _so_text.lower()
-        _added_rows = []
-        for _obj, _target, _just, _tf in _so_bank:
-            if len(_added_rows) >= _so_to_add:
-                break
-            # Skip if a similar objective is already in the text
-            _kws = _obj.lower().split()[:3]
-            if any(len(k) > 3 and k in _so_text_lc for k in _kws):
-                continue
-            _added_rows.append(
-                f'| {_next_so} | {_obj} | {_target} | {_just} | {_tf} |'
+        try:
+            synthesize_objectives_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                org_structure_is_none=False,
+                challenge_flags={},
+                diagnostic_gaps=diagnostic_gaps,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
-            _next_so += 1
+        except RepairError as _so_re:
+            # PR-5B.5F2: annotate with the section name so the caller can
+            # mark _synth_status without modifying the RepairError class
+            # contract globally.  Local attribute only.
+            setattr(_so_re, 'section', 'vision')
+            raise
+        n_so_after = count_valid_objective_rows(
+            sections.get('vision', '') or '')
+        summary['so_rows_added'] = max(0, n_so_after - n_so)
 
-        if _added_rows:
-            sections['vision'] = _append_rows_under_header(
-                _so_text, _so_hdr, _added_rows)
-            summary['so_rows_added'] = len(_added_rows)
-
-    # ── C. KPI depth (consulting/assurance: 6+ rows with richer columns) ───
+    # ── C. KPI depth ── (PR-5B.5F2: AI-first via synthesize_kpi_depth) ────
+    # Deterministic KPI bank top-up and the legacy 5-column skeleton emit
+    # have been replaced with a delegation to ``synthesize_kpi_depth``.
+    # On AI-repair failure the caller's post-normalization save gate
+    # (PR-5B.5F1) blocks the strategy.  ``_build_domain_kpi_bank_ar/en``
+    # are no longer called from this function (they remain referenced by
+    # ``repair_kpi_section_if_missing_frequency``, intentionally out of
+    # PR-5B.5F2 scope).
     _MIN_KPI_DEPTH = 6 if _mode_lc in ('consulting', 'assurance') else 4
-    _kpi_text = sections.get('kpis', '') or ''
-    _n_kpi = count_substantive_kpis(_kpi_text)
+    _n_kpi = count_substantive_kpis(sections.get('kpis', '') or '')
     if _n_kpi < _MIN_KPI_DEPTH:
-        _kpi_to_add = _MIN_KPI_DEPTH - _n_kpi
-        _kpi_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _existing_kpi_nums = set()
-        for _cells in _ts_table_rows(_kpi_text, _kpi_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_kpi_nums.add(int(_cells[0]))
-        _next_kpi = max(_existing_kpi_nums) + 1 if _existing_kpi_nums else 1
-        _kpi_text_lc = _kpi_text.lower()
-
-        # KPI bank — domain-aware
-        if is_ar:
-            _kpi_bank = _build_domain_kpi_bank_ar(domain, fw_short)
-        else:
-            _kpi_bank = _build_domain_kpi_bank_en(domain, fw_short)
-
-        _kpi_rows_new = []
-        for _row in _kpi_bank:
-            if len(_kpi_rows_new) >= _kpi_to_add:
-                break
-            # Skip if already covered — use first 3 significant words
-            _kw = [k for k in _row[0].lower().split()[:4] if len(k) > 3]
-            if _kw and any(k in _kpi_text_lc for k in _kw):
-                continue
-            # Emit a 5-column row (# | description | target | formula | timeframe)
-            new_row_str = f'| {_next_kpi} | {_row[0]} | {_row[1]} | {_row[2]} | {_row[6]} |'
-            _kpi_rows_new.append(new_row_str)
-            # Update dedup text immediately so repeated calls don't add same row twice
-            _kpi_text_lc += ' ' + new_row_str.lower()
-            _next_kpi += 1
-
-        if _kpi_rows_new:
-            # Ensure table header exists before appending rows
-            if not _kpi_hdr.search(_kpi_text):
-                if is_ar:
-                    _kpi_skel = (
-                        '\n\n### مؤشرات الأداء الرئيسية:\n\n'
-                        '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | الإطار الزمني |\n'
-                        '|---|-------------|-----------------|----------------|----------------|\n'
-                    )
-                else:
-                    _kpi_skel = (
-                        '\n\n### Key Performance Indicators:\n\n'
-                        '| # | KPI Description | Target | Formula | Timeframe |\n'
-                        '|---|----------------|--------|---------|----------|\n'
-                    )
-                _kpi_text = _kpi_text.rstrip() + _kpi_skel
-                sections['kpis'] = _kpi_text
-            sections['kpis'] = _append_rows_under_header(
-                sections['kpis'], _kpi_hdr, _kpi_rows_new)
-            summary['kpi_rows_added'] = len(_kpi_rows_new)
+        try:
+            synthesize_kpi_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                generation_mode=generation_mode,
+                org_structure_is_none=False,
+                challenge_flags={},
+                diagnostic_gaps=diagnostic_gaps,
+                sector=sector, org_name=org_name,
+            )
+        except RepairError as _kpi_re:
+            # PR-5B.5F2: annotate with the section name so the caller can
+            # mark _synth_status without modifying the RepairError class
+            # contract globally.  Local attribute only.
+            setattr(_kpi_re, 'section', 'kpis')
+            raise
+        _n_kpi_after = count_substantive_kpis(
+            sections.get('kpis', '') or '')
+        summary['kpi_rows_added'] = max(0, _n_kpi_after - _n_kpi)
 
     # ── D. Risk register depth ──────────────────────────────────────────────
     _MIN_RISK_DEPTH = 5
@@ -32159,6 +32119,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'{_depth_result["capability_gaps"]}',
                                 flush=True,
                             )
+                    except RepairError as _dre:
+                        # PR-5B.5F2: AI repair failure inside
+                        # enforce_technical_strategy_depth (SO or KPI
+                        # branch). The branch annotated `section` on the
+                        # error before re-raising; mirror PR-5B.5F1's
+                        # _mark_synth_failed pattern so the post-
+                        # normalization save gate blocks the strategy.
+                        _section = getattr(_dre, 'section', 'strategy')
+                        _mark_synth_failed(_synth_status, _section, _dre)
+                        print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
+                              f'{_dre}', flush=True)
                     except Exception as _dep_e:
                         print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
                               f'{_dep_e}', flush=True)
@@ -32203,6 +32174,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             if sections.get(sk) and sections[sk].strip()]
                         if _fixed_parts_cyber:
                             content = '\n\n'.join(_fixed_parts_cyber)
+                    except RepairError as _cdre:
+                        # PR-5B.5F2: RepairError raised by
+                        # enforce_technical_strategy_depth propagates up
+                        # through enforce_cybersecurity_technical_depth
+                        # (which doesn't catch it). The error carries a
+                        # local `section` attribute set by the SO/KPI
+                        # branch; record synth_failed using it.
+                        _section = getattr(_cdre, 'section', 'strategy')
+                        _mark_synth_failed(_synth_status, _section, _cdre)
+                        print(f'[STRATEGY-DIAG] cyber_depth_enrichment_failed: '
+                              f'{_cdre}', flush=True)
                     except Exception as _cde:
                         print(f'[STRATEGY-DIAG] cyber_depth_enrichment_failed: '
                               f'{_cde}', flush=True)

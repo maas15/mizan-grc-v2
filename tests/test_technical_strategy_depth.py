@@ -65,6 +65,79 @@ def _skip_if_no_app(fn):
 
 
 # ---------------------------------------------------------------------------
+# PR-5B.5F2: ``enforce_technical_strategy_depth`` is now AI-first for SO and
+# KPI top-up.  These tests exercise the schema/shape/count contract, not the
+# now-removed deterministic banks, so we install module-scoped mocks that
+# seed canonical SO/KPI content and let the surrounding deterministic
+# branches (pillars, risks, capability check) run unchanged.
+# ---------------------------------------------------------------------------
+
+_PR5F2_PATCHES = []
+_PR5F2_ORIGINALS = {}
+_PR5F2_MOCKED_VISION = (
+    "### الأهداف الاستراتيجية:\n\n"
+    "| # | الهدف الاستراتيجي | المؤشر المستهدف | المبرر | الإطار الزمني |\n"
+    "|---|--------------------|-----------------|--------|----------------|\n"
+    "| 1 | تعزيز الحوكمة | 100% | NCA ECC | 12 شهراً |\n"
+    "| 2 | إدارة الهوية والصلاحيات | 100% | NCA ECC IAM | 12 شهراً |\n"
+    "| 3 | المراقبة الأمنية | 24/7 | NCA ECC SIEM | 12 شهراً |\n"
+    "| 4 | الاستجابة للحوادث | < 4 ساعات | NCA ECC IR | 12 شهراً |\n"
+    "| 5 | حماية البيانات | 100% | NCA ECC DP | 12 شهراً |\n"
+    "| 6 | إدارة الثغرات | 30 يوم | NCA ECC VM | 12 شهراً |\n"
+)
+_PR5F2_MOCKED_KPIS = (
+    "### مؤشرات الأداء الرئيسية:\n\n"
+    "| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |"
+    " مصدر البيانات | المالك | التكرار | الإطار الزمني |\n"
+    "|---|--------|---------------|-------------------|----------------|"
+    "----------------|--------|---------|----------------|\n"
+    "| 1 | تغطية ضوابط NCA | KPI | 100% | (مطبق/إجمالي)x100 |"
+    " GRC | CISO | شهري | 12 شهراً |\n"
+    "| 2 | تأهيل الكوادر | KPI | 100% | المُدرَّبون/الإجمالي |"
+    " HR | CISO | ربعي | 12 شهراً |\n"
+    "| 3 | جاهزية الاستجابة | KPI | < 4س | متوسط زمن الاستجابة |"
+    " SOC | CISO | شهري | 12 شهراً |\n"
+    "| 4 | جاهزية النسخ الاحتياطي | KPI | 100% | اختبارات/إجمالي |"
+    " DR | CIO | ربعي | 12 شهراً |\n"
+    "| 5 | متوسط زمن التصحيح | KPI | 30 يوم | متوسط أيام التصحيح |"
+    " VM | CISO | شهري | 12 شهراً |\n"
+    "| 6 | تقييم الأطراف الثالثة | KPI | 100% | المُقيّمون/الإجمالي |"
+    " TPRM | CISO | ربعي | 12 شهراً |\n"
+)
+
+
+def _mock_synth_objectives(sections, lang, **_kwargs):
+    sections['vision'] = _PR5F2_MOCKED_VISION
+
+
+def _mock_synth_kpis(sections, lang, **_kwargs):
+    sections['kpis'] = _PR5F2_MOCKED_KPIS
+    return 6
+
+
+def setUpModule():
+    """Monkey-patch the AI synth helpers used by
+    ``enforce_technical_strategy_depth`` (PR-5B.5F2)."""
+    if _APP is None:
+        return
+    for _name, _fn in (('synthesize_objectives_depth', _mock_synth_objectives),
+                       ('synthesize_kpi_depth', _mock_synth_kpis)):
+        if hasattr(_APP, _name):
+            _orig = getattr(_APP, _name)
+            _PR5F2_PATCHES.append((_name, _orig))
+            _PR5F2_ORIGINALS[_name] = _orig
+            setattr(_APP, _name, _fn)
+
+
+def tearDownModule():
+    if _APP is None:
+        return
+    while _PR5F2_PATCHES:
+        _name, _orig = _PR5F2_PATCHES.pop()
+        setattr(_APP, _name, _orig)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -485,11 +558,22 @@ class TestNoTraceComments(unittest.TestCase):
         # unavailable — the section is left untouched and the caller
         # surfaces the failure.
         sections = {'kpis': ''}
-        with self.assertRaises(_APP.RepairError):
-            _APP.synthesize_kpi_depth(
-                sections, lang='ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-            )
+        # PR-5B.5F2: restore the real synthesize_kpi_depth (this module
+        # mocks it for the enforce_technical_strategy_depth tests; this
+        # specific test exercises the no-AI-provider behaviour directly).
+        _orig_kpi = _PR5F2_ORIGINALS.get('synthesize_kpi_depth')
+        if _orig_kpi is None:
+            self.skipTest('original synthesize_kpi_depth not captured')
+        _mock_kpi = getattr(_APP, 'synthesize_kpi_depth')
+        setattr(_APP, 'synthesize_kpi_depth', _orig_kpi)
+        try:
+            with self.assertRaises(_APP.RepairError):
+                _APP.synthesize_kpi_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                )
+        finally:
+            setattr(_APP, 'synthesize_kpi_depth', _mock_kpi)
         self.assertFalse(
             _has_trace_comments(sections.get('kpis', '')),
             'Untouched KPI section must not contain trace comments',
