@@ -297,15 +297,23 @@ class TestNonCyberRepairLeavesSectionAlone(unittest.TestCase):
             )
         }
         original = sections['kpis']
-        _APP.repair_kpi_section_if_missing_frequency(
-            sections, lang='en',
-            domain='Data Management',
-            org_name='TestOrg', sector='Government',
-            frameworks=[],
-        )
-        # AI provider not configured in test env → ai_repair raises RepairError,
-        # the function returns 0 and the section is unchanged. Critically: no
-        # NCA ECC / MFA / SIEM rows are injected.
+        # PR-5B.5F3: repair now delegates to synthesize_kpi_depth (AI-first).
+        # AI provider not configured in test env → RepairError raised with
+        # section='kpis'.  Critically: NO cyber rows are injected and the
+        # section is left unchanged when AI is unavailable.
+        try:
+            _APP.repair_kpi_section_if_missing_frequency(
+                sections, lang='en',
+                domain='Data Management',
+                org_name='TestOrg', sector='Government',
+                frameworks=[],
+            )
+            raised = None
+        except _APP.RepairError as _e:
+            raised = _e
+        self.assertIsNotNone(raised,
+            'PR-5B.5F3: AI failure must propagate as RepairError, not be swallowed')
+        self.assertEqual(getattr(raised, 'section', None), 'kpis')
         self.assertNotIn('NCA ECC', sections['kpis'])
         self.assertNotIn('MFA', sections['kpis'])
         self.assertNotIn('SIEM', sections['kpis'])
@@ -335,8 +343,10 @@ class TestNonCyberRepairLeavesSectionAlone(unittest.TestCase):
 
     @_skip_if_no_app
     def test_cyber_domain_still_uses_deterministic_bank(self):
-        """For domain == cyber the deterministic bank still fires (baseline
-        behavior preserved for test backwards compatibility)."""
+        """PR-5B.5F3: For cyber domain the function delegates to
+        synthesize_kpi_depth (no longer a deterministic bank).  Stub the
+        synth helper so the test runs without an AI provider and verify the
+        repaired section contains the canonical Frequency column."""
         sections = {
             'kpis': (
                 "## 6. Key Performance Indicators\n"
@@ -344,12 +354,35 @@ class TestNonCyberRepairLeavesSectionAlone(unittest.TestCase):
                 "| 1 | something | someone |\n"
             )
         }
-        n = _APP.repair_kpi_section_if_missing_frequency(
-            sections, lang='en',
-            domain='Cyber Security',
-            org_name='TestOrg', sector='Government',
-            frameworks=['NCA ECC'],
-        )
+
+        def _stub(sections, lang, **_kw):
+            sections['kpis'] = (
+                '## 6. Key Performance Indicators\n\n'
+                '| # | Metric | Type KPI/KRI | Target Value | '
+                'Calculation Formula | Data Source | Owner | Frequency '
+                '| Timeframe |\n'
+                '|---|--------|--------------|--------------|'
+                '---------------------|-------------|-------|-----------|'
+                '-----------|\n'
+                + '\n'.join(
+                    f'| {i} | Metric {i} | KPI | >= 90% | (X / Y) * 100 '
+                    f'| Source | Owner | Monthly | Within 12 months |'
+                    for i in range(1, 9)
+                ) + '\n'
+            )
+            return 8
+
+        _orig = _APP.synthesize_kpi_depth
+        _APP.synthesize_kpi_depth = _stub
+        try:
+            n = _APP.repair_kpi_section_if_missing_frequency(
+                sections, lang='en',
+                domain='Cyber Security',
+                org_name='TestOrg', sector='Government',
+                frameworks=['NCA ECC'],
+            )
+        finally:
+            _APP.synthesize_kpi_depth = _orig
         # Should have replaced the section with the canonical 9-col table.
         self.assertGreater(n, 0)
         self.assertIn('Frequency', sections['kpis'])

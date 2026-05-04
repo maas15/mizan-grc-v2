@@ -73,6 +73,104 @@ def _skip_if_no_app(fn):
 
 
 # ---------------------------------------------------------------------------
+# PR-5B.5F3: repair_kpi_section_if_missing_frequency now delegates to
+# synthesize_kpi_depth (AI-first).  Tests in this module exercise the
+# *post-repair schema/shape/count* contract; we stub the AI synth helpers
+# so the tests run in environments without an AI provider.
+# ---------------------------------------------------------------------------
+
+def _stub_kpi_section_ar(rows=10):
+    header = (
+        '## 6. مؤشرات الأداء الرئيسية\n\n'
+        '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب '
+        '| مصدر البيانات | المالك | التكرار | الإطار الزمني |\n'
+        '|---|--------|---------------|-----------------|---------------|'
+        '----------------|--------|----------|----------------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | المؤشر رقم {i} | KPI | ≥ 90% '
+        f'| (المطبّق ÷ الإجمالي) × 100 | سجل الضوابط | فريق الحوكمة '
+        f'| شهري | خلال 12 شهراً |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_kpi_section_en(rows=10):
+    header = (
+        '## 6. Key Performance Indicators\n\n'
+        '| # | Metric | Type KPI/KRI | Target Value | Calculation Formula '
+        '| Data Source | Owner | Frequency | Timeframe |\n'
+        '|---|--------|--------------|--------------|---------------------|'
+        '-------------|-------|-----------|-----------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | Metric {i} | KPI | >= 90% '
+        f'| (Implemented / Total) * 100 | Control register | Governance Team '
+        f'| Monthly | Within 12 months |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_synthesize_kpi_depth(sections, lang, **_kwargs):
+    if lang == 'ar':
+        sections['kpis'] = _stub_kpi_section_ar(rows=10)
+    else:
+        sections['kpis'] = _stub_kpi_section_en(rows=10)
+    return 10
+
+
+def _stub_vision_section_ar(rows=8):
+    header = (
+        '## 1. الرؤية والأهداف الاستراتيجية\n\n'
+        '**الرؤية:** رؤية المنظمة نحو تحقيق الأمن السيبراني الشامل.\n\n'
+        '### الأهداف الاستراتيجية\n\n'
+        '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
+        '|---|-------|-----------------|--------|---------------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | الهدف الاستراتيجي رقم {i} | ≥ 95% '
+        f'| متطلب NCA ECC | خلال 12 شهراً |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_synthesize_objectives_depth(sections, lang, **_kwargs):
+    sections['vision'] = _stub_vision_section_ar(rows=8)
+    return None
+
+
+_ORIG_SYNTH = {}
+
+
+def setUpModule():
+    """Patch AI synth helpers with deterministic stubs for the duration of
+    this test module.  ``repair_kpi_section_if_missing_frequency`` and
+    ``repair_vision_objectives_if_insufficient`` (post-PR-5B.5F3) delegate
+    to ``synthesize_kpi_depth`` / ``synthesize_objectives_depth`` which call
+    real AI providers.  In tests we replace them with canonical-schema
+    generators so existing schema/shape/count assertions still hold.
+    """
+    if not _USING_REAL_APP:
+        return
+    _ORIG_SYNTH['kpi'] = _APP.synthesize_kpi_depth
+    _ORIG_SYNTH['so'] = _APP.synthesize_objectives_depth
+    _APP.synthesize_kpi_depth = _stub_synthesize_kpi_depth
+    _APP.synthesize_objectives_depth = _stub_synthesize_objectives_depth
+
+
+def tearDownModule():
+    if not _USING_REAL_APP:
+        return
+    if 'kpi' in _ORIG_SYNTH:
+        _APP.synthesize_kpi_depth = _ORIG_SYNTH['kpi']
+    if 'so' in _ORIG_SYNTH:
+        _APP.synthesize_objectives_depth = _ORIG_SYNTH['so']
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -310,7 +408,10 @@ class TestKpiFrequencyRepair(unittest.TestCase):
 
     @_skip_if_no_app
     def test_guide_coverage_after_repair(self):
-        """After repair, KPI guide count matches row count (coverage = 100%)."""
+        """After PR-5B.5F3, repair_kpi_section_if_missing_frequency no longer
+        emits per-KPI guide blocks (that contract moved to
+        rebuild_canonical_kpi_section).  Verify the schema/count contract:
+        ≥ 8 substantive KPI rows in the canonical 9-column table."""
         sections = _make_full_sections_ar()
         _APP.repair_kpi_section_if_missing_frequency(
             sections, 'ar', domain='Cyber Security',
@@ -318,9 +419,8 @@ class TestKpiFrequencyRepair(unittest.TestCase):
         )
         kpis = sections['kpis']
         n_kpis = _APP.count_substantive_kpis_strict(kpis)
-        n_guides = _APP.count_kpi_guides(kpis)
-        self.assertGreaterEqual(n_guides, n_kpis,
-            f'Guide coverage: expected n_guides ({n_guides}) ≥ n_kpis ({n_kpis})')
+        self.assertGreaterEqual(n_kpis, _APP._RICHNESS_MIN_KPI_ROWS,
+            f'Expected ≥ {_APP._RICHNESS_MIN_KPI_ROWS} KPI rows; got {n_kpis}')
 
     @_skip_if_no_app
     def test_kpi_main_header_count_is_one(self):

@@ -23811,18 +23811,28 @@ def repair_vision_objectives_if_insufficient(
         sections, lang, domain='Cyber Security',
         org_name='The Organization', frameworks=None,
         sector='Government'):
-    """Deterministic repair for the Strategic Objectives (SO) table.
+    """AI-first repair for the Strategic Objectives (SO) table (PR-5B.5F3).
 
-    Inspects sections['vision'].  If count_valid_objective_rows() < 6,
-    replaces the *entire* existing SO sub-section (the ### heading plus its
-    table) with a clean canonical 8-row Markdown pipe table.  No HTML, no
-    JSON, no AI calls.
+    Inspects sections['vision'].  Three phases:
 
-    Column schema (Arabic):  | # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |
-    Column schema (English): | # | Objective | Target Metric | Justification | Timeframe |
+      1. **Vision lede injection** (schema-only) — runs unconditionally to
+         ensure the keyword الرؤية / Vision appears in the section.
+      2. **Early return** when ``count_valid_objective_rows >= 6``: the
+         strategic-objectives subheading is restored if missing, and the
+         function returns 0 without invoking the AI.
+      3. **AI-first SO repair** when ``count_valid_objective_rows < 6``:
+         delegates to :func:`synthesize_objectives_depth` (which calls
+         :func:`ai_repair_strategy_section` with ``section_key='vision'``).
+         No deterministic priority bank is used, ``_build_domain_so_bank_ar``
+         / ``_build_domain_so_bank_en`` are never called, the existing SO
+         sub-section is not pre-stripped, and rows are not manually merged
+         or topped up.
 
-    Returns the number of rows written (0 if section was already ≥ 6 rows).
-    Raises AssertionError if the post-repair count is still < 6.
+    Returns the number of new SO rows added by the AI repair (or 0 when the
+    early-return path is taken).  On AI failure, or when the AI-repaired
+    vision still has fewer than 6 valid SO rows, raises :class:`RepairError`
+    with ``section='vision'`` annotated so the production caller can route
+    through ``_mark_synth_failed`` (PR-5B.5F1 gate).
     """
     frameworks = frameworks or ['NCA ECC']
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
@@ -23913,70 +23923,45 @@ def repair_vision_objectives_if_insufficient(
                 sections['vision'] = _vision_chk
         return 0
 
-    vision_text = sections.get('vision', '') or ''
-
-    if is_ar:
-        objectives_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
-        hdr_line = (
-            '### الأهداف الاستراتيجية\n\n'
-            '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
-            '|---|-------|-----------------|--------|---------------|\n'
+    # ── PR-5B.5F3: AI-first SO repair ─────────────────────────────────────
+    # The deterministic _build_domain_so_bank_ar/en banks and the canonical
+    # 8-row table rebuild have been removed.  When the vision section has
+    # fewer than 6 valid Strategic Objective rows we delegate to
+    # ``synthesize_objectives_depth`` (PR-5B.5A AI-first helper) and let it
+    # rewrite ``sections['vision']`` via ``ai_repair_strategy_section``.  We
+    # do NOT pre-strip the existing SO sub-section (the AI helper grounds on
+    # the existing seed) and we do NOT manually merge or top up rows.
+    #
+    # ``repair_vision_objectives_if_insufficient`` enforces a stricter floor
+    # of 6 rows than ``synthesize_objectives_depth``'s internal
+    # ``_RICHNESS_MIN_SO_ROWS`` (4); if the AI-repaired vision still falls
+    # short of 6 we raise ``RepairError(section='vision')`` so the production
+    # caller can mark synth_failed:vision via PR-5B.5F1's gate.
+    n_before = count_valid_objective_rows(sections.get('vision', '') or '')
+    try:
+        synthesize_objectives_depth(
+            sections, lang,
+            domain=domain,
+            fw_short=fw_short,
+            sector=sector,
+            org_name=org_name,
+            generation_mode='consulting',
         )
-    else:
-        objectives_bank = _build_domain_so_bank_en(domain, fw_short, sector)
-        hdr_line = (
-            '### Strategic Objectives\n\n'
-            '| # | Objective | Target Metric | Justification | Timeframe |\n'
-            '|---|-----------|--------------|---------------|----------|\n'
-        )
+    except RepairError as _so_re:
+        setattr(_so_re, 'section', 'vision')
+        raise
 
-    # Remove the existing SO sub-section (### heading + table) entirely so we
-    # can replace it with the clean canonical table.  Match from the ### heading
-    # (if present) to avoid leaving a stale duplicate heading behind.
-    _so_section_re = _ts_re.compile(
-        r'^###\s+(?:الأهداف(?:\s+الاستراتيجية)?|Strategic\s+Objectives)[^\n]*$',
-        _ts_re.MULTILINE | _ts_re.IGNORECASE,
-    )
-    _m = _so_section_re.search(vision_text)
-    if _m:
-        vision_text = vision_text[:_m.start()].rstrip()
-    else:
-        # Fall back: strip from the table-header row if the ### heading is absent.
-        _tbl_hdr_re = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    n_after = count_valid_objective_rows(sections.get('vision', '') or '')
+    if n_after < 6:
+        _err = RepairError(
+            f'repair_vision_objectives_if_insufficient: AI-repaired vision '
+            f'has {n_after}/6 valid Strategic Objective rows (stricter than '
+            f'synthesize_objectives_depth\'s internal floor)'
         )
-        _tm = _tbl_hdr_re.search(vision_text)
-        if _tm:
-            vision_text = vision_text[:_tm.start()].rstrip()
+        setattr(_err, 'section', 'vision')
+        raise _err
 
-    # Build canonical 8-row table.
-    new_rows = [
-        f'| {i + 1} | {obj} | {metric} | {just} | {tf} |'
-        for i, (obj, metric, just, tf) in enumerate(objectives_bank)
-    ]
-    sections['vision'] = (
-        vision_text.rstrip() + '\n\n' + hdr_line
-        + '\n'.join(new_rows) + '\n'
-    )
-
-    # Post-repair assertion — must never fail given the canonical bank above.
-    _n_after = count_valid_objective_rows(sections['vision'])
-    if _n_after < 6:
-        import logging as _logging
-        _logging.error(
-            'repair_vision_objectives_if_insufficient: assertion FAILED '
-            '(count=%d after repair). Vision preview: %r',
-            _n_after, sections['vision'][:600],
-        )
-        raise AssertionError(
-            f'repair_vision_objectives_if_insufficient: expected ≥ 6 valid SO rows '
-            f'after repair; got {_n_after}. '
-            f'Check timeframe tokens in objectives_bank. '
-            f'Vision preview: {sections["vision"][:600]!r}'
-        )
-
-    return len(new_rows)
+    return max(0, n_after - n_before)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -24405,13 +24390,16 @@ def repair_kpi_section_if_missing_frequency(
         org_name='The Organization',
         sector='Government',
         frameworks=None):
-    """Deterministic KPI frequency repair.
+    """AI-first KPI frequency repair (PR-5B.5F3).
 
-    Inspects sections['kpis'].  If the KPI table is missing 'التكرار' or
-    'Frequency', replaces the entire KPI section with the canonical 9-column
-    KPI/KRI table plus 10 per-KPI guide blocks.
+    Inspects sections['kpis'].  If the KPI table already contains a
+    ``Frequency``/``التكرار`` token, returns 0 (no-op).  Otherwise delegates
+    to :func:`synthesize_kpi_depth` for the single AI-first repair path
+    (cyber and non-cyber).  No deterministic KPI bank is used, no per-KPI
+    guide blocks are inserted, and ``_build_domain_kpi_bank_ar`` /
+    ``_build_domain_kpi_bank_en`` are never called.
 
-    Canonical Arabic schema:
+    Canonical Arabic schema (enforced by ``synthesize_kpi_depth``):
       | # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |
       | مصدر البيانات | المالك | التكرار | الإطار الزمني |
 
@@ -24419,7 +24407,10 @@ def repair_kpi_section_if_missing_frequency(
       | # | Metric | Type KPI/KRI | Target Value | Calculation Formula |
       | Data Source | Owner | Frequency | Timeframe |
 
-    Returns the number of rows written (0 if section already had frequency).
+    Returns the number of substantive KPI rows after repair (0 if the
+    section already had a frequency token).  On AI failure, raises
+    :class:`RepairError` with ``section='kpis'`` annotated so the production
+    caller can route through ``_mark_synth_failed`` (PR-5B.5F1 gate).
     """
     frameworks = frameworks or ['NCA ECC']
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
@@ -24434,216 +24425,40 @@ def repair_kpi_section_if_missing_frequency(
     if any(t in _kpi_lc for t in _kpi_freq_tokens):
         return 0  # Already has frequency — no repair needed
 
-    # ── DOMAIN ISOLATION (problem statement PART 1) ──────────────────────────
-    # The deterministic bank below is cyber-specific (NCA ECC / MFA / PAM /
-    # SIEM / MTTD / MTTR / phishing / backup / third-party cyber risk). For
-    # non-cyber domains we MUST NOT inject those rows; instead route through
-    # ai_repair_strategy_section() so the AI generates domain-specific KPIs
-    # under the canonical 9-column schema. If AI repair fails we leave the
-    # section unchanged and surface the failure (caller decides whether to
-    # block export). We do NOT silently fall back to cyber content.
+    # ── PR-5B.5F3: AI-first KPI repair (single path for all domains) ───────
+    # The previously-bifurcated cyber/non-cyber branches have been collapsed
+    # into a single delegation to ``synthesize_kpi_depth`` (PR-5B.5B AI-first
+    # helper).  The deterministic Arabic + English cyber KPI banks and the
+    # ``_make_guide`` factory have been removed; per-KPI guide blocks are
+    # owned by ``rebuild_canonical_kpi_section`` later in the save path.
+    #
+    # ``synthesize_kpi_depth`` itself enforces the 9-column schema with a
+    # ``Frequency``/``التكرار`` column header and the mode-aware floor; on
+    # AI failure or invalid output it raises ``RepairError``.  We annotate
+    # ``section='kpis'`` and re-raise so the production caller can mark
+    # synth_failed:kpis via PR-5B.5F1's gate.  We do NOT inject any
+    # deterministic rows or guide blocks.
+    n_before = count_substantive_kpis(sections.get('kpis', '') or '')
     try:
-        _dctx_kpi = get_strategy_domain_context(domain, lang, frameworks)
-    except DomainResolutionError:
-        _dctx_kpi = None
-    if _dctx_kpi is not None and _dctx_kpi.get("code") != "cyber":
-        try:
-            _ai_kpi = ai_repair_strategy_section(
-                section_key="kpis",
-                sections=sections,
-                lang=lang,
-                domain_context=_dctx_kpi,
-                org_name=org_name,
-                sector=sector,
-                generation_mode="consulting",
-                validation_error="kpi section missing frequency column",
-            )
-            if _ai_kpi and len(_ai_kpi) >= 80:
-                sections['kpis'] = _ai_kpi
-                # Count data rows (lines starting with '|' that aren't headers)
-                _row_lines = [ln for ln in _ai_kpi.splitlines()
-                              if ln.strip().startswith('|')
-                              and ln.strip().endswith('|')
-                              and not re.match(r'^\|[\s\-:|]+\|$', ln.strip())]
-                # Subtract 1 header row (best-effort)
-                return max(0, len(_row_lines) - 1)
-        except RepairError as _re:
-            print(f"[KPI-REPAIR] non-cyber AI repair failed for "
-                  f"domain={_dctx_kpi.get('code')}: {_re}", flush=True)
-            # Leave section unchanged; do NOT inject cyber bank.
-            return 0
-
-    # ── Build canonical Arabic table (cyber-only deterministic bank) ────────
-    if is_ar:
-        section_heading = '## 6. مؤشرات الأداء الرئيسية'
-        table_header = (
-            '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب '
-            '| مصدر البيانات | المالك | التكرار | الإطار الزمني |'
+        rows_after = synthesize_kpi_depth(
+            sections, lang,
+            domain=domain,
+            fw_short=fw_short,
+            sector=sector,
+            org_name=org_name,
+            generation_mode='consulting',
         )
-        table_sep = (
-            '|---|--------|---------------|-----------------|---------------|'
-            '----------------|--------|----------|----------------|'
-        )
-        guides_heading = '### أدلة تقييم مؤشرات الأداء'
+    except RepairError as _kpi_re:
+        setattr(_kpi_re, 'section', 'kpis')
+        raise
 
-        # 10-row NCA ECC canonical bank
-        data_rows_raw = [
-            ('نسبة تطبيق ضوابط NCA ECC و NCA DCC',
-             'KPI', '90% خلال السنة الأولى',
-             'عدد الضوابط المطبقة ÷ إجمالي الضوابط ذات العلاقة × 100',
-             'سجل الضوابط ومستودع الأدلة',
-             'فريق الحوكمة والامتثال', 'شهري', 'خلال 12 شهراً'),
-            ('تغطية المصادقة متعددة العوامل MFA',
-             'KPI', '95% للحسابات الحرجة',
-             'عدد الحسابات المحمية بـ MFA ÷ إجمالي الحسابات الحرجة × 100',
-             'نظام IAM وتقارير الوصول',
-             'مدير الهوية والوصول', 'شهري', 'خلال 9 أشهر'),
-            ('اكتمال مراجعة الصلاحيات المميزة',
-             'KPI', '100% ربعياً',
-             'عدد الحسابات المميزة التي تمت مراجعتها ÷ إجمالي الحسابات المميزة × 100',
-             'نظام PAM وسجلات المراجعة',
-             'مدير الهوية والوصول', 'ربع سنوي', 'خلال 12 شهراً'),
-            ('معالجة الثغرات الحرجة ضمن SLA',
-             'KPI', '95% خلال 15 يوماً',
-             'عدد الثغرات الحرجة المغلقة ضمن SLA ÷ إجمالي الثغرات الحرجة × 100',
-             'منصة إدارة الثغرات',
-             'فريق أمن البنية التحتية', 'أسبوعي', 'خلال 9 أشهر'),
-            ('تغطية مصادر السجلات في SIEM',
-             'KPI', '80% من المصادر الحرجة',
-             'عدد مصادر السجلات المربوطة ÷ إجمالي المصادر الحرجة × 100',
-             'منصة SIEM وسجل الأصول',
-             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
-            ('متوسط زمن اكتشاف الحوادث MTTD',
-             'KRI', 'أقل من 4 ساعات',
-             'مجموع زمن الاكتشاف ÷ عدد الحوادث',
-             'منصة SIEM ونظام إدارة الحوادث',
-             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
-            ('متوسط زمن الاستجابة للحوادث MTTR',
-             'KRI', 'أقل من 24 ساعة للحوادث العالية',
-             'مجموع زمن الاستجابة ÷ عدد الحوادث',
-             'نظام إدارة الحوادث وتقارير الاستجابة',
-             'رئيس الأمن السيبراني', 'شهري', 'خلال 12 شهراً'),
-            ('معدل فشل محاكاة التصيد',
-             'KRI', 'أقل من 10%',
-             'عدد المستخدمين الذين فشلوا في المحاكاة ÷ إجمالي المشاركين × 100',
-             'منصة التوعية ومحاكاة التصيد',
-             'مسؤول التوعية الأمنية', 'ربع سنوي', 'خلال 9 أشهر'),
-            ('نجاح اختبارات استعادة النسخ الاحتياطي',
-             'KPI', '100% للأنظمة الحرجة',
-             'عدد اختبارات الاستعادة الناجحة ÷ إجمالي الاختبارات × 100',
-             'نظام النسخ الاحتياطي وتقارير DR',
-             'مدير البنية التحتية', 'ربع سنوي', 'خلال 18 شهراً'),
-            ('تغطية تقييم مخاطر الأطراف الثالثة',
-             'KPI', '100% للموردين الحرجيين',
-             'عدد الموردين الحرجيين المقيمين ÷ إجمالي الموردين الحرجيين × 100',
-             'سجل الموردين وتقييمات الأمن السيبراني',
-             'فريق الحوكمة والامتثال', 'نصف سنوي', 'خلال 12 شهراً'),
-        ]
-
-        def _make_guide(idx, name):
-            return [
-                f'#### دليل تقييم المؤشر رقم {idx}: {name}',
-                '',
-                '| الخطوة | الإجراء | الأداة/النظام | المسؤول | الناتج |',
-                '|--------|---------|----------------|---------|--------|',
-                f'| 1 | جمع البيانات من المصادر المعتمدة | نظام {domain} | فريق {domain} | سجل القياس |',
-                f'| 2 | تطبيق الصيغة الحسابية | لوحة التحكم | محلل {domain} | القيمة المحسوبة |',
-                f'| 3 | التحقق والمصادقة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق |',
-                f'| 4 | الإبلاغ للإدارة العليا | عرض مجلس {domain} | مدير {domain} | بيان الأداء |',
-                '',
-            ]
-
-    else:
-        section_heading = '## 6. Key Performance Indicators'
-        table_header = (
-            '| # | Metric | Type KPI/KRI | Target Value | Calculation Formula '
-            '| Data Source | Owner | Frequency | Timeframe |'
-        )
-        table_sep = (
-            '|---|--------|--------------|--------------|---------------------|'
-            '-------------|-------|-----------|-----------|'
-        )
-        guides_heading = '### KPI Assessment Guidelines'
-
-        data_rows_raw = [
-            (f'{fw_short} Control Implementation Rate',
-             'KPI', '≥ 90% in Year 1',
-             '(Controls implemented ÷ Total applicable controls) × 100',
-             'Control register & evidence repository',
-             'Governance & Compliance Team', 'Monthly', 'Within 12 months'),
-            ('Multi-Factor Authentication (MFA) Coverage',
-             'KPI', '95% of critical accounts',
-             '(MFA-protected accounts ÷ Total critical accounts) × 100',
-             'IAM system & access reports',
-             'Identity & Access Manager', 'Monthly', 'Within 9 months'),
-            ('Privileged Access Review Completion',
-             'KPI', '100% quarterly',
-             '(Reviewed privileged accounts ÷ Total privileged accounts) × 100',
-             'PAM system & review logs',
-             'Identity & Access Manager', 'Quarterly', 'Within 12 months'),
-            ('Critical Vulnerability Remediation within SLA',
-             'KPI', '95% within 15 days',
-             '(Critical vulns closed within SLA ÷ Total critical vulns) × 100',
-             'Vulnerability management platform',
-             'Infrastructure Security Team', 'Weekly', 'Within 9 months'),
-            ('SIEM Log Source Coverage',
-             'KPI', '80% of critical sources',
-             '(Connected log sources ÷ Total critical sources) × 100',
-             'SIEM platform & asset register',
-             'SOC Team', 'Monthly', 'Within 12 months'),
-            ('Mean Time to Detect (MTTD)',
-             'KRI', '< 4 hours',
-             'Sum of detection times ÷ Number of incidents',
-             'SIEM platform & incident management system',
-             'SOC Team', 'Monthly', 'Within 12 months'),
-            ('Mean Time to Respond (MTTR)',
-             'KRI', '< 24 hours for high severity',
-             'Sum of response times ÷ Number of incidents',
-             'Incident management system & response reports',
-             'Chief Information Security Officer', 'Monthly', 'Within 12 months'),
-            ('Phishing Simulation Failure Rate',
-             'KRI', '< 10%',
-             '(Failed participants ÷ Total participants) × 100',
-             'Security awareness & phishing simulation platform',
-             'Security Awareness Officer', 'Quarterly', 'Within 9 months'),
-            ('Backup Recovery Test Success Rate',
-             'KPI', '100% for critical systems',
-             '(Successful restore tests ÷ Total tests) × 100',
-             'Backup system & DR reports',
-             'Infrastructure Manager', 'Quarterly', 'Within 18 months'),
-            ('Third-Party Risk Assessment Coverage',
-             'KPI', '100% of critical vendors',
-             '(Assessed critical vendors ÷ Total critical vendors) × 100',
-             'Vendor register & cybersecurity assessments',
-             'Governance & Compliance Team', 'Semi-annually', 'Within 12 months'),
-        ]
-
-        def _make_guide(idx, name):
-            return [
-                f'#### KPI #{idx} Assessment Guide: {name}',
-                '',
-                '| Step | Action | Tool / System | Owner | Output |',
-                '|------|--------|----------------|-------|--------|',
-                f'| 1 | Collect data from authoritative sources | {domain} platform | {domain} Team | Measurement log |',
-                f'| 2 | Apply calculation formula | Dashboard | {domain} Analyst | Computed value |',
-                f'| 3 | Validate and attest | Management review | {domain} Lead | Attestation report |',
-                f'| 4 | Report to executive governance | {domain} board pack | {domain} Director | Performance statement |',
-                '',
-            ]
-
-    # ── Assemble the canonical KPI section
-    out_lines = [section_heading, '', table_header, table_sep]
-    for idx, row_cells in enumerate(data_rows_raw, start=1):
-        out_lines.append('| ' + str(idx) + ' | ' + ' | '.join(row_cells) + ' |')
-    out_lines.append('')
-    out_lines.append(guides_heading)
-    out_lines.append('')
-    for idx, row_cells in enumerate(data_rows_raw, start=1):
-        out_lines.extend(_make_guide(idx, row_cells[0]))
-
-    sections['kpis'] = '\n'.join(out_lines).rstrip() + '\n'
-    return len(data_rows_raw)
-
+    # ``synthesize_kpi_depth`` returns the post-repair substantive KPI count
+    # (or 0 if the section already met the floor + had the Frequency column,
+    # which the early return above already handles for the frequency case).
+    if rows_after and rows_after > 0:
+        return rows_after
+    n_after = count_substantive_kpis(sections.get('kpis', '') or '')
+    return max(0, n_after - n_before)
 
 
 #
@@ -32549,6 +32364,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'rows_added={_vis_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _vrre:
+                            # PR-5B.5F3: AI repair failure inside
+                            # repair_vision_objectives_if_insufficient.
+                            # Mirror PR-5B.5F1's _mark_synth_failed pattern so
+                            # the post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_vrre, 'section', 'vision')
+                            _mark_synth_failed(_synth_status, _section, _vrre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_vision_objectives_failed: '
+                                f'{_vrre}',
+                                flush=True,
+                            )
                         except Exception as _vr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_vision_objectives_failed: '
@@ -32601,6 +32429,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'rows_written={_kpi_freq_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _kfre:
+                            # PR-5B.5F3: AI repair failure inside
+                            # repair_kpi_section_if_missing_frequency.
+                            # Mirror PR-5B.5F1's _mark_synth_failed pattern so
+                            # the post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_kfre, 'section', 'kpis')
+                            _mark_synth_failed(_synth_status, _section, _kfre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '
+                                f'{_kfre}',
+                                flush=True,
+                            )
                         except Exception as _kfr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '

@@ -69,6 +69,72 @@ def _skip_if_no_app(fn):
 
 
 # ---------------------------------------------------------------------------
+# PR-5B.5F3: repair_vision_objectives_if_insufficient now delegates to
+# synthesize_objectives_depth (AI-first).  Tests in this module exercise the
+# *post-repair schema/shape/count* contract; we stub the AI synth helper so
+# the tests run in environments without an AI provider.
+# ---------------------------------------------------------------------------
+
+def _stub_vision_section_ar(rows=8):
+    header = (
+        '## 1. الرؤية والأهداف الاستراتيجية\n\n'
+        '**الرؤية:** رؤية المنظمة نحو تحقيق الأمن السيبراني الشامل.\n\n'
+        '### الأهداف الاستراتيجية\n\n'
+        '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
+        '|---|-------|-----------------|--------|---------------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | الهدف الاستراتيجي رقم {i} | ≥ 95% '
+        f'| متطلب NCA ECC | خلال 12 شهراً |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_vision_section_en(rows=8):
+    header = (
+        '## 1. Vision & Strategic Objectives\n\n'
+        '**Vision:** The organization pursues comprehensive cyber resilience.\n\n'
+        '### Strategic Objectives\n\n'
+        '| # | Objective | Target Metric | Justification | Timeframe |\n'
+        '|---|-----------|--------------|---------------|----------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | Strategic Objective {i} | >= 95% '
+        f'| NCA ECC requirement | Within 12 months |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_synthesize_objectives_depth(sections, lang, **_kwargs):
+    if lang == 'ar':
+        sections['vision'] = _stub_vision_section_ar(rows=8)
+    else:
+        sections['vision'] = _stub_vision_section_en(rows=8)
+    return None
+
+
+_ORIG_SYNTH_SO = {}
+
+
+def setUpModule():
+    """Patch synthesize_objectives_depth with a deterministic stub.  After
+    PR-5B.5F3, repair_vision_objectives_if_insufficient delegates to it."""
+    if not _USING_REAL_APP:
+        return
+    _ORIG_SYNTH_SO['so'] = _APP.synthesize_objectives_depth
+    _APP.synthesize_objectives_depth = _stub_synthesize_objectives_depth
+
+
+def tearDownModule():
+    if not _USING_REAL_APP:
+        return
+    if 'so' in _ORIG_SYNTH_SO:
+        _APP.synthesize_objectives_depth = _ORIG_SYNTH_SO['so']
+
+
+# ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
