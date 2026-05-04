@@ -16467,352 +16467,80 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
                                  diagnostic_gaps=None,
                                  maturity='initial',
                                  generation_mode='drafting'):
-    """Diagnostic-driven Strategic Objectives synth.
+    """AI-first Strategic Objectives synthesis (PR-5B.5A).
 
-    Ensures the vision section contains a Strategic Objectives table with
-    ≥ 3 substantive rows. Contract (prompt Part 2A):
-      - If org_structure_is_none=True, at least one objective addresses
-        governance-structure establishment.
-      - For each true challenge_flag, an objective targets that theme
-        (e.g. awareness → 'raise workforce awareness to X%').
-      - Existing substantive objectives are preserved; synth only fills
-        gaps below the richness bar or missing thematic coverage.
+    Behaviour:
+      * If ``sections['vision']`` already has
+        ``>= _RICHNESS_MIN_SO_ROWS`` valid Strategic Objective rows
+        (``count_valid_objective_rows``), return unchanged with
+        ``rebuilt=False``. AI repair is not invoked.
+      * Otherwise, call :func:`ai_repair_strategy_section` with
+        ``section_key='vision'``, validate the repaired markdown, and
+        replace ``sections['vision']`` with the repaired text.
+      * On AI failure or invalid repaired output, raise
+        :class:`RepairError`. No deterministic priority bank is used,
+        no top-up rows are appended, and ``_build_domain_so_bank_ar``
+        / ``_build_domain_so_bank_en`` are never called.
 
-    Returns dict with rebuilt/preserved/injected details.
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` / ``maturity`` / ``generation_mode``
+    parameters are retained for signature compatibility with the
+    pipeline call sites; ``generation_mode`` is forwarded to the AI
+    repair prompt.
+
+    Returns dict with keys ``rebuilt`` (bool), ``preserved`` (int —
+    valid SO row count before repair), and, on success,
+    ``total_after`` (int — valid SO row count after AI repair).
     """
     summary = {'rebuilt': False, 'preserved': 0, 'injected': []}
     vision = sections.get('vision', '') or ''
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
+    n_so = count_valid_objective_rows(vision)
+    summary['preserved'] = n_so
 
-    # Existing objectives — parse + dedupe
-    # MULTILINE is REQUIRED here: the same `hdr` regex is used twice —
-    # by `_ts_table_rows` (which strips per line, so MULTILINE is moot)
-    # AND by `hdr.search(vision)` below at the canonical-replace branch
-    # (which needs `^` to match at any line start). Without MULTILINE
-    # the search returns None for any vision text where the table is
-    # not at character 0, the synth falls into the "no existing table"
-    # branch, and APPENDS a second `### Strategic Objectives` heading
-    # + table below the original — violating the prompt's clause 6
-    # "no duplicate objectives table".
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-        _ts_re.IGNORECASE | _ts_re.MULTILINE,
-    )
-    # Must be identical to the tf_re in count_valid_objective_rows so
-    # that `len(existing_rows)` == count_valid_objective_rows() and the
-    # early-return gate never fires while the audit gate still fails.
-    # Singular forms (month/year/week/day) are already covered by the
-    # plural-or-singular alternatives (months?/years?/weeks?/days?).
-    # Bound the leading digit group to \d{1,6} (any real timeframe fits
-    # within 6 digits) so the NFA does not need to try all O(n) split
-    # points when the input contains a long run of digit characters.
-    tf_re = _ts_re.compile(
-        r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
-        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
-        r'|(?:within|خلال)\s+\d{1,6}'
-        r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
-        r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
-        _ts_re.IGNORECASE,
-    )
-    existing_rows = []  # list of cell-lists (without #)
-    for cells in _ts_table_rows(vision, hdr):
-        if len(cells) != 5:
-            continue
-        if not cells[0].replace('.', '').isdigit():
-            continue
-        if any(_ts_is_placeholder(cells[i]) for i in (1, 2, 3)):
-            continue
-        if not tf_re.search(cells[4] or ''):
-            continue
-        if tf_re.search(cells[1] or ''):
-            continue
-        existing_rows.append(list(cells[1:]))
-    summary['preserved'] = len(existing_rows)
-
-    # Determine what's needed
-    _existing_blob = ' | '.join(' '.join(str(c) for c in r)
-                                 for r in existing_rows)
-
-    def _mentions(row_blob, en_tokens, ar_tokens):
-        tl = row_blob.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in row_blob:
-                return True
-        return False
-
-    coverage = {
-        'structural': _mentions(_existing_blob,
-            ('governance', 'structure', 'committee', 'charter',
-             'org design'),
-            ('حوكمة', 'هيكل', 'لجنة', 'ميثاق', 'توجيه')),
-        'awareness': _mentions(_existing_blob,
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _mentions(_existing_blob,
-            ('soc', 'siem', 'incident', 'detection', 'response'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'suppliers': _mentions(_existing_blob,
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _mentions(_existing_blob,
-            ('compliance', 'audit'),
-            ('امتثال', 'تدقيق')),
-    }
-
-    need_structural = (org_structure_is_none and not coverage['structural'])
-    need_challenges = [k for k, v in challenge_flags.items()
-                       if v and not coverage.get(k, False)]
-    # Use richness threshold so synth fires when below the gate's bar
-    # (4), not the older 3-row contract.
-    below_min = len(existing_rows) < max(3, _RICHNESS_MIN_SO_ROWS)
-
-    if not need_structural and not need_challenges and not below_min:
-        summary['rebuilt'] = False
+    # Threshold: sufficient if the vision already meets the richness
+    # gate's minimum (no AI call needed).
+    if n_so >= _RICHNESS_MIN_SO_ROWS:
         return summary
 
-    # Priority-objective bank — each row is a full 4-tuple
-    # (objective, target_metric, justification, timeframe)
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'إنشاء هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                'اعتماد ميثاق اللجنة وهيكل RACI',
-                f'يغلق فجوة البنية التنظيمية المشخّصة - أساس {fw_short}',
-                'خلال 6 أشهر',
-            ),
-            'awareness': (
-                f'رفع نسبة اجتياز التوعية بـ{domain} لكوادر {org_name}',
-                '≥ 90%',
-                'يغلق فجوة الوعي المشخّصة في التشخيص',
-                'خلال 9 أشهر',
-            ),
-            'incident_response': (
-                f'تشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                'اعتماد كتيب الاستجابة وتشغيل SOC',
-                f'يغلق فجوة الاستجابة وفق {fw_short}',
-                'خلال 12 شهراً',
-            ),
-            'staffing': (
-                f'بناء الكفاءات المتخصصة في {domain}',
-                'سد 80% من الشواغر المتخصصة',
-                'يعالج نقص الكوادر المشخّص',
-                'خلال 18 شهراً',
-            ),
-            'suppliers': (
-                f'تفعيل إدارة مخاطر الأطراف الثالثة',
-                '100% من الموردين الحرجين مُقيّمون',
-                f'يعالج فجوة مخاطر سلسلة الإمداد وفق {fw_short}',
-                'خلال 12 شهراً',
-            ),
-            'compliance': (
-                f'الامتثال الكامل لمتطلبات {fw_short}',
-                '100% من الضوابط المطبقة مع أدلة تدقيق',
-                'يعالج فجوة إثبات الامتثال',
-                'خلال 12 شهراً',
-            ),
-            'baseline': (
-                f'تنفيذ خط الأساس لضوابط {fw_short}',
-                '100% من ضوابط الأولوية العليا مطبقة',
-                'يعالج فجوات النضج الأولية',
-                'خلال 12 شهراً',
-            ),
-        }
-    else:
-        priority_bank = {
-            'structural': (
-                f'Establish formal {domain} governance structure at {org_name}',
-                'Approved committee charter + RACI',
-                f'Closes diagnosed structural gap — foundation for {fw_short}',
-                'Within 6 months',
-            ),
-            'awareness': (
-                f'Raise {domain} awareness pass rate across {org_name} workforce',
-                '≥ 90%',
-                'Closes diagnosed awareness gap',
-                'Within 9 months',
-            ),
-            'incident_response': (
-                f'Operationalize {domain} detection & incident response',
-                'Approved IR runbook + operational SOC',
-                f'Closes IR capability gap per {fw_short}',
-                'Within 12 months',
-            ),
-            'staffing': (
-                f'Build specialist {domain} workforce capability',
-                '80% of specialist roles filled',
-                'Addresses diagnosed staffing shortage',
-                'Within 18 months',
-            ),
-            'suppliers': (
-                'Activate third-party risk management',
-                '100% of critical suppliers assessed',
-                f'Closes supply-chain risk gap per {fw_short}',
-                'Within 12 months',
-            ),
-            'compliance': (
-                f'Full {fw_short} compliance',
-                '100% controls implemented with audit evidence',
-                'Closes compliance-evidence gap',
-                'Within 12 months',
-            ),
-            'baseline': (
-                f'Implement {fw_short} control baseline',
-                '100% of highest-priority controls deployed',
-                'Addresses foundational maturity gaps',
-                'Within 12 months',
-            ),
-        }
-
-    new_rows = []
-    if need_structural:
-        new_rows.append(priority_bank['structural'])
-        summary['injected'].append('structural')
-    for k in need_challenges:
-        if k in priority_bank:
-            new_rows.append(priority_bank[k])
-            summary['injected'].append(k)
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or '').strip()
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        if not title:
-            continue
-        # Skip if already covered
-        tl = title.lower()
-        if (tl in _existing_blob.lower()
-                or any(tl in str(nr[0]).lower() for nr in new_rows)):
-            continue
-        if is_ar:
-            new_rows.append((
-                f'معالجة: {title}',
-                '100% إغلاق',
-                f'ناتج مباشر عن تشخيص {org_name}',
-                'خلال 12 شهراً',
-            ))
-        else:
-            new_rows.append((
-                f'Remediate: {title}',
-                '100% closure',
-                f'Direct outcome of {org_name} diagnostic',
-                'Within 12 months',
-            ))
-        summary['injected'].append(f'dx:{title[:30]}')
-
-    # ── Top-up to RICHNESS threshold (prompt clause 3) ─────────
-    # The richness gate requires _RICHNESS_MIN_SO_ROWS (4) substantive
-    # SO rows; the previous "below 3" top-up loop only ever filled to
-    # 3, so a clean run with no diagnostic challenges still 422'd at
-    # so_rows_insufficient_for_richness. Fix: iterate the priority
-    # bank in a deterministic diagnostic-relevance order, skipping
-    # entries already chosen, so the top-up emits DISTINCT rows
-    # aligned to existing context (not duplicate baseline filler).
-    _topup_order = ('baseline', 'compliance', 'structural', 'awareness',
-                    'incident_response', 'staffing', 'suppliers')
-    _already = {tuple(r) for r in new_rows}
-    _i = 0
-    _min_target = max(3, _RICHNESS_MIN_SO_ROWS)
-    while ((len(existing_rows) + len(new_rows)) < _min_target
-           and _i < len(_topup_order) * 2):
-        _key = _topup_order[_i % len(_topup_order)]
-        _i += 1
-        _row = priority_bank.get(_key)
-        if not _row or tuple(_row) in _already:
-            continue
-        new_rows.append(_row)
-        _already.add(tuple(_row))
-        summary['injected'].append(f'topup:{_key}')
-
-    # Now rebuild the vision section. Strategy: preserve everything in
-    # vision BEFORE the Strategic Objectives table, replace the objectives
-    # table canonically, and preserve everything AFTER (rare).
-    if is_ar:
-        obj_heading = '### الأهداف الاستراتيجية'
-        obj_header = '| # | الهدف الاستراتيجي | المقياس المستهدف | المبرر | الإطار الزمني |'
-        obj_sep = '|---|-------------------|-------------------|--------|----------------|'
-    else:
-        obj_heading = '### Strategic Objectives'
-        obj_header = '| # | Objective | Target Metric | Justification | Timeframe |'
-        obj_sep = '|---|-----------|---------------|---------------|-----------|'
-
-    # Find existing objectives-table span to replace
-    obj_hdr_m = hdr.search(vision)
-    if obj_hdr_m:
-        # Find where the table ends (first non-pipe line after header)
-        before_table = vision[:obj_hdr_m.start()]
-        # Trim trailing whitespace + optional preceding ### heading line
-        # so we can re-emit obj_heading consistently
-        _head_m = _ts_re.search(
-            r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
-            r'[^\n]*\n',
-            before_table, _ts_re.IGNORECASE,
+    # Insufficient — AI-first repair. Build the canonical domain context
+    # and delegate to the single-call repair helper. No deterministic
+    # bank, no top-up.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain or 'Cyber Security', lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-        if _head_m:
-            before_table = before_table[:_head_m.start()]
-        # Walk from table header to end of table
-        _pos = obj_hdr_m.start()
-        _lines = vision[_pos:].split('\n')
-        _i = 0
-        while _i < len(_lines):
-            s = _lines[_i].strip()
-            if s.startswith('|') and s.endswith('|'):
-                _i += 1
-                continue
-            if s == '':
-                # allow one blank then stop
-                _i += 1
-                break
-            break
-        after_table = '\n'.join(_lines[_i:])
-        pre_block = before_table.rstrip()
-    else:
-        # No existing objectives table — but a stale `### Strategic
-        # Objectives` heading (without a table) may exist from an
-        # earlier malformed AI emission. Strip it so the canonical
-        # emit below does not produce a duplicate heading. Without
-        # this, repair would APPEND `### الأهداف الاستراتيجية` AND its
-        # canonical table BELOW the orphan heading, violating prompt
-        # clause 6 ("no duplicate objective headers/tables").
-        pre_block = vision.rstrip()
-        _orphan_m = _ts_re.search(
-            r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
-            r'[^\n]*(?:\n[^\n#|]*)*',
-            pre_block, _ts_re.IGNORECASE,
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_objectives_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
-        if _orphan_m:
-            pre_block = (pre_block[:_orphan_m.start()]
-                         + pre_block[_orphan_m.end():]).rstrip()
-        after_table = ''
 
-    # Emit canonical objectives block
-    all_rows = existing_rows + [list(t) for t in new_rows]
-    out = []
-    if pre_block:
-        out.append(pre_block)
-        out.append('')
-    out.append(obj_heading)
-    out.append('')
-    out.append(obj_header)
-    out.append(obj_sep)
-    for idx, r in enumerate(all_rows, start=1):
-        # Ensure 4 cells
-        while len(r) < 4:
-            r.append('—')
-        out.append('| ' + ' | '.join([str(idx)] + [str(c) for c in r[:4]]) + ' |')
-    out.append('')
-    if after_table.strip():
-        out.append(after_table.rstrip())
+    repaired = ai_repair_strategy_section(
+        section_key='vision',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity=maturity,
+        generation_mode=generation_mode,
+        validation_error=(
+            f'so_rows_insufficient:{n_so}/{_RICHNESS_MIN_SO_ROWS}'
+        ),
+    )
 
-    sections['vision'] = '\n'.join(out).rstrip() + '\n'
+    n_after = count_valid_objective_rows(repaired)
+    if n_after < _RICHNESS_MIN_SO_ROWS:
+        raise RepairError(
+            f'synthesize_objectives_depth: AI-repaired vision has '
+            f'{n_after}/{_RICHNESS_MIN_SO_ROWS} valid Strategic '
+            f'Objective rows'
+        )
+
+    sections['vision'] = repaired
     summary['rebuilt'] = True
-    summary['total_after'] = len(all_rows)
+    summary['total_after'] = n_after
     return summary
 
 
@@ -16825,502 +16553,88 @@ def synthesize_roadmap_depth(sections, lang, domain='Cyber Security',
                              technologies=None,
                              sector='General',
                              org_name='The Organization'):
-    """Diagnostic-driven roadmap row synthesis.
+    """AI-first roadmap synthesis (PR-5B.5C).
 
-    Prepends PRIORITY rows reflecting diagnosed signals BEFORE the generic
-    template bank:
-      - If org_structure_is_none=True: a governance-setup row is injected
-        at position 1 (earliest timeframe).
-      - For each true challenge_flag (awareness/incident_response/
-        staffing/suppliers/compliance): matching activity row is injected
-        when absent.
-      - If diagnostic_gaps list provided: each entry becomes a row.
-    After priority rows, generic templates fill any remaining slots to
-    reach the richness minimum.
+    Behaviour:
+      * If ``sections['roadmap']`` already has ``>= floor`` substantive
+        rows (``_count_substantive_roadmap_rows``), return ``0`` and
+        leave ``sections['roadmap']`` unchanged. AI repair is not
+        invoked.
+      * Otherwise, strict-resolve the domain context (no silent
+        Cyber-Security fallback) and call
+        :func:`ai_repair_strategy_section` with
+        ``section_key='roadmap'``. Validate that the repaired markdown
+        contains ``>= floor`` substantive roadmap rows, replace
+        ``sections['roadmap']`` with the repaired text, and return the
+        number of valid repaired rows.
+      * On AI failure, domain-resolution failure, or invalid repaired
+        output, raise :class:`RepairError`. No deterministic priority
+        bank, no generic templates, no header skeleton, no
+        diagnostic-gap "Remediate:" / "معالجة:" rows are emitted, and
+        ``sections['roadmap']`` is not mutated.
 
-    generation_mode affects padding above the minimum:
-      drafting  → min
-      consulting → min + 1
-      assurance → min + 2
-    Returns count of rows added.
+    The roadmap floor is mode-aware:
+        ``drafting``    -> ``_RICHNESS_MIN_ROADMAP_ROWS``
+        ``consulting``  -> ``_RICHNESS_MIN_ROADMAP_ROWS + 2``
+        ``assurance``   -> ``_RICHNESS_MIN_ROADMAP_ROWS + 3``
+
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` / ``technologies`` parameters are
+    retained for signature compatibility with the pipeline call sites.
     """
     roadmap = sections.get('roadmap', '') or ''
-    current = _count_substantive_roadmap_rows(roadmap)
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
-    technologies = technologies or []
 
-    # Existing roadmap coverage check (same pattern as gaps synth): does a
-    # substantive row already address each diagnostic signal? Used to
-    # avoid double-injection and to determine whether to force synthesis
-    # even when count ≥ minimum (governance-is-none contract).
-    def _row_mentions(row_text, en_tokens, ar_tokens):
-        tl = row_text.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in row_text:
-                return True
-        return False
-
-    # Parse existing rows to check signal coverage.
-    _simple_hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|',
-        _ts_re.IGNORECASE,
-    )
-    existing_rows_text = []
-    for cells in _ts_table_rows(roadmap, _simple_hdr):
-        if cells and cells[0].replace('.', '').isdigit():
-            existing_rows_text.append(' '.join(str(c) for c in cells))
-    _existing_blob = ' | '.join(existing_rows_text)
-
-    coverage = {
-        'structural': _row_mentions(_existing_blob,
-            ('governance', 'structure', 'steering', 'committee',
-             'organizational', 'charter', 'org design'),
-            ('حوكمة', 'هيكل', 'لجنة', 'ميثاق', 'توجيه')),
-        'awareness': _row_mentions(_existing_blob,
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _row_mentions(_existing_blob,
-            ('soc', 'siem', 'incident', 'detection', 'response'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'staffing': _row_mentions(_existing_blob,
-            ('staff', 'hiring', 'recruit', 'skill'),
-            ('تعيين', 'كوادر', 'كفاءات', 'مهارات')),
-        'suppliers': _row_mentions(_existing_blob,
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _row_mentions(_existing_blob,
-            ('audit', 'evidence', 'compliance'),
-            ('تدقيق', 'أدلة', 'امتثال')),
-        'continuity': _row_mentions(_existing_blob,
-            ('continuity', 'bcp', 'disaster recovery', 'resilience', 'backup'),
-            ('استمرارية', 'التعافي', 'الكوارث', 'النسخ الاحتياطي')),
-        'monitoring': _row_mentions(_existing_blob,
-            ('monitoring', 'observability', 'visibility',
-             'continuous monitoring'),
-            ('رصد', 'المراقبة المستمرة', 'الرؤية')),
-    }
-    # Decide which priority rows are needed
-    priority_slots = []
-    if org_structure_is_none and not coverage['structural']:
-        priority_slots.append('structural')
-    for k in ('awareness', 'incident_response', 'staffing',
-              'suppliers', 'compliance', 'continuity', 'monitoring'):
-        if challenge_flags.get(k) and not coverage.get(k, False):
-            priority_slots.append(k)
-    # Technology-gap priority (Part 2E: "if technologies selected are
-    # weak / missing, roadmap must include targeted implementation or
-    # enhancement steps"). Uses the synth's own tech detection since
-    # ctx might not have it.
-    _tech_blob_rm = ' '.join(str(t).lower() for t in (technologies or []))
-    _rm_has = {
-        'siem': any(k in _tech_blob_rm for k in
-                    ('siem', 'splunk', 'sentinel', 'qradar')),
-        'edr':  any(k in _tech_blob_rm for k in
-                    ('edr', 'xdr', 'crowdstrike', 'sentinelone')),
-        'iam':  any(k in _tech_blob_rm for k in
-                    ('iam', 'okta', 'active directory', 'azure ad')),
-        'backup': any(k in _tech_blob_rm for k in
-                      ('backup', 'veeam', 'commvault')),
-    }
-    _rm_missing_key = [k for k, v in _rm_has.items() if not v]
-    # Only add technology priority slot if NOT already covered by
-    # an existing row AND ≥ 2 key categories missing (or nothing selected)
-    _tech_covered_in_roadmap = (
-        'siem' in _existing_blob.lower()
-        or 'edr' in _existing_blob.lower()
-        or 'نشر' in _existing_blob  # "deploy" in Arabic
-    )
-    if ((not technologies or len(_rm_missing_key) >= 2)
-            and not _tech_covered_in_roadmap):
-        priority_slots.append('technology_gap')
-
-    # If count already meets minimum AND no priority injection is needed,
-    # short-circuit.
     _mode_lc = str(generation_mode).lower()
-    _is_consulting_roadmap = _mode_lc in ('consulting', 'assurance')
     needed_floor = _RICHNESS_MIN_ROADMAP_ROWS
     if _mode_lc == 'consulting':
-        needed_floor += 2   # Gap 5: raise consulting floor (was +1)
+        needed_floor += 2
     elif _mode_lc == 'assurance':
-        needed_floor += 3   # assurance gets even more depth
-    if (current >= needed_floor and not priority_slots
-            and not diagnostic_gaps):
+        needed_floor += 3
+
+    current = _count_substantive_roadmap_rows(roadmap)
+
+    if current >= needed_floor:
         return 0
 
-    # Gap 5: consulting/assurance mode uses specific named roles (CISO, DPO,
-    # etc.) and quantified deliverables (≥ X% of Y classified, etc.) rather
-    # than generic "Team" owners and "Approved document" deliverables.
-    if _is_consulting_roadmap:
-        if is_ar:
-            priority_bank = {
-                'structural': (
-                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                    f'المدير التنفيذي / CISO',
-                    'الشهر 1 إلى الشهر 3',
-                    (f'ميثاق لجنة حوكمة معتمد + مصفوفة RACI كاملة لأدوار {domain} '
-                     f'+ تعيين CISO رسمياً — يغلق فجوة الهيكل البنيوي ({fw_short})'),
-                ),
-                'awareness': (
-                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                    'مسؤول الموارد البشرية + CISO',
-                    'الشهر 2 إلى الشهر 9',
-                    f'≥ 90% من الكوادر يجتازون التدريب + ≤ 5% معدل الوقوع بالتصيد',
-                ),
-                'incident_response': (
-                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                    'CISO + مسؤول SOC',
-                    'الشهر 2 إلى الشهر 6',
-                    (f'SOC عامل 24/7 (MTTD ≤ 60 دق) + SIEM منتج + '
-                     f'كتيب الاستجابة معتمد وفق {fw_short}'),
-                ),
-                'staffing': (
-                    f'بناء الكفاءات المتخصصة في {domain}',
-                    'مسؤول الموارد البشرية',
-                    'الشهر 3 إلى الشهر 12',
-                    '≥ 80% من الشواغر المتخصصة مشغولة + خطط تطوير مهني موثقة',
-                ),
-                'suppliers': (
-                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                    'مسؤول مخاطر الأطراف الثالثة (TPRM) / DPO',
-                    'الشهر 4 إلى الشهر 10',
-                    f'100% من الموردين الحرجين مُقيَّمون وفق {fw_short} + نماذج تعاقدية معتمدة',
-                ),
-                'compliance': (
-                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                    'مسؤول الحوكمة والمخاطر والامتثال (GRC)',
-                    'الشهر 3 إلى الشهر 9',
-                    '100% من الضوابط الحرجة موثقة بأدلة تدقيق + تقارير ربعية للإدارة العليا',
-                ),
-                'continuity': (
-                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                    'مسؤول الاستمرارية التشغيلية + مدير تقنية المعلومات',
-                    'الشهر 4 إلى الشهر 12',
-                    ('خطة BCP/DR معتمدة + ≥ 2 اختبار تعافٍ سنوي + '
-                     '100% تغطية الأصول الحيوية بنسخ احتياطية مُختبَرة'),
-                ),
-                'monitoring': (
-                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                    'CISO + مهندس المراقبة الأمنية',
-                    'الشهر 2 إلى الشهر 8',
-                    ('≥ 95% تغطية الأصول الحيوية بالرصد الآني + '
-                     f'لوحات مراقبة تشغيلية وفق {fw_short}'),
-                ),
-                'technology_gap': (
-                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                    'مدير تقنية المعلومات + CISO',
-                    'الشهر 1 إلى الشهر 9',
-                    ('SIEM/EDR/IAM/Backup منتجة ومدمجة + '
-                     f'أدلة تشغيل موثقة وفق {fw_short}'),
-                ),
-            }
-        else:
-            priority_bank = {
-                'structural': (
-                    f'Establish formal {domain} governance structure for {org_name}',
-                    'CEO / CISO', 'Months 1-3',
-                    (f'Approved governance committee charter + full RACI matrix '
-                     f'for {domain} roles + formal CISO appointment — '
-                     f'satisfies {fw_short} governance domain'),
-                ),
-                'awareness': (
-                    f'{domain} awareness & security training programme for {org_name} staff',
-                    'CISO / HR Director', 'Months 2-9',
-                    f'≥ 90% of staff pass annual training; ≤ 5% phishing simulation click-rate',
-                ),
-                'incident_response': (
-                    f'Establish SOC and {domain} detection/response capability',
-                    'CISO / SOC Manager', 'Months 2-6',
-                    (f'24/7 SOC operational (MTTD ≤ 60 min; MTTR ≤ 4 hrs) + '
-                     f'production SIEM + approved {fw_short}-compliant IR runbook'),
-                ),
-                'staffing': (
-                    f'Build {domain} specialist workforce at {org_name}',
-                    'HR Director', 'Months 3-12',
-                    f'≥ 80% of specialist {domain} roles filled + documented development plans',
-                ),
-                'suppliers': (
-                    f'Launch third-party risk management programme at {org_name}',
-                    'TPRM Lead / DPO', 'Months 4-10',
-                    f'100% of critical suppliers assessed per {fw_short} controls + approved contract templates',
-                ),
-                'compliance': (
-                    f'Build {fw_short} compliance-evidence system',
-                    'GRC Director', 'Months 3-9',
-                    f'100% of critical controls documented with audit evidence + quarterly executive reporting',
-                ),
-                'continuity': (
-                    f'Activate business continuity & DR framework at {org_name}',
-                    'COO / IT Director', 'Months 4-12',
-                    ('Approved BCP/DR plan + ≥ 2 recovery tests per year + '
-                     '100% of critical assets covered by tested backup procedures'),
-                ),
-                'monitoring': (
-                    f'Build continuous monitoring capability for {domain} assets',
-                    'CISO / Security Architect', 'Months 2-8',
-                    (f'≥ 95% of critical assets under real-time monitoring + '
-                     f'operational dashboards aligned to {fw_short}'),
-                ),
-                'technology_gap': (
-                    f'Acquire and deploy missing foundational {domain} technical capabilities',
-                    'CIO / CISO', 'Months 1-9',
-                    (f'SIEM/EDR/IAM/Backup production-ready + integrated + '
-                     f'documented per {fw_short} technical controls'),
-                ),
-            }
-    else:
-        # Drafting-mode priority bank — generic owners and deliverables
-        if is_ar:
-            priority_bank = {
-                'structural': (
-                    f'تأسيس هيكل حوكمة {domain} الرسمي لـ{org_name}',
-                    f'رئيس {org_name}',
-                    'الشهر 1 إلى الشهر 3',
-                    (f'ميثاق لجنة الحوكمة معتمد + هيكل تنظيمي + مصفوفة RACI '
-                     f'لأدوار {domain} — يغلق فجوة الهيكل البنيوي'),
-                ),
-                'awareness': (
-                    f'برنامج توعية وتدريب {domain} لكوادر {org_name}',
-                    'الموارد البشرية',
-                    'الشهر 2 إلى الشهر 9',
-                    'مسار تدريبي معتمد + سجل الاجتياز الدوري',
-                ),
-                'incident_response': (
-                    f'تأسيس SOC وتشغيل قدرات الكشف والاستجابة لحوادث {domain}',
-                    f'عمليات {domain}',
-                    'الشهر 2 إلى الشهر 6',
-                    (f'SOC عامل 24/7 + SIEM منتج + كتيب الاستجابة '
-                     f'لحوادث {domain}'),
-                ),
-                'staffing': (
-                    f'بناء الكفاءات المتخصصة في {domain}',
-                    'الموارد البشرية + التدريب',
-                    'الشهر 3 إلى الشهر 12',
-                    'خطة توظيف + شهادات تخصصية + مسار تطوير مهني',
-                ),
-                'suppliers': (
-                    f'إطلاق برنامج إدارة مخاطر الأطراف الثالثة لـ{org_name}',
-                    f'إدارة {domain}',
-                    'الشهر 4 إلى الشهر 10',
-                    f'سجل تقييم الموردين وفق {fw_short} + نماذج تعاقدية',
-                ),
-                'compliance': (
-                    f'بناء منظومة أدلة الامتثال لـ{fw_short}',
-                    'الحوكمة والامتثال',
-                    'الشهر 3 إلى الشهر 9',
-                    'مستودع أدلة التدقيق + خطة الإبلاغ الدوري',
-                ),
-                'continuity': (
-                    f'تفعيل إطار استمرارية الأعمال والتعافي لـ{org_name}',
-                    f'إدارة {domain} وتقنية المعلومات',
-                    'الشهر 4 إلى الشهر 12',
-                    ('خطة BCP/DR معتمدة + اختبار تعافي دوري + '
-                     'مستودع نسخ احتياطي منتظم'),
-                ),
-                'monitoring': (
-                    f'تطوير قدرات الرصد والمراقبة المستمرة لأصول {domain}',
-                    f'عمليات {domain}',
-                    'الشهر 2 إلى الشهر 8',
-                    ('لوحات مراقبة حية + تغطية رصد كاملة + '
-                     'إجراءات استجابة مرتبطة'),
-                ),
-                'technology_gap': (
-                    f'اقتناء ونشر القدرات التقنية الأساسية المفقودة',
-                    f'تقنية المعلومات و{domain}',
-                    'الشهر 1 إلى الشهر 9',
-                    ('قدرات تقنية منتجة: SIEM/EDR/IAM/Backup مدمجة ومختبرة '
-                     'مع أدلة التشغيل'),
-                ),
-            }
-        else:
-            priority_bank = {
-                'structural': (
-                    f'Establish formal {domain} governance structure for {org_name}',
-                    f'{org_name} CEO', 'Months 1-3',
-                    (f'Approved committee charter + org structure + RACI '
-                     f'matrix — closes structural gap'),
-                ),
-                'awareness': (
-                    f'{domain} awareness & training programme for {org_name} staff',
-                    'HR', 'Months 2-9',
-                    'Approved training curriculum + periodic pass-rate records',
-                ),
-                'incident_response': (
-                    f'Establish SOC and {domain} detection/response capability',
-                    f'{domain} Operations', 'Months 2-6',
-                    f'24/7 SOC + production SIEM + {domain} IR runbook',
-                ),
-                'staffing': (
-                    f'Build {domain} specialist workforce',
-                    'HR + Training', 'Months 3-12',
-                    'Hiring plan + certifications + professional-development track',
-                ),
-                'suppliers': (
-                    f'Launch third-party risk management programme at {org_name}',
-                    f'{domain} Management', 'Months 4-10',
-                    f'{fw_short}-aligned supplier assessment register + contracts',
-                ),
-                'compliance': (
-                    f'Build {fw_short} compliance-evidence system',
-                    'GRC', 'Months 3-9',
-                    'Audit-evidence repository + periodic reporting plan',
-                ),
-                'continuity': (
-                    f'Activate business continuity & DR framework at {org_name}',
-                    f'{domain} Management + IT', 'Months 4-12',
-                    ('Approved BCP/DR plan + periodic recovery testing + '
-                     'regular backup repository'),
-                ),
-                'monitoring': (
-                    f'Build continuous monitoring capability for {domain} assets',
-                    f'{domain} Operations', 'Months 2-8',
-                    ('Live monitoring dashboards + full detection coverage + '
-                     'linked response procedures'),
-                ),
-                'technology_gap': (
-                    f'Acquire and deploy missing foundational technical capabilities',
-                    f'IT + {domain}', 'Months 1-9',
-                    ('Production tech capabilities: SIEM/EDR/IAM/Backup '
-                     'integrated and tested with operations runbooks'),
-                ),
-            }
-
-    # Build new rows: priority first, then diagnostic_gaps entries, then
-    # generic fill.
-    has_header = bool(_ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|\s*(?:Owner|المسؤول)\s*\|',
-        _ts_re.IGNORECASE | _ts_re.MULTILINE,
-    ).search(roadmap))
-    existing_row_nums = set()
-    if has_header:
-        for cells in _ts_table_rows(roadmap, _simple_hdr):
-            if cells and cells[0].replace('.', '').isdigit():
-                existing_row_nums.add(int(cells[0]))
-    next_n = max(existing_row_nums) + 1 if existing_row_nums else 1
-
-    templates_ar = [
-        (f'تنفيذ موجة المعالجة الأولى وإغلاق الفجوات الحرجة',
-         f'تقنية المعلومات', 'الشهر 4 إلى الشهر 9',
-         'أدلة إغلاق الضوابط الحرجة'),
-        (f'إجراء تقييم الضوابط وفق {fw_short} وإصدار خطة المعالجة',
-         'فريق الحوكمة والامتثال', 'الشهر 3 إلى الشهر 6',
-         'تقرير التقييم وخطة المعالجة'),
-        (f'تطوير قدرات المراقبة المستمرة وتكامل الأدوات',
-         f'عمليات {domain}', 'الشهر 5 إلى الشهر 10',
-         'لوحات المراقبة التشغيلية'),
-        # ── Additional context-driven substantive templates (prompt
-        # clause 2 + 5) so the floor (4) is always reachable even
-        # when no priority slots and no diagnostic_gaps fire.
-        (f'إعداد سياسات وإجراءات {domain} وفق متطلبات {fw_short}',
-         f'فريق الحوكمة في {org_name}', 'الشهر 2 إلى الشهر 5',
-         'حزمة سياسات وإجراءات معتمدة قابلة للتدقيق'),
-        (f'تنفيذ برنامج التدقيق الداخلي والتقارير التنفيذية لـ{domain}',
-         'التدقيق الداخلي', 'الشهر 6 إلى الشهر 12',
-         'تقارير تدقيق ربعية وخطط معالجة موثقة'),
-        (f'إدارة سجل المخاطر التشغيلية لـ{domain} في قطاع {sector}',
-         f'إدارة المخاطر في {org_name}', 'الشهر 1 إلى الشهر 12',
-         'سجل مخاطر مُحدَّث + خطة استجابة مفعَّلة'),
-    ]
-    templates_en = [
-        ('Execute first remediation wave and close critical gaps',
-         'IT Operations', 'Months 4-9', 'Critical-control closure evidence'),
-        (f'Conduct {fw_short} control assessment and produce remediation plan',
-         'GRC Team', 'Months 3-6', 'Assessment report & remediation plan'),
-        ('Develop continuous monitoring capability and tool integration',
-         f'{domain} Operations', 'Months 5-10', 'Operational monitoring dashboards'),
-        # Additional context-driven substantive templates
-        (f'Develop {domain} policies and procedures aligned to {fw_short}',
-         f'{org_name} Governance', 'Months 2-5',
-         'Approved auditable policy + procedures pack'),
-        (f'Run internal audit programme and executive reporting for {domain}',
-         'Internal Audit', 'Months 6-12',
-         'Quarterly audit reports + documented remediation plans'),
-        (f'Operate {domain} risk register for the {sector} sector',
-         f'{org_name} Risk Management', 'Months 1-12',
-         'Live risk register + active response plan'),
-    ]
-    generic_templates = templates_ar if is_ar else templates_en
-
-    # Assemble new_tuples (activity, owner, timeline, deliverable)
-    new_tuples = []
-    for slot in priority_slots:
-        new_tuples.append(priority_bank[slot])
-
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-            if not title:
-                continue
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        # Skip if existing rows or priority rows already cover it
-        tl = title.lower()
-        dup = (_row_mentions(_existing_blob, (tl,), (title,)) or
-               any(tl in t[0].lower() for t in new_tuples))
-        if dup:
-            continue
-        if is_ar:
-            new_tuples.append((
-                f'معالجة: {title}',
-                f'فريق {domain}',
-                'الشهر 3 إلى الشهر 9',
-                f'أدلة إغلاق الفجوة وفق {fw_short}',
-            ))
-        else:
-            new_tuples.append((
-                f'Remediate: {title}',
-                f'{domain} Team', 'Months 3-9',
-                f'Gap-closure evidence aligned to {fw_short}',
-            ))
-
-    # Fill to reach the floor
-    gi = 0
-    while (current + len(new_tuples)) < needed_floor and gi < len(generic_templates):
-        new_tuples.append(generic_templates[gi])
-        gi += 1
-
-    if not new_tuples:
-        return 0
-
-    # If no header, inject one
-    if not has_header:
-        if is_ar:
-            skeleton = (
-                ('## 5. خارطة طريق التنفيذ\n\n' if '## 5' not in roadmap else '')
-                + '| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n'
-                + '|---|--------|---------|---------------|--------|\n'
-            )
-        else:
-            skeleton = (
-                ('## 5. Implementation Roadmap\n\n' if '## 5' not in roadmap else '')
-                + '| # | Activity | Owner | Timeline | Deliverable |\n'
-                + '|---|----------|-------|----------|-------------|\n'
-            )
-        roadmap = roadmap.rstrip() + ('\n\n' if roadmap.strip() else '') + skeleton
-
-    # Append rows
-    lines = roadmap.split('\n')
-    insert_after = len(lines) - 1
-    for idx in range(len(lines) - 1, -1, -1):
-        s = lines[idx].strip()
-        if s.startswith('|') and s.endswith('|'):
-            insert_after = idx
-            break
-
-    new_rows = []
-    for offset, tpl in enumerate(new_tuples):
-        new_rows.append(
-            f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} | {tpl[3]} |'
+    # Insufficient -- AI-first repair. Strict domain resolution: do
+    # NOT silently default to Cyber Security if domain is missing or
+    # invalid; surface a RepairError instead.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain,
+            lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-    lines = lines[:insert_after + 1] + new_rows + lines[insert_after + 1:]
-    sections['roadmap'] = '\n'.join(lines)
-    return len(new_rows)
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_roadmap_depth: cannot resolve domain context '
+            f'for {domain!r}: {_de}'
+        )
+
+    repaired = ai_repair_strategy_section(
+        section_key='roadmap',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity='',
+        generation_mode=generation_mode,
+        validation_error=(
+            f'roadmap_rows_insufficient:{current}/{needed_floor}'
+        ),
+        min_rows=needed_floor,
+    )
+
+    n_after = _count_substantive_roadmap_rows(repaired)
+    if n_after < needed_floor:
+        raise RepairError(
+            f'synthesize_roadmap_depth: AI-repaired roadmap invalid '
+            f'(rows={n_after}/{needed_floor})'
+        )
+
+    sections['roadmap'] = repaired
+    return n_after
 
 
 def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
@@ -17331,22 +16645,36 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
                          diagnostic_gaps=None,
                          sector='General',
                          org_name='The Organization'):
-    """Diagnostic-driven KPI row synthesis.
+    """AI-first KPI synthesis (PR-5B.5B).
 
-    Prioritized KPI injection order (prompt Part 2F):
-      - If org_structure_is_none=True: "governance implementation" KPI
-      - For each active challenge_flag: matching KPI (awareness pass rate,
-        IR detection time, TPRM coverage, etc.)
-      - Generic fallback templates last, only if still below floor
-    generation_mode adjusts padding (drafting=bar, consulting=+1,
-    assurance=+2).
-    Returns count of rows added.
+    Behaviour:
+      * If ``sections['kpis']`` already has ``>= floor`` substantive
+        rows (``count_substantive_kpis``) AND the section contains
+        the required Frequency / التكرار column, return ``0`` and
+        leave ``sections['kpis']`` unchanged. AI repair is not
+        invoked.
+      * Otherwise, call :func:`ai_repair_strategy_section` with
+        ``section_key='kpis'``, validate the repaired markdown
+        (must contain ``>= floor`` substantive rows and a
+        ``Frequency``/``التكرار`` column), and replace
+        ``sections['kpis']`` with the repaired text. Return the
+        number of valid repaired rows.
+      * On AI failure or invalid repaired output, raise
+        :class:`RepairError`. No deterministic priority bank is used,
+        no header skeleton or filler rows are emitted, no KPI guide
+        rows are inserted, and ``_build_domain_kpi_bank_ar`` /
+        ``_build_domain_kpi_bank_en`` are never called.
+
+    The KPI floor is mode-aware:
+        ``drafting``    → ``_RICHNESS_MIN_KPI_ROWS``
+        ``consulting``  → ``_RICHNESS_MIN_KPI_ROWS + 1``
+        ``assurance``   → ``_RICHNESS_MIN_KPI_ROWS + 2``
+
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` parameters are retained for signature
+    compatibility with the pipeline call sites.
     """
     kpis = sections.get('kpis', '') or ''
-    current = count_substantive_kpis(kpis)
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
 
     _mode_lc = str(generation_mode).lower()
     needed_floor = _RICHNESS_MIN_KPI_ROWS
@@ -17355,253 +16683,61 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
     elif _mode_lc == 'assurance':
         needed_floor += 2
 
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
-        _ts_re.IGNORECASE,
-    )
-    existing_row_nums = set()
-    existing_blob_parts = []
-    for cells in _ts_table_rows(kpis, hdr_re):
-        if cells and cells[0].replace('.', '').isdigit():
-            existing_row_nums.add(int(cells[0]))
-            existing_blob_parts.append(' '.join(str(c) for c in cells))
-    _existing_blob = ' | '.join(existing_blob_parts)
-    next_n = max(existing_row_nums) + 1 if existing_row_nums else 1
-    has_header = bool(hdr_re.search(kpis))
+    current = count_substantive_kpis(kpis)
+    # Required schema column: must contain a Frequency / التكرار
+    # column header (case-insensitive on the English form).
+    has_freq_col = bool(_ts_re.search(
+        r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
+        kpis, _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    ))
 
-    def _mentions(en_tokens, ar_tokens):
-        tl = _existing_blob.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in _existing_blob:
-                return True
-        return False
-
-    coverage = {
-        'structural': _mentions(
-            ('governance', 'charter', 'committee', 'structure',
-             'organizational'),
-            ('حوكمة', 'ميثاق', 'لجنة', 'هيكل')),
-        'awareness': _mentions(
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _mentions(
-            ('soc', 'siem', 'incident', 'detection', 'response time'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'suppliers': _mentions(
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _mentions(
-            ('control implementation', 'compliance', 'audit'),
-            ('تطبيق الضوابط', 'امتثال', 'تدقيق')),
-        'staffing': _mentions(
-            ('staff', 'skill', 'workforce', 'hiring'),
-            ('كوادر', 'مهارات', 'توظيف')),
-    }
-
-    need_slots = []
-    if org_structure_is_none and not coverage['structural']:
-        need_slots.append('structural')
-    for k in ('awareness', 'incident_response', 'suppliers',
-              'compliance', 'staffing'):
-        if challenge_flags.get(k) and not coverage[k]:
-            need_slots.append(k)
-
-    # If row count meets floor AND no diagnostic injection needed, no-op
-    if (current >= needed_floor and not need_slots and not diagnostic_gaps):
+    if current >= needed_floor and has_freq_col:
         return 0
 
-    # Priority KPI bank — each entry is a 5-tuple
-    # (description, target, formula, justification, timeframe)
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'نسبة اكتمال تأسيس هيكل حوكمة {domain}',
-                '100%',
-                '(الخطوات المنجزة ÷ خطوات التأسيس) × 100',
-                'يقيس إغلاق فجوة الهيكل البنيوي المشخّصة',
-                'خلال 6 أشهر',
-            ),
-            'awareness': (
-                f'نسبة اجتياز تدريبات التوعية بـ{domain}',
-                '≥ 90%',
-                '(المجتازين ÷ المستهدفين) × 100',
-                f'يعكس إغلاق فجوة الوعي لدى كوادر {org_name}',
-                'خلال 9 أشهر',
-            ),
-            'incident_response': (
-                'متوسط زمن الاستجابة للحوادث (MTTR)',
-                '≤ 4 ساعات',
-                '(مجموع زمن الاستجابة ÷ عدد الحوادث)',
-                f'يقيس قدرة SOC المنفذ ضمن خارطة الطريق',
-                'خلال 6 أشهر',
-            ),
-            'suppliers': (
-                'نسبة تغطية تقييم الأطراف الثالثة',
-                '100% للموردين الحرجين',
-                '(المُقيَّم ÷ الإجمالي) × 100',
-                f'يقيس إغلاق فجوة مخاطر سلسلة الإمداد',
-                'خلال 12 شهراً',
-            ),
-            'compliance': (
-                f'نسبة تطبيق ضوابط {fw_short} مع أدلة التدقيق',
-                '≥ 95%',
-                '(المطبّق المُوَثَّق ÷ الإجمالي) × 100',
-                'يقيس إغلاق فجوة إثبات الامتثال',
-                'خلال 12 شهراً',
-            ),
-            'staffing': (
-                'نسبة سدّ الشواغر المتخصصة',
-                '≥ 80%',
-                '(الشواغر المسدودة ÷ المطلوبة) × 100',
-                'يعالج نقص الكوادر المشخّص',
-                'خلال 18 شهراً',
-            ),
-            'baseline': (
-                f'نسبة إغلاق الفجوات المشخّصة',
-                '100%',
-                '(المغلقة ÷ الإجمالي) × 100',
-                f'يعكس تقدم {org_name} على خارطة الطريق',
-                'خلال 12 شهراً',
-            ),
-        }
-    else:
-        priority_bank = {
-            'structural': (
-                f'{domain} governance structure establishment completion',
-                '100%',
-                '(Steps completed ÷ Setup steps) × 100',
-                'Measures closure of diagnosed structural gap',
-                'Within 6 months',
-            ),
-            'awareness': (
-                f'{domain} awareness training pass rate',
-                '≥ 90%',
-                '(Passed ÷ Enrolled) × 100',
-                f'Reflects closure of awareness gap at {org_name}',
-                'Within 9 months',
-            ),
-            'incident_response': (
-                'Mean time to respond (MTTR)',
-                '≤ 4 hours',
-                '(Sum response time ÷ # incidents)',
-                'Measures SOC capability delivered via roadmap',
-                'Within 6 months',
-            ),
-            'suppliers': (
-                'Third-party assessment coverage',
-                '100% of critical suppliers',
-                '(Assessed ÷ Total) × 100',
-                'Measures closure of supply-chain risk gap',
-                'Within 12 months',
-            ),
-            'compliance': (
-                f'{fw_short} control implementation with audit evidence',
-                '≥ 95%',
-                '(Implemented & evidenced ÷ Total) × 100',
-                'Measures closure of compliance-evidence gap',
-                'Within 12 months',
-            ),
-            'staffing': (
-                'Specialist role fill rate',
-                '≥ 80%',
-                '(Filled ÷ Required) × 100',
-                'Addresses diagnosed staffing shortage',
-                'Within 18 months',
-            ),
-            'baseline': (
-                f'Diagnosed-gap closure rate',
-                '100%',
-                '(Closed ÷ Total) × 100',
-                f'Reflects {org_name} progress on roadmap',
-                'Within 12 months',
-            ),
-        }
-
-    # Inject header if missing
-    if not has_header:
-        if is_ar:
-            skeleton = (
-                ('## 6. مؤشرات الأداء الرئيسية\n\n' if '## 6' not in kpis else '')
-                + '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | المبرر | الإطار الزمني |\n'
-                + '|---|-------------|-----------------|----------------|--------|----------------|\n'
-            )
-        else:
-            skeleton = (
-                ('## 6. Key Performance Indicators\n\n' if '## 6' not in kpis else '')
-                + '| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n'
-                + '|---|-----------------|--------------|---------------------|---------------|-----------|\n'
-            )
-        kpis = kpis.rstrip() + ('\n\n' if kpis.strip() else '') + skeleton
-
-    # Assemble new rows: priority → diagnostic_gaps → baseline fill
-    new_tuples = []
-    for slot in need_slots:
-        new_tuples.append(priority_bank[slot])
-
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        if not title:
-            continue
-        tl = title.lower()
-        if tl in _existing_blob.lower():
-            continue
-        if any(tl[:30] in str(t[0]).lower() for t in new_tuples):
-            continue
-        if is_ar:
-            new_tuples.append((
-                f'مؤشر إغلاق: {title}',
-                '100%', '(المُنجز ÷ الإجمالي) × 100',
-                'ناتج مباشر عن تشخيص الفجوة', 'خلال 12 شهراً',
-            ))
-        else:
-            new_tuples.append((
-                f'Closure KPI: {title}',
-                '100%', '(Completed ÷ Total) × 100',
-                'Direct diagnostic outcome', 'Within 12 months',
-            ))
-
-    # Baseline fill
-    while (current + len(new_tuples)) < needed_floor:
-        new_tuples.append(priority_bank['baseline'])
-        if len(new_tuples) > 15:
-            break
-
-    if not new_tuples:
-        sections['kpis'] = kpis
-        return 0
-
-    lines = kpis.split('\n')
-    insert_after = -1
-    in_tbl = False
-    for idx, ln in enumerate(lines):
-        s = ln.strip()
-        if not in_tbl:
-            if hdr_re.match(s):
-                in_tbl = True
-            continue
-        if s.startswith('|') and s.endswith('|'):
-            insert_after = idx
-        else:
-            break
-    if insert_after < 0:
-        insert_after = len(lines) - 1
-
-    new_rows = []
-    for offset, tpl in enumerate(new_tuples):
-        new_rows.append(
-            f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} | {tpl[3]} | {tpl[4]} |'
+    # Insufficient or schema missing — AI-first repair.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain or 'Cyber Security', lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-    lines = lines[:insert_after + 1] + new_rows + lines[insert_after + 1:]
-    sections['kpis'] = '\n'.join(lines)
-    return len(new_rows)
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_kpi_depth: cannot resolve domain context '
+            f'for {domain!r}: {_de}'
+        )
+
+    if current < needed_floor:
+        _why = f'kpi_rows_insufficient:{current}/{needed_floor}'
+    else:
+        _why = 'kpi_section_missing_frequency_column'
+
+    repaired = ai_repair_strategy_section(
+        section_key='kpis',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity='',
+        generation_mode=generation_mode,
+        validation_error=_why,
+        min_rows=needed_floor,
+    )
+
+    n_after = count_substantive_kpis(repaired)
+    has_freq_after = bool(_ts_re.search(
+        r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
+        repaired, _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    ))
+    if n_after < needed_floor or not has_freq_after:
+        raise RepairError(
+            f'synthesize_kpi_depth: AI-repaired KPI section invalid '
+            f'(rows={n_after}/{needed_floor}, '
+            f'has_frequency_column={has_freq_after})'
+        )
+
+    sections['kpis'] = repaired
+    return n_after
 
 
 def synthesize_confidence_depth(sections, lang, domain='Cyber Security',
@@ -24389,6 +23525,21 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "with 6 columns:\n"
             "| # | Risk | Likelihood | Impact | Owner | Treatment Strategy |\n"
             "Generate at least {min_rows} risk rows; do not duplicate the heading."
+        ),
+    },
+    "roadmap": {
+        "ar": (
+            "أرجع قسم \"## 5. خارطة الطريق التنفيذية\" فقط، باستخدام "
+            "جدول Markdown ذي 5 أعمدة بالضبط بالترتيب التالي:\n"
+            "| # | النشاط | المسؤول | الإطار الزمني | المخرج |\n"
+            "أنشئ على الأقل {min_rows} صفًا. لا تُدرج رؤوسًا أخرى ولا أقسامًا أخرى."
+        ),
+        "en": (
+            "Return ONLY the '## 5. Implementation Roadmap' section as "
+            "a Markdown pipe table with EXACTLY 5 columns in this order:\n"
+            "| # | Activity | Owner | Timeline | Deliverable |\n"
+            "Generate at least {min_rows} rows. Do not include other "
+            "headings or other sections."
         ),
     },
 }
