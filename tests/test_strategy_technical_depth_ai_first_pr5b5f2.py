@@ -2,16 +2,15 @@
 ``enforce_technical_strategy_depth``.
 
 Each scenario monkey-patches the migrated AI synth helpers
-(``synthesize_objectives_depth`` / ``synthesize_kpi_depth``) and the
-deterministic helpers (``_build_domain_so_bank_*`` / ``_build_domain_kpi_bank_*``)
-to assert:
+(``synthesize_objectives_depth`` / ``synthesize_kpi_depth``) to assert:
 
   * SO shortfall delegates to ``synthesize_objectives_depth``.
   * KPI shortfall delegates to ``synthesize_kpi_depth``.
-  * ``_build_domain_so_bank_ar/en`` are NOT called from
-    ``enforce_technical_strategy_depth``.
-  * ``_build_domain_kpi_bank_ar/en`` are NOT called from
-    ``enforce_technical_strategy_depth``.
+  * ``_build_domain_so_bank_ar/en`` are NOT referenced from
+    ``enforce_technical_strategy_depth`` (statically proven by AST scan
+    after PR-5B.5H deletion of those helpers).
+  * ``_build_domain_kpi_bank_ar/en`` are NOT referenced from
+    ``enforce_technical_strategy_depth`` (same).
   * ``RepairError`` from objective synth is annotated with
     ``section="vision"`` and propagates out.
   * ``RepairError`` from KPI synth is annotated with ``section="kpis"``
@@ -39,11 +38,12 @@ os.environ.setdefault('ANTHROPIC_API_KEY', 'dummy')
 os.environ.setdefault('GOOGLE_API_KEY', 'dummy')
 
 _APP = None
+_APP_PY_PATH = os.path.join(os.path.dirname(__file__), '..', 'app.py')
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
     import importlib.util
     _spec = importlib.util.spec_from_file_location(
-        'app', os.path.join(os.path.dirname(__file__), '..', 'app.py'))
+        'app', _APP_PY_PATH)
     _APP = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_APP)
 except Exception:  # pragma: no cover - environment-dependent
@@ -194,83 +194,49 @@ class EnforceTechnicalStrategyDepthAIFirst(unittest.TestCase):
 
     # ── 3. _build_domain_so_bank_ar/en NOT called ─────────────────────────
     def test_3_build_domain_so_bank_helpers_not_called(self):
-        called = {'ar': 0, 'en': 0}
-
-        def _spy_ar(*_a, **_k):
-            called['ar'] += 1
-            raise AssertionError(
-                'enforce_technical_strategy_depth must not call '
-                '_build_domain_so_bank_ar')
-
-        def _spy_en(*_a, **_k):
-            called['en'] += 1
-            raise AssertionError(
-                'enforce_technical_strategy_depth must not call '
-                '_build_domain_so_bank_en')
-
-        # Stub the AI synth so the branch executes without an AI provider.
-        def _ok_objs(sections, lang, **kwargs):
-            sections['vision'] = _RICH_VISION_AR
-
-        sections = _make_sections(vision=_THIN_VISION_AR, kpis=_RICH_KPIS_AR)
-        patches = [
-            _Patch(_APP, '_build_domain_so_bank_ar', _spy_ar),
-            _Patch(_APP, '_build_domain_so_bank_en', _spy_en),
-            _Patch(_APP, 'synthesize_objectives_depth', _ok_objs),
-        ]
-        for p in patches:
-            p.__enter__()
-        try:
-            _APP.enforce_technical_strategy_depth(
-                sections, 'ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-                sector='Government', org_name='Acme',
-                maturity='initial', generation_mode='consulting')
-        finally:
-            for p in reversed(patches):
-                p.__exit__(None, None, None)
-        self.assertEqual(called['ar'], 0)
-        self.assertEqual(called['en'], 0)
+        # PR-5B.5H: the four legacy bank helpers were physically deleted
+        # from app.py, so a runtime spy on a symbol that no longer exists
+        # has no value.  Replace with an AST scan that proves
+        # enforce_technical_strategy_depth (and the rest of app.py) does
+        # not reference either name as a Call, and that the names are
+        # absent from the imported module.
+        import ast
+        with open(_APP_PY_PATH, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=_APP_PY_PATH)
+        targets = {'_build_domain_so_bank_ar', '_build_domain_so_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    'enforce_technical_strategy_depth (or any production '
+                    f'code) must not call legacy SO bank helper {name!r} '
+                    f'at app.py:{node.lineno}')
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_en'))
 
     # ── 4. _build_domain_kpi_bank_ar/en NOT called ────────────────────────
     def test_4_build_domain_kpi_bank_helpers_not_called(self):
-        called = {'ar': 0, 'en': 0}
-
-        def _spy_ar(*_a, **_k):
-            called['ar'] += 1
-            raise AssertionError(
-                'enforce_technical_strategy_depth must not call '
-                '_build_domain_kpi_bank_ar')
-
-        def _spy_en(*_a, **_k):
-            called['en'] += 1
-            raise AssertionError(
-                'enforce_technical_strategy_depth must not call '
-                '_build_domain_kpi_bank_en')
-
-        def _ok_kpis(sections, lang, **kwargs):
-            sections['kpis'] = _RICH_KPIS_AR
-            return 6
-
-        sections = _make_sections(vision=_RICH_VISION_AR, kpis=_THIN_KPIS_AR)
-        patches = [
-            _Patch(_APP, '_build_domain_kpi_bank_ar', _spy_ar),
-            _Patch(_APP, '_build_domain_kpi_bank_en', _spy_en),
-            _Patch(_APP, 'synthesize_kpi_depth', _ok_kpis),
-        ]
-        for p in patches:
-            p.__enter__()
-        try:
-            _APP.enforce_technical_strategy_depth(
-                sections, 'ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-                sector='Government', org_name='Acme',
-                maturity='initial', generation_mode='consulting')
-        finally:
-            for p in reversed(patches):
-                p.__exit__(None, None, None)
-        self.assertEqual(called['ar'], 0)
-        self.assertEqual(called['en'], 0)
+        # PR-5B.5H: see test_3 — switched to AST + symbol-absence after
+        # the four helpers were deleted.
+        import ast
+        with open(_APP_PY_PATH, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=_APP_PY_PATH)
+        targets = {'_build_domain_kpi_bank_ar', '_build_domain_kpi_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    'enforce_technical_strategy_depth (or any production '
+                    f'code) must not call legacy KPI bank helper {name!r} '
+                    f'at app.py:{node.lineno}')
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_en'))
 
     # ── 5. RepairError from SO synth is annotated section="vision" ────────
     def test_5_repair_error_from_so_annotated_vision_and_propagates(self):

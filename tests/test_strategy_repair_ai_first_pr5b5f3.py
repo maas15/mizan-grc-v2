@@ -2,23 +2,23 @@
 and repair_kpi_section_if_missing_frequency.
 
 Each scenario monkey-patches the migrated AI synth helpers
-(``synthesize_objectives_depth`` / ``synthesize_kpi_depth``) and the
-deterministic helpers (``_build_domain_so_bank_*`` / ``_build_domain_kpi_bank_*``)
-to assert:
+(``synthesize_objectives_depth`` / ``synthesize_kpi_depth``) to assert:
 
   1. Vision lede/subheading schema-only path still works without invoking AI
      when the section already has ≥ 6 valid objectives.
   2. Insufficient objectives delegate to ``synthesize_objectives_depth``.
-  3. ``_build_domain_so_bank_ar/en`` are NOT called from
-     ``repair_vision_objectives_if_insufficient``.
+  3. ``_build_domain_so_bank_ar/en`` are NOT referenced from
+     ``repair_vision_objectives_if_insufficient`` (statically proven by
+     AST scan after PR-5B.5H deletion of those helpers).
   4. AI-repaired objectives with < 6 rows are rejected with
      ``RepairError(section='vision')``.
   5. KPI with missing Frequency delegates to ``synthesize_kpi_depth`` for
      the cyber domain.
   6. KPI with missing Frequency delegates to ``synthesize_kpi_depth`` for
      non-cyber domains (single AI-first path).
-  7. ``_build_domain_kpi_bank_ar/en`` are NOT called from
-     ``repair_kpi_section_if_missing_frequency``.
+  7. ``_build_domain_kpi_bank_ar/en`` are NOT referenced from
+     ``repair_kpi_section_if_missing_frequency`` (statically proven by
+     AST scan after PR-5B.5H deletion of those helpers).
   8. Hardcoded KPI rows / guide blocks are not inserted after a
      ``RepairError``; the original KPI section is preserved.
   9. ``RepairError`` from vision repair propagates with ``section='vision'``.
@@ -245,34 +245,26 @@ class RepairVisionAndKpiAIFirst(unittest.TestCase):
 
     # ── 3. _build_domain_so_bank_ar/en NOT called ─────────────────────────
     def test_3_build_domain_so_bank_helpers_not_called(self):
-        called = {'ar': 0, 'en': 0}
-
-        def _spy_ar(*_a, **_kw):
-            called['ar'] += 1
-            raise AssertionError(
-                'repair_vision_objectives_if_insufficient must not call '
-                '_build_domain_so_bank_ar')
-
-        def _spy_en(*_a, **_kw):
-            called['en'] += 1
-            raise AssertionError(
-                'repair_vision_objectives_if_insufficient must not call '
-                '_build_domain_so_bank_en')
-
-        def _ok(sections, lang, **_kw):
-            sections['vision'] = _stub_so_section(rows=8)
-
-        sections = {'vision': _THIN_VISION_AR}
-        with _Patch(_APP, '_build_domain_so_bank_ar', _spy_ar), \
-             _Patch(_APP, '_build_domain_so_bank_en', _spy_en), \
-             _Patch(_APP, 'synthesize_objectives_depth', _ok):
-            _APP.repair_vision_objectives_if_insufficient(
-                sections, lang='ar',
-                domain='Cyber Security', org_name='Acme',
-                frameworks=['NCA ECC'], sector='Government',
-            )
-        self.assertEqual(called['ar'], 0)
-        self.assertEqual(called['en'], 0)
+        # PR-5B.5H: legacy SO bank helpers deleted; switch from runtime
+        # spies to AST scan + symbol-absence assertion.
+        import ast
+        import os
+        path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        with open(path, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        targets = {'_build_domain_so_bank_ar', '_build_domain_so_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    'repair_vision_objectives_if_insufficient (or any '
+                    f'production code) must not call {name!r} at '
+                    f'app.py:{node.lineno}')
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_en'))
 
     # ── 4. AI-repaired vision with < 6 rows → RepairError section='vision'
     def test_4_ai_repair_below_six_rows_raises_repair_error_vision(self):
@@ -336,35 +328,26 @@ class RepairVisionAndKpiAIFirst(unittest.TestCase):
 
     # ── 7. _build_domain_kpi_bank_ar/en NOT called ────────────────────────
     def test_7_build_domain_kpi_bank_helpers_not_called(self):
-        called = {'ar': 0, 'en': 0}
-
-        def _spy_ar(*_a, **_kw):
-            called['ar'] += 1
-            raise AssertionError(
-                'repair_kpi_section_if_missing_frequency must not call '
-                '_build_domain_kpi_bank_ar')
-
-        def _spy_en(*_a, **_kw):
-            called['en'] += 1
-            raise AssertionError(
-                'repair_kpi_section_if_missing_frequency must not call '
-                '_build_domain_kpi_bank_en')
-
-        def _ok(sections, lang, **_kw):
-            sections['kpis'] = _stub_kpi_section_with_frequency(rows=10)
-            return 10
-
-        sections = {'kpis': _KPI_MISSING_FREQUENCY_AR}
-        with _Patch(_APP, '_build_domain_kpi_bank_ar', _spy_ar), \
-             _Patch(_APP, '_build_domain_kpi_bank_en', _spy_en), \
-             _Patch(_APP, 'synthesize_kpi_depth', _ok):
-            _APP.repair_kpi_section_if_missing_frequency(
-                sections, lang='ar',
-                domain='Cyber Security', org_name='Acme',
-                sector='Government', frameworks=['NCA ECC'],
-            )
-        self.assertEqual(called['ar'], 0)
-        self.assertEqual(called['en'], 0)
+        # PR-5B.5H: legacy KPI bank helpers deleted; switch from runtime
+        # spies to AST scan + symbol-absence assertion.
+        import ast
+        import os
+        path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        with open(path, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        targets = {'_build_domain_kpi_bank_ar', '_build_domain_kpi_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    'repair_kpi_section_if_missing_frequency (or any '
+                    f'production code) must not call {name!r} at '
+                    f'app.py:{node.lineno}')
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_en'))
 
     # ── 8. RepairError → original KPI section preserved (no injection) ────
     def test_8_repair_error_leaves_kpi_section_unchanged(self):
