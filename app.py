@@ -17059,22 +17059,36 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
                          diagnostic_gaps=None,
                          sector='General',
                          org_name='The Organization'):
-    """Diagnostic-driven KPI row synthesis.
+    """AI-first KPI synthesis (PR-5B.5B).
 
-    Prioritized KPI injection order (prompt Part 2F):
-      - If org_structure_is_none=True: "governance implementation" KPI
-      - For each active challenge_flag: matching KPI (awareness pass rate,
-        IR detection time, TPRM coverage, etc.)
-      - Generic fallback templates last, only if still below floor
-    generation_mode adjusts padding (drafting=bar, consulting=+1,
-    assurance=+2).
-    Returns count of rows added.
+    Behaviour:
+      * If ``sections['kpis']`` already has ``>= floor`` substantive
+        rows (``count_substantive_kpis``) AND the section contains
+        the required Frequency / التكرار column, return ``0`` and
+        leave ``sections['kpis']`` unchanged. AI repair is not
+        invoked.
+      * Otherwise, call :func:`ai_repair_strategy_section` with
+        ``section_key='kpis'``, validate the repaired markdown
+        (must contain ``>= floor`` substantive rows and a
+        ``Frequency``/``التكرار`` column), and replace
+        ``sections['kpis']`` with the repaired text. Return the
+        number of valid repaired rows.
+      * On AI failure or invalid repaired output, raise
+        :class:`RepairError`. No deterministic priority bank is used,
+        no header skeleton or filler rows are emitted, no KPI guide
+        rows are inserted, and ``_build_domain_kpi_bank_ar`` /
+        ``_build_domain_kpi_bank_en`` are never called.
+
+    The KPI floor is mode-aware:
+        ``drafting``    → ``_RICHNESS_MIN_KPI_ROWS``
+        ``consulting``  → ``_RICHNESS_MIN_KPI_ROWS + 1``
+        ``assurance``   → ``_RICHNESS_MIN_KPI_ROWS + 2``
+
+    The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
+    ``org_structure_is_none`` parameters are retained for signature
+    compatibility with the pipeline call sites.
     """
     kpis = sections.get('kpis', '') or ''
-    current = count_substantive_kpis(kpis)
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
 
     _mode_lc = str(generation_mode).lower()
     needed_floor = _RICHNESS_MIN_KPI_ROWS
@@ -17083,253 +17097,61 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
     elif _mode_lc == 'assurance':
         needed_floor += 2
 
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI|المؤشر|Metric)\s*\|',
-        _ts_re.IGNORECASE,
-    )
-    existing_row_nums = set()
-    existing_blob_parts = []
-    for cells in _ts_table_rows(kpis, hdr_re):
-        if cells and cells[0].replace('.', '').isdigit():
-            existing_row_nums.add(int(cells[0]))
-            existing_blob_parts.append(' '.join(str(c) for c in cells))
-    _existing_blob = ' | '.join(existing_blob_parts)
-    next_n = max(existing_row_nums) + 1 if existing_row_nums else 1
-    has_header = bool(hdr_re.search(kpis))
+    current = count_substantive_kpis(kpis)
+    # Required schema column: must contain a Frequency / التكرار
+    # column header (case-insensitive on the English form).
+    has_freq_col = bool(_ts_re.search(
+        r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
+        kpis, _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    ))
 
-    def _mentions(en_tokens, ar_tokens):
-        tl = _existing_blob.lower()
-        for t in en_tokens:
-            if t in tl:
-                return True
-        for t in ar_tokens:
-            if t in _existing_blob:
-                return True
-        return False
-
-    coverage = {
-        'structural': _mentions(
-            ('governance', 'charter', 'committee', 'structure',
-             'organizational'),
-            ('حوكمة', 'ميثاق', 'لجنة', 'هيكل')),
-        'awareness': _mentions(
-            ('awareness', 'training', 'phishing'),
-            ('وعي', 'تدريب', 'تصيد')),
-        'incident_response': _mentions(
-            ('soc', 'siem', 'incident', 'detection', 'response time'),
-            ('مراقبة', 'استجابة', 'حوادث', 'كشف')),
-        'suppliers': _mentions(
-            ('supplier', 'vendor', 'third-party', 'third party'),
-            ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')),
-        'compliance': _mentions(
-            ('control implementation', 'compliance', 'audit'),
-            ('تطبيق الضوابط', 'امتثال', 'تدقيق')),
-        'staffing': _mentions(
-            ('staff', 'skill', 'workforce', 'hiring'),
-            ('كوادر', 'مهارات', 'توظيف')),
-    }
-
-    need_slots = []
-    if org_structure_is_none and not coverage['structural']:
-        need_slots.append('structural')
-    for k in ('awareness', 'incident_response', 'suppliers',
-              'compliance', 'staffing'):
-        if challenge_flags.get(k) and not coverage[k]:
-            need_slots.append(k)
-
-    # If row count meets floor AND no diagnostic injection needed, no-op
-    if (current >= needed_floor and not need_slots and not diagnostic_gaps):
+    if current >= needed_floor and has_freq_col:
         return 0
 
-    # Priority KPI bank — each entry is a 5-tuple
-    # (description, target, formula, justification, timeframe)
-    if is_ar:
-        priority_bank = {
-            'structural': (
-                f'نسبة اكتمال تأسيس هيكل حوكمة {domain}',
-                '100%',
-                '(الخطوات المنجزة ÷ خطوات التأسيس) × 100',
-                'يقيس إغلاق فجوة الهيكل البنيوي المشخّصة',
-                'خلال 6 أشهر',
-            ),
-            'awareness': (
-                f'نسبة اجتياز تدريبات التوعية بـ{domain}',
-                '≥ 90%',
-                '(المجتازين ÷ المستهدفين) × 100',
-                f'يعكس إغلاق فجوة الوعي لدى كوادر {org_name}',
-                'خلال 9 أشهر',
-            ),
-            'incident_response': (
-                'متوسط زمن الاستجابة للحوادث (MTTR)',
-                '≤ 4 ساعات',
-                '(مجموع زمن الاستجابة ÷ عدد الحوادث)',
-                f'يقيس قدرة SOC المنفذ ضمن خارطة الطريق',
-                'خلال 6 أشهر',
-            ),
-            'suppliers': (
-                'نسبة تغطية تقييم الأطراف الثالثة',
-                '100% للموردين الحرجين',
-                '(المُقيَّم ÷ الإجمالي) × 100',
-                f'يقيس إغلاق فجوة مخاطر سلسلة الإمداد',
-                'خلال 12 شهراً',
-            ),
-            'compliance': (
-                f'نسبة تطبيق ضوابط {fw_short} مع أدلة التدقيق',
-                '≥ 95%',
-                '(المطبّق المُوَثَّق ÷ الإجمالي) × 100',
-                'يقيس إغلاق فجوة إثبات الامتثال',
-                'خلال 12 شهراً',
-            ),
-            'staffing': (
-                'نسبة سدّ الشواغر المتخصصة',
-                '≥ 80%',
-                '(الشواغر المسدودة ÷ المطلوبة) × 100',
-                'يعالج نقص الكوادر المشخّص',
-                'خلال 18 شهراً',
-            ),
-            'baseline': (
-                f'نسبة إغلاق الفجوات المشخّصة',
-                '100%',
-                '(المغلقة ÷ الإجمالي) × 100',
-                f'يعكس تقدم {org_name} على خارطة الطريق',
-                'خلال 12 شهراً',
-            ),
-        }
-    else:
-        priority_bank = {
-            'structural': (
-                f'{domain} governance structure establishment completion',
-                '100%',
-                '(Steps completed ÷ Setup steps) × 100',
-                'Measures closure of diagnosed structural gap',
-                'Within 6 months',
-            ),
-            'awareness': (
-                f'{domain} awareness training pass rate',
-                '≥ 90%',
-                '(Passed ÷ Enrolled) × 100',
-                f'Reflects closure of awareness gap at {org_name}',
-                'Within 9 months',
-            ),
-            'incident_response': (
-                'Mean time to respond (MTTR)',
-                '≤ 4 hours',
-                '(Sum response time ÷ # incidents)',
-                'Measures SOC capability delivered via roadmap',
-                'Within 6 months',
-            ),
-            'suppliers': (
-                'Third-party assessment coverage',
-                '100% of critical suppliers',
-                '(Assessed ÷ Total) × 100',
-                'Measures closure of supply-chain risk gap',
-                'Within 12 months',
-            ),
-            'compliance': (
-                f'{fw_short} control implementation with audit evidence',
-                '≥ 95%',
-                '(Implemented & evidenced ÷ Total) × 100',
-                'Measures closure of compliance-evidence gap',
-                'Within 12 months',
-            ),
-            'staffing': (
-                'Specialist role fill rate',
-                '≥ 80%',
-                '(Filled ÷ Required) × 100',
-                'Addresses diagnosed staffing shortage',
-                'Within 18 months',
-            ),
-            'baseline': (
-                f'Diagnosed-gap closure rate',
-                '100%',
-                '(Closed ÷ Total) × 100',
-                f'Reflects {org_name} progress on roadmap',
-                'Within 12 months',
-            ),
-        }
-
-    # Inject header if missing
-    if not has_header:
-        if is_ar:
-            skeleton = (
-                ('## 6. مؤشرات الأداء الرئيسية\n\n' if '## 6' not in kpis else '')
-                + '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | المبرر | الإطار الزمني |\n'
-                + '|---|-------------|-----------------|----------------|--------|----------------|\n'
-            )
-        else:
-            skeleton = (
-                ('## 6. Key Performance Indicators\n\n' if '## 6' not in kpis else '')
-                + '| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n'
-                + '|---|-----------------|--------------|---------------------|---------------|-----------|\n'
-            )
-        kpis = kpis.rstrip() + ('\n\n' if kpis.strip() else '') + skeleton
-
-    # Assemble new rows: priority → diagnostic_gaps → baseline fill
-    new_tuples = []
-    for slot in need_slots:
-        new_tuples.append(priority_bank[slot])
-
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-        elif isinstance(dg, str):
-            title = dg.strip()
-        else:
-            continue
-        if not title:
-            continue
-        tl = title.lower()
-        if tl in _existing_blob.lower():
-            continue
-        if any(tl[:30] in str(t[0]).lower() for t in new_tuples):
-            continue
-        if is_ar:
-            new_tuples.append((
-                f'مؤشر إغلاق: {title}',
-                '100%', '(المُنجز ÷ الإجمالي) × 100',
-                'ناتج مباشر عن تشخيص الفجوة', 'خلال 12 شهراً',
-            ))
-        else:
-            new_tuples.append((
-                f'Closure KPI: {title}',
-                '100%', '(Completed ÷ Total) × 100',
-                'Direct diagnostic outcome', 'Within 12 months',
-            ))
-
-    # Baseline fill
-    while (current + len(new_tuples)) < needed_floor:
-        new_tuples.append(priority_bank['baseline'])
-        if len(new_tuples) > 15:
-            break
-
-    if not new_tuples:
-        sections['kpis'] = kpis
-        return 0
-
-    lines = kpis.split('\n')
-    insert_after = -1
-    in_tbl = False
-    for idx, ln in enumerate(lines):
-        s = ln.strip()
-        if not in_tbl:
-            if hdr_re.match(s):
-                in_tbl = True
-            continue
-        if s.startswith('|') and s.endswith('|'):
-            insert_after = idx
-        else:
-            break
-    if insert_after < 0:
-        insert_after = len(lines) - 1
-
-    new_rows = []
-    for offset, tpl in enumerate(new_tuples):
-        new_rows.append(
-            f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} | {tpl[3]} | {tpl[4]} |'
+    # Insufficient or schema missing — AI-first repair.
+    try:
+        domain_context = get_strategy_domain_context(
+            domain or 'Cyber Security', lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-    lines = lines[:insert_after + 1] + new_rows + lines[insert_after + 1:]
-    sections['kpis'] = '\n'.join(lines)
-    return len(new_rows)
+    except DomainResolutionError as _de:
+        raise RepairError(
+            f'synthesize_kpi_depth: cannot resolve domain context '
+            f'for {domain!r}: {_de}'
+        )
+
+    if current < needed_floor:
+        _why = f'kpi_rows_insufficient:{current}/{needed_floor}'
+    else:
+        _why = 'kpi_section_missing_frequency_column'
+
+    repaired = ai_repair_strategy_section(
+        section_key='kpis',
+        sections=sections,
+        lang=lang,
+        domain_context=domain_context,
+        org_name=org_name,
+        sector=sector,
+        maturity='',
+        generation_mode=generation_mode,
+        validation_error=_why,
+        min_rows=needed_floor,
+    )
+
+    n_after = count_substantive_kpis(repaired)
+    has_freq_after = bool(_ts_re.search(
+        r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
+        repaired, _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    ))
+    if n_after < needed_floor or not has_freq_after:
+        raise RepairError(
+            f'synthesize_kpi_depth: AI-repaired KPI section invalid '
+            f'(rows={n_after}/{needed_floor}, '
+            f'has_frequency_column={has_freq_after})'
+        )
+
+    sections['kpis'] = repaired
+    return n_after
 
 
 def synthesize_confidence_depth(sections, lang, domain='Cyber Security',

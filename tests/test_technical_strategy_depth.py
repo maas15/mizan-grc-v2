@@ -481,14 +481,22 @@ class TestNoTraceComments(unittest.TestCase):
 
     @_skip_if_no_app
     def test_synthesized_kpis_have_no_trace_comments(self):
+        # PR-5B.5B: synthesize_kpi_depth is now AI-first. With no AI
+        # provider configured in the test environment, an empty KPI
+        # section triggers ai_repair_strategy_section() which raises
+        # RepairError. The contract guarantees that no deterministic
+        # cyber-default rows / trace comments are inserted when AI is
+        # unavailable — the section is left untouched and the caller
+        # surfaces the failure.
         sections = {'kpis': ''}
-        _APP.synthesize_kpi_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-        )
+        with self.assertRaises(_APP.RepairError):
+            _APP.synthesize_kpi_depth(
+                sections, lang='ar',
+                domain='Cyber Security', fw_short='NCA ECC',
+            )
         self.assertFalse(
             _has_trace_comments(sections.get('kpis', '')),
-            'Synthesized KPIs contain trace comments',
+            'Untouched KPI section must not contain trace comments',
         )
 
     @_skip_if_no_app
