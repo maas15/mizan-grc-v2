@@ -16746,347 +16746,154 @@ def synthesize_confidence_depth(sections, lang, domain='Cyber Security',
                                  maturity='initial',
                                  generation_mode='drafting',
                                  roadmap_rows=None):
-    """Ensure Confidence section has ≥ _RICHNESS_MIN_CSF_ROWS CSF rows and
-    ≥ _RICHNESS_MIN_RISK_ROWS risk rows (each with non-placeholder
-    mitigation). Also ensures a Confidence Score value and a score
-    justification paragraph are present. Appends deterministic rows/
-    paragraphs where counts fall short.
+    """AI-first Confidence Assessment & Risks synthesis (PR-5B.6C.2).
 
-    Maturity drives the default score (if no score is present):
-      initial     → 55%
-      developing  → 65%
-      defined     → 75%
-      managed     → 82%
-      optimized   → 88%
+    Behaviour:
+      * If ``sections['confidence']`` already contains a confidence score,
+        a score justification, ``>= min_csf`` Critical Success Factor rows,
+        and ``>= min_risk`` Key Risk rows (each with a non-placeholder
+        mitigation), return a zero-valued summary unchanged. AI repair is
+        not invoked and the section is left untouched.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no ``domain or 'Cyber
+        Security'`` fallback), call :func:`ai_repair_strategy_section`
+        with ``section_key='confidence'``, validate the repaired markdown
+        BEFORE assignment (score, justification, CSF row count, risk row
+        count), and replace ``sections['confidence']`` wholesale with the
+        AI-repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid repaired
+        output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'confidence')``. No deterministic CSF
+        bank, risk bank, score injection, justification paragraph, or
+        roadmap-linked mitigation suffix is ever emitted, and
+        ``sections['confidence']`` is left unchanged on failure.
 
-    Mitigation-plan linkage (prompt Part 2G): when `roadmap_rows` is
-    provided as a list of (row_number, short_activity_text) tuples,
-    risk mitigation text references specific roadmap row numbers by
-    theme matching — e.g. a "Resource & Skills Constraints" risk
-    references the staffing-related roadmap row. Falls back to
-    generic mitigation phrasing when no matching roadmap row exists.
+    The threshold logic mirrors :func:`validate_confidence_richness`:
+        ``drafting``/``basic``      → ``_RICHNESS_MIN_CSF_ROWS`` and
+                                      ``_RICHNESS_MIN_RISK_ROWS``
+        ``consulting``/``assurance`` → at least 5 CSF rows AND
+                                      5 risk rows.
 
-    generation_mode does not currently alter deterministic CSF / risk
-    phrasing (they are already comprehensive) but is accepted for
-    signature compatibility with _apply_final_synthesis_pass.
+    The legacy ``roadmap_rows`` parameter is retained for signature
+    compatibility with existing call sites.
 
-    Returns dict with keys: csf_added, risks_added, score_added,
-    justification_added, mitigation_links (list of {risk, roadmap_row}
-    for each risk row whose mitigation was linked to a specific
-    roadmap row).
+    Returns dict with keys:
+        ``csf_added``           — int, rows added by AI repair (0 on no-op)
+        ``risks_added``         — int, rows added by AI repair (0 on no-op)
+        ``score_added``         — bool, True when AI repair injected a score
+        ``justification_added`` — bool, True when AI repair injected
+                                  a justification
+        ``mitigation_links``    — list, retained for signature compatibility
+                                  (always empty in AI-first mode).
     """
     summary = {'csf_added': 0, 'risks_added': 0,
                'score_added': False, 'justification_added': False,
                'mitigation_links': []}
     conf = sections.get('confidence', '') or ''
-    is_ar = (lang == 'ar')
 
-    # ── Extract roadmap rows for mitigation linkage (prompt Part 2G)
-    # If the caller didn't pass `roadmap_rows` explicitly, parse the
-    # roadmap section ourselves. Each roadmap row is stored as a tuple
-    # (row_number, activity_text_stripped).
-    if roadmap_rows is None:
-        roadmap_rows = []
-        roadmap_text = sections.get('roadmap', '') or ''
-        if roadmap_text:
-            _rm_hdr = _ts_re.compile(
-                r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|',
-                _ts_re.IGNORECASE,
-            )
-            for _cells in _ts_table_rows(roadmap_text, _rm_hdr):
-                if (_cells and _cells[0].replace('.', '').isdigit()
-                        and len(_cells) >= 2
-                        and not _ts_is_placeholder(_cells[1])):
-                    try:
-                        roadmap_rows.append((int(_cells[0]),
-                                              _cells[1].strip()))
-                    except (ValueError, IndexError):
-                        continue
-
-    # Helper: find the roadmap row number whose activity text contains
-    # any of the given tokens. Returns None if no match.
-    def _find_roadmap_row_for(en_tokens, ar_tokens):
-        for _rn, _act in roadmap_rows:
-            _lc = _act.lower()
-            for _t in en_tokens:
-                if _t in _lc:
-                    return _rn
-            for _t in ar_tokens:
-                if _t in _act:
-                    return _rn
-        return None
-
-    # Maturity → default score percentage
-    _maturity_lc = str(maturity).lower().strip()
-    _score_pct = {
-        'initial':    55,
-        'ad-hoc':     55,
-        'ad hoc':     55,
-        'developing': 65,
-        'defined':    75,
-        'managed':    82,
-        'optimized':  88,
-    }.get(_maturity_lc, 65)
-
-    # Initialize canonical structure if section is empty.
-    if not conf.strip():
-        if is_ar:
-            conf = (
-                "## 7. تقييم الثقة والمخاطر\n\n"
-                f"**درجة الثقة:** {_score_pct}%\n\n"
-                "### مبررات التقييم\n\n"
-                f"تستند هذه الدرجة إلى مستوى النضج الحالي لـ{org_name} "
-                f"والفجوات المحددة في ضوابط {domain} وفق {fw_short}، "
-                "إضافةً إلى القدرة التنفيذية المتاحة لتنفيذ خطة المعالجة "
-                "خلال أفق ثمانية عشر شهراً.\n\n"
-                "### عوامل النجاح الحرجة:\n\n"
-                "| # | العامل | الوصف | الأهمية |\n"
-                "|---|-------|-------|--------|\n"
-                "### المخاطر الرئيسية:\n\n"
-                "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                "|---|--------|-----------|--------|-------------|\n"
-            )
-        else:
-            conf = (
-                "## 7. Confidence Assessment & Risks\n\n"
-                f"**Confidence Score:** {_score_pct}%\n\n"
-                "### Score Justification\n\n"
-                f"This score reflects the current maturity posture of "
-                f"{org_name} and the gaps identified in {domain} controls "
-                f"against {fw_short}, together with the executive capacity "
-                "available to execute the remediation plan over an "
-                "18-month horizon.\n\n"
-                "### Critical Success Factors:\n\n"
-                "| # | Factor | Description | Importance |\n"
-                "|---|--------|-------------|------------|\n"
-                "### Key Risks:\n\n"
-                "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                "|---|------|------------|--------|-----------------|\n"
-            )
-        summary['score_added'] = True
-        summary['justification_added'] = True
-    else:
-        # Score injection when absent
-        score_re = _ts_re.compile(
-            r'(?:\*\*)?(?:Confidence\s+Score|درجة\s+الثقة)(?:\*\*)?\s*:?\s*'
-            r'(?:\*\*)?\s*\d{1,3}\s*%',
-            _ts_re.IGNORECASE,
-        )
-        if not score_re.search(conf):
-            if is_ar:
-                score_line = f"\n\n**درجة الثقة:** {_score_pct}%\n"
-            else:
-                score_line = f"\n\n**Confidence Score:** {_score_pct}%\n"
-            conf = conf.rstrip() + score_line
-            summary['score_added'] = True
-
-        # Justification injection when absent
-        just_re = _ts_re.compile(
-            r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))'
-            r'|(?:justification|rationale|مبررات?)',
-            _ts_re.MULTILINE | _ts_re.IGNORECASE,
-        )
-        if not just_re.search(conf):
-            if is_ar:
-                just_block = (
-                    "\n\n### مبررات التقييم\n\n"
-                    f"تستند هذه الدرجة إلى مستوى النضج الحالي لـ{org_name} "
-                    f"والفجوات المحددة في ضوابط {domain} وفق {fw_short}، "
-                    "إضافةً إلى القدرة التنفيذية المتاحة لتنفيذ خطة المعالجة.\n"
-                )
-            else:
-                just_block = (
-                    "\n\n### Score Justification\n\n"
-                    f"This score reflects the current maturity posture of "
-                    f"{org_name} and the gaps identified in {domain} controls "
-                    f"against {fw_short}, together with the executive capacity "
-                    "available to execute the remediation plan.\n"
-                )
-            conf = conf.rstrip() + just_block
-            summary['justification_added'] = True
-
-    # CSF top-up
+    # ── Compute current state.
+    score_re = _ts_re.compile(
+        r'(?:\*\*)?(?:Confidence\s+Score|درجة\s+الثقة)(?:\*\*)?\s*:?\s*'
+        r'(?:\*\*)?\s*\d{1,3}\s*%',
+        _ts_re.IGNORECASE,
+    )
+    just_heading_re = _ts_re.compile(
+        r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))',
+        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+    )
+    just_inline_re = _ts_re.compile(
+        r'(?:justification|rationale|مبررات?|أسباب|تفسير)',
+        _ts_re.IGNORECASE,
+    )
+    score_present = bool(score_re.search(conf))
+    justification_present = bool(just_heading_re.search(conf)) or bool(
+        just_inline_re.search(conf))
     n_csf = _count_csf_rows(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
-        csf_needed = _RICHNESS_MIN_CSF_ROWS - n_csf
-        csf_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Factor|العامل)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        # If no CSF table exists yet in this section, inject heading +
-        # table skeleton so the appended rows land under a real header.
-        if not csf_hdr.search(conf):
-            if is_ar:
-                csf_skel = (
-                    "\n\n### عوامل النجاح الحرجة:\n\n"
-                    "| # | العامل | الوصف | الأهمية |\n"
-                    "|---|-------|-------|--------|\n"
-                )
-            else:
-                csf_skel = (
-                    "\n\n### Critical Success Factors:\n\n"
-                    "| # | Factor | Description | Importance |\n"
-                    "|---|--------|-------------|------------|\n"
-                )
-            conf = conf.rstrip() + csf_skel
-        csf_rows = list(_ts_table_rows(conf, csf_hdr))
-        existing = {int(c[0]) for c in csf_rows
-                    if c and c[0].replace('.', '').isdigit()}
-        next_n = max(existing) + 1 if existing else 1
-        templates_ar = [
-            (f'دعم القيادة التنفيذية',
-             f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
-             'حرج'),
-            (f'توفر الموارد والكوادر المؤهلة',
-             f'كفاءات بشرية قادرة على تشغيل ضوابط {fw_short} وإدارتها',
-             'عالٍ'),
-            (f'إطار حوكمة {domain} قابل للتشغيل',
-             'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
-             'عالٍ'),
-            (f'تمويل كافٍ ومستقر',
-             'ميزانية متعددة السنوات مرتبطة بأولويات خطة المعالجة وليست بندوداً سنوية',
-             'عالٍ'),
-            (f'بيئة تقنية متكاملة',
-             f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
-             'متوسط'),
-        ]
-        templates_en = [
-            ('Executive Leadership Support',
-             f'Active sponsorship from {org_name} senior leadership to '
-             f'execute the {domain} strategy', 'Critical'),
-            ('Qualified Resources & Talent',
-             f'Competent personnel able to operate and govern {fw_short} controls',
-             'High'),
-            (f'Operable {domain} Governance Framework',
-             'Standing steering committee with clear decision rights and '
-             'escalation paths', 'High'),
-            ('Stable Multi-Year Funding',
-             'Multi-year budget tied to remediation plan priorities rather '
-             'than annual line items', 'High'),
-            ('Integrated Technology Environment',
-             f'{domain} platforms integrated with operational systems and '
-             'unified logging', 'Medium'),
-        ]
-        templates = templates_ar if is_ar else templates_en
-        new_rows = []
-        for offset in range(csf_needed):
-            tpl = templates[offset % len(templates)]
-            new_rows.append(
-                f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} |'
-            )
-        # Insert after last CSF-table line
-        conf = _append_rows_under_header(conf, csf_hdr, new_rows)
-        summary['csf_added'] = csf_needed
-
-    # Risk top-up
     n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_risks < _RICHNESS_MIN_RISK_ROWS:
-        risks_needed = _RICHNESS_MIN_RISK_ROWS - n_risks
-        risk_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        # If no Risk table exists yet, inject heading + skeleton.
-        if not risk_hdr.search(conf):
-            if is_ar:
-                risk_skel = (
-                    "\n\n### المخاطر الرئيسية:\n\n"
-                    "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                    "|---|--------|-----------|--------|-------------|\n"
-                )
-            else:
-                risk_skel = (
-                    "\n\n### Key Risks:\n\n"
-                    "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                    "|---|------|------------|--------|-----------------|\n"
-                )
-            conf = conf.rstrip() + risk_skel
-        risk_rows = list(_ts_table_rows(conf, risk_hdr))
-        existing = {int(c[0]) for c in risk_rows
-                    if c and c[0].replace('.', '').isdigit()}
-        next_n = max(existing) + 1 if existing else 1
-        # Each entry is (risk_title, likelihood, impact, fallback_mitigation,
-        # linkage_tokens_en, linkage_tokens_ar).
-        # When a roadmap row matches the linkage tokens, the mitigation
-        # text is suffixed with "(see Roadmap Row #N)" or the Arabic
-        # equivalent "(انظر صف خارطة الطريق رقم N)".
-        risks_ar = [
-            ('محدودية الموارد والكفاءات', 'متوسط', 'عالٍ',
-             'التنفيذ المرحلي وتحديد أولويات وفق المخاطر وتدبير الكوادر مبكراً',
-             ('staff', 'skill', 'hiring', 'workforce'),
-             ('كوادر', 'مهارات', 'توظيف')),
-            ('مقاومة التغيير', 'عالٍ', 'متوسط',
-             'برنامج إدارة تغيير شامل مدعوم تنفيذياً وحملات توعية موجّهة',
-             ('awareness', 'training', 'change'),
-             ('وعي', 'تدريب', 'تغيير')),
-            ('تأخر موردي التقنية', 'متوسط', 'متوسط',
-             'تعدّد المصادر وتضمين عقوبات تعاقدية مرتبطة بالأداء',
-             ('supplier', 'vendor', 'third-party', 'deploy', 'siem', 'edr'),
-             ('موردين', 'أطراف ثالثة', 'نشر', 'تقني')),
-            ('تضخم النطاق', 'متوسط', 'عالٍ',
-             'لجنة ضبط تغييرات رسمية وحوكمة صارمة لأي توسعات نطاق',
-             ('governance', 'committee', 'charter', 'steering'),
-             ('حوكمة', 'لجنة', 'ميثاق', 'توجيه')),
-            ('تغيّر المتطلبات التنظيمية', 'متوسط', 'عالٍ',
-             'آلية رصد تنظيمي دورية ومراجعة خطة المعالجة ربع سنوياً',
-             ('compliance', 'audit', 'evidence'),
-             ('امتثال', 'تدقيق', 'أدلة')),
-        ]
-        risks_en = [
-            ('Resource & Skills Constraints', 'Medium', 'High',
-             'Phased implementation, risk-based prioritisation, early '
-             'talent sourcing',
-             ('staff', 'skill', 'hiring', 'workforce'),
-             ('كوادر', 'مهارات', 'توظيف')),
-            ('Change Resistance', 'High', 'Medium',
-             'Comprehensive change-management programme with executive '
-             'sponsorship and targeted awareness',
-             ('awareness', 'training', 'change'),
-             ('وعي', 'تدريب', 'تغيير')),
-            ('Technology Vendor Delays', 'Medium', 'Medium',
-             'Dual-sourcing strategy with performance-linked contractual '
-             'penalties',
-             ('supplier', 'vendor', 'third-party', 'deploy', 'siem', 'edr'),
-             ('موردين', 'أطراف ثالثة', 'نشر', 'تقني')),
-            ('Scope Creep', 'Medium', 'High',
-             'Formal change-control committee and strict governance for '
-             'any scope expansions',
-             ('governance', 'committee', 'charter', 'steering'),
-             ('حوكمة', 'لجنة', 'ميثاق', 'توجيه')),
-            ('Regulatory Change', 'Medium', 'High',
-             'Regulatory-monitoring cadence with quarterly remediation-plan '
-             'review',
-             ('compliance', 'audit', 'evidence'),
-             ('امتثال', 'تدقيق', 'أدلة')),
-        ]
-        templates = risks_ar if is_ar else risks_en
-        new_rows = []
-        for offset in range(risks_needed):
-            tpl = templates[offset % len(templates)]
-            # Unpack with roadmap-linkage tokens
-            _title, _lk, _imp, _mit_fb, _en_tok, _ar_tok = tpl
-            # Try to find a matching roadmap row for this risk theme.
-            _matched_row = _find_roadmap_row_for(_en_tok, _ar_tok)
-            if _matched_row is not None:
-                if is_ar:
-                    _mit = (f'{_mit_fb} (انظر صف خارطة الطريق رقم '
-                            f'{_matched_row})')
-                else:
-                    _mit = f'{_mit_fb} (see Roadmap Row #{_matched_row})'
-                summary['mitigation_links'].append({
-                    'risk': _title,
-                    'roadmap_row': _matched_row,
-                })
-            else:
-                _mit = _mit_fb
-            new_rows.append(
-                f'| {next_n + offset} | {_title} | {_lk} | {_imp} | {_mit} |'
-            )
-        conf = _append_rows_under_header(conf, risk_hdr, new_rows)
-        summary['risks_added'] = risks_needed
 
-    sections['confidence'] = conf
+    # ── Mode-aware thresholds — mirror validate_confidence_richness.
+    _is_consulting_grade = str(generation_mode).lower() in (
+        'consulting', 'assurance')
+    min_csf = max(_RICHNESS_MIN_CSF_ROWS, 5) if _is_consulting_grade \
+        else _RICHNESS_MIN_CSF_ROWS
+    min_risk = max(_RICHNESS_MIN_RISK_ROWS, 5) if _is_consulting_grade \
+        else _RICHNESS_MIN_RISK_ROWS
+
+    # ── Sufficient → no-op (AI is not called, section is not mutated).
+    if (score_present and justification_present
+            and n_csf >= min_csf and n_risks >= min_risk):
+        return summary
+
+    # ── Insufficient/malformed — AI-first repair. Strict-resolve domain
+    # context (no ``domain or 'Cyber Security'`` fallback). Annotate any
+    # failure with ``section='confidence'`` so the production caller's
+    # ``except RepairError`` branch can route through
+    # ``_mark_synth_failed`` (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
+        )
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_confidence_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    _why = (
+        f'confidence_repair_needed:'
+        f'score_present={score_present},'
+        f'justification_present={justification_present},'
+        f'csf_rows={n_csf}/{min_csf},'
+        f'risk_rows={n_risks}/{min_risk}'
+    )
+
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='confidence',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector='General',
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=_why,
+            min_rows=max(min_csf, min_risk),
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'confidence')
+        raise
+
+    # ── Validate the repaired markdown BEFORE assignment. Reject if any
+    # required signal is missing. Heading / domain isolation is already
+    # enforced inside ``ai_repair_strategy_section``.
+    rep_score = bool(score_re.search(repaired))
+    rep_just = bool(just_heading_re.search(repaired)) or bool(
+        just_inline_re.search(repaired))
+    rep_csf = _count_csf_rows(repaired)
+    rep_risk = _count_risk_rows_with_mitigation(repaired)
+    if (not rep_score or not rep_just
+            or rep_csf < min_csf or rep_risk < min_risk):
+        _err = RepairError(
+            f'synthesize_confidence_depth: AI-repaired confidence section '
+            f'invalid (score={rep_score}, justification={rep_just}, '
+            f'csf_rows={rep_csf}/{min_csf}, '
+            f'risk_rows={rep_risk}/{min_risk})'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    sections['confidence'] = repaired
+    summary['score_added'] = not score_present
+    summary['justification_added'] = not justification_present
+    summary['csf_added'] = max(0, rep_csf - n_csf)
+    summary['risks_added'] = max(0, rep_risk - n_risks)
     return summary
+
+
 
 
 def _append_rows_under_header(text, hdr_re, new_rows):
@@ -18073,6 +17880,15 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
                 or _cf_result.get('score_added')
                 or _cf_result.get('justification_added')):
             summary['confidence'] = _cf_result
+    except RepairError as _cre:
+        # PR-5B.6C.2: AI repair unavailable / invalid output — fail
+        # closed for this section. The post-normalization save gate
+        # consults summary['synth_status'] via the request-local
+        # _synth_status dict and refuses to save the strategy. No
+        # deterministic CSF / risk fallback rows are inserted.
+        _mark_synth_failed(summary, 'confidence', _cre)
+        print(f'[STRATEGY-DIAG] final_synth_confidence_failed: {_cre}',
+              flush=True)
     except Exception as _sce:
         print(f'[STRATEGY-DIAG] final_synth_confidence_failed: {_sce}',
               flush=True)
@@ -18561,6 +18377,10 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     generation_mode=ctx.get('generation_mode', 'drafting'),
                 )
                 cycle['repairs'].append('confidence')
+            except RepairError as _cre:
+                # PR-5B.6C.2: see vision branch above.
+                _mark_synth_failed(log, 'confidence', _cre)
+                cycle['repairs'].append(f'confidence_failed:{_cre}')
             except Exception as _e:
                 cycle['repairs'].append(f'confidence_failed:{_e}')
 
@@ -21958,18 +21778,54 @@ _AI_REPAIR_SECTION_SCHEMA = {
     },
     "confidence": {
         "ar": (
-            "أرجع قسم \"## 7. تقييم الثقة والمخاطر\" فقط. "
-            "ضمّن جدولًا واحدًا للمخاطر بعنوان فرعي **المخاطر الرئيسية** "
-            "ذو 6 أعمدة:\n"
-            "| # | الخطر | الاحتمال | الأثر | المالك | استراتيجية المعالجة |\n"
-            "أنشئ على الأقل {min_rows} صفًا للمخاطر، بدون تكرار للعنوان."
+            "أرجع فقط القسم: \"## 7. تقييم الثقة والمخاطر\".\n"
+            "1) أدرج سطراً بصيغة:\n"
+            "**درجة الثقة:** NN%\n"
+            "حيث NN عدد صحيح بين 40 و 95.\n"
+            "2) ثم العنوان الفرعي:\n"
+            "### مبررات التقييم\n"
+            "متبوعاً بفقرة من جملتين جوهريتين على الأقل تشير إلى مستوى "
+            "النضج الحالي والفجوات الجوهرية.\n"
+            "3) ثم العنوان الفرعي:\n"
+            "### عوامل النجاح الحرجة\n"
+            "متبوعاً بجدول Markdown بأربعة أعمدة بالضبط:\n"
+            "| # | العامل | الوصف | الأهمية |\n"
+            "|---|-------|-------|--------|\n"
+            "بحد أدنى {min_csf_rows} صفوف.\n"
+            "4) ثم العنوان الفرعي:\n"
+            "### المخاطر الرئيسية\n"
+            "متبوعاً بجدول Markdown بخمسة أعمدة بالضبط:\n"
+            "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+            "|---|--------|-----------|--------|-------------|\n"
+            "بحد أدنى {min_risk_rows} صفوف.\n"
+            "5) يجب أن تتضمن كل خطة معالجة إجراءً محدداً وغير عام.\n"
+            "لا تُدرج أقساماً أخرى. لا تكرر العناوين. "
+            "لا تستخدم خلايا نائبة أو خلايا فارغة."
         ),
         "en": (
-            "Return ONLY the '## 7. Confidence & Risk Assessment' section. "
-            "Include exactly one risks table under the sub-heading **Key Risks** "
-            "with 6 columns:\n"
-            "| # | Risk | Likelihood | Impact | Owner | Treatment Strategy |\n"
-            "Generate at least {min_rows} risk rows; do not duplicate the heading."
+            "Return ONLY the section: \"## 7. Confidence Assessment & Risks\".\n"
+            "1) Include a line:\n"
+            "**Confidence Score:** NN%\n"
+            "where NN is an integer between 40 and 95.\n"
+            "2) Then the sub-heading:\n"
+            "### Score Justification\n"
+            "followed by at least two substantive sentences referencing the "
+            "current maturity posture and material gaps.\n"
+            "3) Then the sub-heading:\n"
+            "### Critical Success Factors\n"
+            "followed by a Markdown pipe table with EXACTLY 4 columns:\n"
+            "| # | Factor | Description | Importance |\n"
+            "|---|--------|-------------|------------|\n"
+            "minimum {min_csf_rows} rows.\n"
+            "4) Then the sub-heading:\n"
+            "### Key Risks\n"
+            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
+            "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
+            "|---|------|------------|--------|-----------------|\n"
+            "minimum {min_risk_rows} rows.\n"
+            "5) Every mitigation plan must be specific and non-generic.\n"
+            "Do not include other sections. Do not duplicate headings. "
+            "Do not use placeholder cells or empty cells."
         ),
     },
     "roadmap": {
@@ -22112,7 +21968,26 @@ def ai_repair_strategy_section(
             "confidence": rules.get("min_risk_rows", 5),
             "pillars":    rules.get("min_pillars", _RICHNESS_MIN_PILLARS_LOCAL),
         }.get(section_key, 5)
-    schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
+    # Confidence schema requires two distinct minimums (CSF rows and risk
+    # rows). Compute them from the validator constants / domain rules and
+    # never let `min_rows` reduce either below the validator threshold.
+    if section_key == "confidence" and schema_block:
+        _csf_floor = max(rules.get("min_csf_rows", 0) or 0,
+                         _RICHNESS_MIN_CSF_ROWS)
+        _risk_floor = max(rules.get("min_risk_rows", 0) or 0,
+                          _RICHNESS_MIN_RISK_ROWS)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = 0
+        _min_csf_rows = max(_csf_floor, _min_rows_int)
+        _min_risk_rows = max(_risk_floor, _min_rows_int)
+        schema_block = schema_block.format(
+            min_csf_rows=_min_csf_rows,
+            min_risk_rows=_min_risk_rows,
+        )
+    else:
+        schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
 
     forbidden = list(domain_context.get("forbidden_terms", []) or [])
     capabilities = list(domain_context.get("allowed_capabilities", []) or [])
