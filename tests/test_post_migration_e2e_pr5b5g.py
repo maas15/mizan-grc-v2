@@ -446,7 +446,6 @@ class TestAIFirstReplacementContract(unittest.TestCase):
                 domain='Cyber Security', fw_short='NCA ECC',
             )
         self.assertEqual(seen.get('section_key'), 'roadmap')
-        self.assertNotEqual(seen.get('section_key'), 'roadmaps')
         self.assertEqual(sections['roadmap'], repaired)
 
 
@@ -588,7 +587,7 @@ class TestPreviewExportBlocker(unittest.TestCase):
     """Document why preview/export end-to-end cannot be exercised in this
     test sandbox (instead of asserting a misleading pass)."""
 
-    def test_8_preview_export_blocker_documented(self):
+    def test_preview_export_blocker_documented(self):
         # Required for an end-to-end preview/export round-trip:
         #   - A live SQLAlchemy engine bound to a populated DB (the
         #     in-memory SQLite default has no schema migrations applied).
