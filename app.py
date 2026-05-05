@@ -21301,7 +21301,8 @@ def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
                                               sector='General',
                                               org_name='The Organization',
                                               maturity='initial',
-                                              generation_mode='drafting'):
+                                              generation_mode='drafting',
+                                              synth_status=None):
     """Apply all PASS-6 completeness fixes in the correct order:
       1. Dedupe confidence (idempotent — runs even if no duplicates).
       2. Enrich placeholder KPI rows.
@@ -21350,8 +21351,20 @@ def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
             _force_inject_mandatory_section(
                 sections, 'strategic_objectives_rows_insufficient', lang,
                 domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
             n_so = count_valid_objective_rows(sections.get('vision', ''))
+        except RepairError as _so_re_err:
+            # PR-5B.6D.1: AI-first vision synthesis failed. Mark the
+            # vision section as synth_failed so the post-normalization
+            # save gate refuses to save. Do NOT swallow the failure.
+            _mark_synth_failed(
+                synth_status,
+                getattr(_so_re_err, 'section', 'vision'),
+                _so_re_err,
+            )
         except Exception:
             pass
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -22902,280 +22915,109 @@ def enforce_cybersecurity_technical_depth(
 def _force_inject_mandatory_section(sections, flag, lang,
                                      domain='Cyber Security', fw_short='NCA ECC',
                                      org_name='The Organization',
-                                     budget='allocated budget', maturity='initial'):
-    """Force-inject canonical content for `flag` into the appropriate section.
+                                     budget='allocated budget', maturity='initial',
+                                     sector='General',
+                                     generation_mode='drafting'):
+    """AI-first mandatory-section repair (PR-5B.6D.1).
 
-    Audit patterns this function is designed to satisfy:
-      - kpi_assessment_guides_missing → "KPI #N Assessment Guide" / "دليل تقييم المؤشر رقم"
-      - confidence_score_missing      → "Confidence Score: NN%" / "درجة الثقة: NN%"
-      - score_justification_missing   → "Score Justification" / "مبررات التقييم"
-      - gap_guidance_missing          → "Gap #N Implementation Guide" / "دليل ... فجوة"
-      - strategic_objectives_*        → 5-row SO table
+    Routes each ``flag`` to the corresponding AI-first synthesizer:
+      - ``strategic_objectives_*``         → :func:`synthesize_objectives_depth`
+      - ``kpi_assessment_guides_missing``  → :func:`synthesize_kpi_depth`
+      - ``confidence_score_missing``       → :func:`synthesize_confidence_depth`
+      - ``score_justification_missing``    → :func:`synthesize_confidence_depth`
+      - ``gap_guidance_missing``           → fail-closed :class:`RepairError`
+        with ``section='gaps'`` (no AI-first gap synthesizer is wired up
+        yet; a later PR will introduce ``synthesize_gaps_depth``).
+      - any unknown flag                   → :class:`RepairError`
+        with ``section='strategy'``.
+
+    No deterministic content (canned KPI / gap / confidence / SO rows or
+    paragraphs) is ever authored by this function. On AI failure the
+    underlying synthesizer's :class:`RepairError` is re-raised with
+    ``setattr(err, 'section', <vision|kpis|confidence|gaps|strategy>)``
+    so the production caller can route through :func:`_mark_synth_failed`
+    and the post-normalization audit gate can block the save.
+
+    The legacy ``budget`` parameter is retained for signature
+    compatibility; it is no longer consumed because deterministic
+    confidence justification authoring has been removed.
     """
-    import re as _fi_re
-    is_ar = (lang == 'ar')
-
-    # 1. KPI Assessment Guides — append to 'kpis' section
-    if flag == 'kpi_assessment_guides_missing':
-        kpis = sections.get('kpis', '') or ''
-        if not kpis.strip():
-            # Inject minimal KPI section with table first, then the guides
-            if is_ar:
-                kpis = (
-                    "## 6. مؤشرات الأداء الرئيسية\n\n"
-                    "| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | المبرر | الإطار الزمني |\n"
-                    "|---|-------------|-----------------|----------------|--------|----------------|\n"
-                    f"| 1 | نسبة تطبيق ضوابط {fw_short} | ≥ 95% | (المطبّق ÷ الإجمالي) × 100 | امتثال {domain} | خلال 12 شهراً |\n"
-                    f"| 2 | نسبة إغلاق الفجوات | 100% | (المغلق ÷ الإجمالي) × 100 | نضج {domain} | خلال 9 أشهر |\n"
-                )
-            else:
-                kpis = (
-                    "## 6. Key Performance Indicators\n\n"
-                    "| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n"
-                    "|---|-----------------|--------------|---------------------|---------------|-----------|\n"
-                    f"| 1 | {fw_short} control implementation rate | ≥ 95% | (Implemented ÷ Total) × 100 | Compliance posture | Within 12 months |\n"
-                    f"| 2 | Gap closure rate | 100% | (Closed ÷ Total) × 100 | Maturity progression | Within 9 months |\n"
-                )
-        # Always append guides block — uses tokens the audit expects
-        if is_ar:
-            guides = (
-                "\n\n### أدلة تقييم مؤشرات الأداء\n\n"
-                f"#### دليل تقييم المؤشر رقم 1: نسبة تطبيق ضوابط {fw_short}\n\n"
-                "| الخطوة | الإجراء | المسؤول | الناتج |\n"
-                "|--------|---------|---------|--------|\n"
-                f"| 1 | جمع البيانات | فريق {domain} | سجل القياس |\n"
-                f"| 2 | الحساب | محلل {domain} | القيمة |\n"
-                f"| 3 | التحقق | رئيس {domain} | تقرير |\n"
-                f"| 4 | الإبلاغ | مدير {domain} | بيان الأداء |\n\n"
-                f"#### دليل تقييم المؤشر رقم 2: نسبة إغلاق الفجوات\n\n"
-                "| الخطوة | الإجراء | المسؤول | الناتج |\n"
-                "|--------|---------|---------|--------|\n"
-                f"| 1 | حصر الفجوات | فريق {domain} | سجل |\n"
-                f"| 2 | تتبع الإغلاق | رئيس {domain} | لوحة |\n"
-                f"| 3 | التحقق | مراجع {domain} | تقرير |\n"
-                f"| 4 | الإبلاغ | مدير {domain} | بيان |\n"
-            )
-        else:
-            guides = (
-                "\n\n### KPI Assessment Guidelines\n\n"
-                f"#### KPI #1 Assessment Guide: {fw_short} control implementation rate\n\n"
-                "| Step | Action | Owner | Output |\n"
-                "|------|--------|-------|--------|\n"
-                f"| 1 | Collect data | {domain} Team | Measurement log |\n"
-                f"| 2 | Compute | {domain} Analyst | Computed value |\n"
-                f"| 3 | Validate | {domain} Lead | Attestation |\n"
-                f"| 4 | Report | {domain} Director | Performance statement |\n\n"
-                "#### KPI #2 Assessment Guide: Gap closure rate\n\n"
-                "| Step | Action | Owner | Output |\n"
-                "|------|--------|-------|--------|\n"
-                f"| 1 | Inventory gaps | {domain} Team | Register |\n"
-                f"| 2 | Track closure | {domain} Lead | Dashboard |\n"
-                f"| 3 | Validate | {domain} Auditor | Report |\n"
-                f"| 4 | Report | {domain} Director | Statement |\n"
-            )
-        sections['kpis'] = kpis.rstrip() + guides
-        return
-
-    # 2 & 3. Confidence Score + Score Justification — write to 'confidence'
-    if flag in ('confidence_score_missing', 'score_justification_missing'):
-        conf = sections.get('confidence', '') or ''
-        # PASS-6 fix #2: do NOT blindly prepend the canonical block on top
-        # of existing confidence content — that produces duplicate sections.
-        # Surgical insertion strategy:
-        #   - If section is empty → write the full canonical block.
-        #   - If section has content but missing Score line → insert a
-        #     Score line (only) at top.
-        #   - If section has Score but missing Justification → insert
-        #     Justification block right after the Score line.
-        #   - dedupe_confidence_section is called later in the
-        #     completeness pass to clean up any residual duplicates.
-        score_present_re = _fi_re.compile(
-            r'\*\*(?:Confidence Score|درجة الثقة)\s*:?\s*\*\*\s*:?\s*\d+\s*%',
-            _fi_re.IGNORECASE,
-        )
-        justif_present_re = _fi_re.compile(
-            r'\*\*(?:Score Justification|مبررات التقييم)\s*:?\s*\*\*',
-            _fi_re.IGNORECASE,
-        )
-        has_score  = bool(score_present_re.search(conf))
-        has_justif = bool(justif_present_re.search(conf))
-        if is_ar:
-            full_block = (
-                "## 7. تقييم الثقة والمخاطر\n\n"
-                "**درجة الثقة:** 55%\n\n"
-                "**مبررات التقييم:**\n"
-                f"تعكس درجة الثقة مستوى نضج {org_name} ({maturity}) في {domain}. "
-                f"العوامل الإيجابية: تفويض {fw_short} وميزانية {budget} كافية للمرحلة 1. "
-                f"العوامل السلبية: مستوى النضج الأولي يتطلب إغلاق فجوات أساسية بالتوازي. "
-                f"العامل الأكثر حرجاً: استمرار الرعاية التنفيذية.\n\n"
-            )
-            score_line = "**درجة الثقة:** 55%\n\n"
-            justif_block = (
-                "**مبررات التقييم:**\n"
-                f"تعكس درجة الثقة مستوى نضج {org_name} ({maturity}) في {domain}. "
-                f"العوامل الإيجابية: تفويض {fw_short} وميزانية {budget} كافية للمرحلة 1. "
-                f"العوامل السلبية: مستوى النضج الأولي يتطلب إغلاق فجوات أساسية بالتوازي.\n\n"
-            )
-        else:
-            full_block = (
-                "## 7. Confidence Assessment & Risks\n\n"
-                "**Confidence Score:** 55%\n\n"
-                "**Score Justification:**\n"
-                f"The rating reflects {org_name}'s {maturity} maturity baseline in {domain}. "
-                f"Confidence-raising factors: {fw_short} regulatory mandate and {budget} budget "
-                f"sufficient for Phase 1. Confidence-reducing factors: {maturity} maturity "
-                f"requires simultaneous closure of foundational gaps. Most critical success "
-                f"factor: sustained executive sponsorship across all phases.\n\n"
-            )
-            score_line = "**Confidence Score:** 55%\n\n"
-            justif_block = (
-                "**Score Justification:**\n"
-                f"The rating reflects {org_name}'s {maturity} maturity baseline in {domain}. "
-                f"Confidence-raising factors: {fw_short} regulatory mandate and {budget} budget "
-                f"sufficient for Phase 1. Most critical success factor: sustained executive "
-                f"sponsorship across all phases.\n\n"
-            )
-        if not conf.strip():
-            sections['confidence'] = full_block
-        elif not has_score and not has_justif:
-            # Insert score+justif AFTER the section heading if present,
-            # otherwise at top.
-            heading_match = _fi_re.search(
-                r'^##\s*7\.\s*[^\n]*\n', conf, _fi_re.MULTILINE,
-            )
-            insertion = score_line + justif_block
-            if heading_match:
-                sections['confidence'] = (
-                    conf[:heading_match.end()] + '\n' + insertion
-                    + conf[heading_match.end():]
-                )
-            else:
-                sections['confidence'] = full_block + conf
-        elif not has_score:
-            # Insert just the score line at the top of section
-            heading_match = _fi_re.search(
-                r'^##\s*7\.\s*[^\n]*\n', conf, _fi_re.MULTILINE,
-            )
-            if heading_match:
-                sections['confidence'] = (
-                    conf[:heading_match.end()] + '\n' + score_line
-                    + conf[heading_match.end():]
-                )
-            else:
-                sections['confidence'] = score_line + conf
-        elif not has_justif:
-            # Insert just justification right after the score line
-            score_match = score_present_re.search(conf)
-            insert_at = conf.find('\n', score_match.end())
-            if insert_at < 0:
-                insert_at = score_match.end()
-            sections['confidence'] = (
-                conf[:insert_at + 1] + '\n' + justif_block + conf[insert_at + 1:]
-            )
-        # else: both present → no-op
-        return
-
-    # 4. Gap Implementation Guides — append to 'gaps' section
-    if flag == 'gap_guidance_missing':
-        gaps = sections.get('gaps', '') or ''
-        if not gaps.strip():
-            if is_ar:
-                gaps = (
-                    "## 4. تحليل الفجوات\n\n"
-                    "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                    "|---|--------|-------|----------|--------|\n"
-                    f"| 1 | غياب حوكمة {domain} | لا توجد لجنة حوكمة | حرج | مفتوح |\n"
-                    f"| 2 | قصور الضوابط | ضوابط {fw_short} غير مفعّلة | عالٍ | مفتوح |\n"
-                )
-            else:
-                gaps = (
-                    "## 4. Gap Analysis\n\n"
-                    "| # | Gap | Description | Priority | Status |\n"
-                    "|---|-----|-------------|----------|--------|\n"
-                    f"| 1 | {domain} governance absent | No committee | Critical | Open |\n"
-                    f"| 2 | Controls deficit | {fw_short} controls inactive | High | Open |\n"
-                )
-        if is_ar:
-            guides = (
-                "\n\n### أدلة تنفيذ الفجوات\n\n"
-                f"#### دليل تنفيذ الفجوة رقم 1: غياب حوكمة {domain}\n\n"
-                "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
-                "|--------|---------|---------|----------------|--------|\n"
-                f"| 1 | تقييم الوضع | فريق {domain} | الشهر 1 | تقرير تقييم |\n"
-                f"| 2 | تصميم المعالجة | رئيس {domain} | شهر 2-3 | خطة |\n"
-                f"| 3 | التنفيذ | فريق {domain} | شهر 4-6 | ضوابط |\n"
-                f"| 4 | الإغلاق | رئيس {domain} | شهر 7 | تقرير إغلاق |\n\n"
-                f"#### دليل تنفيذ الفجوة رقم 2: قصور الضوابط\n\n"
-                "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
-                "|--------|---------|---------|----------------|--------|\n"
-                f"| 1 | التقييم | فريق {domain} | الشهر 1 | تقرير |\n"
-                f"| 2 | التصميم | رئيس {domain} | شهر 2-3 | خطة |\n"
-                f"| 3 | التنفيذ | فريق {domain} | شهر 4-6 | ضوابط |\n"
-                f"| 4 | الإغلاق | رئيس {domain} | شهر 7 | تقرير |\n"
-            )
-        else:
-            guides = (
-                "\n\n### Gap Implementation Guidance\n\n"
-                f"#### Gap #1 Implementation Guide: {domain} governance absent\n\n"
-                "**Description:** No dedicated governance committee.\n\n"
-                "| Step | Action | Owner | Timeline | Output |\n"
-                "|------|--------|-------|----------|--------|\n"
-                f"| 1 | Assess baseline | {domain} Team | Month 1 | Assessment |\n"
-                f"| 2 | Design remediation | {domain} Lead | M 2-3 | Plan |\n"
-                f"| 3 | Implement | {domain} Team | M 4-6 | Controls |\n"
-                f"| 4 | Close | {domain} Lead | Month 7 | Closure report |\n\n"
-                "#### Gap #2 Implementation Guide: Controls deficit\n\n"
-                f"**Description:** {fw_short} controls inactive.\n\n"
-                "| Step | Action | Owner | Timeline | Output |\n"
-                "|------|--------|-------|----------|--------|\n"
-                f"| 1 | Assess | {domain} Team | Month 1 | Report |\n"
-                f"| 2 | Design | {domain} Lead | M 2-3 | Plan |\n"
-                f"| 3 | Implement | {domain} Team | M 4-6 | Controls |\n"
-                f"| 4 | Close | {domain} Lead | Month 7 | Report |\n"
-            )
-        sections['gaps'] = gaps.rstrip() + guides
-        return
-
-    # 5. Strategic Objectives — write into 'vision' section
+    # 1. Strategic Objectives flags → AI-first vision synthesis.
     if flag in ('strategic_objectives_row_schema_violation',
                 'strategic_objectives_rows_insufficient',
                 'strategic_objectives_section_missing'):
-        vision = sections.get('vision', '') or ''
-        if is_ar:
-            so_block = (
-                "\n\n### الأهداف الاستراتيجية:\n\n"
-                "| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n"
-                "|---|-------|------------------|--------|----------------|\n"
-                f"| 1 | إنشاء حوكمة {domain} | اعتماد الميثاق | يغلق فجوة الحوكمة | خلال 6 أشهر |\n"
-                f"| 2 | نشر ضوابط {fw_short} | 100% | يغلق فجوات الضبط | خلال 12 شهراً |\n"
-                f"| 3 | تنفيذ التوعية | ≥ 90% | يغلق فجوة الوعي | خلال 9 أشهر |\n"
-                f"| 4 | تشغيل الاستجابة للحوادث | اعتماد الدليل | يغلق فجوة الاستجابة | خلال 12 شهراً |\n"
-                f"| 5 | إطلاق الرصد المستمر | لوحة شهرية | يغلق فجوة الضمان | خلال 18 شهراً |\n"
+        try:
+            synthesize_objectives_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
-        else:
-            so_block = (
-                "\n\n### Strategic Objectives:\n\n"
-                "| # | Objective | Target Metric | Justification | Timeframe |\n"
-                "|---|-----------|---------------|---------------|-----------|\n"
-                f"| 1 | Establish {domain} governance | Charter approved | Closes governance gap | Within 6 months |\n"
-                f"| 2 | Deploy {fw_short} controls | 100% in scope | Closes control gaps | Within 12 months |\n"
-                f"| 3 | Implement training | ≥ 90% completion | Closes awareness gap | Within 9 months |\n"
-                f"| 4 | Operationalize IR | Playbook approved | Closes IR gap | Within 12 months |\n"
-                f"| 5 | Launch monitoring | Monthly dashboard | Closes assurance gap | Within 18 months |\n"
-            )
-        if not vision.strip():
-            heading = "## 1. الرؤية والأهداف" if is_ar else "## 1. Vision & Objectives"
-            sections['vision'] = heading + so_block
-        else:
-            # Replace any existing malformed SO block
-            so_re = _fi_re.compile(
-                r'(?:###\s*Strategic Objectives:?|###\s*الأهداف الاستراتيجية:?)'
-                r'[\s\S]*?(?=\n##\s|\Z)',
-                _fi_re.IGNORECASE,
-            )
-            new_v, n = so_re.subn(so_block.lstrip('\n') + '\n', vision, count=1)
-            sections['vision'] = new_v if n else (vision.rstrip() + so_block)
+        except RepairError as _vre:
+            setattr(_vre, 'section', 'vision')
+            raise
         return
+
+    # 2. KPI assessment guides flag → AI-first KPI synthesis.
+    #    NOTE: The deterministic per-KPI "Assessment Guide" block is no
+    #    longer authored here. If guide coverage remains missing after
+    #    AI repair, the downstream audit will fail closed rather than
+    #    have this function inject canned guide tables.
+    if flag == 'kpi_assessment_guides_missing':
+        try:
+            synthesize_kpi_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _kre:
+            setattr(_kre, 'section', 'kpis')
+            raise
+        return
+
+    # 3. Confidence Score / Score Justification flags → AI-first
+    #    confidence synthesis. ``synthesize_confidence_depth`` already
+    #    validates score, justification, CSF rows, and risk rows in a
+    #    single call and sets ``setattr(err, 'section', 'confidence')``
+    #    on its own RepairError, but we re-affirm the section attr
+    #    here defensively.
+    if flag in ('confidence_score_missing', 'score_justification_missing'):
+        try:
+            synthesize_confidence_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                org_name=org_name, maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _cre:
+            setattr(_cre, 'section', 'confidence')
+            raise
+        return
+
+    # 4. Gap guidance flag → fail-closed. No deterministic gap rows or
+    #    "Implementation Guide" tables are authored by this function.
+    #    A later PR (PR-5B.6E) will introduce ``synthesize_gaps_depth``
+    #    and replace this branch with an AI-first delegation.
+    if flag == 'gap_guidance_missing':
+        _err = RepairError(
+            'gap guidance missing and no AI-first gap synthesizer is '
+            'available'
+        )
+        setattr(_err, 'section', 'gaps')
+        raise _err
+
+    # 5. Unknown flag — never silently no-op when the caller expects a
+    #    repair. Attribute to the generic 'strategy' section so the gate
+    #    still observes the failure.
+    _err = RepairError(
+        f'_force_inject_mandatory_section: unknown flag {flag!r}; no '
+        f'AI-first repair path is registered for this flag'
+    )
+    setattr(_err, 'section', 'strategy')
+    raise _err
+
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -23965,6 +23807,14 @@ def api_generate_strategy():
         # ── Language — MUST be resolved first (used by org-memory and sector intel) ──
         lang = data.get('language', 'en')
         print(f"DEBUG: Language = {lang}", flush=True)
+
+        # ── PR-5B.6D.1: request-scoped fail-closed status dict.
+        # Initialized early so every Tier-3/Tier-4 ``_force_inject_mandatory_section``
+        # call site (and any AI-first synthesizer that raises ``RepairError``)
+        # can route through ``_mark_synth_failed(_synth_status, section, err)``.
+        # The post-normalization save gate consults this dict to refuse
+        # saving a strategy whose mandatory sections failed AI repair.
+        _synth_status = {}
 
         # ── PASS-7 FIX: initialize fw_short exactly once, early, before any
         # language branching or prompt selection. Previously assigned only
@@ -28391,9 +28241,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     org_name=data.get('org_name', 'The Organization'),
                                     budget=data.get('budget', 'allocated budget'),
                                     maturity=maturity,
+                                    sector=data.get('sector', 'General'),
+                                    generation_mode=_generation_mode,
                                 )
                                 print(f"[STRATEGY] FORCE-INJECTED mandatory section "
                                       f"for surviving flag: {_flag}", flush=True)
+                            except RepairError as _fi_re_err:
+                                # PR-5B.6D.1: AI-first delegation failed.
+                                # Route through _mark_synth_failed so the
+                                # post-normalization save gate blocks the
+                                # save instead of letting a deterministic
+                                # injector mask the failure.
+                                _mark_synth_failed(
+                                    _synth_status,
+                                    getattr(_fi_re_err, 'section', 'strategy'),
+                                    _fi_re_err,
+                                )
+                                print(f"[STRATEGY] Force-inject RepairError for "
+                                      f"{_flag}: {_fi_re_err}", flush=True)
                             except Exception as _fi_e:
                                 print(f"[STRATEGY] Force-inject failed for {_flag}: "
                                       f"{_fi_e}", flush=True)
@@ -29504,9 +29369,25 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 org_name=data.get('org_name', 'The Organization'),
                                 budget=data.get('budget', 'allocated budget'),
                                 maturity=maturity,
+                                sector=data.get('sector', 'General'),
+                                generation_mode=_generation_mode,
                             )
                             print(f'[STRATEGY-DIAG] postnorm_force_injected '
                                   f'flag={_f}', flush=True)
+                        except RepairError as _pn_re_err:
+                            # PR-5B.6D.1: AI-first delegation failed for a
+                            # mandatory post-normalization flag. Mark the
+                            # underlying section as synth_failed so the
+                            # final audit gate refuses to save.
+                            _mark_synth_failed(
+                                _synth_status,
+                                getattr(_pn_re_err, 'section', 'strategy'),
+                                _pn_re_err,
+                            )
+                            print(f'[STRATEGY-DIAG] postnorm_force_inject_repair_error '
+                                  f'flag={_f} section='
+                                  f'{getattr(_pn_re_err, "section", "strategy")!r} '
+                                  f'err={_pn_re_err}', flush=True)
                         except Exception as _pn_e:
                             print(f'[STRATEGY-DIAG] postnorm_force_inject_failed '
                                   f'flag={_f} err={_pn_e}', flush=True)
@@ -29653,6 +29534,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                             org_name=_cpl_org,
                             maturity=_cpl_mat,
                             generation_mode=_cpl_mode,
+                            synth_status=_synth_status,
                         )
                         print(f'[STRATEGY-DIAG] completeness_pass '
                               f'flags={_completeness_flags} '
@@ -29869,11 +29751,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # move the gap table out leaving env thin. Running
                     # synthesis here closes that edge case.
                     # PR-5B.5F1: request-scoped fail-closed status dict.
-                    # Defined OUTSIDE the synthesis try-block so the
-                    # later roadmap depth-safety top-up and post-
-                    # normalization save gate can read it even if the
-                    # synthesis pass raised an early exception.
-                    _synth_status = {}
+                    # PR-5B.6D.1: ``_synth_status`` is now hoisted to the
+                    # top of ``api_generate_strategy`` so Tier-3 / Tier-4
+                    # ``_force_inject_mandatory_section`` call sites can
+                    # also write into it. Re-asserted here as a no-op
+                    # ``setdefault``-style guard so an early-raise inside
+                    # this synthesis block does not lose the existing dict.
+                    if not isinstance(locals().get('_synth_status'), dict):
+                        _synth_status = {}
                     try:
                         # Build the authoritative diagnostic model (prompt
                         # Part 1). This is the single source of truth for
