@@ -17124,27 +17124,55 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
                           diagnostic_gaps=None,
                           maturity='initial',
                           generation_mode='drafting'):
-    """Diagnostic-driven rebuild of the Gap Analysis section.
+    """AI-first Gap Analysis synthesis (PR-5B.6E).
 
-    Contract (prompt Part 2D):
-      1. If org_structure_is_none=True, a structural governance gap
-         MUST be present (row 1).
-      2. For each true challenge_flag (awareness / incident_response /
-         staffing / suppliers / compliance), a matching gap row is
-         emitted when absent.
-      3. Existing substantive gap rows are preserved verbatim.
-      4. If a diagnostic_gaps list is provided by the caller, each entry
-         is emitted as a row (keyed by a 'title' / 'description' dict
-         or a simple string).
-      5. Minimum row count remains `_RICHNESS_MIN_GAP_ROWS` (2) — if
-         after injection the count is below, pads from generic bank.
+    Behaviour:
+      * If ``sections['gaps']`` already contains
+        ``>= _effective_min_gaps`` substantive gap rows AND each gap
+        row is matched by a per-gap implementation guide subsection
+        (``count_gap_guides >= count_substantive_gaps``), return a
+        zero-valued summary unchanged. AI repair is not invoked and
+        the section is left untouched.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no
+        ``domain or 'Cyber Security'`` fallback), call
+        :func:`ai_repair_strategy_section` with ``section_key='gaps'``,
+        validate the repaired markdown BEFORE assignment (gap row count
+        and per-row implementation-guide coverage), and replace
+        ``sections['gaps']`` wholesale with the AI-repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid
+        repaired output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'gaps')``. No deterministic
+        structural-gap row, challenge-driven gap bank, generic gap-bank
+        top-up, or per-gap implementation-guide table is ever emitted,
+        and ``sections['gaps']`` is left unchanged on failure.
 
-    Returns dict with:
-      - rebuilt: bool
-      - rows_before / rows_after
-      - structural_gap_injected: bool
-      - challenge_driven_gaps_injected: list[str]
-      - diagnostic_gaps_used: int
+    The threshold logic mirrors :func:`validate_arabic_strategy_semantic_richness`:
+        ``drafting``/``basic``      → ``_RICHNESS_MIN_GAP_ROWS``
+        ``consulting``/``assurance`` → at least 5 gap rows
+        ``org_structure_is_none``    → at least 5 gap rows
+
+    The legacy ``challenge_flags``, ``technologies``, and
+    ``diagnostic_gaps`` parameters are retained for signature
+    compatibility with the pipeline call sites; they are no longer
+    consumed because deterministic gap authoring has been removed.
+
+    Returns dict with keys:
+        ``rebuilt``                       — bool (True only on AI repair)
+        ``structural_gap_injected``       — bool, retained for signature
+                                            compatibility (always False
+                                            in AI-first mode).
+        ``challenge_driven_gaps_injected`` — list, retained for signature
+                                            compatibility (always empty
+                                            in AI-first mode).
+        ``diagnostic_gaps_used``          — int, retained for signature
+                                            compatibility (always 0 in
+                                            AI-first mode).
+        ``rows_before``                   — int (substantive gap rows
+                                            before repair).
+        ``rows_after``                    — int (substantive gap rows
+                                            after repair, or before on
+                                            no-op).
     """
     summary = {
         'rebuilt': False,
@@ -17153,379 +17181,85 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
         'diagnostic_gaps_used': 0,
     }
     gaps = sections.get('gaps', '') or ''
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
+    n_rows_before = count_substantive_gaps(gaps)
+    n_guides_before = count_gap_guides(gaps)
+    summary['rows_before'] = n_rows_before
 
-    rows_before, existing_guides = _extract_existing_gap_rows(gaps)
-    summary['rows_before'] = len(rows_before)
-
-    # Detect whether structural gap already exists (bilingual keyword check)
-    def _is_structural_row(r):
-        joined = ' '.join(str(c) for c in r).lower()
-        return (('governance' in joined and 'structur' in joined) or
-                ('organizational' in joined and 'structur' in joined) or
-                'الهيكل التنظيمي' in joined or
-                'حوكمة' in joined and 'هيكل' in joined)
-
-    def _row_mentions(r, en_tokens, ar_tokens):
-        joined = ' '.join(str(c) for c in r)
-        joined_lc = joined.lower()
-        for t in en_tokens:
-            if t in joined_lc:
-                return True
-        for t in ar_tokens:
-            if t in joined:
-                return True
-        return False
-
-    has_structural = any(_is_structural_row(r) for r in rows_before)
-    # Challenge-flag coverage check: does an existing row mention each
-    # flagged challenge area?
-    coverage = {}
-    coverage['awareness'] = any(
-        _row_mentions(r, ('awareness', 'training', 'phishing'),
-                      ('وعي', 'تدريب', 'تصيد')) for r in rows_before)
-    coverage['incident_response'] = any(
-        _row_mentions(r, ('incident', 'soc', 'siem', 'response'),
-                      ('حوادث', 'استجابة', 'مراقبة', 'كشف')) for r in rows_before)
-    coverage['staffing'] = any(
-        _row_mentions(r, ('staff', 'skill', 'workforce', 'hiring'),
-                      ('موظفين', 'مهارات', 'كفاءات', 'كوادر')) for r in rows_before)
-    coverage['suppliers'] = any(
-        _row_mentions(r, ('supplier', 'vendor', 'third-party', 'third party'),
-                      ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')) for r in rows_before)
-    coverage['compliance'] = any(
-        _row_mentions(r, ('compliance', 'audit', 'regulation'),
-                      ('امتثال', 'تدقيق', 'تنظيمي')) for r in rows_before)
-
-    # Decide: do we need to rebuild? Rebuild iff any of:
-    #   - row count < min
-    #   - org_structure_is_none and no structural row
-    #   - any true challenge_flag with no coverage
-    needs_inject_structural = (org_structure_is_none and not has_structural)
-    needs_challenge_injection = [
-        k for k, v in challenge_flags.items()
-        if v and not coverage.get(k, False)
-    ]
-    # Consulting-mode / no-structure orgs require a higher gap floor so the
-    # AI's thin output (often just 2-3 rows) is expanded to reflect the real
-    # diagnostic depth expected in a consulting-grade deliverable.
+    # Mode-aware floor — mirrors validate_arabic_strategy_semantic_richness
+    # / consulting-mode richness expectations.
     _mode_lc_g = str(generation_mode).lower()
     _effective_min_gaps = _RICHNESS_MIN_GAP_ROWS
     if _mode_lc_g in ('consulting', 'assurance') or org_structure_is_none:
         _effective_min_gaps = max(_effective_min_gaps, 5)
-    below_min = len(rows_before) < _effective_min_gaps
-    if (not needs_inject_structural and not needs_challenge_injection
-            and not below_min and not diagnostic_gaps):
-        summary['rows_after'] = len(rows_before)
+
+    # Sufficient → no-op (AI is not called, section is not mutated).
+    if (n_rows_before >= _effective_min_gaps
+            and n_guides_before >= n_rows_before
+            and n_rows_before > 0):
+        summary['rows_after'] = n_rows_before
         return summary
 
-    # ── Build the canonical section
-    rows_out = list(rows_before)  # preserve existing
+    # Insufficient/malformed — AI-first repair. Strict-resolve domain
+    # context (no ``domain or 'Cyber Security'`` fallback). Annotate any
+    # failure with ``section='gaps'`` so the production caller's
+    # ``except RepairError`` branch can route through
+    # ``_mark_synth_failed`` (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
+        )
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_gaps_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
+        )
+        setattr(_err, 'section', 'gaps')
+        raise _err
 
-    # 1. Structural gap (row 1 if needed)
-    if needs_inject_structural:
-        if is_ar:
-            struct_row = [
-                'غياب هيكل حوكمة الأمن السيبراني الرسمي',
-                (f'كشف التشخيص أن {org_name} لا يمتلك لجنة حوكمة معرّفة '
-                 f'أو هيكلاً تنظيمياً رسمياً لإدارة {domain} — فجوة بنيوية '
-                 f'أساسية تسبق كل ضوابط {fw_short} التشغيلية.'),
-                'حرجة',
-                'مفتوحة',
-            ]
-        else:
-            struct_row = [
-                'Absence of formal cybersecurity governance structure',
-                (f'Diagnostic identified that {org_name} lacks a defined '
-                 f'governance committee or formal organizational structure '
-                 f'for {domain} — a foundational structural gap that '
-                 f'precedes all operational {fw_short} controls.'),
-                'Critical',
-                'Open',
-            ]
-        # Prepend so it's row #1
-        rows_out.insert(0, struct_row)
-        summary['structural_gap_injected'] = True
+    _why = (
+        f'gaps_repair_needed:'
+        f'rows={n_rows_before}/{_effective_min_gaps},'
+        f'guides={n_guides_before}/{max(n_rows_before, _effective_min_gaps)},'
+        f'org_structure_is_none={bool(org_structure_is_none)}'
+    )
 
-    # 2. Challenge-flag-driven injection
-    _chal_bank_ar = {
-        'awareness': [
-            'قصور الوعي الأمني لدى الكوادر',
-            (f'التشخيص يشير إلى ضعف ثقافة الوعي بـ{domain} لدى كوادر {org_name}؛ '
-             'يلزم برنامج تدريب ممتد وقياس نسب الاجتياز دورياً.'),
-            'عالية', 'مفتوحة',
-        ],
-        'incident_response': [
-            'غياب قدرات الكشف والاستجابة للحوادث',
-            (f'التشخيص يكشف عن نقص في قدرات SOC / SIEM / IR اللازمة '
-             f'لكشف حوادث {domain} في {org_name} خلال وقت مقبول وفق {fw_short}.'),
-            'عالية', 'مفتوحة',
-        ],
-        'staffing': [
-            'نقص الكفاءات المتخصصة',
-            (f'التشخيص يوضح أن {org_name} لا يمتلك العدد أو المستوى المطلوب '
-             f'من كوادر {domain} لتشغيل الضوابط بصورة مستدامة.'),
-            'عالية', 'مفتوحة',
-        ],
-        'suppliers': [
-            'ضعف إدارة مخاطر الأطراف الثالثة',
-            (f'التشخيص يشير إلى غياب برنامج منظم لتقييم موردي {domain} '
-             f'في {org_name} وفق متطلبات {fw_short}.'),
-            'متوسطة', 'مفتوحة',
-        ],
-        'compliance': [
-            'قصور في إثبات الامتثال والتدقيق',
-            (f'التشخيص يكشف عن غياب أدلة تدقيق قابلة للإظهار لضوابط {fw_short} '
-             f'المطبقة على {org_name}.'),
-            'عالية', 'مفتوحة',
-        ],
-    }
-    _chal_bank_en = {
-        'awareness': [
-            'Workforce security awareness deficit',
-            (f'Diagnostic indicates low {domain} awareness culture among '
-             f'{org_name} staff; a sustained training programme with '
-             'periodic pass-rate measurement is required.'),
-            'High', 'Open',
-        ],
-        'incident_response': [
-            'Detection & incident response capability absent',
-            (f'Diagnostic identifies deficient SOC / SIEM / IR capability '
-             f'needed to detect {domain} incidents at {org_name} within '
-             f'acceptable time per {fw_short}.'),
-            'High', 'Open',
-        ],
-        'staffing': [
-            'Specialist workforce shortage',
-            (f'Diagnostic shows {org_name} lacks sufficient {domain} '
-             f'headcount / skill level to operate controls sustainably.'),
-            'High', 'Open',
-        ],
-        'suppliers': [
-            'Third-party risk management weakness',
-            (f'Diagnostic indicates no structured programme to assess '
-             f'{domain} suppliers at {org_name} against {fw_short}.'),
-            'Medium', 'Open',
-        ],
-        'compliance': [
-            'Compliance evidence & audit gap',
-            (f'Diagnostic identifies missing audit-ready evidence for '
-             f'{fw_short} controls as implemented at {org_name}.'),
-            'High', 'Open',
-        ],
-    }
-    chal_bank = _chal_bank_ar if is_ar else _chal_bank_en
-    for k in needs_challenge_injection:
-        if k in chal_bank:
-            rows_out.append(list(chal_bank[k]))
-            summary['challenge_driven_gaps_injected'].append(k)
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='gaps',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=_why,
+            min_rows=_effective_min_gaps,
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'gaps')
+        raise
 
-    # 3. Diagnostic gaps list (if provided) — each entry is either a
-    #    dict {'title', 'description', 'priority'(opt), 'status'(opt)}
-    #    or a plain string.
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-            desc = str(dg.get('description') or dg.get('detail') or '').strip()
-            prio = str(dg.get('priority') or ('عالية' if is_ar else 'High'))
-            stat = str(dg.get('status') or ('مفتوحة' if is_ar else 'Open'))
-        elif isinstance(dg, str):
-            title = dg.strip()
-            desc = (f'فجوة تم تشخيصها في {org_name}' if is_ar
-                    else f'Diagnosed gap at {org_name}')
-            prio = 'عالية' if is_ar else 'High'
-            stat = 'مفتوحة' if is_ar else 'Open'
-        else:
-            continue
-        if not title:
-            continue
-        # Skip if an existing row already has this title
-        title_lc = title.lower()
-        dup = any(title_lc in (r[0] or '').lower()
-                  or (r[0] or '').lower() in title_lc
-                  for r in rows_out)
-        if dup:
-            continue
-        rows_out.append([title, desc or title, prio, stat])
-        summary['diagnostic_gaps_used'] += 1
+    # Validate the repaired markdown BEFORE assignment. Reject if the
+    # AI returned fewer gap rows than required, or if any gap row is
+    # missing its per-gap implementation guide subsection. Heading /
+    # domain isolation is already enforced inside
+    # ``ai_repair_strategy_section``.
+    rep_rows = count_substantive_gaps(repaired)
+    rep_guides = count_gap_guides(repaired)
+    if rep_rows < _effective_min_gaps or rep_guides < rep_rows:
+        _err = RepairError(
+            f'synthesize_gaps_depth: AI-repaired gaps section invalid '
+            f'(rows={rep_rows}/{_effective_min_gaps}, '
+            f'guides={rep_guides}/{rep_rows})'
+        )
+        setattr(_err, 'section', 'gaps')
+        raise _err
 
-    # 4. Generic-bank top-up ONLY if we are still below effective minimum.
-    _generic_bank_ar = [
-        ['ضعف الضوابط التقنية الأساسية',
-         (f'ضوابط {fw_short} الأساسية غير مطبقة بالكامل في {org_name}، '
-          f'خاصة في مجال {domain}.'),
-         'عالية', 'مفتوحة'],
-        ['محدودية المراقبة والرصد',
-         (f'غياب القدرة على المراقبة المستمرة لأصول {domain} الحيوية '
-          f'في {org_name}.'),
-         'متوسطة', 'مفتوحة'],
-        ['غياب خطط استمرارية الأعمال',
-         (f'خطط استمرارية الأعمال الخاصة بـ{domain} غير مكتملة أو غير '
-          f'مختبرة في {org_name}.'),
-         'متوسطة', 'مفتوحة'],
-        ['غياب سياسات وإجراءات موثقة',
-         (f'لا تمتلك {org_name} حزمة سياسات وإجراءات {domain} موثقة '
-          f'ومعتمدة تغطي متطلبات {fw_short} التشغيلية.'),
-         'عالية', 'مفتوحة'],
-        ['قصور في إدارة الهويات والوصول',
-         (f'غياب آليات فعّالة لإدارة الهويات والوصول في بيئة {org_name}، '
-          f'مما يرفع من مستوى مخاطر {domain} وفق {fw_short}.'),
-         'عالية', 'مفتوحة'],
-        ['غياب برنامج تدريب وتوعية أمنية',
-         (f'لا يوجد في {org_name} برنامج توعية وتدريب منتظم لرفع كفاءة '
-          f'الكوادر في مجال {domain} ومتطلبات {fw_short}.'),
-         'متوسطة', 'مفتوحة'],
-        ['ضعف إدارة أصول {domain}',
-         (f'جرد أصول {domain} في {org_name} غير مكتمل أو غير محدث، '
-          f'مما يعيق الامتثال لمتطلبات {fw_short} ذات الصلة.'),
-         'متوسطة', 'مفتوحة'],
-    ]
-    _generic_bank_en = [
-        ['Foundational technical-control weakness',
-         (f'Core {fw_short} controls are not fully implemented at {org_name}, '
-          f'particularly in the {domain} domain.'),
-         'High', 'Open'],
-        ['Monitoring & detection limitations',
-         (f'No sustained monitoring capability for critical {domain} assets '
-          f'at {org_name}.'),
-         'Medium', 'Open'],
-        ['Business continuity planning gaps',
-         (f'{domain}-specific business continuity plans at {org_name} are '
-          f'incomplete or untested.'),
-         'Medium', 'Open'],
-        ['Absence of documented policies and procedures',
-         (f'{org_name} lacks an approved set of {domain} policies and '
-          f'procedures covering {fw_short} operational requirements.'),
-         'High', 'Open'],
-        ['Identity & access management deficiency',
-         (f'No effective IAM controls are in place at {org_name}, '
-          f'increasing {domain} risk exposure per {fw_short}.'),
-         'High', 'Open'],
-        ['No formal security awareness & training programme',
-         (f'{org_name} has no regular security awareness programme to '
-          f'build workforce competence in {domain} and {fw_short} requirements.'),
-         'Medium', 'Open'],
-        [f'{domain} asset inventory gap',
-         (f'The {domain} asset inventory at {org_name} is incomplete or '
-          f'outdated, impeding compliance with relevant {fw_short} controls.'),
-         'Medium', 'Open'],
-    ]
-    generic_bank = _generic_bank_ar if is_ar else _generic_bank_en
-    gi = 0
-    while len(rows_out) < _effective_min_gaps and gi < len(generic_bank):
-        candidate = generic_bank[gi]
-        dup = any(candidate[0].lower() in (r[0] or '').lower()
-                  or (r[0] or '').lower() in candidate[0].lower()
-                  for r in rows_out)
-        if not dup:
-            rows_out.append(list(candidate))
-        gi += 1
-
-    # ── Emit canonical section
-    if is_ar:
-        section_heading = '## 4. تحليل الفجوات'
-        table_header = '| # | الفجوة | الوصف | الأولوية | الحالة |'
-        table_sep = '|---|--------|-------|---------|--------|'
-    else:
-        section_heading = '## 4. Gap Analysis'
-        table_header = '| # | Gap | Description | Priority | Status |'
-        table_sep = '|---|-----|-------------|----------|--------|'
-    out = [section_heading, '', table_header, table_sep]
-    for idx, r in enumerate(rows_out, start=1):
-        # Ensure 4 data cells
-        while len(r) < 4:
-            r.append('—')
-        out.append('| ' + ' | '.join([str(idx)] + [str(c) for c in r[:4]]) + ' |')
-    out.append('')
-
-    # Re-emit existing guides for rows that were preserved. The row-number
-    # for a preserved row may have shifted (structural gap is now row 1),
-    # so we key off the gap TITLE. For any existing guide whose referenced
-    # title matches a preserved row's title, re-emit it. Gaps that need
-    # fresh guides are synthesized generically.
-    for idx, r in enumerate(rows_out, start=1):
-        title_lc = (r[0] or '').lower()
-        # Try to find a prior guide by fuzzy title match in existing_guides
-        guide_block = None
-        for _num, block in existing_guides.items():
-            # Check if guide's header line mentions this gap title
-            first_line = block.split('\n', 1)[0]
-            if title_lc and (title_lc[:30] in first_line.lower()
-                             or first_line.lower().endswith(title_lc[:30])):
-                guide_block = block
-                break
-        if guide_block:
-            # Replace the guide's row-number in its heading so numbering
-            # stays consistent.
-            out.append(_ts_re.sub(
-                r'(#?\s*)(Gap\s*#?\d+|الفجوة\s*(?:رقم|#)?\s*\d+)',
-                lambda _m: (_m.group(1) + (
-                    f'الفجوة رقم {idx}' if is_ar
-                    else f'Gap #{idx}')),
-                guide_block.split('\n', 1)[0]
-            ))
-            body = guide_block.split('\n', 1)[1] if '\n' in guide_block else ''
-            if body:
-                out.append(body)
-            out.append('')
-            continue
-        # Synthesize a deterministic type-specific guide using the same
-        # gap-type classification and 6-step templates as ensure_gap_guide_coverage.
-        _gap_nm  = r[0] if r else ''
-        _gap_dsc = r[1] if len(r) > 1 else ''
-        _gap_pri = r[2] if len(r) > 2 else ''
-        if is_ar:
-            _gtype = _gap_type(_gap_nm, _gap_dsc, True)
-            _steps = _gap_guide_steps_ar(_gtype, domain, fw_short, _gap_nm)
-            _pri_label = {'حرج': '🔴 حرجة', 'عالي': '🟠 عالية', 'عالية': '🟠 عالية',
-                          'متوسط': '🟡 متوسطة', 'منخفض': '🟢 منخفضة'}.get(
-                _gap_pri.strip() if _gap_pri else '',
-                f'الأولوية: {_gap_pri}' if _gap_pri else '')
-            _guide_block = [
-                f'#### دليل تنفيذ الفجوة رقم {idx}: {_gap_nm}',
-                '',
-            ]
-            if _gap_dsc and _gap_dsc != '—':
-                _guide_block.append(f'**السياق:** {_gap_dsc}')
-            if _pri_label:
-                _guide_block.append(f'**الأولوية:** {_pri_label}')
-            _guide_block.extend([
-                '',
-                '| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |',
-                '|--------|---------|---------|----------------|--------|',
-            ])
-            _guide_block.extend(_steps)
-            _guide_block.append('')
-            out.extend(_guide_block)
-        else:
-            _gtype = _gap_type(_gap_nm, _gap_dsc, False)
-            _steps = _gap_guide_steps_en(_gtype, domain, fw_short, _gap_nm)
-            _pri_label = {'critical': '🔴 Critical', 'high': '🟠 High',
-                          'medium': '🟡 Medium', 'low': '🟢 Low'}.get(
-                (_gap_pri or '').strip().lower(),
-                f'Priority: {_gap_pri}' if _gap_pri else '')
-            _guide_block = [
-                f'#### Gap #{idx} Implementation Guide: {_gap_nm}',
-                '',
-            ]
-            if _gap_dsc and _gap_dsc != '—':
-                _guide_block.append(f'**Context:** {_gap_dsc}')
-            if _pri_label:
-                _guide_block.append(f'**Priority:** {_pri_label}')
-            _guide_block.extend([
-                '',
-                '| Step | Action | Owner | Timeline | Output |',
-                '|------|--------|-------|----------|--------|',
-            ])
-            _guide_block.extend(_steps)
-            _guide_block.append('')
-            out.extend(_guide_block)
-
-    sections['gaps'] = '\n'.join(out).rstrip() + '\n'
+    sections['gaps'] = repaired
     summary['rebuilt'] = True
-    summary['rows_after'] = len(rows_out)
+    summary['rows_after'] = rep_rows
     return summary
 
 
@@ -17782,6 +17516,15 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             maturity=maturity, generation_mode=gen_mode)
         if _gaps_result and _gaps_result.get('rebuilt'):
             summary['gaps'] = _gaps_result
+    except RepairError as _gre:
+        # PR-5B.6E: AI repair unavailable — fail closed. The
+        # post-normalization save gate consults summary['synth_status']
+        # via the request-local _synth_status dict and refuses to save
+        # the strategy. No deterministic fallback gap rows or guides
+        # are inserted.
+        _mark_synth_failed(summary, 'gaps', _gre)
+        print(f'[STRATEGY-DIAG] final_synth_gaps_failed: {_gre}',
+              flush=True)
     except Exception as _ge:
         print(f'[STRATEGY-DIAG] final_synth_gaps_failed: {_ge}',
               flush=True)
@@ -18311,6 +18054,12 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     generation_mode=ctx.get('generation_mode', 'drafting'),
                 )
                 cycle['repairs'].append('gaps')
+            except RepairError as _gre:
+                # PR-5B.6E: see vision branch above. Mark synth_failed:gaps
+                # via the request-scoped ``log`` container so the
+                # post-normalization save gate refuses to save.
+                _mark_synth_failed(log, 'gaps', _gre)
+                cycle['repairs'].append(f'gaps_failed:{_gre}')
             except Exception as _e:
                 cycle['repairs'].append(f'gaps_failed:{_e}')
         if 'roadmap' in failing_keys:
@@ -21856,6 +21605,38 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "headings or other sections."
         ),
     },
+    "gaps": {
+        "ar": (
+            "أرجع قسم \"## 4. تحليل الفجوات\" فقط.\n"
+            "أولاً: جدول Markdown أنبوبي ذو 5 أعمدة بالضبط بالترتيب التالي:\n"
+            "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
+            "|---|--------|-------|----------|--------|\n"
+            "أنشئ على الأقل {min_rows} صفًا.\n"
+            "ثم لكل فجوة في الجدول، أدرج كتلة دليل تنفيذ بالعنوان التالي:\n"
+            "#### دليل تنفيذ الفجوة رقم N: <اسم الفجوة>\n"
+            "متبوعاً بجدول Markdown أنبوبي بخمسة أعمدة بالضبط:\n"
+            "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
+            "|--------|---------|---------|----------------|--------|\n"
+            "بحد أدنى {min_steps_per_guide} خطوات لكل دليل.\n"
+            "لا تُدرج رؤوسًا أخرى ولا أقسامًا أخرى. "
+            "لا تستخدم خلايا نائبة أو خلايا فارغة."
+        ),
+        "en": (
+            "Return ONLY the '## 4. Gap Analysis' section.\n"
+            "First: a Markdown pipe table with EXACTLY 5 columns in this order:\n"
+            "| # | Gap | Description | Priority | Status |\n"
+            "|---|-----|-------------|----------|--------|\n"
+            "Generate at least {min_rows} rows.\n"
+            "Then for each gap row, include an implementation guide block with the heading:\n"
+            "#### Gap #N Implementation Guide: <gap title>\n"
+            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
+            "| Step | Action | Owner | Timeline | Output |\n"
+            "|------|--------|-------|----------|--------|\n"
+            "minimum {min_steps_per_guide} steps per guide.\n"
+            "Do not include other headings or other sections. "
+            "Do not use placeholder or empty cells."
+        ),
+    },
     "pillars": {
         "ar": (
             "أرجع فقط القسم المسمى \"## 2. الركائز الاستراتيجية\".\n"
@@ -21998,6 +21779,24 @@ def ai_repair_strategy_section(
         schema_block = schema_block.format(
             min_csf_rows=_min_csf_rows,
             min_risk_rows=_min_risk_rows,
+        )
+    elif section_key == "gaps" and schema_block:
+        # Gaps schema requires two distinct minimums (table rows AND
+        # implementation-guide steps). Compute the row floor from the
+        # validator constant / domain rules and never let ``min_rows``
+        # reduce it below the validator threshold. ``min_steps_per_guide``
+        # mirrors the deterministic 4-step guide template.
+        _gap_floor = max(rules.get("min_gap_rows", 0) or 0,
+                         _RICHNESS_MIN_GAP_ROWS)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = _gap_floor
+        _min_rows_eff = max(_gap_floor, _min_rows_int)
+        _min_steps_per_guide = 4
+        schema_block = schema_block.format(
+            min_rows=_min_rows_eff,
+            min_steps_per_guide=_min_steps_per_guide,
         )
     else:
         schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
