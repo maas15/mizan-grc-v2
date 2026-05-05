@@ -22883,64 +22883,12 @@ def enforce_cybersecurity_technical_depth(
         diagnostic_gaps=diagnostic_gaps,
     )
 
-    # ── Step 4: Ensure confidence section has TWO separate subsections ──────
-    if lang == 'ar':
-        _ensure_confidence_split(sections, fw_short=fw_short)
-
     return {
         'depth_summary': depth_summary,
         'heading_repairs': heading_repairs,
         'alignment_issues': alignment_issues,
         'capability_gaps': depth_summary.get('capability_gaps', []),
     }
-
-
-def _ensure_confidence_split(sections, fw_short='NCA ECC'):
-    """Ensure the confidence section has separate CSF and risk subsections.
-
-    If "عوامل النجاح الحرجة" is missing, adds a minimal header.
-    If "المخاطر الرئيسية" appears more than once, collapses to one occurrence.
-    Idempotent.
-    """
-    conf = sections.get('confidence', '') or ''
-    if not conf.strip():
-        return
-
-    has_csf = bool(_ts_re.search(r'###\s*عوامل\s+النجاح', conf))
-    has_risk = bool(_ts_re.search(r'###\s*المخاطر\s+الرئيسية', conf))
-
-    # If neither subsection header exists, try to split by looking for
-    # a pipe-table that uses risk columns vs CSF columns
-    if not has_csf:
-        # Inject minimal CSF block before the first pipe-table if no CSF header
-        risk_hdr_pos = conf.find('### المخاطر')
-        if risk_hdr_pos > 0:
-            insert_pos = risk_hdr_pos
-        else:
-            # Find the first pipe-table header
-            tbl_m = _ts_re.search(r'^(?:\|[^\n]+\|\n)+', conf, _ts_re.MULTILINE)
-            insert_pos = tbl_m.start() if tbl_m else len(conf)
-        csf_block = (
-            '\n\n### عوامل النجاح الحرجة:\n\n'
-            '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
-            '|---|-------|-------|--------|-------------|\n'
-            f'| 1 | دعم القيادة التنفيذية | التزام الإدارة العليا بالأمن السيبراني | حرج | قرارات مجلس الإدارة |\n'
-            f'| 2 | توفر الميزانية | تخصيص ميزانية كافية لمتطلبات {fw_short} | عالٍ | سجل الميزانية المعتمد |\n'
-            f'| 3 | توفر الكفاءات | توظيف موارد بشرية مؤهلة في الأمن السيبراني | عالٍ | وصف وظيفي + شهادات |\n'
-        )
-        conf = conf[:insert_pos] + csf_block + conf[insert_pos:]
-        sections['confidence'] = conf
-
-    if not has_risk:
-        conf = sections.get('confidence', '') or ''
-        risk_block = (
-            '\n\n### المخاطر الرئيسية:\n\n'
-            '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
-            '|---|-------|-------|-----------|--------|------------|--------|--------------|-----------------|---------------|\n'
-            f'| 1 | تأخر اعتماد الحوكمة | تأخر القرارات التنفيذية | متوسط | عالٍ | متوسط | CISO | ورش عمل مبكرة وعروض قيمة مبنية على المخاطر | عدم انعقاد لجنة الحوكمة | مخاطر متبقية منخفضة |\n'
-            f'| 2 | نقص الكفاءات السيبرانية | صعوبة استقطاب المواهب | عالٍ | عالٍ | عالٍ | CISO | التوظيف المبكر + MSSP مؤقت | شواغر غير مشغولة > 30 يوماً | مخاطر متبقية متوسطة |\n'
-        )
-        sections['confidence'] = (sections.get('confidence', '') or '').rstrip() + risk_block
 
 
 # ────────────────────────────────────────────────────────────────────────────
