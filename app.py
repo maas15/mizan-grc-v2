@@ -22269,91 +22269,50 @@ def repair_confidence_risk_section(
         sections, lang, domain='Cyber Security',
         org_name='The Organization', frameworks=None,
         sector='Government'):
-    """Deterministic repair for the Confidence / Risk section.
+    """AI-first repair for the Confidence / Risk section (PR-5B.6C.3).
 
-    Steps:
-      1. Remove duplicate '### المخاطر الرئيسية' (or '### Key Risks') headings
-         by merging their table rows under the first heading.
-      2. Ensure a عوامل النجاح الحرجة (CSF) subsection exists with the
-         5-column schema: | # | العامل | الوصف | الأهمية | دليل القياس |
-         and at least _RICHNESS_MIN_CSF_ROWS rows.
-      3. Ensure a المخاطر الرئيسية (Key Risks) subsection exists with the
-         10-column schema and at least 6 valid rows.
+    Behaviour:
+      1. Schema-only cleanup: collapse duplicate
+         '### المخاطر الرئيسية' / '### Key Risks' headings (keep the first).
+      2. Sufficiency check (no AI call when satisfied):
+            * Confidence Score line present
+            * Score Justification / مبررات التقييم heading or inline marker
+            * ``_count_csf_rows >= _RICHNESS_MIN_CSF_ROWS``
+            * ``_count_risk_rows_with_mitigation >= _RISK_REPAIR_MIN``
+            * Exactly one risk heading
+      3. Otherwise delegate to
+         :func:`ai_repair_strategy_section` with
+         ``section_key='confidence'`` for BOTH cyber and non-cyber domains.
+         Validate the returned markdown BEFORE assignment.  Replace
+         ``sections['confidence']`` only if validation passes.
+      4. On :class:`DomainResolutionError`, AI failure, or invalid
+         repaired output: raise :class:`RepairError` annotated with
+         ``setattr(err, 'section', 'confidence')`` and leave
+         ``sections['confidence']`` untouched.  No deterministic CSF /
+         risk bank rows are ever inserted (no CISO, SOC, SIEM,
+         IAM/PAM/MFA, MSSP, DR/RTO, Tabletop Exercise, رئيس الأمن
+         السيبراني, فريق SOC, …).
 
-    Returns a summary dict describing what was changed.
+    Returns the summary dict (keys preserved for backward compatibility):
+        ``dup_headings_removed`` — int, duplicate risk headings collapsed
+        ``csf_rows_added``       — int, CSF rows present in repaired
+                                   section minus rows present beforehand
+                                   (0 on no-op, >=0 on AI replacement)
+        ``risk_rows_added``      — int, ``-1`` signals "AI replaced
+                                   section wholesale"; ``0`` on no-op
+        ``score_added``          — bool, True when AI repair injected a
+                                   Confidence Score line that was absent
+                                   in the original section
     """
-    frameworks = frameworks or ['NCA ECC']
-    fw_short = frameworks[0] if frameworks else 'NCA ECC'
     is_ar = (lang == 'ar')
-    conf = sections.get('confidence', '') or ''
+    conf_original = sections.get('confidence', '') or ''
+    conf = conf_original
     summary = {'dup_headings_removed': 0, 'csf_rows_added': 0,
                'risk_rows_added': 0, 'score_added': False}
 
-    # ── DOMAIN ISOLATION (problem statement PART 1 / PART 4) ─────────────────
-    # The deterministic risk/CSF banks below are cyber-specific (SOC, SIEM,
-    # IAM/PAM/MFA, DR, phishing, third-party cyber). For non-cyber domains we
-    # MUST NOT inject those rows. Try ai_repair_strategy_section first; if it
-    # fails we leave the section unchanged and surface the failure rather than
-    # contaminate non-cyber strategies with cyber content.
-    try:
-        _dctx_conf = get_strategy_domain_context(domain, lang, frameworks)
-    except DomainResolutionError:
-        _dctx_conf = None
-    if _dctx_conf is not None and _dctx_conf.get("code") != "cyber":
-        try:
-            _ai_conf = ai_repair_strategy_section(
-                section_key="confidence",
-                sections=sections,
-                lang=lang,
-                domain_context=_dctx_conf,
-                org_name=org_name,
-                sector=sector,
-                generation_mode="consulting",
-                validation_error="confidence/risk section needs domain-specific repair",
-            )
-            if _ai_conf and len(_ai_conf) >= 80:
-                sections['confidence'] = _ai_conf
-                summary['risk_rows_added'] = -1  # signal "AI replaced section"
-                return summary
-        except RepairError as _re:
-            print(f"[CONF-REPAIR] non-cyber AI repair failed for "
-                  f"domain={_dctx_conf.get('code')}: {_re}", flush=True)
-            return summary  # leave unchanged; no cyber injection
-
-    # ── Step 0: Ensure canonical top-level heading and confidence score ──
-    # Bounded repetitions prevent ReDoS on adversarial whitespace runs.
-    score_re = _ts_re.compile(
-        r'(?:\*\*)?(?:Confidence[ \t]{0,10}Score|درجة[ \t]{0,10}الثقة)(?:\*\*)?'
-        r'[ \t]{0,10}:?[ \t]{0,10}(?:\*\*)?[ \t]{0,10}\d{1,3}[ \t]{0,5}%',
-        _ts_re.IGNORECASE,
-    )
-    if not conf.strip():
-        if is_ar:
-            conf = (
-                '## 7. تقييم الثقة والمخاطر\n\n'
-                '**درجة الثقة:** 65%\n\n'
-                '### مبررات التقييم\n\n'
-                f'تعكس هذه الدرجة مستوى النضج الحالي لـ{org_name} '
-                f'والفجوات المحددة في ضوابط {domain} وفق {fw_short}.\n\n'
-            )
-        else:
-            conf = (
-                '## 7. Confidence Assessment & Risks\n\n'
-                '**Confidence Score:** 65%\n\n'
-                '### Score Justification\n\n'
-                f'This score reflects the current maturity posture of {org_name} '
-                f'and the gaps identified in {domain} controls against {fw_short}.\n\n'
-            )
-        summary['score_added'] = True
-    elif not score_re.search(conf):
-        score_line = (
-            '\n\n**درجة الثقة:** 65%\n' if is_ar
-            else '\n\n**Confidence Score:** 65%\n'
-        )
-        conf = conf.rstrip() + score_line
-        summary['score_added'] = True
-
-    # ── Step 1: Collapse duplicate risk-subsection headings ──────────────
+    # ── Schema-only cleanup: collapse duplicate risk subsection headings.
+    # Performed FIRST so the sufficiency check sees a single risk heading
+    # whenever the section is otherwise valid.
     if is_ar:
         _risk_hdr_pattern = (
             r'^###\s*(?:المخاطر\s+الرئيسية|المخاطر\s+الاستراتيجية|'
@@ -22366,305 +22325,131 @@ def repair_confidence_risk_section(
     _risk_hdr_re_dup = _ts_re.compile(
         _risk_hdr_pattern, _ts_re.MULTILINE | _ts_re.IGNORECASE)
     _risk_hdr_matches = list(_risk_hdr_re_dup.finditer(conf))
-
     if len(_risk_hdr_matches) >= 2:
-        # Collect all table rows from every duplicate block
-        _risk_tbl_row_re = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _all_risk_rows = []
-        for _cells in _ts_table_rows(conf, _risk_tbl_row_re):
-            if (_cells and _cells[0].replace('.', '').isdigit()
-                    and len(_cells) >= 2
-                    and not _ts_is_placeholder(_cells[1])):
-                _all_risk_rows.append(_cells)
-
-        # Remove all risk subsection blocks beyond the first
-        first_pos = _risk_hdr_matches[0].start()
+        # Keep everything up to (not including) the second heading.
         second_pos = _risk_hdr_matches[1].start()
-        # Keep everything up to (not including) the second heading
         conf = conf[:second_pos].rstrip()
         summary['dup_headings_removed'] = len(_risk_hdr_matches) - 1
+        sections['confidence'] = conf
 
-    # ── Define canonical CSF and Risk banks ──────────────────────────────
-    if is_ar:
-        _csf_bank = [
-            ('دعم القيادة التنفيذية',
-             f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
-             'حرج',
-             'تقارير اجتماعات لجنة التوجيه'),
-            ('وضوح ملكية الضوابط',
-             'تعيين مالك لكل ضابط ومخرج تنفيذي مع مصفوفة RACI',
-             'حرج',
-             f'سجل الضوابط ومصفوفة RACI'),
-            (f'إطار حوكمة {domain} قابل للتشغيل',
-             'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
-             'عالٍ',
-             'محاضر الاجتماعات وسجل قرارات لجنة التوجيه'),
-            ('توفر الأدلة والتوثيق',
-             'حفظ أدلة التطبيق والاختبار والمراجعة بشكل منهجي',
-             'عالٍ',
-             'مستودع الأدلة وتقارير التدقيق'),
-            ('بيئة تقنية متكاملة',
-             f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
-             'متوسط',
-             'نسبة تغطية مصادر السجلات في SIEM'),
-        ]
-        _risk_bank = [
-            ('تأخر اعتماد نموذج الحوكمة',
-             'غياب هيكل حوكمة رسمي وبطء اتخاذ القرارات',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'الإدارة العليا',
-             'تنفيذ مبكر لورش العمل التنفيذية وعروض قيمة تعتمد على المخاطر',
-             'تأخر اعتماد ميثاق لجنة التوجيه',
-             'متوسط'),
-            ('نقص الكفاءات المتخصصة في الأمن السيبراني',
-             'سوق عمل متنافس وفجوة مهارات محلية',
-             'عالٍ', 'عالٍ', 'حرج',
-             'رئيس الأمن السيبراني',
-             'التوظيف المبكر واستخدام خدمات MSSP كحل مؤقت',
-             'تزايد الشواغر غير المملوءة في وحدة الأمن',
-             'عالٍ'),
-            ('عدم اكتمال جرد الأصول والأنظمة',
-             'غياب عملية جرد منهجية للأصول التقنية',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'تقنية المعلومات',
-             f'تنفيذ جرد أصول وربطه بإدارة الثغرات والمراقبة',
-             'أصول غير مصنفة أو غير مراقبة',
-             'متوسط'),
-            ('فشل تكامل SIEM مع مصادر السجلات الحرجة',
-             'تعقيد البيئة التقنية وتفاوت قدرات المورد',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'فريق SOC',
-             'تحديد مصادر السجلات الحرجة واختبار التكامل وحالات الاستخدام',
-             'انخفاض تغطية السجلات عن 80%',
-             'متوسط'),
-            ('تأخر تطبيق IAM/PAM/MFA',
-             'مقاومة المستخدمين وتعقيدات التكامل مع الأنظمة القديمة',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'مدير الهوية والوصول',
-             'تطبيق مرحلي للحسابات الحرجة مع برنامج إدارة تغيير',
-             'حسابات مميزة دون MFA أو مراجعة دورية',
-             'متوسط'),
-            ('عدم اختبار النسخ الاحتياطي والتعافي من الكوارث',
-             'غياب جدولة اختبارات DR إلزامية دورية',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'مدير البنية التحتية',
-             'تنفيذ اختبارات استعادة ربع سنوية وتوثيق النتائج',
-             'فشل اختبار الاستعادة أو تجاوز RTO',
-             'متوسط'),
-            ('ضعف جاهزية الاستجابة للحوادث',
-             'غياب خطة استجابة موثقة ومُختبرة',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'رئيس الأمن السيبراني',
-             'اعتماد Playbooks وتنفيذ Tabletop Exercise',
-             'تأخر التصعيد أو عدم وضوح المسؤوليات',
-             'متوسط'),
-            (f'فجوات أدلة الامتثال لضوابط {fw_short}',
-             'ضعف التوثيق وعدم اتساق آليات جمع الأدلة',
-             'متوسط', 'متوسط', 'متوسط',
-             'فريق الحوكمة والامتثال',
-             'إنشاء مستودع أدلة وربطه بالضوابط والمتطلبات',
-             'ضوابط مطبقة دون دليل قابل للتدقيق',
-             'منخفض'),
-        ]
-    else:
-        _csf_bank = [
-            ('Executive Leadership Support',
-             f'Active sponsorship from {org_name} senior leadership '
-             f'to execute the {domain} strategy',
-             'Critical',
-             'Steering committee meeting reports'),
-            ('Control Ownership Clarity',
-             'Each control has an assigned owner with a clear RACI',
-             'Critical',
-             'Control register and RACI matrix'),
-            (f'Operable {domain} Governance Framework',
-             'Standing steering committee with clear decision rights',
-             'High',
-             'Meeting minutes and steering committee decision log'),
-            ('Evidence Availability',
-             'Systematic preservation of implementation and audit evidence',
-             'High',
-             'Evidence repository and audit reports'),
-            ('Integrated Technology Environment',
-             f'{domain} platforms integrated with operational systems '
-             'and unified logging',
-             'Medium',
-             'SIEM log-source coverage rate'),
-        ]
-        _risk_bank = [
-            ('Delayed Governance Model Approval',
-             'Absence of formal governance structure; slow decision-making',
-             'Medium', 'High', 'High',
-             'Senior Management',
-             'Early executive workshops and risk-based value briefings',
-             'Delay in steering committee charter approval',
-             'Medium'),
-            ('Lack of Specialised Cybersecurity Competencies',
-             'Competitive labour market and local skills gap',
-             'High', 'High', 'Critical',
-             'CISO',
-             'Early recruitment and interim MSSP services',
-             'Growing unfilled vacancies in security unit',
-             'High'),
-            ('Incomplete Asset and System Inventory',
-             'No systematic asset-discovery process in place',
-             'Medium', 'High', 'High',
-             'IT Operations Owner',
-             f'Run comprehensive asset discovery before applying {fw_short} controls',
-             'Gaps in asset-management reports',
-             'Medium'),
-            ('SIEM Integration Failure with Critical Log Sources',
-             'Complex tech environment and varying vendor capabilities',
-             'Medium', 'High', 'High',
-             'SOC Manager',
-             'Phased integration with per-source acceptance testing before go-live',
-             'Log-source coverage falling below 80%',
-             'Medium'),
-            ('Delayed IAM/PAM/MFA Rollout',
-             'User resistance and integration complexity with legacy systems',
-             'Medium', 'High', 'High',
-             'IAM Owner',
-             'Phased rollout for critical accounts with change management programme',
-             'PAM deployment phases behind schedule',
-             'Medium'),
-            ('Untested Backup and Disaster Recovery',
-             'Absence of mandatory periodic DR test scheduling',
-             'Medium', 'High', 'High',
-             'Infrastructure Manager',
-             'Schedule mandatory quarterly DR tests with results reporting',
-             'More than 90 days elapsed without a DR test',
-             'Medium'),
-            ('Weak Incident Response Readiness',
-             'No documented and tested incident response plan',
-             'Medium', 'High', 'High',
-             'CISO',
-             'Adopt Playbooks and conduct Tabletop Exercises',
-             'Delayed escalation or unclear responsibilities',
-             'Medium'),
-            (f'{fw_short} Compliance Evidence Gaps',
-             'Weak documentation and inconsistent evidence-collection practices',
-             'Medium', 'Medium', 'Medium',
-             'Governance and Compliance Team',
-             'Create evidence repository linked to controls and requirements',
-             'Controls applied without auditable evidence',
-             'Low'),
-        ]
-
-    # ── Step 2: Replace CSF subsection when insufficient ─────────────────
-    # Instead of appending rows to a potentially malformed table, cut from
-    # the CSF heading (or risk heading if CSF is missing) and replace the
-    # entire CSF block with the canonical bank.
-    _csf_heading_re = _ts_re.compile(
-        r'^###\s+(?:عوامل\s+النجاح\s+الحرجة|Critical\s+Success\s+Factors)[^\n]*$',
+    # ── Sufficiency probes (mirror synthesize_confidence_depth helpers).
+    score_re = _ts_re.compile(
+        r'(?:\*\*)?(?:Confidence[ \t]{0,10}Score|درجة[ \t]{0,10}الثقة)(?:\*\*)?'
+        r'[ \t]{0,10}:?[ \t]{0,10}(?:\*\*)?[ \t]{0,10}\d{1,3}[ \t]{0,5}%',
+        _ts_re.IGNORECASE,
+    )
+    just_heading_re = _ts_re.compile(
+        r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))',
         _ts_re.MULTILINE | _ts_re.IGNORECASE,
     )
-    n_csf = _count_csf_rows(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
-        _cm = _csf_heading_re.search(conf)
-        if _cm:
-            conf = conf[:_cm.start()].rstrip()
-        if is_ar:
-            _csf_block = (
-                '\n\n### عوامل النجاح الحرجة\n\n'
-                '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
-                '|---|-------|-------|---------|-------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                    for i, r in enumerate(_csf_bank)
-                ) + '\n'
-            )
-        else:
-            _csf_block = (
-                '\n\n### Critical Success Factors\n\n'
-                '| # | Factor | Description | Importance | Measurement Indicator |\n'
-                '|---|--------|-------------|------------|----------------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                    for i, r in enumerate(_csf_bank)
-                ) + '\n'
-            )
-        conf = conf.rstrip() + _csf_block
-        summary['csf_rows_added'] = len(_csf_bank)
-
-    # ── Step 3: Replace risk subsection when insufficient ────────────────
-    # Cut from the risk heading and replace the entire block with the
-    # canonical 8-row bank so n_risk ≥ 6 is guaranteed.
-    _risk_heading_re = _ts_re.compile(
-        r'^###\s+(?:المخاطر\s+الرئيسية|المخاطر\s+الاستراتيجية|Key\s+Risks)[^\n]*$',
-        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+    just_inline_re = _ts_re.compile(
+        r'(?:justification|rationale|مبررات?|أسباب|تفسير)',
+        _ts_re.IGNORECASE,
     )
     _RISK_REPAIR_MIN = 6
-    n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_risks < _RISK_REPAIR_MIN:
-        _rm = _risk_heading_re.search(conf)
-        if _rm:
-            conf = conf[:_rm.start()].rstrip()
-        if is_ar:
-            _risk_block = (
-                '\n\n### المخاطر الرئيسية\n\n'
-                '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر'
-                ' | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
-                '|---|-------|-------|-----------|--------|-------------|'
-                '--------|-------------|-----------------|---------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
-                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
-                    for i, r in enumerate(_risk_bank)
-                ) + '\n'
-            )
-        else:
-            _risk_block = (
-                '\n\n### Key Risks\n\n'
-                '| # | Risk | Root Cause | Likelihood | Impact | Risk Level'
-                ' | Owner | Treatment Plan | Warning Indicator | Residual Risk |\n'
-                '|---|------|-----------|-----------|--------|----------|'
-                '-----|--------------|-----------------|---------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
-                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
-                    for i, r in enumerate(_risk_bank)
-                ) + '\n'
-            )
-        conf = conf.rstrip() + _risk_block
-        summary['risk_rows_added'] = len(_risk_bank)
 
-    sections['confidence'] = conf
+    def _is_sufficient(text):
+        if not text or not text.strip():
+            return False
+        if not score_re.search(text):
+            return False
+        if not (just_heading_re.search(text) or just_inline_re.search(text)):
+            return False
+        if _count_csf_rows(text) < _RICHNESS_MIN_CSF_ROWS:
+            return False
+        if _count_risk_rows_with_mitigation(text) < _RISK_REPAIR_MIN:
+            return False
+        if len(_risk_hdr_re_dup.findall(text)) != 1:
+            return False
+        return True
 
-    # ── Post-repair assertions ────────────────────────────────────────────
-    _n_csf_after = _count_csf_rows(conf)
-    _n_risk_after = _count_risk_rows_with_mitigation(conf)
-    _n_risk_hdrs = len(_ts_re.findall(
-        r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
-        conf, _ts_re.IGNORECASE,
-    ))
-    _csf_present = bool(_csf_heading_re.search(conf))
-    _risk_present = bool(_risk_heading_re.search(conf))
-    if (_n_csf_after < _RICHNESS_MIN_CSF_ROWS
-            or _n_risk_after < _RISK_REPAIR_MIN
-            or not _csf_present
-            or not _risk_present
-            or _n_risk_hdrs > 1):
-        import logging as _logging
-        _logging.error(
-            'repair_confidence_risk_section: assertion FAILED '
-            'csf=%d risk=%d risk_hdrs=%d csf_present=%s risk_present=%s. '
-            'Preview: %r',
-            _n_csf_after, _n_risk_after, _n_risk_hdrs,
-            _csf_present, _risk_present, conf[:600],
+    n_csf_before = _count_csf_rows(conf)
+    score_present_before = bool(score_re.search(conf))
+
+    if _is_sufficient(conf):
+        return summary
+
+    # ── AI-first repair (cyber AND non-cyber).  Strict-resolve the
+    # domain context — no ``domain or 'Cyber Security'`` fallback.  Any
+    # failure is annotated with ``section='confidence'`` so the
+    # production caller can route through ``_mark_synth_failed``
+    # (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=list(frameworks) if frameworks else None,
         )
-        raise AssertionError(
-            f'repair_confidence_risk_section: post-repair assertions failed. '
-            f'csf_rows={_n_csf_after} (min {_RICHNESS_MIN_CSF_ROWS}), '
-            f'risk_rows={_n_risk_after} (min {_RISK_REPAIR_MIN}), '
-            f'risk_headings={_n_risk_hdrs} (must be 1), '
-            f'csf_present={_csf_present}, risk_present={_risk_present}. '
-            f'Preview: {conf[:600]!r}'
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'repair_confidence_risk_section: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'confidence')
+        raise _err
 
+    _why = (
+        f'confidence_repair_needed:'
+        f'score_present={score_present_before},'
+        f'csf_rows={n_csf_before}/{_RICHNESS_MIN_CSF_ROWS},'
+        f'risk_rows={_count_risk_rows_with_mitigation(conf)}/{_RISK_REPAIR_MIN}'
+    )
+
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='confidence',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            generation_mode='consulting',
+            validation_error=_why,
+            min_rows=max(_RICHNESS_MIN_CSF_ROWS, _RISK_REPAIR_MIN),
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'confidence')
+        raise
+
+    # ── Validate BEFORE assignment.  Heading / domain isolation is
+    # enforced inside ``ai_repair_strategy_section``.
+    rep_score = bool(score_re.search(repaired))
+    rep_just = bool(just_heading_re.search(repaired)) or bool(
+        just_inline_re.search(repaired))
+    rep_csf = _count_csf_rows(repaired)
+    rep_risk = _count_risk_rows_with_mitigation(repaired)
+    rep_risk_hdrs = len(_risk_hdr_re_dup.findall(repaired))
+    if (not rep_score or not rep_just
+            or rep_csf < _RICHNESS_MIN_CSF_ROWS
+            or rep_risk < _RISK_REPAIR_MIN
+            or rep_risk_hdrs != 1):
+        _err = RepairError(
+            f'repair_confidence_risk_section: AI-repaired confidence '
+            f'section invalid (score={rep_score}, justification={rep_just}, '
+            f'csf_rows={rep_csf}/{_RICHNESS_MIN_CSF_ROWS}, '
+            f'risk_rows={rep_risk}/{_RISK_REPAIR_MIN}, '
+            f'risk_headings={rep_risk_hdrs})'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    sections['confidence'] = repaired
+    summary['score_added'] = (not score_present_before) and rep_score
+    summary['csf_rows_added'] = max(0, rep_csf - n_csf_before)
+    # Sentinel: the AI replaced the section wholesale; the caller cannot
+    # interpret this as a row delta.  Mirrors the existing
+    # ``risk_rows_added = -1`` convention used by the previous non-cyber
+    # branch and asserted by the production diagnostic logger.
+    summary['risk_rows_added'] = -1
     return summary
+
+
+# Note: the deterministic CSF / risk banks (CISO, SOC, SIEM, IAM/PAM/MFA,
+# MSSP, DR/RTO, Tabletop Exercise, رئيس الأمن السيبراني, فريق SOC, …)
+# previously assembled inside ``repair_confidence_risk_section`` were
+# removed in PR-5B.6C.3.  The AI provider is now the single source of
+# truth for confidence / risk content, with
+# ``ai_repair_strategy_section(section_key='confidence', ...)``
+# enforcing domain isolation and schema.
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -30701,6 +30486,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'{_risk_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _crre:
+                            # PR-5B.6C.3: AI repair failure inside
+                            # repair_confidence_risk_section. Mirror
+                            # PR-5B.5F1's _mark_synth_failed pattern so the
+                            # post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_crre, 'section', 'confidence')
+                            _mark_synth_failed(_synth_status, _section, _crre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_confidence_risk_failed: '
+                                f'{_crre}',
+                                flush=True,
+                            )
                         except Exception as _rr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_confidence_risk_failed: '

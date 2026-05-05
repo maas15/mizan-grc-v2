@@ -327,15 +327,29 @@ class TestNonCyberRepairLeavesSectionAlone(unittest.TestCase):
                 "**Confidence Score:** 60%\n"
             )
         }
-        _APP.repair_confidence_risk_section(
-            sections, lang='en',
-            domain='Artificial Intelligence',
-            org_name='TestOrg', sector='Government',
-            frameworks=[],
-        )
-        # No cyber risk rows must appear (no SOC, SIEM, IAM/PAM/MFA, DR test,
-        # phishing). AI provider unavailable → no AI replacement either; the
-        # section is left unchanged.
+        original = sections['confidence']
+        # PR-5B.6C.3: repair_confidence_risk_section now delegates to
+        # ai_repair_strategy_section (AI-first) for both cyber and
+        # non-cyber domains.  AI provider not configured in the test
+        # env → RepairError raised with section='confidence'.  No
+        # cyber rows are injected and the section is left unchanged.
+        try:
+            _APP.repair_confidence_risk_section(
+                sections, lang='en',
+                domain='Artificial Intelligence',
+                org_name='TestOrg', sector='Government',
+                frameworks=[],
+            )
+            raised = None
+        except _APP.RepairError as _e:
+            raised = _e
+        self.assertIsNotNone(
+            raised,
+            'PR-5B.6C.3: AI failure must propagate as RepairError, '
+            'not be swallowed')
+        self.assertEqual(getattr(raised, 'section', None), 'confidence')
+        # Section MUST remain unchanged (no cyber bank leak).
+        self.assertEqual(sections['confidence'], original)
         text = sections['confidence']
         for term in ('SOC', 'SIEM', 'PAM', 'MFA', 'phishing', 'IAM'):
             self.assertNotIn(term, text,
