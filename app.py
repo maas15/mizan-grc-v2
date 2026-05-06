@@ -34198,6 +34198,18 @@ def api_generate_pdf_async():
     # for the resolution order (sections_json → content → client fallback).
     try:
         _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
+        # synchronously, before any task_id is issued.
+        print(f'[EXPORT-DOMAIN-GUARD] PDF-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type_a,
+            'artifact_id': _art_id_a,
+        }), 422
     except Exception as _cn_e:
         print(f'[ASYNC-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical = ''
@@ -34215,6 +34227,29 @@ def api_generate_pdf_async():
             content = ensure_markdown_formatting(content)
         except Exception as _nf_e:
             print(f'[ASYNC-NORM] PDF client-content normalize failed: {_nf_e}', flush=True)
+
+    # PR-5B.7B.3: client-payload fallback guard — when no DB-canonical
+    # content was used, validate the (possibly normalized) client content
+    # against the resolved request domain before queueing the build.
+    if not (_db_canonical and _db_canonical.strip()):
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type_a,
+                artifact_id=_art_id_a,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] PDF-async client-payload denied for '
+                  f'{_art_type_a}/{_art_id_a}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
 
     task_id = str(uuid.uuid4())
     _export_store[task_id] = {'status': 'pending', 'filename': filename}
@@ -34363,6 +34398,18 @@ def api_generate_docx_async():
     # same repair-processed sections_json / content that the preview renders.
     try:
         _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
+        # synchronously, before any task_id is issued.
+        print(f'[EXPORT-DOMAIN-GUARD] DOCX-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type_a,
+            'artifact_id': _art_id_a,
+        }), 422
     except Exception as _cn_e:
         print(f'[ASYNC-CANON] DOCX lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical = ''
@@ -34380,6 +34427,27 @@ def api_generate_docx_async():
             content = ensure_markdown_formatting(content)
         except Exception as _nf_e:
             print(f'[ASYNC-NORM] DOCX client-content normalize failed: {_nf_e}', flush=True)
+
+    # PR-5B.7B.3: client-payload fallback guard for DOCX-async path.
+    if not (_db_canonical and _db_canonical.strip()):
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type_a,
+                artifact_id=_art_id_a,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX-async client-payload denied for '
+                  f'{_art_type_a}/{_art_id_a}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
 
     task_id = str(uuid.uuid4())
 
@@ -35656,6 +35724,17 @@ def api_generate_docx():
     # processed sections_json from the DB rather than stale client content.
     try:
         _db_canonical_d = _canonical_content_from_db(_art_type, _art_id, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
+        print(f'[EXPORT-DOMAIN-GUARD] DOCX denied for {_art_type}/{_art_id}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type,
+            'artifact_id': _art_id,
+        }), 422
     except Exception as _cn_e:
         print(f'[DOCX-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_d = ''
@@ -35668,6 +35747,28 @@ def api_generate_docx():
         except Exception:
             pass
         content = _db_canonical_d
+    else:
+        # PR-5B.7B.3: client-payload fallback — guard the request body too,
+        # otherwise an unsaved/legacy artifact could still ship contaminated
+        # content. Domain here is the request-resolved canonical name.
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type,
+                artifact_id=_art_id,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX client-payload denied for '
+                  f'{_art_type}/{_art_id}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type,
+                'artifact_id': _art_id,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_docx', {'filename': filename})
@@ -35909,6 +36010,17 @@ def api_generate_pdf():
     # resolution here so any direct caller gets the same parity guarantee.
     try:
         _db_canonical_p = _canonical_content_from_db(_art_type_p, _art_id_p, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
+        print(f'[EXPORT-DOMAIN-GUARD] PDF denied for {_art_type_p}/{_art_id_p}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain_pdf,
+            'artifact_type': _art_type_p,
+            'artifact_id': _art_id_p,
+        }), 422
     except Exception as _cn_e:
         print(f'[PDF-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_p = ''
@@ -35921,6 +36033,26 @@ def api_generate_pdf():
         except Exception:
             pass
         content = _db_canonical_p
+    else:
+        # PR-5B.7B.3: client-payload fallback — guard the request body too.
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain_pdf,
+                language=lang,
+                artifact_type=_art_type_p,
+                artifact_id=_art_id_p,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] PDF client-payload denied for '
+                  f'{_art_type_p}/{_art_id_p}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain_pdf,
+                'artifact_type': _art_type_p,
+                'artifact_id': _art_id_p,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_pdf', {'filename': filename})
@@ -40238,6 +40370,96 @@ def api_save_evidence_gaps():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ── PR-5B.7B.3: Export-time domain isolation guard ─────────────────────────────
+# Fail-CLOSED guard that runs validate_domain_isolation on the content about to
+# be exported. Saved strategies (or client-submitted payloads) that contain
+# cross-domain terms (e.g. NCA ECC inside a Data Management strategy) MUST NOT
+# be exportable to PDF/DOCX. The guard is read-only: it never repairs content.
+# Repair is owned by repair_domain_contamination at generation time.
+def _enforce_export_domain_isolation(sections_dict, domain, language,
+                                     frameworks=None,
+                                     artifact_type: str = "strategy",
+                                     artifact_id=None,
+                                     keys_to_check=None) -> None:
+    """Raise DomainContaminationError if any section in ``sections_dict``
+    contains forbidden cross-domain terms for the resolved ``domain``.
+
+    No-op for non-strategy artifact types (policies, audits, etc.).
+
+    On unresolvable domain (DomainResolutionError) the helper raises
+    DomainContaminationError — a saved strategy whose persisted domain no
+    longer normalises is treated as contaminated rather than silently
+    defaulting to Cyber Security. Callers MUST convert to HTTP 422.
+    """
+    if (artifact_type or "strategy") != "strategy":
+        return
+    if not isinstance(sections_dict, dict):
+        return
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang=(language or "en"),
+            selected_frameworks=frameworks or None,
+        )
+    except DomainResolutionError as _dre:
+        msg = (f"Export blocked — saved strategy domain is unresolvable "
+               f"({domain!r}): {_dre}")
+        print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+              f'domain_unresolvable raw={domain!r}', flush=True)
+        raise DomainContaminationError(msg)
+    contamination = validate_domain_isolation(
+        sections_dict, domain_context, keys_to_check=keys_to_check,
+    )
+    if contamination:
+        domain_code = domain_context.get("code", "")
+        summary = "; ".join(
+            f"{rec.get('section', '?')}={list(rec.get('found_terms', []))[:4]}"
+            for rec in contamination
+        )
+        print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+              f'domain={domain_code} contaminated sections={summary}',
+              flush=True)
+        domain_display = domain_context.get("display_en") or domain_code or ""
+        raise DomainContaminationError(
+            f"Export blocked — saved strategy contains cross-domain content "
+            f"({domain_display}): {summary}"
+        )
+    # Clean — single-line trace so operators can audit pass-through too.
+    print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+          f'domain={domain_context.get("code", "")} clean '
+          f'sections={len([k for k, v in sections_dict.items() if v])}',
+          flush=True)
+
+
+def _enforce_export_domain_isolation_from_text(text, domain, language,
+                                               frameworks=None,
+                                               artifact_type: str = "strategy",
+                                               artifact_id=None) -> None:
+    """Flattened-text wrapper around _enforce_export_domain_isolation.
+
+    Used by the ``content`` fallback inside _canonical_content_from_db (when
+    only the joined markdown blob is available, not the per-section dict)
+    and by export-route client-payload fallback paths (when the DB has no
+    canonical content and the request body's ``content`` is the only source).
+
+    Packs ``text`` into a single-key dict so validate_domain_isolation can
+    still substring-match forbidden terms; matching is case-insensitive
+    substring and is unaffected by the section key.
+    """
+    if (artifact_type or "strategy") != "strategy":
+        return
+    if not isinstance(text, str) or not text.strip():
+        return
+    _enforce_export_domain_isolation(
+        {"flattened": text},
+        domain=domain,
+        language=language,
+        frameworks=frameworks,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        keys_to_check=["flattened"],
+    )
+
+
 # ── Hard publishability gate for export (internal helper — not a route) ────────
 def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) -> str:
     """Load the canonical markdown for an artifact directly from the DB.
@@ -40296,6 +40518,20 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
             import hashlib as _hl_cn
             _secs = _json_cn.loads(_sections_json_str)
             if isinstance(_secs, dict) and _secs:
+                # PR-5B.7B.3: export-time domain isolation guard. Use the DB
+                # row's domain/language as the source of truth (the saved
+                # artifact, not the request payload). Raises
+                # DomainContaminationError on contamination — let it propagate
+                # so export routes can convert to HTTP 422.
+                _row_domain   = _row['domain']   if 'domain'   in _row_keys else None
+                _row_language = _row['language'] if 'language' in _row_keys else None
+                _enforce_export_domain_isolation(
+                    _secs,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type=artifact_type,
+                    artifact_id=_art_id,
+                )
                 _order = ['vision', 'pillars', 'environment', 'gaps',
                           'roadmap', 'kpis', 'confidence']
                 _parts = [_secs[k] for k in _order
@@ -40321,12 +40557,30 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                     except Exception:
                         pass
                     return _canonical
+        except DomainContaminationError:
+            # PR-5B.7B.3: contamination is a fail-CLOSED signal — never
+            # swallow it, and never fall through to the `content` fallback
+            # which would also be contaminated. Let the export route
+            # convert to HTTP 422.
+            raise
         except Exception as _e:
             print(f'[CANON] sections_json parse failed: {_e}', flush=True)
 
     # Fallback: the stored `content` column was also repair-processed at save.
     _content_db = _row['content'] if 'content' in _row_keys else None
     if _content_db and isinstance(_content_db, str) and _content_db.strip():
+        # PR-5B.7B.3: flattened-text guard for the content-fallback path.
+        # No per-section structure available here; substring match still
+        # detects forbidden cross-domain terms.
+        _row_domain   = _row['domain']   if 'domain'   in _row_keys else None
+        _row_language = _row['language'] if 'language' in _row_keys else None
+        _enforce_export_domain_isolation_from_text(
+            _content_db,
+            domain=_row_domain,
+            language=_row_language,
+            artifact_type=artifact_type,
+            artifact_id=_art_id,
+        )
         try:
             return ensure_markdown_formatting(_content_db)
         except Exception as _fmt_e:
