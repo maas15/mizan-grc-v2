@@ -23675,6 +23675,30 @@ def api_generate_strategy():
         _diagnostic_id   = data.get('diagnostic_id')
         _diagnostic_context = ''  # enrichment injected into the strategy prompt
 
+        # ── PR fix: hoist `_model_sector` / `_model_size` initialization ──
+        # These were previously assigned only inside the
+        # `if _prompt_diag_model:` branch (and the `else:` branch
+        # contained `_model_sector = _model_sector` self-aliases that
+        # raised UnboundLocalError). They are read above by
+        # `get_sector_intelligence(_model_sector, ...)` and across
+        # every Arabic/English/board/technical prompt branch below,
+        # so they MUST be initialized unconditionally before first use.
+        # Domain-neutral: pulls from explicit request keys with a safe
+        # final default; downstream branches still overwrite from the
+        # canonical diagnostic model when available.
+        _model_sector = (str(
+            data.get('sector')
+            or data.get('organization_sector')
+            or data.get('industry')
+            or 'Government'
+        ).strip() or 'Government')
+        _model_size = (str(
+            data.get('size')
+            or data.get('organization_size')
+            or data.get('org_size')
+            or 'Medium'
+        ).strip() or 'Medium')
+
         # ── Org memory enrichment (all modes — improves consistency) ──────────
         _org_mem_ctx = _get_org_memory_context(
             session['user_id'], data.get('domain', 'Cyber Security'), lang
