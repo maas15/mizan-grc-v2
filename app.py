@@ -1501,13 +1501,24 @@ def generate_raci_for_domain(domain):
             ]
         },
     }
-    d = RACI_MAP.get(domain, RACI_MAP['Cyber Security'])
+    # Strict domain resolution — accept English/Arabic display names,
+    # canonical codes (cyber/data/ai/dt/erm/global), and slug forms.
+    # Unknown/missing domain raises DomainResolutionError. No silent
+    # fallback to Cyber Security.
+    _code = normalize_domain_strict(domain)
+    _canonical_display = _DOMAIN_DISPLAY_EN.get(_code)
+    if _canonical_display is None or _canonical_display not in RACI_MAP:
+        raise DomainResolutionError(
+            f'generate_raci_for_domain: no RACI mapping for resolved '
+            f'domain code {_code!r} (input {domain!r})'
+        )
+    d = RACI_MAP[_canonical_display]
     rows = '\n'.join(
         f'| {act} | {r} | {a} | {c} | {i} |'
         for act, r, a, c, i in d['activities']
     )
     return (
-        f"DOMAIN RACI ({domain}):\n"
+        f"DOMAIN RACI ({_canonical_display}):\n"
         f"Sponsor: {d['sponsor']} | Primary Accountable: {d['accountable']}\n"
         f"| Activity | Responsible | Accountable | Consulted | Informed |\n"
         f"|---|---|---|---|---|\n"
@@ -13033,6 +13044,7 @@ def api_strategy_latest():
     finishing the INSERT.
     """
     import json as _json_sl
+    import hashlib as _hl_sl
     domain = request.args.get('domain', '')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
@@ -13046,21 +13058,95 @@ def api_strategy_latest():
                 'error': 'No strategy found',
                 'attempts': attempts,
             }), 404
-        _cj = _json_sl.loads(row['content_json']) if row['content_json'] else None
-        _sj = _json_sl.loads(row['sections_json']) if row['sections_json'] else None
+        _row_keys = row.keys() if hasattr(row, 'keys') else []
+        _sections_json_raw = row['sections_json'] if 'sections_json' in _row_keys else None
+        _content_json_raw  = row['content_json']  if 'content_json'  in _row_keys else None
+        _row_content       = row['content']       if 'content'       in _row_keys else None
+        _row_domain        = row['domain']        if 'domain'        in _row_keys else None
+        _row_language      = row['language']      if 'language'      in _row_keys else None
+        _row_id            = row['id']            if 'id'            in _row_keys else None
+        _cj = _json_sl.loads(_content_json_raw) if _content_json_raw else None
+        _sj = _json_sl.loads(_sections_json_raw) if _sections_json_raw else None
+        # PR-5B.7B.4: canonical content + parity hash + export-domain guard.
+        # Mirrors _canonical_content_from_db so preview ↔ DB ↔ export
+        # produce the same canonical payload and same canonical_hash.
+        _canonical_content = ''
+        _canonical_source  = None
+        try:
+            if isinstance(_sj, dict) and _sj:
+                _enforce_export_domain_isolation(
+                    _sj,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type='strategy',
+                    artifact_id=_row_id,
+                )
+                _canonical_content = _assemble_canonical_from_sections(_sj)
+                _canonical_source  = 'sections_json'
+            elif _row_content and isinstance(_row_content, str) and _row_content.strip():
+                _enforce_export_domain_isolation_from_text(
+                    _row_content,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type='strategy',
+                    artifact_id=_row_id,
+                )
+                try:
+                    _canonical_content = ensure_markdown_formatting(_row_content)
+                except Exception as _fmt_e:
+                    print(f'[STRATEGY-LATEST] ensure_markdown_formatting failed '
+                          f'(non-fatal): {_fmt_e}', flush=True)
+                    _canonical_content = _row_content
+                _canonical_source = 'content_fallback'
+        except DomainContaminationError as _dce:
+            # Saved strategy contains cross-domain content — fail CLOSED with
+            # 422 to match PR-5B.7B.3 export-route behaviour. Otherwise the
+            # user would see a "clean" preview that immediately fails on
+            # download.
+            print(f'[EXPORT-DOMAIN-GUARD] strategy-latest denied for '
+                  f'strategy/{_row_id}: {_dce}', flush=True)
+            return jsonify({
+                'error': 'Preview blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': _row_domain,
+                'artifact_type': 'strategy',
+                'artifact_id': _row_id,
+            }), 422
         # Last-resort: wrap full raw content so at least the vision tab renders
-        if _sj is None and row['content']:
-            _sj = {'vision': row['content']}
+        if _sj is None and _row_content:
+            _sj = {'vision': _row_content}
+            if not _canonical_source:
+                _canonical_source = 'wrap_vision'
+        # Parity hash — sha256(canonical || raw_sections_json_str)[:16].
+        # Computed against the RAW sections_json string read from DB so it
+        # equals the export-time hash logged by _canonical_content_from_db
+        # for the same row.
+        _canonical_hash = None
+        try:
+            _canonical_hash = _hl_sl.sha256(
+                ((_canonical_content or '') + '||' + (_sections_json_raw or ''))
+                .encode('utf-8')
+            ).hexdigest()[:16]
+            print(f'[STRATEGY-PARITY] latest canonical_hash={_canonical_hash} '
+                  f'artifact=strategy/{_row_id} '
+                  f'source={_canonical_source} '
+                  f'content_len={len(_canonical_content or "")}', flush=True)
+        except Exception as _hash_e:
+            print(f'[STRATEGY-LATEST] hash compute failed (non-fatal): {_hash_e}',
+                  flush=True)
         return jsonify({
             'success': True,
-            'id': row['id'],
-            'strategy_id': row['id'],
+            'id': _row_id,
+            'strategy_id': _row_id,
             'sections': _sj,
             'content_json': _cj,
-            'domain': row['domain'],
-            'language': row['language'],
+            'domain': _row_domain,
+            'language': _row_language,
             'document_title': row['document_title'] or '',
             'recovery_attempts': attempts,
+            'content': _canonical_content,
+            'canonical_hash': _canonical_hash,
+            'canonical_source': _canonical_source,
         })
     except Exception as _sle:
         print(f"[STRATEGY-LATEST] error: {_sle}", flush=True)
@@ -16507,14 +16593,16 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
     # bank, no top-up.
     try:
         domain_context = get_strategy_domain_context(
-            domain or 'Cyber Security', lang,
+            domain, lang,
             selected_frameworks=[fw_short] if fw_short else None,
         )
     except DomainResolutionError as _de:
-        raise RepairError(
+        _err = RepairError(
             f'synthesize_objectives_depth: cannot resolve domain '
             f'context for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'vision')
+        raise _err
 
     repaired = ai_repair_strategy_section(
         section_key='vision',
@@ -16697,14 +16785,16 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
     # Insufficient or schema missing — AI-first repair.
     try:
         domain_context = get_strategy_domain_context(
-            domain or 'Cyber Security', lang,
+            domain, lang,
             selected_frameworks=[fw_short] if fw_short else None,
         )
     except DomainResolutionError as _de:
-        raise RepairError(
+        _err = RepairError(
             f'synthesize_kpi_depth: cannot resolve domain context '
             f'for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'kpis')
+        raise _err
 
     if current < needed_floor:
         _why = f'kpi_rows_insufficient:{current}/{needed_floor}'
@@ -26494,7 +26584,7 @@ RAW STRATEGY TO ENHANCE:
                         print(f"DEBUG: Extracted {section_name} ({len(section_content)} chars)", flush=True)
         
         # Ensure all 7 sections are filled
-        section_order = ['vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence']
+        section_order = list(STRATEGY_SECTION_ORDER)
         
         # Order-based assignment: fill EMPTY sections with UNASSIGNED parts only
         # This prevents the bug where part 0 (vision) gets duplicated into pillars slot
@@ -28392,117 +28482,35 @@ The confidence score is based on a comprehensive assessment of the organization'
             _struct_valid2, _struct_broken2 = _validate_strategy_structure(sections, lang)
 
             if _struct_broken2:
+                # PR-5B.7B.1: Pass-2 deterministic fallback reconstruction REMOVED.
+                # The previous block synthesised hardcoded bilingual tables for
+                # pillars/gaps/kpis/confidence (with a silent "Cyber Security"
+                # default) when the Pass-1 AI repair still failed the structure
+                # validator. That bypassed every AI-first synth contract and
+                # _mark_synth_failed telemetry. We now fail-closed: each broken
+                # section is marked synth_failed in the request-local
+                # _synth_status dict; sections[<sec>] is left untouched. The
+                # downstream re-validation (_struct_broken3) and the existing
+                # warning-bypass / _wb_flags 422 gate handle the response.
                 print(
-                    f"[STRATEGY] Still broken after AI repair — running fallback reconstruction: "
+                    f"[STRATEGY] Still broken after AI repair — marking "
+                    f"synth_failed (no deterministic fallback): "
                     f"{list(_struct_broken2.keys())}", flush=True
                 )
-
-                # ── Pass 2: deterministic Python fallback reconstruction ────────
-                # When the AI repair still fails the schema validator, inject a
-                # hardcoded minimal valid table for each outstanding broken schema.
-                # Content is domain-aware and organisation-scoped.  The 422 is only
-                # returned if this pass also cannot satisfy the validator.
-                def _build_fallback_section(fb_sec, fb_lang, fb_domain, fb_org, fb_sector):
-                    """Return a minimal but validator-compliant section string, or None."""
-                    _ar = fb_lang == 'ar'
-                    _ds = (fb_domain or 'Cyber Security').split()[0]  # e.g. "Cyber"
-
-                    if fb_sec == 'pillars':
-                        if _ar:
-                            return (
-                                "## 2. الركائز الاستراتيجية\n\n"
-                                "| # | المبادرة | الوصف | المخرج المتوقع |\n"
-                                "|---|---------|-------|---------------|\n"
-                                f"| 1 | إطار الحوكمة | إنشاء هيكل الحوكمة والسياسات اللازمة لـ {fb_org} | وثيقة إطار الحوكمة المعتمدة |\n"
-                                f"| 2 | إدارة المخاطر | تطبيق برنامج شامل لتقييم المخاطر ومعالجتها | سجل المخاطر وخطط المعالجة |\n"
-                                f"| 3 | بناء القدرات | تطوير كفاءات الموظفين في مجال {_ds} | مصفوفة الكفاءات وسجل التدريب |\n"
-                            )
-                        return (
-                            "## 2. Strategic Pillars\n\n"
-                            "| # | Initiative | Description | Expected Deliverable |\n"
-                            "|---|-----------|-------------|---------------------|\n"
-                            f"| 1 | Governance Framework | Establish {_ds} governance structure and policies for {fb_org} | Approved governance framework document |\n"
-                            f"| 2 | Risk Management | Implement comprehensive risk assessment and mitigation programme | Risk register and treatment plans |\n"
-                            f"| 3 | Capability Development | Build organisational {_ds} competency across {fb_org} | Training programme and competency matrix |\n"
-                        )
-
-                    if fb_sec == 'gaps':
-                        if _ar:
-                            return (
-                                "## 4. تحليل الفجوات\n\n"
-                                "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                                "|---|-------|-------|----------|--------|\n"
-                                f"| 1 | غياب إطار الحوكمة | لا يوجد هيكل رسمي لحوكمة {_ds} في {fb_org} | عالٍ | مفتوح - مؤكد |\n"
-                                f"| 2 | نقص توثيق السياسات | السياسات والإجراءات المتعلقة بـ {_ds} غير مكتملة | عالٍ | مفتوح - مؤكد |\n"
-                                f"| 3 | ضعف برامج التوعية | لا يوجد برنامج رسمي لتوعية الموظفين | متوسط | مفتوح - مؤكد |\n"
-                            )
-                        return (
-                            "## 4. Gap Analysis\n\n"
-                            "| # | Gap | Description | Priority | Status |\n"
-                            "|---|-----|-------------|----------|--------|\n"
-                            f"| 1 | {_ds} Governance Absence | No formal {_ds} governance structure exists at {fb_org} | High | Open - Confirmed |\n"
-                            f"| 2 | Policy Documentation | {_ds} policies and procedures are incomplete or absent | High | Open - Confirmed |\n"
-                            f"| 3 | Awareness Programme | No formal {_ds} awareness programme for staff exists | Medium | Open - Confirmed |\n"
-                        )
-
-                    if fb_sec == 'kpis':
-                        if _ar:
-                            return (
-                                "## 6. مؤشرات الأداء الرئيسية\n\n"
-                                "| # | وصف مؤشر الأداء | القيمة المستهدفة | صيغة الحساب | المبرر | الإطار الزمني |\n"
-                                "|---|----------------|-----------------|-------------|--------|---------------|\n"
-                                f"| 1 | معدل الامتثال للإطار | 90% | (الضوابط المنفذة ÷ إجمالي الضوابط) × 100 | قياس مدى الالتزام بمتطلبات الإطار | 12 شهراً |\n"
-                                f"| 2 | نسبة إغلاق الفجوات | 80% | (الفجوات المغلقة ÷ إجمالي الفجوات) × 100 | تتبع تقدم معالجة الفجوات المحددة | 18 شهراً |\n"
-                            )
-                        return (
-                            "## 6. Key Performance Indicators\n\n"
-                            "| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n"
-                            "|---|----------------|--------------|---------------------|---------------|-----------|\n"
-                            f"| 1 | {_ds} Framework Compliance Rate | 90% | (Implemented controls ÷ Total controls) × 100 | Measures adherence to framework requirements | 12 months |\n"
-                            f"| 2 | Gap Closure Rate | 80% | (Closed gaps ÷ Total identified gaps) × 100 | Tracks remediation progress against identified gaps | 18 months |\n"
-                        )
-
-                    if fb_sec == 'confidence':
-                        if _ar:
-                            return (
-                                "## 7. تقييم الثقة والمخاطر\n\n"
-                                "**درجة الثقة:** 60%\n\n"
-                                "### عوامل النجاح الحرجة:\n\n"
-                                "| # | العامل | الوصف | الأهمية |\n"
-                                "|---|-------|-------|--------|\n"
-                                f"| 1 | دعم القيادة التنفيذية | الدعم الفعّال والالتزام من الإدارة العليا في {fb_org} | حرج |\n"
-                                f"| 2 | توفر الكوادر المؤهلة | توافر الكفاءات البشرية القادرة على تنفيذ استراتيجية {_ds} | عالٍ |\n\n"
-                                "### المخاطر الرئيسية:\n\n"
-                                "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                                "|---|--------|-----------|--------|-------------|\n"
-                                "| 1 | محدودية الموارد | متوسط | عالٍ | التنفيذ المرحلي مع تحديد الأولويات وفق المخاطر |\n"
-                                "| 2 | مقاومة التغيير | عالٍ | متوسط | خطة إدارة تغيير شاملة مع دعم القيادة التنفيذية |\n"
-                            )
-                        return (
-                            "## 7. Confidence Assessment & Risks\n\n"
-                            "**Confidence Score:** 60%\n\n"
-                            "### Critical Success Factors:\n\n"
-                            "| # | Factor | Description | Importance |\n"
-                            "|---|--------|-------------|------------|\n"
-                            f"| 1 | Executive Leadership Support | Active sponsorship and commitment from senior leadership at {fb_org} | Critical |\n"
-                            f"| 2 | Qualified Resources | Availability of {_ds} competent personnel to execute the strategy | High |\n\n"
-                            "### Key Risks:\n\n"
-                            "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                            "|---|------|------------|--------|----------------|\n"
-                            "| 1 | Resource Constraints | Medium | High | Phased implementation with risk-based prioritisation |\n"
-                            "| 2 | Resistance to Change | High | Medium | Comprehensive change management programme with executive sponsorship |\n"
-                        )
-                    return None
-
                 for _bsec2, _reason2 in _struct_broken2.items():
-                    _fallback = _build_fallback_section(
-                        _bsec2, lang, _domain_v, _org_v, _sector_v
-                    )
-                    if _fallback:
-                        sections[_bsec2] = _fallback
-                        print(f"[STRATEGY] Fallback reconstruction applied for '{_bsec2}'", flush=True)
+                    try:
+                        _err2 = RepairError(
+                            f"Pass-2 AI repair could not satisfy structure "
+                            f"validator for '{_bsec2}': {_reason2}"
+                        )
+                        setattr(_err2, 'section', _bsec2)
+                        _mark_synth_failed(_synth_status, _bsec2, _err2)
+                    except Exception:
+                        # Defensive: never let telemetry plumbing raise out of
+                        # the request handler.
+                        pass
 
-                # ── Final validation after fallback reconstruction ─────────────
+                # ── Final validation after AI repair (no deterministic Pass-2) ─
                 _struct_valid3, _struct_broken3 = _validate_strategy_structure(sections, lang)
                 if _struct_broken3:
                     _broken_list3 = ', '.join(_struct_broken3.keys())
@@ -28989,13 +28997,13 @@ The confidence score is based on a comprehensive assessment of the organization'
             sections['gaps'] = _fix_gap_table_header(sections['gaps'])
 
         # Normalize every strategy section before building JSON.
-        for _k in ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence'):
+        for _k in STRATEGY_SECTION_ORDER:
             if sections.get(_k):
                 sections[_k] = ensure_markdown_formatting(sections[_k])
 
 
         # ── Reassemble content from the fixed sections ────────────────────────
-        _section_order = ['vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence']
+        _section_order = list(STRATEGY_SECTION_ORDER)
         _fixed_parts = [sections[sk] for sk in _section_order if sections.get(sk) and sections[sk].strip()]
         if _fixed_parts:
             content = '\n\n'.join(_fixed_parts)
@@ -29203,8 +29211,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # sections that just satisfied the audit. Without this,
                     # `content` would still hold the pre-Tier-4 normalized
                     # version that lacked the canonical markers.
-                    _section_order_t4 = ['vision', 'pillars', 'environment',
-                                         'gaps', 'roadmap', 'kpis', 'confidence']
+                    _section_order_t4 = list(STRATEGY_SECTION_ORDER)
                     _fixed_parts_t4 = [sections[sk] for sk in _section_order_t4
                                        if sections.get(sk) and sections[sk].strip()]
                     if _fixed_parts_t4:
@@ -29304,8 +29311,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                               flush=True)
                         _completeness_flags = []
                     # Rebuild content from completeness-fixed sections
-                    _section_order_c = ['vision', 'pillars', 'environment',
-                                        'gaps', 'roadmap', 'kpis', 'confidence']
+                    _section_order_c = list(STRATEGY_SECTION_ORDER)
                     _fixed_parts_c = [sections[sk] for sk in _section_order_c
                                       if sections.get(sk) and sections[sk].strip()]
                     if _fixed_parts_c:
@@ -34265,6 +34271,18 @@ def api_generate_pdf_async():
     # for the resolution order (sections_json → content → client fallback).
     try:
         _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
+        # synchronously, before any task_id is issued.
+        print(f'[EXPORT-DOMAIN-GUARD] PDF-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type_a,
+            'artifact_id': _art_id_a,
+        }), 422
     except Exception as _cn_e:
         print(f'[ASYNC-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical = ''
@@ -34282,6 +34300,29 @@ def api_generate_pdf_async():
             content = ensure_markdown_formatting(content)
         except Exception as _nf_e:
             print(f'[ASYNC-NORM] PDF client-content normalize failed: {_nf_e}', flush=True)
+
+    # PR-5B.7B.3: client-payload fallback guard — when no DB-canonical
+    # content was used, validate the (possibly normalized) client content
+    # against the resolved request domain before queueing the build.
+    if not (_db_canonical and _db_canonical.strip()):
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type_a,
+                artifact_id=_art_id_a,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] PDF-async client-payload denied for '
+                  f'{_art_type_a}/{_art_id_a}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
 
     task_id = str(uuid.uuid4())
     _export_store[task_id] = {'status': 'pending', 'filename': filename}
@@ -34430,6 +34471,18 @@ def api_generate_docx_async():
     # same repair-processed sections_json / content that the preview renders.
     try:
         _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
+        # synchronously, before any task_id is issued.
+        print(f'[EXPORT-DOMAIN-GUARD] DOCX-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type_a,
+            'artifact_id': _art_id_a,
+        }), 422
     except Exception as _cn_e:
         print(f'[ASYNC-CANON] DOCX lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical = ''
@@ -34447,6 +34500,27 @@ def api_generate_docx_async():
             content = ensure_markdown_formatting(content)
         except Exception as _nf_e:
             print(f'[ASYNC-NORM] DOCX client-content normalize failed: {_nf_e}', flush=True)
+
+    # PR-5B.7B.3: client-payload fallback guard for DOCX-async path.
+    if not (_db_canonical and _db_canonical.strip()):
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type_a,
+                artifact_id=_art_id_a,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX-async client-payload denied for '
+                  f'{_art_type_a}/{_art_id_a}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
 
     task_id = str(uuid.uuid4())
 
@@ -35723,6 +35797,17 @@ def api_generate_docx():
     # processed sections_json from the DB rather than stale client content.
     try:
         _db_canonical_d = _canonical_content_from_db(_art_type, _art_id, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
+        print(f'[EXPORT-DOMAIN-GUARD] DOCX denied for {_art_type}/{_art_id}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain,
+            'artifact_type': _art_type,
+            'artifact_id': _art_id,
+        }), 422
     except Exception as _cn_e:
         print(f'[DOCX-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_d = ''
@@ -35735,6 +35820,28 @@ def api_generate_docx():
         except Exception:
             pass
         content = _db_canonical_d
+    else:
+        # PR-5B.7B.3: client-payload fallback — guard the request body too,
+        # otherwise an unsaved/legacy artifact could still ship contaminated
+        # content. Domain here is the request-resolved canonical name.
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain,
+                language=lang,
+                artifact_type=_art_type,
+                artifact_id=_art_id,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX client-payload denied for '
+                  f'{_art_type}/{_art_id}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type,
+                'artifact_id': _art_id,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_docx', {'filename': filename})
@@ -35976,6 +36083,17 @@ def api_generate_pdf():
     # resolution here so any direct caller gets the same parity guarantee.
     try:
         _db_canonical_p = _canonical_content_from_db(_art_type_p, _art_id_p, session.get('user_id', 0))
+    except DomainContaminationError as _dce:
+        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
+        print(f'[EXPORT-DOMAIN-GUARD] PDF denied for {_art_type_p}/{_art_id_p}: {_dce}',
+              flush=True)
+        return jsonify({
+            'error': 'Export blocked — saved strategy contains cross-domain content',
+            'reason': 'domain_contamination',
+            'domain': domain_pdf,
+            'artifact_type': _art_type_p,
+            'artifact_id': _art_id_p,
+        }), 422
     except Exception as _cn_e:
         print(f'[PDF-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_p = ''
@@ -35988,6 +36106,26 @@ def api_generate_pdf():
         except Exception:
             pass
         content = _db_canonical_p
+    else:
+        # PR-5B.7B.3: client-payload fallback — guard the request body too.
+        try:
+            _enforce_export_domain_isolation_from_text(
+                content,
+                domain=domain_pdf,
+                language=lang,
+                artifact_type=_art_type_p,
+                artifact_id=_art_id_p,
+            )
+        except DomainContaminationError as _dce_p:
+            print(f'[EXPORT-DOMAIN-GUARD] PDF client-payload denied for '
+                  f'{_art_type_p}/{_art_id_p}: {_dce_p}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain_pdf,
+                'artifact_type': _art_type_p,
+                'artifact_id': _art_id_p,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_pdf', {'filename': filename})
@@ -40305,6 +40443,148 @@ def api_save_evidence_gaps():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ── PR-5B.7B.3: Export-time domain isolation guard ─────────────────────────────
+# Fail-CLOSED guard that runs validate_domain_isolation on the content about to
+# be exported. Saved strategies (or client-submitted payloads) that contain
+# cross-domain terms (e.g. NCA ECC inside a Data Management strategy) MUST NOT
+# be exportable to PDF/DOCX. The guard is read-only: it never repairs content.
+# Repair is owned by repair_domain_contamination at generation time.
+def _enforce_export_domain_isolation(sections_dict, domain, language,
+                                     frameworks=None,
+                                     artifact_type: str = "strategy",
+                                     artifact_id=None,
+                                     keys_to_check=None) -> None:
+    """Raise DomainContaminationError if any section in ``sections_dict``
+    contains forbidden cross-domain terms for the resolved ``domain``.
+
+    No-op for non-strategy artifact types (policies, audits, etc.).
+
+    On unresolvable domain (DomainResolutionError) the helper raises
+    DomainContaminationError — a saved strategy whose persisted domain no
+    longer normalises is treated as contaminated rather than silently
+    defaulting to Cyber Security. Callers MUST convert to HTTP 422.
+    """
+    if (artifact_type or "strategy") != "strategy":
+        return
+    if not isinstance(sections_dict, dict):
+        return
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang=(language or "en"),
+            selected_frameworks=frameworks or None,
+        )
+    except DomainResolutionError as _dre:
+        msg = (f"Export blocked — saved strategy domain is unresolvable "
+               f"({domain!r}): {_dre}")
+        print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+              f'domain_unresolvable raw={domain!r}', flush=True)
+        raise DomainContaminationError(msg)
+    contamination = validate_domain_isolation(
+        sections_dict, domain_context, keys_to_check=keys_to_check,
+    )
+    if contamination:
+        domain_code = domain_context.get("code", "")
+        summary = "; ".join(
+            f"{rec.get('section', '?')}={list(rec.get('found_terms', []))[:4]}"
+            for rec in contamination
+        )
+        print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+              f'domain={domain_code} contaminated sections={summary}',
+              flush=True)
+        domain_display = domain_context.get("display_en") or domain_code or ""
+        raise DomainContaminationError(
+            f"Export blocked — saved strategy contains cross-domain content "
+            f"({domain_display}): {summary}"
+        )
+    # Clean — single-line trace so operators can audit pass-through too.
+    print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
+          f'domain={domain_context.get("code", "")} clean '
+          f'sections={len([k for k, v in sections_dict.items() if v])}',
+          flush=True)
+
+
+def _enforce_export_domain_isolation_from_text(text, domain, language,
+                                               frameworks=None,
+                                               artifact_type: str = "strategy",
+                                               artifact_id=None) -> None:
+    """Flattened-text wrapper around _enforce_export_domain_isolation.
+
+    Used by the ``content`` fallback inside _canonical_content_from_db (when
+    only the joined markdown blob is available, not the per-section dict)
+    and by export-route client-payload fallback paths (when the DB has no
+    canonical content and the request body's ``content`` is the only source).
+
+    Packs ``text`` into a single-key dict so validate_domain_isolation can
+    still substring-match forbidden terms; matching is case-insensitive
+    substring and is unaffected by the section key.
+    """
+    if (artifact_type or "strategy") != "strategy":
+        return
+    if not isinstance(text, str) or not text.strip():
+        return
+    _enforce_export_domain_isolation(
+        {"flattened": text},
+        domain=domain,
+        language=language,
+        frameworks=frameworks,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        keys_to_check=["flattened"],
+    )
+
+
+# ── Shared canonical section order (PR-5B.7B.4) ────────────────────────────────
+# Single source of truth for the 7-section assembly order used by save-time
+# normalization, _canonical_content_from_db (export), and /api/strategy/latest
+# (preview recovery). Board-summary order is intentionally different (6 keys
+# without 'environment') and is NOT covered by this tuple.
+STRATEGY_SECTION_ORDER = (
+    "vision",
+    "pillars",
+    "environment",
+    "gaps",
+    "roadmap",
+    "kpis",
+    "confidence",
+)
+
+
+def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -> str:
+    """Assemble canonical strategy markdown from a per-section dict.
+
+    PR-5B.7B.4: shared helper used by both export (_canonical_content_from_db)
+    and preview recovery (/api/strategy/latest) so both code paths produce
+    byte-identical canonical content.
+
+    Behaviour:
+      * Iterates ``STRATEGY_SECTION_ORDER``; includes only non-empty string
+        sections.
+      * Joins included sections with two newlines.
+      * If ``apply_formatting=True``, runs ``ensure_markdown_formatting`` on
+        the joined string. If formatting fails, returns the unformatted
+        joined string (matches the existing non-fatal try/except inside
+        _canonical_content_from_db).
+      * Empty / non-dict input returns ``""``.
+    """
+    if not isinstance(sections_dict, dict) or not sections_dict:
+        return ""
+    parts = [sections_dict[k] for k in STRATEGY_SECTION_ORDER
+             if sections_dict.get(k)
+             and isinstance(sections_dict[k], str)
+             and sections_dict[k].strip()]
+    if not parts:
+        return ""
+    canonical = "\n\n".join(parts)
+    if not apply_formatting:
+        return canonical
+    try:
+        return ensure_markdown_formatting(canonical)
+    except Exception as _fmt_e:
+        print(f'[CANON] ensure_markdown_formatting failed (non-fatal): {_fmt_e}',
+              flush=True)
+        return canonical
+
+
 # ── Hard publishability gate for export (internal helper — not a route) ────────
 def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) -> str:
     """Load the canonical markdown for an artifact directly from the DB.
@@ -40363,18 +40643,26 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
             import hashlib as _hl_cn
             _secs = _json_cn.loads(_sections_json_str)
             if isinstance(_secs, dict) and _secs:
-                _order = ['vision', 'pillars', 'environment', 'gaps',
-                          'roadmap', 'kpis', 'confidence']
-                _parts = [_secs[k] for k in _order
-                          if _secs.get(k) and isinstance(_secs[k], str) and _secs[k].strip()]
-                if _parts:
-                    _canonical = '\n\n'.join(_parts)
-                    # Apply final pass through normalizer so any late structural
-                    # tweaks (ghost-row drop, cascade split) are reflected here too.
-                    try:
-                        _canonical = ensure_markdown_formatting(_canonical)
-                    except Exception as _fmt_e:
-                        print(f'[CANON] ensure_markdown_formatting failed (non-fatal): {_fmt_e}', flush=True)
+                # PR-5B.7B.3: export-time domain isolation guard. Use the DB
+                # row's domain/language as the source of truth (the saved
+                # artifact, not the request payload). Raises
+                # DomainContaminationError on contamination — let it propagate
+                # so export routes can convert to HTTP 422.
+                _row_domain   = _row['domain']   if 'domain'   in _row_keys else None
+                _row_language = _row['language'] if 'language' in _row_keys else None
+                _enforce_export_domain_isolation(
+                    _secs,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type=artifact_type,
+                    artifact_id=_art_id,
+                )
+                # PR-5B.7B.4: delegate to shared helper for order + formatting.
+                # Behaviour preserved: same STRATEGY_SECTION_ORDER, same
+                # ensure_markdown_formatting application, same non-fatal
+                # fallback to unformatted join on formatting error.
+                _canonical = _assemble_canonical_from_sections(_secs)
+                if _canonical:
                     # Parity hash — matches the hash logged at save time.
                     # Operators should see the SAME 16-char hash at save
                     # and at every subsequent export of the same artifact.
@@ -40388,12 +40676,30 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                     except Exception:
                         pass
                     return _canonical
+        except DomainContaminationError:
+            # PR-5B.7B.3: contamination is a fail-CLOSED signal — never
+            # swallow it, and never fall through to the `content` fallback
+            # which would also be contaminated. Let the export route
+            # convert to HTTP 422.
+            raise
         except Exception as _e:
             print(f'[CANON] sections_json parse failed: {_e}', flush=True)
 
     # Fallback: the stored `content` column was also repair-processed at save.
     _content_db = _row['content'] if 'content' in _row_keys else None
     if _content_db and isinstance(_content_db, str) and _content_db.strip():
+        # PR-5B.7B.3: flattened-text guard for the content-fallback path.
+        # No per-section structure available here; substring match still
+        # detects forbidden cross-domain terms.
+        _row_domain   = _row['domain']   if 'domain'   in _row_keys else None
+        _row_language = _row['language'] if 'language' in _row_keys else None
+        _enforce_export_domain_isolation_from_text(
+            _content_db,
+            domain=_row_domain,
+            language=_row_language,
+            artifact_type=artifact_type,
+            artifact_id=_art_id,
+        )
         try:
             return ensure_markdown_formatting(_content_db)
         except Exception as _fmt_e:
