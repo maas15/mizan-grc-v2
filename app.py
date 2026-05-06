@@ -22724,9 +22724,9 @@ def _force_inject_mandatory_section(sections, flag, lang,
       - ``kpi_assessment_guides_missing``  → :func:`synthesize_kpi_depth`
       - ``confidence_score_missing``       → :func:`synthesize_confidence_depth`
       - ``score_justification_missing``    → :func:`synthesize_confidence_depth`
-      - ``gap_guidance_missing``           → fail-closed :class:`RepairError`
-        with ``section='gaps'`` (no AI-first gap synthesizer is wired up
-        yet; a later PR will introduce ``synthesize_gaps_depth``).
+      - ``gap_guidance_missing``           → :func:`synthesize_gaps_depth`
+        (PR-5B.6E AI-first delegation; on AI failure raises
+        :class:`RepairError` with ``section='gaps'``).
       - any unknown flag                   → :class:`RepairError`
         with ``section='strategy'``.
 
@@ -22795,17 +22795,30 @@ def _force_inject_mandatory_section(sections, flag, lang,
             raise
         return
 
-    # 4. Gap guidance flag → fail-closed. No deterministic gap rows or
-    #    "Implementation Guide" tables are authored by this function.
-    #    A later PR (PR-5B.6E) will introduce ``synthesize_gaps_depth``
-    #    and replace this branch with an AI-first delegation.
+    # 4. Gap guidance flag → AI-first gap synthesis (PR-5B.6E). No
+    #    deterministic gap rows or per-gap "Implementation Guide" tables
+    #    are authored by this function. ``synthesize_gaps_depth``
+    #    strict-resolves the domain context, calls
+    #    ``ai_repair_strategy_section(section_key='gaps')``, validates
+    #    the repaired markdown (rows + 1:1 implementation guides) BEFORE
+    #    assignment, and on failure raises ``RepairError`` with
+    #    ``setattr(err, 'section', 'gaps')``.  We re-affirm the section
+    #    attr here defensively so the production caller's
+    #    ``except RepairError`` branch routes through
+    #    ``_mark_synth_failed`` (PR-5B.5F1 / PR-5B.6D.1 plumbing).
     if flag == 'gap_guidance_missing':
-        _err = RepairError(
-            'gap guidance missing and no AI-first gap synthesizer is '
-            'available'
-        )
-        setattr(_err, 'section', 'gaps')
-        raise _err
+        try:
+            synthesize_gaps_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _gre:
+            setattr(_gre, 'section', 'gaps')
+            raise
+        return
 
     # 5. Unknown flag — never silently no-op when the caller expects a
     #    repair. Attribute to the generic 'strategy' section so the gate
@@ -23288,115 +23301,30 @@ Write all {len(kpi_names)} guides now. NO prose intro. Start directly with ---""
                 print("[REPAIR] injected Score Justification block "
                       "(score was present, justification label missing)", flush=True)
 
-    # ── Repair: Gap Implementation Guidance (NEW, synthesized, no AI call) ──
+    # ── Repair: Gap Implementation Guidance (PR-5B.6E AI-first) ─────────────
     # Non-board technical strategies must include per-gap implementation
-    # guidance. When the AI omits both the gaps section AND the per-gap
-    # guides (drafting mode edge case), synthesize a minimal 5-row gaps
-    # table first so the guide builder below has rows to iterate.
-    # Remediation prompt pass 3 clause C/D/E/F.
+    # guidance. Delegate entirely to ``synthesize_gaps_depth``: no
+    # deterministic 5-row gaps table, no canned per-gap implementation
+    # guide blocks. ``synthesize_gaps_depth`` strict-resolves the domain
+    # context, calls ``ai_repair_strategy_section(section_key='gaps')``,
+    # validates the repaired markdown BEFORE assignment, and on failure
+    # raises ``RepairError`` with ``setattr(err, 'section', 'gaps')``.
+    # The production caller (``api_generate_strategy``) wraps each
+    # ``_targeted_section_repair`` invocation in
+    # ``except RepairError`` → ``_mark_synth_failed`` so the
+    # post-normalization save gate refuses to save the strategy when
+    # AI repair is unavailable.
     if 'gap_guidance_missing' in issues:
-        if not (sections.get('gaps') or '').strip():
-            _gap_hdr_en = "## 4. Gap Analysis"
-            _gap_hdr_ar = "## 4. تحليل الفجوات"
-            _gap_hdr = _gap_hdr_ar if lang == 'ar' else _gap_hdr_en
-            if lang == 'ar':
-                _synth_gaps = (
-                    f"{_gap_hdr}\n\n"
-                    f"### الفجوات المحددة:\n\n"
-                    f"| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                    f"|---|--------|-------|----------|--------|\n"
-                    f"| 1 | غياب حوكمة {domain} | لا توجد لجنة حوكمة مخصصة لـ {domain} متوائمة مع {fw_short} | حرج | مفتوح |\n"
-                    f"| 2 | قصور الضوابط التقنية | الضوابط الحالية لا تغطي متطلبات {fw_short} الإلزامية | عالٍ | مفتوح |\n"
-                    f"| 3 | ضعف الوعي | غياب برنامج توعية منتظم للموظفين في {domain} | عالٍ | مفتوح |\n"
-                    f"| 4 | غياب الاستجابة للحوادث | لا يوجد دليل معتمد للاستجابة لحوادث {domain} | عالٍ | مفتوح |\n"
-                    f"| 5 | ضعف الرصد المستمر | لا توجد لوحة متابعة للامتثال المستمر لـ {fw_short} | متوسط | مفتوح |\n"
-                )
-            else:
-                _synth_gaps = (
-                    f"{_gap_hdr}\n\n"
-                    f"### Identified Gaps:\n\n"
-                    f"| # | Gap | Description | Priority | Status |\n"
-                    f"|---|-----|-------------|----------|--------|\n"
-                    f"| 1 | {domain} governance absent | No dedicated {domain} governance committee aligned with {fw_short} | Critical | Open |\n"
-                    f"| 2 | Technical controls deficit | Current controls do not cover mandatory {fw_short} requirements | High | Open |\n"
-                    f"| 3 | Awareness weakness | No recurring {domain} awareness programme for workforce | High | Open |\n"
-                    f"| 4 | Incident response absent | No approved {domain} incident response playbook | High | Open |\n"
-                    f"| 5 | Continuous monitoring weak | No continuous compliance dashboard for {fw_short} | Medium | Open |\n"
-                )
-            sections['gaps'] = _synth_gaps
-            print(f"[REPAIR] synthesized minimal gaps table (was empty) — "
-                  f"5 rows, domain={domain}, framework={fw_short}", flush=True)
-        _gaps_text = sections['gaps']
-        # Extract gap rows: | # | Gap | Description | Priority | Status |
-        _gap_rows = _tr.findall(
-            r'^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|',
-            _gaps_text, _tr.MULTILINE
-        )
-        # Filter out header/separator remnants
-        _gap_rows = [(n, g, d, p) for (n, g, d, p) in _gap_rows
-                     if g.lower() not in ('gap', 'الفجوة', '#')
-                     and not _tr.match(r'^[-:]+$', g.strip())]
-        # Last-resort: if row extraction produces nothing (unusual table
-        # shape after synthesis), use 5 domain-generic rows so per-gap
-        # guide blocks always get written and the audit flag clears.
-        if not _gap_rows:
-            if lang == 'ar':
-                _gap_rows = [
-                    ('1', f'غياب حوكمة {domain}',      f'حوكمة {fw_short} غير مطبّقة',       'حرج'),
-                    ('2', f'قصور الضوابط التقنية',      f'ضوابط {fw_short} الأساسية غير مفعّلة', 'عالٍ'),
-                    ('3', 'ضعف الوعي',                  'لا يوجد برنامج توعية منتظم',          'عالٍ'),
-                    ('4', 'غياب الاستجابة للحوادث',     'لا يوجد دليل حوادث معتمد',            'عالٍ'),
-                    ('5', 'ضعف الرصد المستمر',          'لا توجد لوحة متابعة للامتثال',        'متوسط'),
-                ]
-            else:
-                _gap_rows = [
-                    ('1', f'{domain} governance absent', f'{fw_short} governance not operationalized', 'Critical'),
-                    ('2', 'Technical controls deficit',  f'{fw_short} core controls not implemented',   'High'),
-                    ('3', 'Awareness weakness',          'No recurring awareness programme',             'High'),
-                    ('4', 'Incident response absent',    'No approved IR playbook',                      'High'),
-                    ('5', 'Continuous monitoring weak',  'No continuous-compliance dashboard',           'Medium'),
-                ]
-            print('[REPAIR] _gap_rows empty — using 5 domain-generic rows for guide synthesis',
-                  flush=True)
-        if _gap_rows:
-            _guide_lines = []
-            if lang == 'ar':
-                _guide_lines.append("\n\n### أدلة تنفيذ الفجوات")
-            else:
-                _guide_lines.append("\n\n### Gap Implementation Guidance")
-            for (_n, _gap_name, _desc, _pri) in _gap_rows[:6]:  # cap at 6 gaps
-                _gn = _gap_name.strip()
-                if lang == 'ar':
-                    _guide_lines.extend([
-                        "",
-                        f"#### دليل تنفيذ الفجوة #{_n}: {_gn}",
-                        "",
-                        f"**الوصف:** {_desc.strip()}",
-                        "",
-                        "| الخطوة | الإجراء | المسؤول | الجدول الزمني | الناتج |",
-                        "|--------|---------|---------|----------------|--------|",
-                        f"| 1 | تقييم الوضع الحالي للفجوة ({_gn}) | فريق {domain} | الشهر 1 | تقرير تقييم الفجوة |",
-                        f"| 2 | تصميم ضوابط المعالجة وفق {fw_short} | رئيس {domain} | الشهر 2-3 | خطة المعالجة المعتمدة |",
-                        f"| 3 | تنفيذ الضوابط والاختبار | فريق {domain} | الشهر 4-6 | الضوابط المفعّلة |",
-                        f"| 4 | التحقق والإبلاغ للإدارة | رئيس {domain} | الشهر 7 | تقرير إغلاق الفجوة |",
-                    ])
-                else:
-                    _guide_lines.extend([
-                        "",
-                        f"#### Gap #{_n} Implementation Guide: {_gn}",
-                        "",
-                        f"**Description:** {_desc.strip()}",
-                        "",
-                        "| Step | Action | Owner | Timeline | Output |",
-                        "|------|--------|-------|----------|--------|",
-                        f"| 1 | Assess current-state baseline for {_gn} | {domain} Team | Month 1 | Gap assessment report |",
-                        f"| 2 | Design remediation controls aligned with {fw_short} | {domain} Lead | Months 2–3 | Approved remediation plan |",
-                        f"| 3 | Implement controls and validate effectiveness | {domain} Team | Months 4–6 | Operational controls |",
-                        f"| 4 | Verify closure and report to management | {domain} Lead | Month 7 | Gap closure report |",
-                    ])
-            _guide_text = "\n".join(_guide_lines)
-            sections['gaps'] = sections['gaps'].rstrip() + _guide_text
-            print(f"[REPAIR] injected synthesized gap implementation guides for {len(_gap_rows[:6])} gaps", flush=True)
+        try:
+            synthesize_gaps_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                org_name=org_name, maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _gre:
+            setattr(_gre, 'section', 'gaps')
+            raise
 
     # ── Repair: Assurance assumption block ───────────────────────────────────
     if 'assurance_assumptions_missing' in issues and generation_mode == 'assurance':
@@ -27968,18 +27896,34 @@ The confidence score is based on a comprehensive assessment of the organization'
             print(f"[STRATEGY] Quality audit ({doc_subtype}/{_generation_mode}): missing — {_quality_issues}", flush=True)
             # Downgrade quality label for generic-scaffold issues even after repair
             _has_generic = 'generic_scaffold_dominant' in _quality_issues
-            sections = _targeted_section_repair(
-                sections        = sections,
-                issues          = _quality_issues,
-                doc_subtype     = doc_subtype,
-                lang            = lang,
-                domain          = domain,
-                fw_short        = fw_short,
-                org_name        = data.get('org_name', 'The Organization'),
-                budget          = data.get('budget', 'allocated budget'),
-                maturity        = maturity,
-                generation_mode = _generation_mode,
-            )
+            try:
+                sections = _targeted_section_repair(
+                    sections        = sections,
+                    issues          = _quality_issues,
+                    doc_subtype     = doc_subtype,
+                    lang            = lang,
+                    domain          = domain,
+                    fw_short        = fw_short,
+                    org_name        = data.get('org_name', 'The Organization'),
+                    budget          = data.get('budget', 'allocated budget'),
+                    maturity        = maturity,
+                    generation_mode = _generation_mode,
+                )
+            except RepairError as _tsr_re:
+                # PR-5B.6E: AI-first gap repair (or another AI-first
+                # branch) failed inside _targeted_section_repair. Route
+                # through _mark_synth_failed so the post-normalization
+                # save gate refuses to save the strategy. Continue
+                # processing with the (un-repaired) sections — the
+                # downstream Tier-3 force-inject pass will still run
+                # and surface the same flag if applicable.
+                _mark_synth_failed(
+                    _synth_status,
+                    getattr(_tsr_re, 'section', 'gaps'),
+                    _tsr_re,
+                )
+                print(f"[STRATEGY] _targeted_section_repair RepairError: "
+                      f"{_tsr_re}", flush=True)
             _, _q2 = _audit_document_quality(sections, doc_subtype, lang)
             _quality_issues_post = list(_q2)
             if _q2:
@@ -28010,18 +27954,33 @@ The confidence score is based on a comprehensive assessment of the organization'
                 if _surviving_mandatory:
                     print(f"[STRATEGY] Defensive 2nd-pass repair for surviving "
                           f"mandatory flags: {_surviving_mandatory}", flush=True)
-                    sections = _targeted_section_repair(
-                        sections        = sections,
-                        issues          = _surviving_mandatory,
-                        doc_subtype     = doc_subtype,
-                        lang            = lang,
-                        domain          = domain,
-                        fw_short        = fw_short,
-                        org_name        = data.get('org_name', 'The Organization'),
-                        budget          = data.get('budget', 'allocated budget'),
-                        maturity        = maturity,
-                        generation_mode = _generation_mode,
-                    )
+                    try:
+                        sections = _targeted_section_repair(
+                            sections        = sections,
+                            issues          = _surviving_mandatory,
+                            doc_subtype     = doc_subtype,
+                            lang            = lang,
+                            domain          = domain,
+                            fw_short        = fw_short,
+                            org_name        = data.get('org_name', 'The Organization'),
+                            budget          = data.get('budget', 'allocated budget'),
+                            maturity        = maturity,
+                            generation_mode = _generation_mode,
+                        )
+                    except RepairError as _tsr2_re:
+                        # PR-5B.6E: AI-first gap repair (or another
+                        # AI-first branch) failed inside the defensive
+                        # 2nd-pass _targeted_section_repair. Mark
+                        # synth_status so the post-normalization save
+                        # gate refuses to save the strategy.
+                        _mark_synth_failed(
+                            _synth_status,
+                            getattr(_tsr2_re, 'section', 'gaps'),
+                            _tsr2_re,
+                        )
+                        print(f"[STRATEGY] _targeted_section_repair "
+                              f"(2nd pass) RepairError: {_tsr2_re}",
+                              flush=True)
                     _, _q3 = _audit_document_quality(sections, doc_subtype, lang)
                     _quality_issues_post = list(_q3)
                     _still_surviving = [i for i in _q3 if i in _mandatory_flags]
