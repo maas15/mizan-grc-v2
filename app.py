@@ -16746,347 +16746,154 @@ def synthesize_confidence_depth(sections, lang, domain='Cyber Security',
                                  maturity='initial',
                                  generation_mode='drafting',
                                  roadmap_rows=None):
-    """Ensure Confidence section has ≥ _RICHNESS_MIN_CSF_ROWS CSF rows and
-    ≥ _RICHNESS_MIN_RISK_ROWS risk rows (each with non-placeholder
-    mitigation). Also ensures a Confidence Score value and a score
-    justification paragraph are present. Appends deterministic rows/
-    paragraphs where counts fall short.
+    """AI-first Confidence Assessment & Risks synthesis (PR-5B.6C.2).
 
-    Maturity drives the default score (if no score is present):
-      initial     → 55%
-      developing  → 65%
-      defined     → 75%
-      managed     → 82%
-      optimized   → 88%
+    Behaviour:
+      * If ``sections['confidence']`` already contains a confidence score,
+        a score justification, ``>= min_csf`` Critical Success Factor rows,
+        and ``>= min_risk`` Key Risk rows (each with a non-placeholder
+        mitigation), return a zero-valued summary unchanged. AI repair is
+        not invoked and the section is left untouched.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no ``domain or 'Cyber
+        Security'`` fallback), call :func:`ai_repair_strategy_section`
+        with ``section_key='confidence'``, validate the repaired markdown
+        BEFORE assignment (score, justification, CSF row count, risk row
+        count), and replace ``sections['confidence']`` wholesale with the
+        AI-repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid repaired
+        output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'confidence')``. No deterministic CSF
+        bank, risk bank, score injection, justification paragraph, or
+        roadmap-linked mitigation suffix is ever emitted, and
+        ``sections['confidence']`` is left unchanged on failure.
 
-    Mitigation-plan linkage (prompt Part 2G): when `roadmap_rows` is
-    provided as a list of (row_number, short_activity_text) tuples,
-    risk mitigation text references specific roadmap row numbers by
-    theme matching — e.g. a "Resource & Skills Constraints" risk
-    references the staffing-related roadmap row. Falls back to
-    generic mitigation phrasing when no matching roadmap row exists.
+    The threshold logic mirrors :func:`validate_confidence_richness`:
+        ``drafting``/``basic``      → ``_RICHNESS_MIN_CSF_ROWS`` and
+                                      ``_RICHNESS_MIN_RISK_ROWS``
+        ``consulting``/``assurance`` → at least 5 CSF rows AND
+                                      5 risk rows.
 
-    generation_mode does not currently alter deterministic CSF / risk
-    phrasing (they are already comprehensive) but is accepted for
-    signature compatibility with _apply_final_synthesis_pass.
+    The legacy ``roadmap_rows`` parameter is retained for signature
+    compatibility with existing call sites.
 
-    Returns dict with keys: csf_added, risks_added, score_added,
-    justification_added, mitigation_links (list of {risk, roadmap_row}
-    for each risk row whose mitigation was linked to a specific
-    roadmap row).
+    Returns dict with keys:
+        ``csf_added``           — int, rows added by AI repair (0 on no-op)
+        ``risks_added``         — int, rows added by AI repair (0 on no-op)
+        ``score_added``         — bool, True when AI repair injected a score
+        ``justification_added`` — bool, True when AI repair injected
+                                  a justification
+        ``mitigation_links``    — list, retained for signature compatibility
+                                  (always empty in AI-first mode).
     """
     summary = {'csf_added': 0, 'risks_added': 0,
                'score_added': False, 'justification_added': False,
                'mitigation_links': []}
     conf = sections.get('confidence', '') or ''
-    is_ar = (lang == 'ar')
 
-    # ── Extract roadmap rows for mitigation linkage (prompt Part 2G)
-    # If the caller didn't pass `roadmap_rows` explicitly, parse the
-    # roadmap section ourselves. Each roadmap row is stored as a tuple
-    # (row_number, activity_text_stripped).
-    if roadmap_rows is None:
-        roadmap_rows = []
-        roadmap_text = sections.get('roadmap', '') or ''
-        if roadmap_text:
-            _rm_hdr = _ts_re.compile(
-                r'^\|\s*#\s*\|\s*(?:Activity|النشاط)\s*\|',
-                _ts_re.IGNORECASE,
-            )
-            for _cells in _ts_table_rows(roadmap_text, _rm_hdr):
-                if (_cells and _cells[0].replace('.', '').isdigit()
-                        and len(_cells) >= 2
-                        and not _ts_is_placeholder(_cells[1])):
-                    try:
-                        roadmap_rows.append((int(_cells[0]),
-                                              _cells[1].strip()))
-                    except (ValueError, IndexError):
-                        continue
-
-    # Helper: find the roadmap row number whose activity text contains
-    # any of the given tokens. Returns None if no match.
-    def _find_roadmap_row_for(en_tokens, ar_tokens):
-        for _rn, _act in roadmap_rows:
-            _lc = _act.lower()
-            for _t in en_tokens:
-                if _t in _lc:
-                    return _rn
-            for _t in ar_tokens:
-                if _t in _act:
-                    return _rn
-        return None
-
-    # Maturity → default score percentage
-    _maturity_lc = str(maturity).lower().strip()
-    _score_pct = {
-        'initial':    55,
-        'ad-hoc':     55,
-        'ad hoc':     55,
-        'developing': 65,
-        'defined':    75,
-        'managed':    82,
-        'optimized':  88,
-    }.get(_maturity_lc, 65)
-
-    # Initialize canonical structure if section is empty.
-    if not conf.strip():
-        if is_ar:
-            conf = (
-                "## 7. تقييم الثقة والمخاطر\n\n"
-                f"**درجة الثقة:** {_score_pct}%\n\n"
-                "### مبررات التقييم\n\n"
-                f"تستند هذه الدرجة إلى مستوى النضج الحالي لـ{org_name} "
-                f"والفجوات المحددة في ضوابط {domain} وفق {fw_short}، "
-                "إضافةً إلى القدرة التنفيذية المتاحة لتنفيذ خطة المعالجة "
-                "خلال أفق ثمانية عشر شهراً.\n\n"
-                "### عوامل النجاح الحرجة:\n\n"
-                "| # | العامل | الوصف | الأهمية |\n"
-                "|---|-------|-------|--------|\n"
-                "### المخاطر الرئيسية:\n\n"
-                "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                "|---|--------|-----------|--------|-------------|\n"
-            )
-        else:
-            conf = (
-                "## 7. Confidence Assessment & Risks\n\n"
-                f"**Confidence Score:** {_score_pct}%\n\n"
-                "### Score Justification\n\n"
-                f"This score reflects the current maturity posture of "
-                f"{org_name} and the gaps identified in {domain} controls "
-                f"against {fw_short}, together with the executive capacity "
-                "available to execute the remediation plan over an "
-                "18-month horizon.\n\n"
-                "### Critical Success Factors:\n\n"
-                "| # | Factor | Description | Importance |\n"
-                "|---|--------|-------------|------------|\n"
-                "### Key Risks:\n\n"
-                "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                "|---|------|------------|--------|-----------------|\n"
-            )
-        summary['score_added'] = True
-        summary['justification_added'] = True
-    else:
-        # Score injection when absent
-        score_re = _ts_re.compile(
-            r'(?:\*\*)?(?:Confidence\s+Score|درجة\s+الثقة)(?:\*\*)?\s*:?\s*'
-            r'(?:\*\*)?\s*\d{1,3}\s*%',
-            _ts_re.IGNORECASE,
-        )
-        if not score_re.search(conf):
-            if is_ar:
-                score_line = f"\n\n**درجة الثقة:** {_score_pct}%\n"
-            else:
-                score_line = f"\n\n**Confidence Score:** {_score_pct}%\n"
-            conf = conf.rstrip() + score_line
-            summary['score_added'] = True
-
-        # Justification injection when absent
-        just_re = _ts_re.compile(
-            r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))'
-            r'|(?:justification|rationale|مبررات?)',
-            _ts_re.MULTILINE | _ts_re.IGNORECASE,
-        )
-        if not just_re.search(conf):
-            if is_ar:
-                just_block = (
-                    "\n\n### مبررات التقييم\n\n"
-                    f"تستند هذه الدرجة إلى مستوى النضج الحالي لـ{org_name} "
-                    f"والفجوات المحددة في ضوابط {domain} وفق {fw_short}، "
-                    "إضافةً إلى القدرة التنفيذية المتاحة لتنفيذ خطة المعالجة.\n"
-                )
-            else:
-                just_block = (
-                    "\n\n### Score Justification\n\n"
-                    f"This score reflects the current maturity posture of "
-                    f"{org_name} and the gaps identified in {domain} controls "
-                    f"against {fw_short}, together with the executive capacity "
-                    "available to execute the remediation plan.\n"
-                )
-            conf = conf.rstrip() + just_block
-            summary['justification_added'] = True
-
-    # CSF top-up
+    # ── Compute current state.
+    score_re = _ts_re.compile(
+        r'(?:\*\*)?(?:Confidence\s+Score|درجة\s+الثقة)(?:\*\*)?\s*:?\s*'
+        r'(?:\*\*)?\s*\d{1,3}\s*%',
+        _ts_re.IGNORECASE,
+    )
+    just_heading_re = _ts_re.compile(
+        r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))',
+        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+    )
+    just_inline_re = _ts_re.compile(
+        r'(?:justification|rationale|مبررات?|أسباب|تفسير)',
+        _ts_re.IGNORECASE,
+    )
+    score_present = bool(score_re.search(conf))
+    justification_present = bool(just_heading_re.search(conf)) or bool(
+        just_inline_re.search(conf))
     n_csf = _count_csf_rows(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
-        csf_needed = _RICHNESS_MIN_CSF_ROWS - n_csf
-        csf_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Factor|العامل)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        # If no CSF table exists yet in this section, inject heading +
-        # table skeleton so the appended rows land under a real header.
-        if not csf_hdr.search(conf):
-            if is_ar:
-                csf_skel = (
-                    "\n\n### عوامل النجاح الحرجة:\n\n"
-                    "| # | العامل | الوصف | الأهمية |\n"
-                    "|---|-------|-------|--------|\n"
-                )
-            else:
-                csf_skel = (
-                    "\n\n### Critical Success Factors:\n\n"
-                    "| # | Factor | Description | Importance |\n"
-                    "|---|--------|-------------|------------|\n"
-                )
-            conf = conf.rstrip() + csf_skel
-        csf_rows = list(_ts_table_rows(conf, csf_hdr))
-        existing = {int(c[0]) for c in csf_rows
-                    if c and c[0].replace('.', '').isdigit()}
-        next_n = max(existing) + 1 if existing else 1
-        templates_ar = [
-            (f'دعم القيادة التنفيذية',
-             f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
-             'حرج'),
-            (f'توفر الموارد والكوادر المؤهلة',
-             f'كفاءات بشرية قادرة على تشغيل ضوابط {fw_short} وإدارتها',
-             'عالٍ'),
-            (f'إطار حوكمة {domain} قابل للتشغيل',
-             'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
-             'عالٍ'),
-            (f'تمويل كافٍ ومستقر',
-             'ميزانية متعددة السنوات مرتبطة بأولويات خطة المعالجة وليست بندوداً سنوية',
-             'عالٍ'),
-            (f'بيئة تقنية متكاملة',
-             f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
-             'متوسط'),
-        ]
-        templates_en = [
-            ('Executive Leadership Support',
-             f'Active sponsorship from {org_name} senior leadership to '
-             f'execute the {domain} strategy', 'Critical'),
-            ('Qualified Resources & Talent',
-             f'Competent personnel able to operate and govern {fw_short} controls',
-             'High'),
-            (f'Operable {domain} Governance Framework',
-             'Standing steering committee with clear decision rights and '
-             'escalation paths', 'High'),
-            ('Stable Multi-Year Funding',
-             'Multi-year budget tied to remediation plan priorities rather '
-             'than annual line items', 'High'),
-            ('Integrated Technology Environment',
-             f'{domain} platforms integrated with operational systems and '
-             'unified logging', 'Medium'),
-        ]
-        templates = templates_ar if is_ar else templates_en
-        new_rows = []
-        for offset in range(csf_needed):
-            tpl = templates[offset % len(templates)]
-            new_rows.append(
-                f'| {next_n + offset} | {tpl[0]} | {tpl[1]} | {tpl[2]} |'
-            )
-        # Insert after last CSF-table line
-        conf = _append_rows_under_header(conf, csf_hdr, new_rows)
-        summary['csf_added'] = csf_needed
-
-    # Risk top-up
     n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_risks < _RICHNESS_MIN_RISK_ROWS:
-        risks_needed = _RICHNESS_MIN_RISK_ROWS - n_risks
-        risk_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        # If no Risk table exists yet, inject heading + skeleton.
-        if not risk_hdr.search(conf):
-            if is_ar:
-                risk_skel = (
-                    "\n\n### المخاطر الرئيسية:\n\n"
-                    "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                    "|---|--------|-----------|--------|-------------|\n"
-                )
-            else:
-                risk_skel = (
-                    "\n\n### Key Risks:\n\n"
-                    "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                    "|---|------|------------|--------|-----------------|\n"
-                )
-            conf = conf.rstrip() + risk_skel
-        risk_rows = list(_ts_table_rows(conf, risk_hdr))
-        existing = {int(c[0]) for c in risk_rows
-                    if c and c[0].replace('.', '').isdigit()}
-        next_n = max(existing) + 1 if existing else 1
-        # Each entry is (risk_title, likelihood, impact, fallback_mitigation,
-        # linkage_tokens_en, linkage_tokens_ar).
-        # When a roadmap row matches the linkage tokens, the mitigation
-        # text is suffixed with "(see Roadmap Row #N)" or the Arabic
-        # equivalent "(انظر صف خارطة الطريق رقم N)".
-        risks_ar = [
-            ('محدودية الموارد والكفاءات', 'متوسط', 'عالٍ',
-             'التنفيذ المرحلي وتحديد أولويات وفق المخاطر وتدبير الكوادر مبكراً',
-             ('staff', 'skill', 'hiring', 'workforce'),
-             ('كوادر', 'مهارات', 'توظيف')),
-            ('مقاومة التغيير', 'عالٍ', 'متوسط',
-             'برنامج إدارة تغيير شامل مدعوم تنفيذياً وحملات توعية موجّهة',
-             ('awareness', 'training', 'change'),
-             ('وعي', 'تدريب', 'تغيير')),
-            ('تأخر موردي التقنية', 'متوسط', 'متوسط',
-             'تعدّد المصادر وتضمين عقوبات تعاقدية مرتبطة بالأداء',
-             ('supplier', 'vendor', 'third-party', 'deploy', 'siem', 'edr'),
-             ('موردين', 'أطراف ثالثة', 'نشر', 'تقني')),
-            ('تضخم النطاق', 'متوسط', 'عالٍ',
-             'لجنة ضبط تغييرات رسمية وحوكمة صارمة لأي توسعات نطاق',
-             ('governance', 'committee', 'charter', 'steering'),
-             ('حوكمة', 'لجنة', 'ميثاق', 'توجيه')),
-            ('تغيّر المتطلبات التنظيمية', 'متوسط', 'عالٍ',
-             'آلية رصد تنظيمي دورية ومراجعة خطة المعالجة ربع سنوياً',
-             ('compliance', 'audit', 'evidence'),
-             ('امتثال', 'تدقيق', 'أدلة')),
-        ]
-        risks_en = [
-            ('Resource & Skills Constraints', 'Medium', 'High',
-             'Phased implementation, risk-based prioritisation, early '
-             'talent sourcing',
-             ('staff', 'skill', 'hiring', 'workforce'),
-             ('كوادر', 'مهارات', 'توظيف')),
-            ('Change Resistance', 'High', 'Medium',
-             'Comprehensive change-management programme with executive '
-             'sponsorship and targeted awareness',
-             ('awareness', 'training', 'change'),
-             ('وعي', 'تدريب', 'تغيير')),
-            ('Technology Vendor Delays', 'Medium', 'Medium',
-             'Dual-sourcing strategy with performance-linked contractual '
-             'penalties',
-             ('supplier', 'vendor', 'third-party', 'deploy', 'siem', 'edr'),
-             ('موردين', 'أطراف ثالثة', 'نشر', 'تقني')),
-            ('Scope Creep', 'Medium', 'High',
-             'Formal change-control committee and strict governance for '
-             'any scope expansions',
-             ('governance', 'committee', 'charter', 'steering'),
-             ('حوكمة', 'لجنة', 'ميثاق', 'توجيه')),
-            ('Regulatory Change', 'Medium', 'High',
-             'Regulatory-monitoring cadence with quarterly remediation-plan '
-             'review',
-             ('compliance', 'audit', 'evidence'),
-             ('امتثال', 'تدقيق', 'أدلة')),
-        ]
-        templates = risks_ar if is_ar else risks_en
-        new_rows = []
-        for offset in range(risks_needed):
-            tpl = templates[offset % len(templates)]
-            # Unpack with roadmap-linkage tokens
-            _title, _lk, _imp, _mit_fb, _en_tok, _ar_tok = tpl
-            # Try to find a matching roadmap row for this risk theme.
-            _matched_row = _find_roadmap_row_for(_en_tok, _ar_tok)
-            if _matched_row is not None:
-                if is_ar:
-                    _mit = (f'{_mit_fb} (انظر صف خارطة الطريق رقم '
-                            f'{_matched_row})')
-                else:
-                    _mit = f'{_mit_fb} (see Roadmap Row #{_matched_row})'
-                summary['mitigation_links'].append({
-                    'risk': _title,
-                    'roadmap_row': _matched_row,
-                })
-            else:
-                _mit = _mit_fb
-            new_rows.append(
-                f'| {next_n + offset} | {_title} | {_lk} | {_imp} | {_mit} |'
-            )
-        conf = _append_rows_under_header(conf, risk_hdr, new_rows)
-        summary['risks_added'] = risks_needed
 
-    sections['confidence'] = conf
+    # ── Mode-aware thresholds — mirror validate_confidence_richness.
+    _is_consulting_grade = str(generation_mode).lower() in (
+        'consulting', 'assurance')
+    min_csf = max(_RICHNESS_MIN_CSF_ROWS, 5) if _is_consulting_grade \
+        else _RICHNESS_MIN_CSF_ROWS
+    min_risk = max(_RICHNESS_MIN_RISK_ROWS, 5) if _is_consulting_grade \
+        else _RICHNESS_MIN_RISK_ROWS
+
+    # ── Sufficient → no-op (AI is not called, section is not mutated).
+    if (score_present and justification_present
+            and n_csf >= min_csf and n_risks >= min_risk):
+        return summary
+
+    # ── Insufficient/malformed — AI-first repair. Strict-resolve domain
+    # context (no ``domain or 'Cyber Security'`` fallback). Annotate any
+    # failure with ``section='confidence'`` so the production caller's
+    # ``except RepairError`` branch can route through
+    # ``_mark_synth_failed`` (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
+        )
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_confidence_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    _why = (
+        f'confidence_repair_needed:'
+        f'score_present={score_present},'
+        f'justification_present={justification_present},'
+        f'csf_rows={n_csf}/{min_csf},'
+        f'risk_rows={n_risks}/{min_risk}'
+    )
+
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='confidence',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector='General',
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=_why,
+            min_rows=max(min_csf, min_risk),
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'confidence')
+        raise
+
+    # ── Validate the repaired markdown BEFORE assignment. Reject if any
+    # required signal is missing. Heading / domain isolation is already
+    # enforced inside ``ai_repair_strategy_section``.
+    rep_score = bool(score_re.search(repaired))
+    rep_just = bool(just_heading_re.search(repaired)) or bool(
+        just_inline_re.search(repaired))
+    rep_csf = _count_csf_rows(repaired)
+    rep_risk = _count_risk_rows_with_mitigation(repaired)
+    if (not rep_score or not rep_just
+            or rep_csf < min_csf or rep_risk < min_risk):
+        _err = RepairError(
+            f'synthesize_confidence_depth: AI-repaired confidence section '
+            f'invalid (score={rep_score}, justification={rep_just}, '
+            f'csf_rows={rep_csf}/{min_csf}, '
+            f'risk_rows={rep_risk}/{min_risk})'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    sections['confidence'] = repaired
+    summary['score_added'] = not score_present
+    summary['justification_added'] = not justification_present
+    summary['csf_added'] = max(0, rep_csf - n_csf)
+    summary['risks_added'] = max(0, rep_risk - n_risks)
     return summary
+
+
 
 
 def _append_rows_under_header(text, hdr_re, new_rows):
@@ -17317,27 +17124,55 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
                           diagnostic_gaps=None,
                           maturity='initial',
                           generation_mode='drafting'):
-    """Diagnostic-driven rebuild of the Gap Analysis section.
+    """AI-first Gap Analysis synthesis (PR-5B.6E).
 
-    Contract (prompt Part 2D):
-      1. If org_structure_is_none=True, a structural governance gap
-         MUST be present (row 1).
-      2. For each true challenge_flag (awareness / incident_response /
-         staffing / suppliers / compliance), a matching gap row is
-         emitted when absent.
-      3. Existing substantive gap rows are preserved verbatim.
-      4. If a diagnostic_gaps list is provided by the caller, each entry
-         is emitted as a row (keyed by a 'title' / 'description' dict
-         or a simple string).
-      5. Minimum row count remains `_RICHNESS_MIN_GAP_ROWS` (2) — if
-         after injection the count is below, pads from generic bank.
+    Behaviour:
+      * If ``sections['gaps']`` already contains
+        ``>= _effective_min_gaps`` substantive gap rows AND each gap
+        row is matched by a per-gap implementation guide subsection
+        (``count_gap_guides >= count_substantive_gaps``), return a
+        zero-valued summary unchanged. AI repair is not invoked and
+        the section is left untouched.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no
+        ``domain or 'Cyber Security'`` fallback), call
+        :func:`ai_repair_strategy_section` with ``section_key='gaps'``,
+        validate the repaired markdown BEFORE assignment (gap row count
+        and per-row implementation-guide coverage), and replace
+        ``sections['gaps']`` wholesale with the AI-repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid
+        repaired output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'gaps')``. No deterministic
+        structural-gap row, challenge-driven gap bank, generic gap-bank
+        top-up, or per-gap implementation-guide table is ever emitted,
+        and ``sections['gaps']`` is left unchanged on failure.
 
-    Returns dict with:
-      - rebuilt: bool
-      - rows_before / rows_after
-      - structural_gap_injected: bool
-      - challenge_driven_gaps_injected: list[str]
-      - diagnostic_gaps_used: int
+    The threshold logic mirrors :func:`validate_arabic_strategy_semantic_richness`:
+        ``drafting``/``basic``      → ``_RICHNESS_MIN_GAP_ROWS``
+        ``consulting``/``assurance`` → at least 5 gap rows
+        ``org_structure_is_none``    → at least 5 gap rows
+
+    The legacy ``challenge_flags``, ``technologies``, and
+    ``diagnostic_gaps`` parameters are retained for signature
+    compatibility with the pipeline call sites; they are no longer
+    consumed because deterministic gap authoring has been removed.
+
+    Returns dict with keys:
+        ``rebuilt``                       — bool (True only on AI repair)
+        ``structural_gap_injected``       — bool, retained for signature
+                                            compatibility (always False
+                                            in AI-first mode).
+        ``challenge_driven_gaps_injected`` — list, retained for signature
+                                            compatibility (always empty
+                                            in AI-first mode).
+        ``diagnostic_gaps_used``          — int, retained for signature
+                                            compatibility (always 0 in
+                                            AI-first mode).
+        ``rows_before``                   — int (substantive gap rows
+                                            before repair).
+        ``rows_after``                    — int (substantive gap rows
+                                            after repair, or before on
+                                            no-op).
     """
     summary = {
         'rebuilt': False,
@@ -17346,379 +17181,85 @@ def synthesize_gaps_depth(sections, lang, domain='Cyber Security',
         'diagnostic_gaps_used': 0,
     }
     gaps = sections.get('gaps', '') or ''
-    is_ar = (lang == 'ar')
-    challenge_flags = challenge_flags or {}
-    diagnostic_gaps = diagnostic_gaps or []
+    n_rows_before = count_substantive_gaps(gaps)
+    n_guides_before = count_gap_guides(gaps)
+    summary['rows_before'] = n_rows_before
 
-    rows_before, existing_guides = _extract_existing_gap_rows(gaps)
-    summary['rows_before'] = len(rows_before)
-
-    # Detect whether structural gap already exists (bilingual keyword check)
-    def _is_structural_row(r):
-        joined = ' '.join(str(c) for c in r).lower()
-        return (('governance' in joined and 'structur' in joined) or
-                ('organizational' in joined and 'structur' in joined) or
-                'الهيكل التنظيمي' in joined or
-                'حوكمة' in joined and 'هيكل' in joined)
-
-    def _row_mentions(r, en_tokens, ar_tokens):
-        joined = ' '.join(str(c) for c in r)
-        joined_lc = joined.lower()
-        for t in en_tokens:
-            if t in joined_lc:
-                return True
-        for t in ar_tokens:
-            if t in joined:
-                return True
-        return False
-
-    has_structural = any(_is_structural_row(r) for r in rows_before)
-    # Challenge-flag coverage check: does an existing row mention each
-    # flagged challenge area?
-    coverage = {}
-    coverage['awareness'] = any(
-        _row_mentions(r, ('awareness', 'training', 'phishing'),
-                      ('وعي', 'تدريب', 'تصيد')) for r in rows_before)
-    coverage['incident_response'] = any(
-        _row_mentions(r, ('incident', 'soc', 'siem', 'response'),
-                      ('حوادث', 'استجابة', 'مراقبة', 'كشف')) for r in rows_before)
-    coverage['staffing'] = any(
-        _row_mentions(r, ('staff', 'skill', 'workforce', 'hiring'),
-                      ('موظفين', 'مهارات', 'كفاءات', 'كوادر')) for r in rows_before)
-    coverage['suppliers'] = any(
-        _row_mentions(r, ('supplier', 'vendor', 'third-party', 'third party'),
-                      ('موردين', 'أطراف ثالثة', 'سلسلة الإمداد')) for r in rows_before)
-    coverage['compliance'] = any(
-        _row_mentions(r, ('compliance', 'audit', 'regulation'),
-                      ('امتثال', 'تدقيق', 'تنظيمي')) for r in rows_before)
-
-    # Decide: do we need to rebuild? Rebuild iff any of:
-    #   - row count < min
-    #   - org_structure_is_none and no structural row
-    #   - any true challenge_flag with no coverage
-    needs_inject_structural = (org_structure_is_none and not has_structural)
-    needs_challenge_injection = [
-        k for k, v in challenge_flags.items()
-        if v and not coverage.get(k, False)
-    ]
-    # Consulting-mode / no-structure orgs require a higher gap floor so the
-    # AI's thin output (often just 2-3 rows) is expanded to reflect the real
-    # diagnostic depth expected in a consulting-grade deliverable.
+    # Mode-aware floor — mirrors validate_arabic_strategy_semantic_richness
+    # / consulting-mode richness expectations.
     _mode_lc_g = str(generation_mode).lower()
     _effective_min_gaps = _RICHNESS_MIN_GAP_ROWS
     if _mode_lc_g in ('consulting', 'assurance') or org_structure_is_none:
         _effective_min_gaps = max(_effective_min_gaps, 5)
-    below_min = len(rows_before) < _effective_min_gaps
-    if (not needs_inject_structural and not needs_challenge_injection
-            and not below_min and not diagnostic_gaps):
-        summary['rows_after'] = len(rows_before)
+
+    # Sufficient → no-op (AI is not called, section is not mutated).
+    if (n_rows_before >= _effective_min_gaps
+            and n_guides_before >= n_rows_before
+            and n_rows_before > 0):
+        summary['rows_after'] = n_rows_before
         return summary
 
-    # ── Build the canonical section
-    rows_out = list(rows_before)  # preserve existing
+    # Insufficient/malformed — AI-first repair. Strict-resolve domain
+    # context (no ``domain or 'Cyber Security'`` fallback). Annotate any
+    # failure with ``section='gaps'`` so the production caller's
+    # ``except RepairError`` branch can route through
+    # ``_mark_synth_failed`` (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
+        )
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_gaps_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
+        )
+        setattr(_err, 'section', 'gaps')
+        raise _err
 
-    # 1. Structural gap (row 1 if needed)
-    if needs_inject_structural:
-        if is_ar:
-            struct_row = [
-                'غياب هيكل حوكمة الأمن السيبراني الرسمي',
-                (f'كشف التشخيص أن {org_name} لا يمتلك لجنة حوكمة معرّفة '
-                 f'أو هيكلاً تنظيمياً رسمياً لإدارة {domain} — فجوة بنيوية '
-                 f'أساسية تسبق كل ضوابط {fw_short} التشغيلية.'),
-                'حرجة',
-                'مفتوحة',
-            ]
-        else:
-            struct_row = [
-                'Absence of formal cybersecurity governance structure',
-                (f'Diagnostic identified that {org_name} lacks a defined '
-                 f'governance committee or formal organizational structure '
-                 f'for {domain} — a foundational structural gap that '
-                 f'precedes all operational {fw_short} controls.'),
-                'Critical',
-                'Open',
-            ]
-        # Prepend so it's row #1
-        rows_out.insert(0, struct_row)
-        summary['structural_gap_injected'] = True
+    _why = (
+        f'gaps_repair_needed:'
+        f'rows={n_rows_before}/{_effective_min_gaps},'
+        f'guides={n_guides_before}/{max(n_rows_before, _effective_min_gaps)},'
+        f'org_structure_is_none={bool(org_structure_is_none)}'
+    )
 
-    # 2. Challenge-flag-driven injection
-    _chal_bank_ar = {
-        'awareness': [
-            'قصور الوعي الأمني لدى الكوادر',
-            (f'التشخيص يشير إلى ضعف ثقافة الوعي بـ{domain} لدى كوادر {org_name}؛ '
-             'يلزم برنامج تدريب ممتد وقياس نسب الاجتياز دورياً.'),
-            'عالية', 'مفتوحة',
-        ],
-        'incident_response': [
-            'غياب قدرات الكشف والاستجابة للحوادث',
-            (f'التشخيص يكشف عن نقص في قدرات SOC / SIEM / IR اللازمة '
-             f'لكشف حوادث {domain} في {org_name} خلال وقت مقبول وفق {fw_short}.'),
-            'عالية', 'مفتوحة',
-        ],
-        'staffing': [
-            'نقص الكفاءات المتخصصة',
-            (f'التشخيص يوضح أن {org_name} لا يمتلك العدد أو المستوى المطلوب '
-             f'من كوادر {domain} لتشغيل الضوابط بصورة مستدامة.'),
-            'عالية', 'مفتوحة',
-        ],
-        'suppliers': [
-            'ضعف إدارة مخاطر الأطراف الثالثة',
-            (f'التشخيص يشير إلى غياب برنامج منظم لتقييم موردي {domain} '
-             f'في {org_name} وفق متطلبات {fw_short}.'),
-            'متوسطة', 'مفتوحة',
-        ],
-        'compliance': [
-            'قصور في إثبات الامتثال والتدقيق',
-            (f'التشخيص يكشف عن غياب أدلة تدقيق قابلة للإظهار لضوابط {fw_short} '
-             f'المطبقة على {org_name}.'),
-            'عالية', 'مفتوحة',
-        ],
-    }
-    _chal_bank_en = {
-        'awareness': [
-            'Workforce security awareness deficit',
-            (f'Diagnostic indicates low {domain} awareness culture among '
-             f'{org_name} staff; a sustained training programme with '
-             'periodic pass-rate measurement is required.'),
-            'High', 'Open',
-        ],
-        'incident_response': [
-            'Detection & incident response capability absent',
-            (f'Diagnostic identifies deficient SOC / SIEM / IR capability '
-             f'needed to detect {domain} incidents at {org_name} within '
-             f'acceptable time per {fw_short}.'),
-            'High', 'Open',
-        ],
-        'staffing': [
-            'Specialist workforce shortage',
-            (f'Diagnostic shows {org_name} lacks sufficient {domain} '
-             f'headcount / skill level to operate controls sustainably.'),
-            'High', 'Open',
-        ],
-        'suppliers': [
-            'Third-party risk management weakness',
-            (f'Diagnostic indicates no structured programme to assess '
-             f'{domain} suppliers at {org_name} against {fw_short}.'),
-            'Medium', 'Open',
-        ],
-        'compliance': [
-            'Compliance evidence & audit gap',
-            (f'Diagnostic identifies missing audit-ready evidence for '
-             f'{fw_short} controls as implemented at {org_name}.'),
-            'High', 'Open',
-        ],
-    }
-    chal_bank = _chal_bank_ar if is_ar else _chal_bank_en
-    for k in needs_challenge_injection:
-        if k in chal_bank:
-            rows_out.append(list(chal_bank[k]))
-            summary['challenge_driven_gaps_injected'].append(k)
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='gaps',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=_why,
+            min_rows=_effective_min_gaps,
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'gaps')
+        raise
 
-    # 3. Diagnostic gaps list (if provided) — each entry is either a
-    #    dict {'title', 'description', 'priority'(opt), 'status'(opt)}
-    #    or a plain string.
-    for dg in diagnostic_gaps:
-        if isinstance(dg, dict):
-            title = str(dg.get('title') or dg.get('name') or '').strip()
-            desc = str(dg.get('description') or dg.get('detail') or '').strip()
-            prio = str(dg.get('priority') or ('عالية' if is_ar else 'High'))
-            stat = str(dg.get('status') or ('مفتوحة' if is_ar else 'Open'))
-        elif isinstance(dg, str):
-            title = dg.strip()
-            desc = (f'فجوة تم تشخيصها في {org_name}' if is_ar
-                    else f'Diagnosed gap at {org_name}')
-            prio = 'عالية' if is_ar else 'High'
-            stat = 'مفتوحة' if is_ar else 'Open'
-        else:
-            continue
-        if not title:
-            continue
-        # Skip if an existing row already has this title
-        title_lc = title.lower()
-        dup = any(title_lc in (r[0] or '').lower()
-                  or (r[0] or '').lower() in title_lc
-                  for r in rows_out)
-        if dup:
-            continue
-        rows_out.append([title, desc or title, prio, stat])
-        summary['diagnostic_gaps_used'] += 1
+    # Validate the repaired markdown BEFORE assignment. Reject if the
+    # AI returned fewer gap rows than required, or if any gap row is
+    # missing its per-gap implementation guide subsection. Heading /
+    # domain isolation is already enforced inside
+    # ``ai_repair_strategy_section``.
+    rep_rows = count_substantive_gaps(repaired)
+    rep_guides = count_gap_guides(repaired)
+    if rep_rows < _effective_min_gaps or rep_guides < rep_rows:
+        _err = RepairError(
+            f'synthesize_gaps_depth: AI-repaired gaps section invalid '
+            f'(rows={rep_rows}/{_effective_min_gaps}, '
+            f'guides={rep_guides}/{rep_rows})'
+        )
+        setattr(_err, 'section', 'gaps')
+        raise _err
 
-    # 4. Generic-bank top-up ONLY if we are still below effective minimum.
-    _generic_bank_ar = [
-        ['ضعف الضوابط التقنية الأساسية',
-         (f'ضوابط {fw_short} الأساسية غير مطبقة بالكامل في {org_name}، '
-          f'خاصة في مجال {domain}.'),
-         'عالية', 'مفتوحة'],
-        ['محدودية المراقبة والرصد',
-         (f'غياب القدرة على المراقبة المستمرة لأصول {domain} الحيوية '
-          f'في {org_name}.'),
-         'متوسطة', 'مفتوحة'],
-        ['غياب خطط استمرارية الأعمال',
-         (f'خطط استمرارية الأعمال الخاصة بـ{domain} غير مكتملة أو غير '
-          f'مختبرة في {org_name}.'),
-         'متوسطة', 'مفتوحة'],
-        ['غياب سياسات وإجراءات موثقة',
-         (f'لا تمتلك {org_name} حزمة سياسات وإجراءات {domain} موثقة '
-          f'ومعتمدة تغطي متطلبات {fw_short} التشغيلية.'),
-         'عالية', 'مفتوحة'],
-        ['قصور في إدارة الهويات والوصول',
-         (f'غياب آليات فعّالة لإدارة الهويات والوصول في بيئة {org_name}، '
-          f'مما يرفع من مستوى مخاطر {domain} وفق {fw_short}.'),
-         'عالية', 'مفتوحة'],
-        ['غياب برنامج تدريب وتوعية أمنية',
-         (f'لا يوجد في {org_name} برنامج توعية وتدريب منتظم لرفع كفاءة '
-          f'الكوادر في مجال {domain} ومتطلبات {fw_short}.'),
-         'متوسطة', 'مفتوحة'],
-        ['ضعف إدارة أصول {domain}',
-         (f'جرد أصول {domain} في {org_name} غير مكتمل أو غير محدث، '
-          f'مما يعيق الامتثال لمتطلبات {fw_short} ذات الصلة.'),
-         'متوسطة', 'مفتوحة'],
-    ]
-    _generic_bank_en = [
-        ['Foundational technical-control weakness',
-         (f'Core {fw_short} controls are not fully implemented at {org_name}, '
-          f'particularly in the {domain} domain.'),
-         'High', 'Open'],
-        ['Monitoring & detection limitations',
-         (f'No sustained monitoring capability for critical {domain} assets '
-          f'at {org_name}.'),
-         'Medium', 'Open'],
-        ['Business continuity planning gaps',
-         (f'{domain}-specific business continuity plans at {org_name} are '
-          f'incomplete or untested.'),
-         'Medium', 'Open'],
-        ['Absence of documented policies and procedures',
-         (f'{org_name} lacks an approved set of {domain} policies and '
-          f'procedures covering {fw_short} operational requirements.'),
-         'High', 'Open'],
-        ['Identity & access management deficiency',
-         (f'No effective IAM controls are in place at {org_name}, '
-          f'increasing {domain} risk exposure per {fw_short}.'),
-         'High', 'Open'],
-        ['No formal security awareness & training programme',
-         (f'{org_name} has no regular security awareness programme to '
-          f'build workforce competence in {domain} and {fw_short} requirements.'),
-         'Medium', 'Open'],
-        [f'{domain} asset inventory gap',
-         (f'The {domain} asset inventory at {org_name} is incomplete or '
-          f'outdated, impeding compliance with relevant {fw_short} controls.'),
-         'Medium', 'Open'],
-    ]
-    generic_bank = _generic_bank_ar if is_ar else _generic_bank_en
-    gi = 0
-    while len(rows_out) < _effective_min_gaps and gi < len(generic_bank):
-        candidate = generic_bank[gi]
-        dup = any(candidate[0].lower() in (r[0] or '').lower()
-                  or (r[0] or '').lower() in candidate[0].lower()
-                  for r in rows_out)
-        if not dup:
-            rows_out.append(list(candidate))
-        gi += 1
-
-    # ── Emit canonical section
-    if is_ar:
-        section_heading = '## 4. تحليل الفجوات'
-        table_header = '| # | الفجوة | الوصف | الأولوية | الحالة |'
-        table_sep = '|---|--------|-------|---------|--------|'
-    else:
-        section_heading = '## 4. Gap Analysis'
-        table_header = '| # | Gap | Description | Priority | Status |'
-        table_sep = '|---|-----|-------------|----------|--------|'
-    out = [section_heading, '', table_header, table_sep]
-    for idx, r in enumerate(rows_out, start=1):
-        # Ensure 4 data cells
-        while len(r) < 4:
-            r.append('—')
-        out.append('| ' + ' | '.join([str(idx)] + [str(c) for c in r[:4]]) + ' |')
-    out.append('')
-
-    # Re-emit existing guides for rows that were preserved. The row-number
-    # for a preserved row may have shifted (structural gap is now row 1),
-    # so we key off the gap TITLE. For any existing guide whose referenced
-    # title matches a preserved row's title, re-emit it. Gaps that need
-    # fresh guides are synthesized generically.
-    for idx, r in enumerate(rows_out, start=1):
-        title_lc = (r[0] or '').lower()
-        # Try to find a prior guide by fuzzy title match in existing_guides
-        guide_block = None
-        for _num, block in existing_guides.items():
-            # Check if guide's header line mentions this gap title
-            first_line = block.split('\n', 1)[0]
-            if title_lc and (title_lc[:30] in first_line.lower()
-                             or first_line.lower().endswith(title_lc[:30])):
-                guide_block = block
-                break
-        if guide_block:
-            # Replace the guide's row-number in its heading so numbering
-            # stays consistent.
-            out.append(_ts_re.sub(
-                r'(#?\s*)(Gap\s*#?\d+|الفجوة\s*(?:رقم|#)?\s*\d+)',
-                lambda _m: (_m.group(1) + (
-                    f'الفجوة رقم {idx}' if is_ar
-                    else f'Gap #{idx}')),
-                guide_block.split('\n', 1)[0]
-            ))
-            body = guide_block.split('\n', 1)[1] if '\n' in guide_block else ''
-            if body:
-                out.append(body)
-            out.append('')
-            continue
-        # Synthesize a deterministic type-specific guide using the same
-        # gap-type classification and 6-step templates as ensure_gap_guide_coverage.
-        _gap_nm  = r[0] if r else ''
-        _gap_dsc = r[1] if len(r) > 1 else ''
-        _gap_pri = r[2] if len(r) > 2 else ''
-        if is_ar:
-            _gtype = _gap_type(_gap_nm, _gap_dsc, True)
-            _steps = _gap_guide_steps_ar(_gtype, domain, fw_short, _gap_nm)
-            _pri_label = {'حرج': '🔴 حرجة', 'عالي': '🟠 عالية', 'عالية': '🟠 عالية',
-                          'متوسط': '🟡 متوسطة', 'منخفض': '🟢 منخفضة'}.get(
-                _gap_pri.strip() if _gap_pri else '',
-                f'الأولوية: {_gap_pri}' if _gap_pri else '')
-            _guide_block = [
-                f'#### دليل تنفيذ الفجوة رقم {idx}: {_gap_nm}',
-                '',
-            ]
-            if _gap_dsc and _gap_dsc != '—':
-                _guide_block.append(f'**السياق:** {_gap_dsc}')
-            if _pri_label:
-                _guide_block.append(f'**الأولوية:** {_pri_label}')
-            _guide_block.extend([
-                '',
-                '| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |',
-                '|--------|---------|---------|----------------|--------|',
-            ])
-            _guide_block.extend(_steps)
-            _guide_block.append('')
-            out.extend(_guide_block)
-        else:
-            _gtype = _gap_type(_gap_nm, _gap_dsc, False)
-            _steps = _gap_guide_steps_en(_gtype, domain, fw_short, _gap_nm)
-            _pri_label = {'critical': '🔴 Critical', 'high': '🟠 High',
-                          'medium': '🟡 Medium', 'low': '🟢 Low'}.get(
-                (_gap_pri or '').strip().lower(),
-                f'Priority: {_gap_pri}' if _gap_pri else '')
-            _guide_block = [
-                f'#### Gap #{idx} Implementation Guide: {_gap_nm}',
-                '',
-            ]
-            if _gap_dsc and _gap_dsc != '—':
-                _guide_block.append(f'**Context:** {_gap_dsc}')
-            if _pri_label:
-                _guide_block.append(f'**Priority:** {_pri_label}')
-            _guide_block.extend([
-                '',
-                '| Step | Action | Owner | Timeline | Output |',
-                '|------|--------|-------|----------|--------|',
-            ])
-            _guide_block.extend(_steps)
-            _guide_block.append('')
-            out.extend(_guide_block)
-
-    sections['gaps'] = '\n'.join(out).rstrip() + '\n'
+    sections['gaps'] = repaired
     summary['rebuilt'] = True
-    summary['rows_after'] = len(rows_out)
+    summary['rows_after'] = rep_rows
     return summary
 
 
@@ -17733,30 +17274,40 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                               org_structure_is_none=False,
                               challenge_flags=None,
                               technologies=None):
-    """If the Strategic Pillars section has fewer than
-    _RICHNESS_MIN_PILLARS_LOCAL substantive pillars, REBUILD it
-    canonically from structured data. Preserves existing substantive
-    pillars verbatim; fills the remaining slots from a deterministic
-    bank of domain-relevant consultancy-grade pillar templates.
+    """AI-first Strategic Pillars synthesis (PR-5B.6B).
 
-    Diagnostic-aware priority (prompt Part 2B):
-      - If org_structure_is_none=True, a GOVERNANCE-STRUCTURE pillar is
-        prepended first (before any other bank entry) because the user
-        explicitly reported no defined organizational structure.
-      - If maturity='initial', the pillar set prioritizes baseline
-        establishment over optimization — governance + operational
-        controls first, detection/TPRM/awareness after.
-      - If challenge_flags indicate awareness/IR/TPRM/staffing gaps,
-        the pillar pick-order weights those pillars higher.
+    Behaviour:
+      * If ``sections['pillars']`` already has
+        ``>= _RICHNESS_MIN_PILLARS_LOCAL`` substantive pillars (each with
+        a substantive initiative table) AND the
+        ``org_structure_is_none`` governance-pillar contract is
+        satisfied, return unchanged with ``rebuilt=False``. AI repair
+        is not invoked.
+      * Otherwise, strict-resolve domain context via
+        :func:`get_strategy_domain_context` (no ``domain or 'Cyber
+        Security'`` fallback), call
+        :func:`ai_repair_strategy_section` with
+        ``section_key='pillars'``, validate the repaired markdown, and
+        replace ``sections['pillars']`` with the repaired text.
+      * On :class:`DomainResolutionError`, AI failure, or invalid
+        repaired output, raise :class:`RepairError` with
+        ``setattr(err, 'section', 'pillars')``. No deterministic pillar
+        bank is used, no governance / technology-priority / maturity
+        templates are injected, and ``sections['pillars']`` is left
+        unchanged on failure.
 
-    Rebuild — not patch — matches the prompt's "if pillars are thin,
-    rebuild them" directive. Returns dict with:
-      - pillars_before / pillars_after
-      - rebuilt: bool
-      - preserved_titles: list of AI-pillar titles kept
-      - synthesized_titles: list of deterministic-pillar titles added
-      - governance_pillar_injected: True when org_structure_is_none
-        triggered the structural governance pillar
+    The legacy ``diagnostic_gaps`` / ``risks`` / ``objectives`` /
+    ``challenge_flags`` / ``technologies`` parameters are retained for
+    signature compatibility with the pipeline call sites.
+    ``maturity`` and ``generation_mode`` are forwarded to the AI repair
+    prompt.
+
+    Returns dict with keys ``rebuilt`` (bool), ``preserved_titles``
+    (list — substantive AI pillar titles before repair),
+    ``synthesized_titles`` (list, empty post-AI-first migration),
+    ``governance_pillar_injected`` (bool, always False post-AI-first
+    migration), ``pillars_before`` (int), and, on success,
+    ``pillars_after`` (int — substantive pillar count after AI repair).
     """
     summary = {'rebuilt': False, 'preserved_titles': [],
                'synthesized_titles': [],
@@ -17764,36 +17315,22 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
     pillars = sections.get('pillars', '') or ''
     n_before = _count_substantive_pillars(pillars)
     summary['pillars_before'] = n_before
-    # Even when n_before >= minimum, we STILL need to check that the
-    # org_structure_is_none contract is satisfied — the prompt says
-    # "if there is no defined organizational structure, one pillar must
-    # explicitly address governance structure". If the existing pillars
-    # don't contain a governance/structure pillar, we must rebuild to
-    # inject one. Detect that below before early-returning.
-    #
-    # ALSO (gate alignment): if `n_before` counted narrative-only
-    # pillars via `_count_substantive_pillars`'s ≥80-char fallback,
-    # those would later FAIL the integrity gate's per-pillar
-    # initiative-table check. Re-count strictly here using the gate-
-    # aligned helper so synth doesn't bail when initiative tables are
-    # missing.
-    _existing_with_init = sum(
-        1 for (_t, _b) in _extract_existing_pillars(pillars)
-        if _pillar_has_substantive_initiative(_b)
-    )
-    n_before_strict = _existing_with_init
-    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
-            and not org_structure_is_none):
-        summary['pillars_after'] = n_before
-        return summary
-    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
-            and org_structure_is_none):
-        # Only early-return if the FIRST pillar's heading explicitly
-        # carries governance/structure tokens.  Checking the whole
-        # section body was too broad: NCA ECC strategies mention
-        # 'حوكمة' in every pillar's narrative, causing a false-positive
-        # that skipped the governance-pillar injection and left the
-        # document starting with الركيزة الثانية.
+
+    # Strict gate-aligned count: each counted pillar must carry a
+    # substantive initiative table row, mirroring the integrity-gate
+    # `pillars_missing_substantive_initiative` check.
+    existing = _extract_existing_pillars(pillars)
+    preserved = [(t, b) for (t, b) in existing
+                 if _pillar_has_substantive_initiative(b)]
+    n_before_strict = len(preserved)
+    summary['preserved_titles'] = [t for t, _ in preserved]
+
+    # Governance-pillar contract: when org_structure_is_none, the FIRST
+    # pillar's heading must explicitly carry governance / structure
+    # tokens. Otherwise we treat the section as failing-the-contract
+    # and trigger AI repair even when the count is sufficient.
+    _gov_contract_ok = True
+    if org_structure_is_none:
         _gov_tokens_ar = ('الحوكمة', 'حوكمة', 'الهيكل', 'هيكل',
                           'الهيكلة', 'هيكلة', 'اللجنة', 'لجنة',
                           'التوجيه', 'توجيه')
@@ -17807,697 +17344,83 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 r'^###[^#\n][^\n]*$', pillars, _ts_re.MULTILINE))
         if _first_matches:
             _first_m = _first_matches[0]
-            # Extract ONLY the first pillar heading line for governance check
             _first_heading = pillars[_first_m.start():_first_m.end()].lower()
-            for t in _gov_tokens_en:
-                if t in _first_heading:
-                    _has_gov_first = True
-                    break
-            if not _has_gov_first:
-                for t in _gov_tokens_ar:
-                    if t in pillars[_first_m.start():_first_m.end()]:
-                        _has_gov_first = True
-                        break
-        if _has_gov_first:
-            summary['pillars_after'] = n_before
-            return summary
-        # else: fall through to rebuild, injecting governance pillar
+            if any(t in _first_heading for t in _gov_tokens_en):
+                _has_gov_first = True
+            elif any(t in pillars[_first_m.start():_first_m.end()]
+                     for t in _gov_tokens_ar):
+                _has_gov_first = True
+        _gov_contract_ok = _has_gov_first
 
-    is_ar = (lang == 'ar')
-    diagnostic_gaps = diagnostic_gaps or []
-    risks = risks or []
-    objectives = objectives or []
-    challenge_flags = challenge_flags or {}
-    technologies = technologies or []
+    # Sufficient pillars + governance-pillar contract satisfied → no-op.
+    if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
+            and _gov_contract_ok):
+        summary['pillars_after'] = n_before
+        return summary
 
-    # Extract any existing pillars from the section — keep the substantive
-    # ones, discard the thin ones.
-    # PRESERVE FILTER: align with integrity gate. The gate at the save
-    # path requires every counted pillar to have a substantive
-    # initiative table row (`pillars_missing_substantive_initiative`).
-    # The previous filter used `_pillar_is_substantive` which accepted
-    # narrative-only pillars (≥80 chars). Those passed the synth's
-    # internal counter but failed the downstream gate. Now: require
-    # a substantive initiative table — so narrative-only `### الركيزة`
-    # entries get dropped here and the slot is filled by a bank pillar
-    # that carries a proper initiative table.
-    existing = _extract_existing_pillars(pillars)
-    preserved = [(t, b) for (t, b) in existing
-                 if _pillar_has_substantive_initiative(b)]
-    summary['preserved_titles'] = [t for t, _ in preserved]
-
-    # Deterministic consultancy-grade pillar bank. Each pillar is designed
-    # to pass _count_substantive_pillars — it has an initiative row AND a
-    # narrative body well over 80 chars. Content references the user's
-    # domain / framework / sector / organization. Each pillar carries
-    # 3 initiative rows so synthesized pillars pass the 3+ initiative
-    # depth check without requiring a separate enrichment pass.
-    if is_ar:
-        pillar_bank = [
-            {
-                'title': f'الركيزة الأولى: الحوكمة والامتثال وإدارة مخاطر {domain}',
-                'narrative': (
-                    f"تؤسس هذه الركيزة إطار حوكمة {domain} الرسمي لـ{org_name} "
-                    f"بما يحقق الامتثال لمتطلبات {fw_short} في قطاع {sector}. "
-                    "تشمل ميثاق الأمن السيبراني، وصلاحيات لجنة التوجيه، ومصفوفة "
-                    "RACI، وسجل الضوابط، ومسارات التصعيد، وإعداد التقارير الدورية "
-                    "للإدارة العليا، وربط القرارات بالأولويات المؤسسية."
-                ),
-                'initiatives': [
-                    (
-                        f'ميثاق الأمن السيبراني ولجنة الحوكمة',
-                        f'إعداد ميثاق {domain} المعتمد وتشكيل لجنة توجيه برئاسة تنفيذية مع اختصاصات واضحة وجداول اجتماعات دورية',
-                        f'ميثاق {domain} المعتمد + اختصاصات لجنة الحوكمة + محاضر الاجتماعات الربعية',
-                    ),
-                    (
-                        f'مصفوفة RACI وإطار السياسات',
-                        f'توثيق مصفوفة RACI لأدوار {domain} ومسؤولياتها وإعداد حزمة السياسات والإجراءات وفق {fw_short}',
-                        f'مصفوفة RACI المعتمدة + سياسة {domain} الرئيسية + الإجراءات التشغيلية',
-                    ),
-                    (
-                        f'سجل ضوابط {fw_short} وسجل المخاطر',
-                        f'بناء سجل ضوابط {fw_short} المُرقَّم وربطه بسجل مخاطر {domain} مع خطط معالجة موثقة',
-                        f'سجل ضوابط {fw_short} + سجل مخاطر نشط + خطط المعالجة الموثقة',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الثانية: الحماية التقنية والهندسة الأمنية',
-                'narrative': (
-                    f"تُحكم هذه الركيزة الضوابط التقنية الأساسية في بنية {org_name} "
-                    f"بما يشمل إدارة الهوية والوصول المميز (IAM/PAM)، ونشر منصات "
-                    f"الحماية المتطورة (EDR/XDR)، وتطبيق ضوابط حماية البيانات، "
-                    f"وذلك وفق خط الأساس الذي يفرضه {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        'إدارة الهوية والوصول المميز (IAM/PAM)',
-                        'جرد الحسابات المميزة وتطبيق المصادقة متعددة العوامل (MFA) ونشر حل PAM مع آليات مراجعة الوصول الدورية',
-                        'قاموس هويات المستخدمين + خطة نشر PAM/MFA + سجل مراجعة الوصول',
-                    ),
-                    (
-                        'نشر منصات الحماية (EDR/XDR)',
-                        f'تطبيق خط الأساس الأمني للنهايات والشبكات عبر نشر EDR/XDR مع ضوابط {fw_short} التشغيلية',
-                        'سياسة تكوين النهايات + خط الأساس الأمني EDR/XDR + سجل تغطية الأجهزة',
-                    ),
-                    (
-                        'حماية البيانات والتصنيف',
-                        f'تنفيذ مخطط تصنيف البيانات وضوابط التشفير وسياسات DLP وفق متطلبات {fw_short}',
-                        'مخطط تصنيف البيانات + سياسة التشفير + قواعد DLP المفعَّلة',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الثالثة: الكشف والاستجابة والمرونة السيبرانية',
-                'narrative': (
-                    f"ترفع هذه الركيزة قدرة {org_name} على الكشف المبكر والاستجابة "
-                    f"الفعّالة لحوادث {domain}، بما يشمل تفعيل SIEM، وإعداد كتب "
-                    "الاستجابة للحوادث، وتفعيل برنامج إدارة الثغرات، وضمان استمرارية "
-                    "الأعمال والتعافي من الكوارث."
-                ),
-                'initiatives': [
-                    (
-                        'SIEM وكتالوج حالات الاستخدام',
-                        f'ربط مصادر السجلات بمنصة SIEM وتطوير كتالوج حالات استخدام الكشف المرتبطة بتهديدات {sector}',
-                        'مصادر السجلات المُدمجة + كتالوج حالات SIEM + مصفوفة التصعيد',
-                    ),
-                    (
-                        'كتب الاستجابة للحوادث',
-                        f'إعداد كتب تشغيل الاستجابة للحوادث الحرجة وإجراء تمارين محاكاة دورية وفق متطلبات {fw_short}',
-                        'كتب الاستجابة المعتمدة + تقارير تمارين المحاكاة + مؤشرات MTTD/MTTR',
-                    ),
-                    (
-                        'إدارة الثغرات والنسخ الاحتياطي',
-                        f'تطبيق إجراء إدارة الثغرات والتصحيح مع اختبارات استعادة النسخ الاحتياطي بشكل دوري',
-                        'سجل الثغرات + تقارير اختبار الاستعادة + أدلة النسخ الاحتياطي',
-                    ),
-                ],
-            },
-            {
-                'title': f'الركيزة الرابعة: الثقافة والقدرات والضمان المستمر',
-                'narrative': (
-                    f"تُطوّر هذه الركيزة كفاءات {org_name} في مجال {domain}، وتُعزّز "
-                    "ثقافة الأمن السيبراني عبر برامج التوعية ومحاكاة التصيد، وإدارة "
-                    "مخاطر الأطراف الثالثة، والضمان المستمر عبر التدقيق الداخلي."
-                ),
-                'initiatives': [
-                    (
-                        'برنامج التوعية ومحاكاة التصيد',
-                        f'تطوير برنامج توعية {domain} المتدرج مع تمارين محاكاة التصيد ومقاييس فعالية التدريب',
-                        'خطة حملة التوعية + تقارير محاكاة التصيد + معدلات الاجتياز',
-                    ),
-                    (
-                        'تقييم مخاطر الأطراف الثالثة',
-                        f'تطبيق نموذج تقييم {domain} للموردين الحرجين وفق {fw_short} مع متطلبات تعاقدية واضحة',
-                        'نموذج تقييم الأطراف الثالثة + سجل مخاطر الموردين + الشروط التعاقدية',
-                    ),
-                    (
-                        'التدقيق الداخلي والضمان المستمر',
-                        f'تشغيل دورة تدقيق داخلي دورية لضوابط {fw_short} مع إصدار تقارير تنفيذية ربعية',
-                        'تقارير التدقيق الداخلي + خطط المعالجة + لوحة متابعة الامتثال',
-                    ),
-                ],
-            },
-        ]
-    else:
-        pillar_bank = [
-            {
-                'title': f'Pillar 1: {domain} Governance, Compliance & Risk Management',
-                'narrative': (
-                    f"This pillar establishes {org_name}'s formal {domain} "
-                    f"governance framework aligned to {fw_short} obligations "
-                    f"in the {sector} sector. It covers the cybersecurity "
-                    "charter, steering-committee authority, RACI matrix, "
-                    "control register, escalation paths, and periodic "
-                    "executive reporting."
-                ),
-                'initiatives': [
-                    (
-                        f'{domain} Charter & Governance Committee',
-                        f'Prepare the approved {domain} charter and form an executive-chaired steering committee with clear ToR and quarterly meeting schedule',
-                        f'Approved {domain} charter + Committee ToR + Quarterly meeting minutes',
-                    ),
-                    (
-                        f'RACI Matrix & Policy Framework',
-                        f'Document RACI matrix for {domain} roles and produce a policy/procedure pack aligned to {fw_short}',
-                        f'Approved RACI matrix + {domain} master policy + Operating procedures',
-                    ),
-                    (
-                        f'{fw_short} Control Register & Risk Register',
-                        f'Build a numbered {fw_short} control register and link it to a live {domain} risk register with documented remediation plans',
-                        f'{fw_short} control register + Live risk register + Documented remediation plans',
-                    ),
-                ],
-            },
-            {
-                'title': f'Pillar 2: Technical Protection & Security Engineering',
-                'narrative': (
-                    f"This pillar hardens the core technical controls in "
-                    f"{org_name}'s infrastructure, covering IAM/PAM, "
-                    "EDR/XDR deployment, data protection and classification, "
-                    f"all aligned to the {fw_short} control baseline."
-                ),
-                'initiatives': [
-                    (
-                        'Identity & Privileged Access Management (IAM/PAM)',
-                        'Inventory privileged accounts, enforce MFA, and deploy a PAM solution with periodic access-review cycles',
-                        'Identity inventory + PAM/MFA deployment plan + Access review register',
-                    ),
-                    (
-                        'EDR/XDR Deployment Baseline',
-                        f'Apply the endpoint and network security baseline by deploying EDR/XDR with {fw_short} operational controls',
-                        'Endpoint configuration policy + EDR/XDR security baseline + Device coverage register',
-                    ),
-                    (
-                        'Data Protection & Classification',
-                        f'Implement a data classification scheme, encryption controls, and DLP policies per {fw_short} requirements',
-                        'Data classification scheme + Encryption policy + Active DLP rules',
-                    ),
-                ],
-            },
-            {
-                'title': 'Pillar 3: Detection, Response & Cyber Resilience',
-                'narrative': (
-                    f"This pillar raises {org_name}'s capacity for early "
-                    f"detection and effective response to {domain} incidents, "
-                    "through SIEM activation, incident response playbooks, "
-                    "vulnerability management, and backup/DR resilience."
-                ),
-                'initiatives': [
-                    (
-                        'SIEM Use-Case Catalogue',
-                        f'Connect log sources to the SIEM platform and develop a detection use-case catalogue linked to {sector} threat scenarios',
-                        'Integrated log sources + SIEM use-case catalogue + Escalation matrix',
-                    ),
-                    (
-                        'Incident Response Playbooks',
-                        f'Develop critical incident response playbooks and run periodic simulation exercises per {fw_short} requirements',
-                        'Approved IR playbooks + Simulation exercise reports + MTTD/MTTR metrics',
-                    ),
-                    (
-                        'Vulnerability Management & Backup/DR',
-                        f'Implement a vulnerability and patch management procedure with periodic backup restore testing',
-                        'Vulnerability register + Restore test reports + Backup evidence',
-                    ),
-                ],
-            },
-            {
-                'title': f'Pillar 4: Culture, Capabilities & Continuous Assurance',
-                'narrative': (
-                    f"This pillar develops {org_name}'s {domain} competency "
-                    "through tiered awareness programmes, phishing simulations, "
-                    "third-party cyber risk management, and continuous "
-                    "assurance through internal audit."
-                ),
-                'initiatives': [
-                    (
-                        f'{domain} Awareness & Phishing Simulation',
-                        f'Develop a tiered {domain} awareness programme with phishing simulations and training effectiveness metrics',
-                        'Awareness campaign plan + Phishing simulation reports + Pass-rate metrics',
-                    ),
-                    (
-                        'Third-Party Cyber Risk Assessment',
-                        f'Apply a {domain} assessment template for critical suppliers under {fw_short} with clear contractual requirements',
-                        'Third-party assessment template + Supplier risk register + Contractual clauses',
-                    ),
-                    (
-                        f'Internal Audit & Continuous Assurance',
-                        f'Run a periodic internal audit cycle for {fw_short} controls with quarterly executive reporting',
-                        'Internal audit reports + Remediation plans + Compliance dashboard',
-                    ),
-                ],
-            },
-        ]
-
-    # Keep existing substantive pillars first (up to 5); fill remaining
-    # slots from the bank, skipping any whose title collides with an
-    # already-kept pillar.
-    preserved_titles_lc = {t.lower().strip() for t, _ in preserved}
-    needed = _RICHNESS_MIN_PILLARS_LOCAL - len(preserved)
-    # Synthesize at least `needed`, optionally +1 for consulting / +2 for
-    # assurance to leave depth margin.
-    _mode_lc = str(generation_mode).lower()
-    if _mode_lc == 'consulting':
-        needed += 1
-    elif _mode_lc == 'assurance':
-        needed += 2
-
-    picked = []
-
-    # Diagnostic-aware prepend: if org_structure_is_none, ensure the very
-    # first synthesized pillar addresses governance structure explicitly,
-    # regardless of bank ordering. Prompt Part 2B: "if there is no defined
-    # organizational structure, one pillar must explicitly address
-    # governance structure / org design / committee / reporting model".
-    if org_structure_is_none:
-        if is_ar:
-            gov_pillar = {
-                'title': (f'الركيزة الأولى: إنشاء هيكل حوكمة {domain} — '
-                          f'الأساس المؤسسي المفقود'),
-                'narrative': (
-                    f"كشف التشخيص أن {org_name} لا يمتلك هيكلاً تنظيمياً "
-                    f"معرّفاً لإدارة {domain}. تعالج هذه الركيزة هذا الغياب "
-                    f"الهيكلي — وهو الأولوية القصوى قبل أي استثمار في "
-                    f"الضوابط التشغيلية — عبر إنشاء لجنة الحوكمة، "
-                    f"وتوصيف المسؤوليات، واعتماد ميثاق رسمي لـ{domain} "
-                    f"وفق متطلبات {fw_short}. بدون هذا الهيكل، لا يمكن "
-                    "تطبيق باقي الركائز بصورة مستدامة."
-                ),
-                'initiatives': [
-                    (
-                        f'تأسيس هيكل حوكمة {domain} الرسمي',
-                        f'تشكيل لجنة حوكمة {domain} برئاسة تنفيذية مع ميثاق '
-                        f'معتمد يحدد الصلاحيات والمسؤوليات ومسارات التصعيد',
-                        f'ميثاق لجنة الحوكمة + هيكل تنظيمي معتمد + '
-                        f'مصفوفة RACI لأدوار {domain}',
-                    ),
-                    (
-                        f'سياسات وإجراءات {domain}',
-                        f'إعداد حزمة السياسات والإجراءات الرئيسية لـ{domain} وفق متطلبات {fw_short} مع آليات مراجعة دورية',
-                        f'حزمة سياسات {domain} المعتمدة + جدول المراجعة السنوي',
-                    ),
-                    (
-                        f'سجل ضوابط {fw_short}',
-                        f'بناء سجل ضوابط {fw_short} مُرقَّم مع تحديد المسؤول عن كل ضابط وحالة التطبيق',
-                        f'سجل ضوابط {fw_short} + مسؤولو الضوابط + لوحة حالة الامتثال',
-                    ),
-                ],
-            }
-        else:
-            gov_pillar = {
-                'title': (f'Pillar 1: Establish {domain} Governance '
-                          f'Structure — the Missing Foundation'),
-                'narrative': (
-                    f"The diagnostic identified that {org_name} has no "
-                    f"defined organizational structure for {domain}. "
-                    f"This pillar closes that structural gap — the "
-                    f"highest-priority move before any investment in "
-                    f"operational controls — by establishing the "
-                    f"governance committee, responsibility definitions, "
-                    f"and a formal {domain} charter aligned to {fw_short} "
-                    "obligations. Without this structure, no other pillar "
-                    "can be executed sustainably."
-                ),
-                'initiatives': [
-                    (
-                        f'Establish formal {domain} governance structure',
-                        f'Form executive-chaired {domain} governance committee '
-                        'with approved charter defining authority, '
-                        'responsibilities, and escalation paths',
-                        f'Committee charter + approved org structure + '
-                        f'RACI matrix for {domain} roles',
-                    ),
-                    (
-                        f'{domain} Policies & Procedures',
-                        f'Develop the core {domain} policy and procedure pack per {fw_short} with periodic review mechanisms',
-                        f'Approved {domain} policy pack + Annual review schedule',
-                    ),
-                    (
-                        f'{fw_short} Control Register',
-                        f'Build a numbered {fw_short} control register assigning an owner and implementation status to each control',
-                        f'{fw_short} control register + Control owners + Compliance status dashboard',
-                    ),
-                ],
-            }
-        # Only inject if preserved pillars don't already contain one
-        _gov_t = gov_pillar['title'].lower()
-        if not any(('governance' in t and 'structure' in t) or
-                   ('حوكمة' in t and ('هيكل' in t or 'بنية' in t))
-                   for t in preserved_titles_lc):
-            picked.insert(0, gov_pillar)  # governance must be Pillar 1
-            summary['governance_pillar_injected'] = True
-
-    # ── Technology-gap priority pillar (prompt Part 2B)
-    # If the user's tech selections are MISSING in ≥ 2 key categories,
-    # inject a pillar focused on that foundational capability build-out.
-    # Key categories: siem (monitoring), edr (endpoint), iam (identity).
-    # This runs AFTER governance-injection so the governance pillar
-    # retains the #1 slot when both apply.
-    _key_tech_missing = sum(
-        1 for cat in ('siem', 'edr', 'iam', 'backup')
-        if cat in (technologies or []) and False  # legacy guard
-    )
-    # Correct derivation — technologies param is the raw list. We need
-    # tech_gaps from ctx. Pull from synthesizer signature:
-    _tech_gaps_from_ctx = []
-    # The signature won't have tech_gaps directly; we derive it locally
-    # by scanning the `technologies` list for presence markers.
-    _tech_blob_syn = ' '.join(str(t).lower() for t in (technologies or []))
-    _has = {
-        'siem': any(k in _tech_blob_syn for k in
-                    ('siem', 'splunk', 'sentinel', 'qradar')),
-        'edr':  any(k in _tech_blob_syn for k in
-                    ('edr', 'xdr', 'crowdstrike', 'sentinelone',
-                     'defender for endpoint')),
-        'iam':  any(k in _tech_blob_syn for k in
-                    ('iam', 'okta', 'active directory', 'azure ad')),
-        'backup': any(k in _tech_blob_syn for k in
-                      ('backup', 'veeam', 'commvault', 'rubrik')),
-    }
-    _missing_key = [k for k, v in _has.items() if not v]
-    # Only inject tech-priority pillar if the user reported no
-    # technologies at all OR ≥ 2 key categories are missing.
-    _tech_priority_needed = (
-        not technologies or len(_missing_key) >= 2
-    )
-    if _tech_priority_needed:
-        _missing_str_ar = '، '.join({
-            'siem': 'منصة SIEM للمراقبة',
-            'edr':  'حماية نقاط النهاية EDR/XDR',
-            'iam':  'إدارة الهوية والوصول',
-            'backup': 'حلول النسخ الاحتياطي والتعافي',
-        }.get(k, k) for k in _missing_key)
-        _missing_str_en = ', '.join({
-            'siem': 'SIEM monitoring',
-            'edr':  'EDR/XDR endpoint protection',
-            'iam':  'identity & access management',
-            'backup': 'backup & recovery',
-        }.get(k, k) for k in _missing_key)
-        if is_ar:
-            tech_pillar = {
-                'title': (f'بناء القدرات التقنية الأساسية المفقودة في '
-                          f'{org_name}'),
-                'narrative': (
-                    f"كشف التشخيص غياب قدرات تقنية أساسية في {org_name} "
-                    f"تشمل: {_missing_str_ar}. تعالج هذه الركيزة هذا "
-                    "النقص عبر تصميم وبناء ونشر هذه القدرات بصورة "
-                    f"متكاملة مع متطلبات {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        f'نشر القدرات التقنية الأساسية المفقودة',
-                        (f'تنفيذ مشاريع اقتناء/نشر/تكامل لـ: {_missing_str_ar} '
-                         f'مع ربطها بأُطر الحوكمة والتشغيل'),
-                        ('قدرات تقنية منتجة مع أدلة الاختبار والتشغيل الدوري'),
-                    ),
-                    (
-                        'خطة تكامل الأدوات والأنظمة',
-                        f'تصميم خطة التكامل بين القدرات المنشورة ومنظومة ضوابط {fw_short}',
-                        'خطة التكامل المعتمدة + اختبارات القبول',
-                    ),
-                    (
-                        'توثيق خط الأساس التقني',
-                        'توثيق إعدادات الأمان الافتراضية وخط الأساس التقني لجميع القدرات',
-                        'وثيقة خط الأساس التقني + سجل الاختلافات',
-                    ),
-                ],
-            }
-        else:
-            tech_pillar = {
-                'title': (f'Build missing foundational technical capabilities '
-                          f'at {org_name}'),
-                'narrative': (
-                    f"Diagnostic identified that {org_name} lacks core "
-                    f"technical capabilities including: {_missing_str_en}. "
-                    "This pillar closes that gap through acquisition, "
-                    "deployment and integration of these capabilities "
-                    f"aligned to {fw_short}."
-                ),
-                'initiatives': [
-                    (
-                        'Deploy missing foundational technical capabilities',
-                        (f'Execute acquisition/deployment/integration for: '
-                         f'{_missing_str_en} with governance + operations '
-                         'integration'),
-                        ('Production capabilities with test evidence and '
-                         'periodic operations runbook'),
-                    ),
-                    (
-                        'Tool & System Integration Plan',
-                        f'Design an integration plan linking deployed capabilities to the {fw_short} control framework',
-                        'Approved integration plan + Acceptance test results',
-                    ),
-                    (
-                        'Technical Baseline Documentation',
-                        'Document default security configurations and technical baseline for all new capabilities',
-                        'Technical baseline document + Deviation register',
-                    ),
-                ],
-            }
-        picked.append(tech_pillar)
-        summary['technology_priority_pillar_injected'] = True
-        summary['missing_tech_categories'] = _missing_key
-
-    # ── Maturity-conditioned bank ordering (prompt Part 2B)
-    # If maturity is initial/ad-hoc, the bank picks must PRIORITIZE
-    # baseline / foundational pillars before optimization pillars. We
-    # reorder pillar_bank so baseline-focused entries come first, then
-    # detection, then optimization.
-    _baseline_kw = (
-        'baseline', 'foundational', 'operational controls',
-        'governance', 'الضوابط التشغيلية', 'الأساس', 'الحوكمة',
-    )
-    _optim_kw = (
-        'optimization', 'optimize', 'advanced', 'continuous improvement',
-        'التحسين', 'التحسين المستمر', 'المتقدم',
-    )
-    _maturity_lc = str(maturity).lower().strip()
-    if _maturity_lc in ('initial', 'ad-hoc', 'ad hoc'):
-        def _pbank_priority(pb):
-            tl = pb['title'].lower()
-            # Lower sort-key wins — baseline first, optim last.
-            if any(k in tl for k in _baseline_kw):
-                return 0
-            if any(k in tl for k in _optim_kw):
-                return 2
-            return 1
-        pillar_bank = sorted(pillar_bank, key=_pbank_priority)
-        summary['maturity_reordered'] = True
-
-    for pbank in pillar_bank:
-        if any(t.lower() in pbank['title'].lower() or
-               pbank['title'].lower() in t.lower()
-               for t in preserved_titles_lc):
-            continue
-        # Skip if the governance pillar already covers governance
-        if (summary['governance_pillar_injected']
-                and ('Governance' in pbank['title']
-                     or 'الحوكمة' in pbank['title'])):
-            continue
-        picked.append(pbank)
-        if len(picked) >= needed:
-            break
-
-    # Build the canonical section
-    # ── ORDINAL NORMALIZATION (pillar validator alignment) ───────
-    # The validator regex at `_count_substantive_pillars` requires
-    # pillar headings to match the pattern
-    #   ### (Pillar \d*|Strategic Pillar \d*|الركيزة[...]\s*\d*)
-    # Historically, the governance-priority pillar emitted a title
-    # like "الركيزة الأولى: ..." (word ordinal), and the technology-
-    # gap pillar emitted "بناء القدرات التقنية..." (no ordinal
-    # prefix at all). The latter was NOT matched by the validator
-    # — that's the documented production failure
-    # `pillars_below_richness_minimum_2/3`. Additionally, the bank
-    # entries also carry "الأولى"/"Pillar 1:" in their titles, so
-    # after governance-injection we had duplicate "الأولى"/"Pillar 1"
-    # labels.
-    #
-    # Fix: build the final `picked` list (preserved + gov + tech +
-    # bank), then REWRITE each pillar's title to use a clean
-    # sequential ordinal prefix in the target language. The original
-    # descriptive part of the title is preserved — only the ordinal
-    # prefix is normalized.
-    def _normalize_pillar_titles(plist, is_ar_lang):
-        """Rewrite each pillar's title to `### الركيزة N: <desc>` /
-        `### Pillar N: <desc>`. Strips any existing ordinal prefix
-        (including word ordinals) so the final order is sequential
-        and the validator regex matches every entry."""
-        # Patterns that may lead an existing title and should be
-        # stripped before re-prefixing.
-        _strip_ar = _ts_re.compile(
-            r'^\s*(?:الركيزة(?:\s+الاستراتيجية)?'
-            r'(?:\s+(?:الأولى|الثانية|الثالثة|الرابعة|الخامسة|'
-            r'السادسة|السابعة))?\s*\d*)\s*[:：\-—]?\s*',
+    # Insufficient or contract-failing — AI-first repair. Strict-resolve
+    # domain context (no ``domain or 'Cyber Security'`` fallback). Annotate
+    # any failure with ``section='pillars'`` so the production caller's
+    # ``except RepairError`` branch can route through ``_mark_synth_failed``
+    # (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=[fw_short] if fw_short else None,
         )
-        _strip_en = _ts_re.compile(
-            r'^\s*(?:Strategic\s+)?Pillar\s*\d*\s*[:\-—]?\s*',
-            _ts_re.IGNORECASE,
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'synthesize_pillars_depth: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
-        _num_ar = {1: 'الأولى', 2: 'الثانية', 3: 'الثالثة',
-                   4: 'الرابعة', 5: 'الخامسة', 6: 'السادسة',
-                   7: 'السابعة'}
-        for i, p in enumerate(plist, start=1):
-            raw = p.get('title', '') or ''
-            desc = _strip_ar.sub('', raw) if is_ar_lang else \
-                   _strip_en.sub('', raw)
-            desc = desc.strip(' :：-—')
-            if not desc:
-                desc = raw.strip()
-            if is_ar_lang:
-                word = _num_ar.get(i, str(i))
-                p['title'] = f'الركيزة {word}: {desc}'
-            else:
-                p['title'] = f'Pillar {i}: {desc}'
-        return plist
+        setattr(_err, 'section', 'pillars')
+        raise _err
 
-    # ── DEDUPLICATE by descriptive title (after ordinal strip) ───
-    # Prevents the case where gov-priority pillar's descriptive part
-    # overlaps with bank pillar 1's (both contain "governance"). The
-    # threshold is deliberately STRICT — we only drop when the
-    # descriptive parts are essentially the same topic, not just
-    # sharing one-or-two common words. Over-aggressive dedup would
-    # drop legitimately different pillars like the tech-capability
-    # pillar next to the governance one.
-    def _dedup_by_desc(plist, is_ar_lang):
-        _strip_ar = _ts_re.compile(
-            r'^\s*(?:الركيزة(?:\s+الاستراتيجية)?'
-            r'(?:\s+(?:الأولى|الثانية|الثالثة|الرابعة|الخامسة|'
-            r'السادسة|السابعة))?\s*\d*)\s*[:：\-—]?\s*',
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='pillars',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            maturity=maturity,
+            generation_mode=generation_mode,
+            validation_error=(
+                f'pillars_insufficient:{n_before_strict}/'
+                f'{_RICHNESS_MIN_PILLARS_LOCAL}'
+                + ('' if _gov_contract_ok else ',governance_pillar_missing')
+            ),
         )
-        _strip_en = _ts_re.compile(
-            r'^\s*(?:Strategic\s+)?Pillar\s*\d*\s*[:\-—]?\s*',
-            _ts_re.IGNORECASE,
+    except RepairError as _re:
+        setattr(_re, 'section', 'pillars')
+        raise
+
+    # Validate the repaired markdown BEFORE assignment. Reject if the
+    # AI returned fewer than _RICHNESS_MIN_PILLARS_LOCAL substantive
+    # pillars or any counted pillar lacks a substantive initiative
+    # table row. Heading / domain isolation is already enforced inside
+    # ``ai_repair_strategy_section``.
+    n_after = _count_substantive_pillars(repaired)
+    repaired_pillars = _extract_existing_pillars(repaired)
+    _with_init = sum(
+        1 for (_t, _b) in repaired_pillars
+        if _pillar_has_substantive_initiative(_b)
+    )
+    if (n_after < _RICHNESS_MIN_PILLARS_LOCAL
+            or _with_init < _RICHNESS_MIN_PILLARS_LOCAL):
+        _err = RepairError(
+            f'synthesize_pillars_depth: AI-repaired pillars has '
+            f'{n_after}/{_RICHNESS_MIN_PILLARS_LOCAL} substantive '
+            f'pillars and {_with_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
+            f'with substantive initiative tables'
         )
-        # Low-signal stopwords that should not contribute to similarity.
-        _stop = {
-            'the', 'and', 'for', 'of', 'at', 'to', 'a', 'an', 'in', 'on',
-            'with', 'by', 'establish', 'build', 'missing', 'foundational',
-            'cyber', 'security',
-            'في', 'من', 'على', 'إلى', 'عبر', 'مع', 'بناء', 'إنشاء',
-            'المفقودة', 'الأساسية',
-        }
-        seen = []   # list of (descriptive_lc, significant_word_set)
-        out = []
-        for p in plist:
-            raw = p.get('title', '') or ''
-            desc = (_strip_ar.sub('', raw) if is_ar_lang
-                     else _strip_en.sub('', raw))
-            desc_lc = desc.strip(' :：-—').lower()
-            my_sig = {w for w in desc_lc.split()
-                      if w and len(w) > 2 and w not in _stop}
-            is_dup = False
-            for (kept_desc, kept_sig) in seen:
-                # Rule 1: exact 25-char prefix match → dup
-                if (desc_lc[:25] and kept_desc[:25]
-                        and desc_lc[:25] == kept_desc[:25]):
-                    is_dup = True
-                    break
-                # Rule 2: significant-word overlap ≥ 60% of smaller
-                # set AND ≥ 3 shared words (too-small sets give
-                # unreliable ratios).
-                if my_sig and kept_sig:
-                    inter = my_sig & kept_sig
-                    smaller = min(len(my_sig), len(kept_sig))
-                    if (smaller >= 3 and len(inter) >= 3
-                            and len(inter) / smaller >= 0.60):
-                        is_dup = True
-                        break
-            if is_dup:
-                continue
-            seen.append((desc_lc, my_sig))
-            out.append(p)
-        return out
+        setattr(_err, 'section', 'pillars')
+        raise _err
 
-    # Apply dedup + ordinal rewrite in order.
-    # KEY FIX (root-cause): preserved pillar titles may be non-canonical
-    # (e.g., AI-generated headings like "### Governance Strategy" that lack
-    # the "Pillar N:" / "الركيزة N:" prefix). _PILLAR_HEADING_RE_GLOBAL —
-    # used by _final_strategy_audit and the pre-save integrity gate — ONLY
-    # matches canonical prefixes; when at least one canonical heading is
-    # already present the fallback to ###\s+ does NOT fire, so non-canonical
-    # preserved headings are invisible to the audit. This causes the gate to
-    # see fewer than 3 valid pillars even though the synth built 3.
-    # Fix: wrap preserved (title, body) pairs into dicts so they can be
-    # processed by _normalize_pillar_titles together with picked, giving ALL
-    # pillars a canonical "Pillar N:" / "الركيزة N:" heading before output.
-    _preserved_dicts = [{'title': t, '_body': b} for t, b in preserved]
-    picked = _dedup_by_desc(picked, is_ar)
-    # Normalize ALL pillars (preserved + picked) sequentially so every heading
-    # in the output section matches _PILLAR_HEADING_RE_GLOBAL.
-    # When a governance pillar was explicitly injected it must be Pillar 1
-    # (الركيزة الأولى), so we place it at the very front of the combined list
-    # ahead of any AI-preserved pillars that were already present.
-    if summary['governance_pillar_injected'] and picked:
-        _gov_picked = [picked[0]]
-        _rest_picked = picked[1:]
-        _all_pillars = _normalize_pillar_titles(
-            _gov_picked + _preserved_dicts + _rest_picked, is_ar)
-    else:
-        _all_pillars = _normalize_pillar_titles(_preserved_dicts + picked, is_ar)
-
-    if is_ar:
-        out = ['## 2. الركائز الاستراتيجية', '']
-        for p in _all_pillars:
-            out.append('### ' + p['title'])
-            out.append('')
-            if '_body' in p:
-                # Preserved pillar: emit the original AI body verbatim
-                # (already contains a substantive initiative table).
-                out.append(p['_body'].strip())
-            else:
-                out.append(p['narrative'])
-                out.append('')
-                out.append('| # | المبادرة | الوصف | المخرج المتوقع |')
-                out.append('|---|---------|-------|----------------|')
-                # Emit all initiatives (3 per bank pillar for technical depth)
-                _inits = p.get('initiatives') or [p['initiative']]
-                for _i, _init in enumerate(_inits, 1):
-                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
-                summary['synthesized_titles'].append(p['title'])
-            out.append('')
-    else:
-        out = ['## 2. Strategic Pillars', '']
-        for p in _all_pillars:
-            out.append('### ' + p['title'])
-            out.append('')
-            if '_body' in p:
-                out.append(p['_body'].strip())
-            else:
-                out.append(p['narrative'])
-                out.append('')
-                out.append('| # | Initiative | Description | Expected Deliverable |')
-                out.append('|---|-----------|-------------|---------------------|')
-                # Emit all initiatives (3 per bank pillar for technical depth)
-                _inits = p.get('initiatives') or [p['initiative']]
-                for _i, _init in enumerate(_inits, 1):
-                    out.append(f'| {_i} | {_init[0]} | {_init[1]} | {_init[2]} |')
-                summary['synthesized_titles'].append(p['title'])
-            out.append('')
-
-    sections['pillars'] = '\n'.join(out).rstrip() + '\n'
+    sections['pillars'] = repaired
     summary['rebuilt'] = True
-    summary['pillars_after'] = _count_substantive_pillars(sections['pillars'])
+    summary['pillars_after'] = n_after
     return summary
 
 
@@ -18517,6 +17440,29 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
 # (initial / developing / defined / managed / optimized) when present.
 # ────────────────────────────────────────────────────────────────────────────
 
+def _mark_synth_failed(container, section, error):
+    """Record a fail-closed synthesis failure (PR-5B.5F1).
+
+    Writes into ``container['synth_status'][section] = 'failed'`` and emits a
+    ``[STRATEGY-DIAG] synth_failed:<section>`` log line.  ``container`` is the
+    request-scoped dict carried by ``_apply_final_synthesis_pass`` (its
+    ``summary`` return value), ``converge_strategy_sections`` (its ``log``
+    return value), or the request-local ``_synth_status`` dict used by the
+    depth-safety top-up site.
+
+    This helper exists ONLY for `RepairError` raised by
+    ``synthesize_objectives_depth`` / ``synthesize_kpi_depth`` /
+    ``synthesize_roadmap_depth``.  Generic ``Exception`` paths keep their
+    legacy log-and-continue behavior and MUST NOT call this helper, so that
+    programming bugs do not get conflated with AI repair unavailability.
+    """
+    if container is None or not isinstance(container, dict):
+        return
+    status = container.setdefault('synth_status', {})
+    status[section] = 'failed'
+    print(f'[STRATEGY-DIAG] synth_failed:{section}: {error}', flush=True)
+
+
 def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
     """Run all four semantic-richness synthesizers on the final canonical
     payload. Returns a dict of {synth_name: result} summarizing what was
@@ -18528,7 +17474,7 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
     org_name     = ctx.get('org_name', 'The Organization')
     maturity     = ctx.get('maturity', 'initial')
     gen_mode     = ctx.get('generation_mode', 'drafting')
-    summary = {}
+    summary = {'synth_status': {}}
     # 0a. Strategic Objectives — rebuild canonically with diagnostic-
     # driven injection. Runs first so downstream pillars/roadmap/KPI
     # can thematically align (though today they don't explicitly
@@ -18543,6 +17489,14 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             maturity=maturity, generation_mode=gen_mode)
         if _obj_result and _obj_result.get('rebuilt'):
             summary['objectives'] = _obj_result
+    except RepairError as _ore:
+        # PR-5B.5F1: AI repair unavailable — fail closed. The
+        # post-normalization save gate consults summary['synth_status']
+        # via the request-local _synth_status dict and refuses to save
+        # the strategy. No deterministic fallback rows are inserted.
+        _mark_synth_failed(summary, 'vision', _ore)
+        print(f'[STRATEGY-DIAG] final_synth_objectives_failed: {_ore}',
+              flush=True)
     except Exception as _oe:
         print(f'[STRATEGY-DIAG] final_synth_objectives_failed: {_oe}',
               flush=True)
@@ -18562,6 +17516,15 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             maturity=maturity, generation_mode=gen_mode)
         if _gaps_result and _gaps_result.get('rebuilt'):
             summary['gaps'] = _gaps_result
+    except RepairError as _gre:
+        # PR-5B.6E: AI repair unavailable — fail closed. The
+        # post-normalization save gate consults summary['synth_status']
+        # via the request-local _synth_status dict and refuses to save
+        # the strategy. No deterministic fallback gap rows or guides
+        # are inserted.
+        _mark_synth_failed(summary, 'gaps', _gre)
+        print(f'[STRATEGY-DIAG] final_synth_gaps_failed: {_gre}',
+              flush=True)
     except Exception as _ge:
         print(f'[STRATEGY-DIAG] final_synth_gaps_failed: {_ge}',
               flush=True)
@@ -18582,6 +17545,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             technologies=ctx.get('technologies', []))
         if _pillars_result and _pillars_result.get('rebuilt'):
             summary['pillars'] = _pillars_result
+    except RepairError as _pre:
+        # PR-5B.6B: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'pillars', _pre)
+        print(f'[STRATEGY-DIAG] final_synth_pillars_failed: {_pre}',
+              flush=True)
     except Exception as _pe:
         print(f'[STRATEGY-DIAG] final_synth_pillars_failed: {_pe}',
               flush=True)
@@ -18610,6 +17578,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             sector=sector, org_name=org_name)
         if _rm_added:
             summary['roadmap_rows_added'] = _rm_added
+    except RepairError as _rre:
+        # PR-5B.5F1: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'roadmap', _rre)
+        print(f'[STRATEGY-DIAG] final_synth_roadmap_failed: {_rre}',
+              flush=True)
     except Exception as _sre:
         print(f'[STRATEGY-DIAG] final_synth_roadmap_failed: {_sre}',
               flush=True)
@@ -18630,6 +17603,11 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
             sector=sector, org_name=org_name)
         if _kpi_added:
             summary['kpi_rows_added'] = _kpi_added
+    except RepairError as _kre:
+        # PR-5B.5F1: see _apply_final_synthesis_pass objectives branch.
+        _mark_synth_failed(summary, 'kpis', _kre)
+        print(f'[STRATEGY-DIAG] final_synth_kpi_failed: {_kre}',
+              flush=True)
     except Exception as _ske:
         print(f'[STRATEGY-DIAG] final_synth_kpi_failed: {_ske}',
               flush=True)
@@ -18645,6 +17623,15 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
                 or _cf_result.get('score_added')
                 or _cf_result.get('justification_added')):
             summary['confidence'] = _cf_result
+    except RepairError as _cre:
+        # PR-5B.6C.2: AI repair unavailable / invalid output — fail
+        # closed for this section. The post-normalization save gate
+        # consults summary['synth_status'] via the request-local
+        # _synth_status dict and refuses to save the strategy. No
+        # deterministic CSF / risk fallback rows are inserted.
+        _mark_synth_failed(summary, 'confidence', _cre)
+        print(f'[STRATEGY-DIAG] final_synth_confidence_failed: {_cre}',
+              flush=True)
     except Exception as _sce:
         print(f'[STRATEGY-DIAG] final_synth_confidence_failed: {_sce}',
               flush=True)
@@ -18741,12 +17728,19 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _final_strategy_audit(sections, lang, doc_subtype=None):
+def _final_strategy_audit(sections, lang, doc_subtype=None, synth_status=None):
     """Audit sections against the SAME thresholds the save gates use.
     Returns a list of (section_key, defect_tag, count_observed,
     threshold) tuples. Empty list = sections meet all thresholds.
 
     Reuses existing counters; does NOT reimplement counting logic.
+
+    PR-5B.5F1: when ``synth_status`` is provided (a request-scoped dict
+    mapping section name -> status string), any entry whose value is
+    ``'failed'`` adds a synthetic ``synth_failed:<section>`` defect so
+    the post-normalization save gate refuses to ship a strategy whose
+    AI repair pass raised ``RepairError``.  No deterministic fallback
+    rows are inserted; the caller MUST regenerate.
     """
     defects = []
     if doc_subtype == 'board':
@@ -18828,6 +17822,13 @@ def _final_strategy_audit(sections, lang, doc_subtype=None):
                             n_risk, _RICHNESS_MIN_RISK_ROWS))
     except Exception:
         pass
+    # PR-5B.5F1: surface synth_failed:<section> defects so the
+    # post-normalization save gate blocks strategies whose AI repair
+    # raised RepairError.
+    if synth_status and isinstance(synth_status, dict):
+        for _sec, _st in synth_status.items():
+            if _st == 'failed':
+                defects.append((_sec, f'synth_failed:{_sec}', 0, 1))
     return defects
 
 
@@ -18861,6 +17862,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         'progress': False,
         'converged': False,
         'cycles': [],
+        'synth_status': {},
     }
     initial = _final_strategy_audit(sections, lang, doc_subtype)
     log['initial_defects'] = [(s, t, c, m) for s, t, c, m in initial]
@@ -18877,6 +17879,18 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         failing_keys = {d[0] for d in
                         _final_strategy_audit(sections, lang, doc_subtype)}
         if not failing_keys:
+            # PR-5B.5F1: same fail-closed guard as the post-cycle
+            # re-audit branch below — do not claim convergence if a
+            # prior cycle's synth raised RepairError.
+            if log.get('synth_status'):
+                log['converged'] = False
+                log['final_defects'] = [
+                    (sec, f'synth_failed:{sec}', 0, 1)
+                    for sec, st in log['synth_status'].items()
+                    if st == 'failed'
+                ]
+                log['cycles'].append(cycle)
+                break
             log['converged'] = True
             log['final_defects'] = []
             log['cycles'].append(cycle)
@@ -18942,6 +17956,13 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     sections.get('vision', '') or '')
                 cycle['repairs'].append(
                     f'objectives:{_v_before}->{_v_after}')
+            except RepairError as _vre:
+                # PR-5B.5F1: AI repair unavailable — fail closed for this
+                # section. The convergence loop must NOT report a clean
+                # converged=True when any synth_status entry is failed,
+                # and the post-normalization save gate refuses the save.
+                _mark_synth_failed(log, 'vision', _vre)
+                cycle['repairs'].append(f'objectives_failed:{_vre}')
             except Exception as _e:
                 cycle['repairs'].append(f'objectives_failed:{_e}')
         if 'pillars' in failing_keys:
@@ -18996,6 +18017,12 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                             if i + 1 < len(_p_matches_a)
                             else len(_pillars_text_after)]))
                 cycle['repairs'].append(f'pillars:{_p_before}->{_p_after}')
+            except RepairError as _pre:
+                # PR-5B.6B: AI repair unavailable / invalid output —
+                # fail closed and surface to the post-normalization
+                # gate via the request-scoped ``log`` container.
+                _mark_synth_failed(log, 'pillars', _pre)
+                cycle['repairs'].append(f'pillars_failed:{_pre}')
             except Exception as _e:
                 cycle['repairs'].append(f'pillars_failed:{_e}')
         if 'environment' in failing_keys:
@@ -19027,6 +18054,12 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     generation_mode=ctx.get('generation_mode', 'drafting'),
                 )
                 cycle['repairs'].append('gaps')
+            except RepairError as _gre:
+                # PR-5B.6E: see vision branch above. Mark synth_failed:gaps
+                # via the request-scoped ``log`` container so the
+                # post-normalization save gate refuses to save.
+                _mark_synth_failed(log, 'gaps', _gre)
+                cycle['repairs'].append(f'gaps_failed:{_gre}')
             except Exception as _e:
                 cycle['repairs'].append(f'gaps_failed:{_e}')
         if 'roadmap' in failing_keys:
@@ -19043,12 +18076,21 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     org_name=ctx.get('org_name', 'The Organization'),
                 )
                 cycle['repairs'].append('roadmap')
+            except RepairError as _rre:
+                # PR-5B.5F1: see vision branch above.
+                _mark_synth_failed(log, 'roadmap', _rre)
+                cycle['repairs'].append(f'roadmap_failed:{_rre}')
             except Exception as _e:
                 cycle['repairs'].append(f'roadmap_failed:{_e}')
         if 'kpis' in failing_keys:
             # KPI repair is special: re-canonicalize via rebuild
             # function which both synthesizes rows AND collapses any
             # duplicate main-table headers.
+            # PR-5B.5F1: rebuild_canonical_kpi_section is schema-only and
+            # safe to run regardless of AI repair outcome — it is intentionally
+            # NOT inside the synth try-block so a RepairError from
+            # synthesize_kpi_depth does not skip canonical schema cleanup.
+            _kpi_synth_failed = False
             try:
                 synthesize_kpi_depth(
                     sections, lang, domain=domain, fw_short=fw_short,
@@ -19060,11 +18102,21 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     sector=ctx.get('sector', 'General'),
                     org_name=ctx.get('org_name', 'The Organization'),
                 )
-                rebuild_canonical_kpi_section(
-                    sections, lang, domain, fw_short)
-                cycle['repairs'].append('kpis')
+            except RepairError as _kre:
+                # PR-5B.5F1: see vision branch above.
+                _mark_synth_failed(log, 'kpis', _kre)
+                cycle['repairs'].append(f'kpis_failed:{_kre}')
+                _kpi_synth_failed = True
             except Exception as _e:
                 cycle['repairs'].append(f'kpis_failed:{_e}')
+                _kpi_synth_failed = True
+            try:
+                rebuild_canonical_kpi_section(
+                    sections, lang, domain, fw_short)
+                if not _kpi_synth_failed:
+                    cycle['repairs'].append('kpis')
+            except Exception as _rce:
+                cycle['repairs'].append(f'kpis_rebuild_failed:{_rce}')
         if 'confidence' in failing_keys:
             try:
                 synthesize_confidence_depth(
@@ -19074,6 +18126,10 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     generation_mode=ctx.get('generation_mode', 'drafting'),
                 )
                 cycle['repairs'].append('confidence')
+            except RepairError as _cre:
+                # PR-5B.6C.2: see vision branch above.
+                _mark_synth_failed(log, 'confidence', _cre)
+                cycle['repairs'].append(f'confidence_failed:{_cre}')
             except Exception as _e:
                 cycle['repairs'].append(f'confidence_failed:{_e}')
 
@@ -19083,6 +18139,19 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         log['cycles'].append(cycle)
 
         if not post:
+            # PR-5B.5F1: do not report convergence as clean when any
+            # synthesizer raised RepairError during this cycle/run. The
+            # post-normalization save gate consumes log['synth_status']
+            # and refuses to save such strategies.
+            if log.get('synth_status'):
+                log['converged'] = False
+                log['final_defects'] = [
+                    (sec, f'synth_failed:{sec}', 0, 1)
+                    for sec, st in log['synth_status'].items()
+                    if st == 'failed'
+                ]
+                log['progress'] = (len(post) < prev_defect_count)
+                break
             log['converged'] = True
             log['final_defects'] = []
             log['progress'] = (len(post) < prev_defect_count)
@@ -21981,7 +21050,8 @@ def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
                                               sector='General',
                                               org_name='The Organization',
                                               maturity='initial',
-                                              generation_mode='drafting'):
+                                              generation_mode='drafting',
+                                              synth_status=None):
     """Apply all PASS-6 completeness fixes in the correct order:
       1. Dedupe confidence (idempotent — runs even if no duplicates).
       2. Enrich placeholder KPI rows.
@@ -22030,8 +21100,20 @@ def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
             _force_inject_mandatory_section(
                 sections, 'strategic_objectives_rows_insufficient', lang,
                 domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
             n_so = count_valid_objective_rows(sections.get('vision', ''))
+        except RepairError as _so_re_err:
+            # PR-5B.6D.1: AI-first vision synthesis failed. Mark the
+            # vision section as synth_failed so the post-normalization
+            # save gate refuses to save. Do NOT swallow the failure.
+            _mark_synth_failed(
+                synth_status,
+                getattr(_so_re_err, 'section', 'vision'),
+                _so_re_err,
+            )
         except Exception:
             pass
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -22174,981 +21256,6 @@ def _add_pillar_initiative_rows(body, needed, is_ar, domain='Cyber Security',
     return '\n'.join(lines)
 
 
-def _build_domain_so_bank_ar(domain, fw_short, sector):
-    """Return a list of Arabic Strategic Objective (SO) tuples for the given domain.
-    Each tuple: (objective, target, justification, timeframe).
-    Falls back to cybersecurity bank when domain is not specifically mapped.
-    """
-    _dc = normalize_domain(domain or '')
-    if _dc == 'ai':
-        return [
-            (f'تأسيس إطار حوكمة الذكاء الاصطناعي وفق {fw_short}',
-             '100% اعتماد إطار الحوكمة وتفعيل لجنة التوجيه',
-             f'متطلب {fw_short} — غياب هيكل حوكمة رسمي للذكاء الاصطناعي',
-             'خلال 6 أشهر'),
-            ('إدارة مخاطر النماذج والتحيز في الذكاء الاصطناعي',
-             '≥ 95% نسبة النماذج المُقيَّمة لمخاطر التحيز والجودة',
-             'تقليل مخاطر اتخاذ القرار القائمة على نماذج معيبة',
-             'خلال 9 أشهر'),
-            (f'الامتثال لأخلاقيات الذكاء الاصطناعي ومعايير {fw_short}',
-             '100% الموافقة الأخلاقية لجميع حالات الاستخدام',
-             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
-             'خلال 12 شهراً'),
-            ('حوكمة البيانات لتدريب النماذج والاستدلال',
-             '100% تصنيف بيانات التدريب ومصادر البيانات',
-             'ضمان سلامة النماذج وصحة مخرجات الذكاء الاصطناعي',
-             'خلال 9 أشهر'),
-            ('شفافية الذكاء الاصطناعي وقابلية التفسير',
-             '100% من النماذج الإنتاجية موثقة وقابلة للتفسير',
-             'الامتثال لمتطلبات الشفافية وبناء ثقة المستفيدين',
-             'خلال 12 أشهر'),
-            ('رصد أداء النماذج وانجراف البيانات',
-             '100% من النماذج الإنتاجية مع رصد مستمر',
-             'الحفاظ على دقة النماذج واكتشاف التدهور مبكراً',
-             'خلال 18 شهراً'),
-        ]
-    if _dc == 'data':
-        return [
-            (f'تأسيس إطار حوكمة البيانات وفق {fw_short}',
-             '100% اعتماد إطار حوكمة البيانات وتفعيل لجنة التوجيه',
-             f'متطلب {fw_short} — غياب هيكل حوكمة رسمي للبيانات',
-             'خلال 6 أشهر'),
-            ('جودة البيانات والنسب والتصنيف',
-             '≥ 95% نسبة دقة البيانات في الأنظمة الحيوية',
-             'تحسين موثوقية التقارير وقرارات الأعمال',
-             'خلال 9 أشهر'),
-            (f'الامتثال لمتطلبات حماية البيانات في {fw_short}',
-             '100% تصنيف البيانات الحساسة وتطبيق ضوابط الحماية',
-             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
-             'خلال 12 أشهر'),
-            ('كتالوج البيانات وإدارة البيانات الرئيسية',
-             '100% أصول البيانات الحيوية مُسجَّلة في الكتالوج',
-             'تمكين صانعي القرار من اكتشاف البيانات واستخدامها',
-             'خلال 12 أشهر'),
-            ('أتمتة جودة البيانات والرصد المستمر',
-             '≥ 90% نسبة اكتشاف مشاكل جودة البيانات آلياً',
-             'تقليل معالجة البيانات اليدوية وتحسين الكفاءة',
-             'خلال 18 أشهر'),
-            ('الامتثال لمتطلبات الأرشفة والاحتفاظ بالبيانات',
-             '100% الالتزام بسياسات دورة حياة البيانات',
-             'تلبية المتطلبات القانونية والتنظيمية للاحتفاظ',
-             'خلال 12 أشهر'),
-        ]
-    if _dc == 'erm':
-        return [
-            (f'تأسيس إطار إدارة المخاطر المؤسسية وفق {fw_short}',
-             '100% اعتماد إطار إدارة المخاطر وتفعيل لجنة المخاطر',
-             f'متطلب {fw_short} — غياب إطار متكامل لإدارة المخاطر',
-             'خلال 6 أشهر'),
-            ('بناء سجل المخاطر المؤسسي وتحديثه دورياً',
-             '100% تغطية وحدات الأعمال بسجل المخاطر',
-             'تحقيق رؤية شاملة للمخاطر عبر المؤسسة',
-             'خلال 9 أشهر'),
-            (f'الامتثال لمتطلبات {fw_short} في قطاع {sector}',
-             f'≥ 95% امتثال لمتطلبات {fw_short}',
-             f'الامتثال التنظيمي الإلزامي لقطاع {sector}',
-             'خلال 12 أشهر'),
-            ('إدارة مخاطر الأطراف الثالثة والموردين',
-             '100% تقييم الموردين الحرجين قبل التعاقد',
-             'تقليل مخاطر الإمداد والتعرض للمخاطر الخارجية',
-             'خلال 12 أشهر'),
-            ('تقارير المخاطر لمجلس الإدارة والإدارة التنفيذية',
-             'تقرير مخاطر ربع سنوي لمجلس الإدارة',
-             'تعزيز ثقافة الوعي بالمخاطر في قيادة المؤسسة',
-             'خلال 9 أشهر'),
-            ('خطط معالجة المخاطر وقياس الفاعلية',
-             '100% المخاطر المحرجة لها خطة معالجة معتمدة',
-             'تحقيق مستوى المخاطر المتبقية ضمن شهية المؤسسة',
-             'خلال 18 أشهر'),
-        ]
-    if _dc == 'dt':
-        return [
-            (f'تأسيس إطار حوكمة التحول الرقمي وفق {fw_short}',
-             '100% اعتماد إطار الحوكمة وتفعيل لجنة التحول الرقمي',
-             f'متطلب {fw_short} — غياب إطار حوكمة رسمي للتحول الرقمي',
-             'خلال 6 أشهر'),
-            ('رقمنة العمليات الحيوية وأتمتتها',
-             '≥ 80% من العمليات الحيوية مؤتمتة ورقمية',
-             'تحسين الكفاءة وتقليل التكاليف التشغيلية',
-             'خلال 18 أشهر'),
-            (f'الامتثال لمعايير {fw_short} في التحول الرقمي',
-             f'≥ 95% امتثال لمتطلبات {fw_short}',
-             f'الامتثال التنظيمي والتقني لقطاع {sector}',
-             'خلال 12 أشهر'),
-            ('اعتماد الحوسبة السحابية وإدارة البنية التحتية',
-             '≥ 70% من الأنظمة على البنية السحابية',
-             'تعزيز المرونة والقدرة على التوسع',
-             'خلال 24 شهراً'),
-            ('رفع الكفاءة الرقمية للكوادر البشرية',
-             '≥ 90% من الموظفين حاصلون على تأهيل رقمي',
-             'بناء القدرات الداخلية لقيادة التحول',
-             'خلال 12 أشهر'),
-            ('قياس أثر التحول الرقمي وتحسينه المستمر',
-             'لوحة قياس رقمية تُحدَّث شهرياً',
-             'التحقق من تحقيق الأهداف وتصحيح المسار',
-             'خلال 18 أشهر'),
-        ]
-    if _dc == 'global':
-        return [
-            (f'الامتثال لمتطلبات {fw_short} الدولية',
-             f'≥ 95% امتثال لجميع متطلبات {fw_short}',
-             f'الامتثال التنظيمي والتقني للمعايير الدولية',
-             'خلال 12 أشهر'),
-            ('تأسيس إطار حوكمة المعايير وإدارة الامتثال',
-             '100% اعتماد إطار الحوكمة وتفعيل لجنة الامتثال',
-             'ضمان الاتساق التنظيمي وتقليل مخاطر الغرامات',
-             'خلال 6 أشهر'),
-            ('برنامج التدقيق الداخلي وتقييم الامتثال',
-             'تدقيق داخلي ربع سنوي لجميع المعايير المطبقة',
-             'اكتشاف الفجوات مبكراً وتصحيح المسار',
-             'خلال 9 أشهر'),
-            ('حوكمة الموردين وفق المعايير الدولية',
-             '100% تقييم الموردين الحرجين وفق المعايير المطبقة',
-             'تقليل مخاطر الامتثال عبر سلسلة الإمداد',
-             'خلال 12 أشهر'),
-            ('رفع وعي المعايير وبناء الكفاءات الداخلية',
-             '≥ 90% إكمال تدريب المعايير للموظفين المعنيين',
-             'بناء ثقافة الامتثال وتقليل الاعتماد الخارجي',
-             'خلال 9 أشهر'),
-            ('إعداد تقارير الامتثال لمجلس الإدارة والجهات التنظيمية',
-             'تقرير امتثال ربع سنوي وتقرير سنوي شامل',
-             'الشفافية مع الجهات التنظيمية وثقة المستفيدين',
-             'خلال 18 أشهر'),
-        ]
-    # Cyber Security (default)
-    return [
-        ('نموذج حوكمة الأمن السيبراني',
-         '100% نضج هيكل الحوكمة',
-         f'متطلب {fw_short} وغياب هيكل حوكمة رسمي',
-         'خلال 6 أشهر'),
-        (f'تطبيق ضوابط {fw_short}',
-         f'≥ 95% نسبة تطبيق ضوابط {fw_short} مع أدلة تدقيق',
-         f'امتثال تنظيمي إلزامي لقطاع {sector}',
-         'خلال 12 أشهر'),
-        ('إدارة الهوية والوصول المميز (IAM/PAM)',
-         '100% تغطية الحسابات المميزة بـPAM و100% MFA',
-         'تقليل مخاطر الوصول غير المصرح به',
-         'خلال 9 أشهر'),
-        ('مراقبة SIEM واستجابة للحوادث',
-         'MTTD ≤ 60 دقيقة، MTTR ≤ 4 ساعات',
-         'ثغرات الكشف المُشخَّصة في التقييم',
-         'خلال 12 أشهر'),
-        ('إدارة الثغرات والتصحيح',
-         '100% إغلاق الثغرات الحرجة خلال 30 يوماً',
-         'تقليل سطح الهجوم المعرّض',
-         'خلال 6 أشهر'),
-        ('النسخ الاحتياطي والتعافي من الكوارث',
-         '100% نجاح اختبارات استعادة النسخ الاحتياطي',
-         'ضمان استمرارية الأعمال في حالات الطوارئ',
-         'خلال 9 أشهر'),
-        ('التوعية ومحاكاة التصيد',
-         '≥ 90% اجتياز التدريب، ≤ 5% معدل وقوع التصيد',
-         'تقليل المخاطر البشرية للحوادث السيبرانية',
-         'خلال 12 أشهر'),
-        ('مخاطر الأطراف الثالثة',
-         '100% تقييم الموردين الحرجين',
-         'إغلاق فجوة سلسلة الإمداد الرقمية',
-         'خلال 18 أشهر'),
-    ]
-
-
-def _build_domain_so_bank_en(domain, fw_short, sector):
-    """Return English Strategic Objective tuples for the given domain."""
-    _dc = normalize_domain(domain or '')
-    if _dc == 'ai':
-        return [
-            (f'Establish AI Governance Framework per {fw_short}',
-             '100% governance framework adopted; AI steering committee active',
-             f'{fw_short} requirement; no formal AI governance structure exists',
-             'Within 6 months'),
-            ('AI Model Risk Management & Bias Mitigation',
-             '≥ 95% of production models assessed for bias and quality risk',
-             'Reduce decision risk from biased or underperforming models',
-             'Within 9 months'),
-            (f'AI Ethics & {fw_short} Compliance',
-             '100% ethical review approved for all active AI use cases',
-             f'Mandatory regulatory compliance for {sector} sector',
-             'Within 12 months'),
-            ('Data Governance for AI Training & Inference',
-             '100% training datasets classified and lineage documented',
-             'Ensure model integrity and validity of AI outputs',
-             'Within 9 months'),
-            ('AI Transparency & Explainability',
-             '100% of production models documented with interpretability notes',
-             'Satisfy transparency requirements and build stakeholder trust',
-             'Within 12 months'),
-            ('Continuous Model Performance Monitoring & Drift Detection',
-             '100% of production models with live monitoring dashboards',
-             'Maintain accuracy and detect model degradation proactively',
-             'Within 18 months'),
-        ]
-    if _dc == 'data':
-        return [
-            (f'Establish Data Governance Framework per {fw_short}',
-             '100% data governance framework adopted; data council active',
-             f'{fw_short} requirement; no formal data governance exists',
-             'Within 6 months'),
-            ('Data Quality, Lineage & Classification',
-             '≥ 95% data accuracy in critical systems',
-             'Improve reporting reliability and business decisions',
-             'Within 9 months'),
-            (f'Data Protection Compliance per {fw_short}',
-             '100% sensitive data classified and protection controls applied',
-             f'Mandatory regulatory compliance for {sector} sector',
-             'Within 12 months'),
-            ('Data Catalogue & Master Data Management',
-             '100% critical data assets registered in data catalogue',
-             'Enable data discovery and trusted consumption by decision-makers',
-             'Within 12 months'),
-            ('Data Quality Automation & Continuous Monitoring',
-             '≥ 90% of data quality issues detected automatically',
-             'Reduce manual data handling and improve operational efficiency',
-             'Within 18 months'),
-            ('Archiving & Retention Policy Compliance',
-             '100% adherence to data lifecycle and retention policies',
-             'Meet legal and regulatory retention obligations',
-             'Within 12 months'),
-        ]
-    if _dc == 'erm':
-        return [
-            (f'Establish ERM Framework per {fw_short}',
-             '100% ERM framework adopted; risk committee active',
-             f'{fw_short} requirement; no integrated enterprise risk framework',
-             'Within 6 months'),
-            ('Enterprise Risk Register — Build & Maintain',
-             '100% of business units covered in the risk register',
-             'Achieve a consolidated view of risk across the organisation',
-             'Within 9 months'),
-            (f'{fw_short} Regulatory Compliance for {sector}',
-             f'≥ 95% compliance with {fw_short} requirements',
-             f'Mandatory regulatory compliance for {sector} sector',
-             'Within 12 months'),
-            ('Third-Party & Supplier Risk Management',
-             '100% of critical suppliers assessed before contracting',
-             'Reduce supply-chain and third-party risk exposure',
-             'Within 12 months'),
-            ('Risk Reporting to Board & Executive Management',
-             'Quarterly risk reports delivered to the Board',
-             'Embed risk awareness culture in organisational leadership',
-             'Within 9 months'),
-            ('Risk Treatment Plans & Effectiveness Measurement',
-             '100% of critical risks have an approved treatment plan',
-             'Achieve residual risk levels within the organisation\'s risk appetite',
-             'Within 18 months'),
-        ]
-    if _dc == 'dt':
-        return [
-            (f'Establish Digital Transformation Governance per {fw_short}',
-             '100% governance framework adopted; digital committee active',
-             f'{fw_short} requirement; no formal DT governance structure',
-             'Within 6 months'),
-            ('Core Process Digitalisation & Automation',
-             '≥ 80% of critical processes automated/digital',
-             'Improve operational efficiency and reduce manual costs',
-             'Within 18 months'),
-            (f'{fw_short} Compliance for Digital Initiatives',
-             f'≥ 95% compliance with {fw_short}',
-             f'Mandatory regulatory and technical compliance for {sector}',
-             'Within 12 months'),
-            ('Cloud Adoption & Infrastructure Modernisation',
-             '≥ 70% of systems migrated to cloud infrastructure',
-             'Improve scalability, resilience and cost efficiency',
-             'Within 24 months'),
-            ('Digital Capability Building for Workforce',
-             '≥ 90% of staff hold a validated digital skills qualification',
-             'Build internal capability to sustain the transformation',
-             'Within 12 months'),
-            ('Digital Impact Measurement & Continuous Improvement',
-             'Monthly digital dashboard updated and reviewed',
-             'Verify objectives achieved and course-correct where needed',
-             'Within 18 months'),
-        ]
-    if _dc == 'global':
-        return [
-            (f'{fw_short} International Standards Compliance',
-             f'≥ 95% compliance with all {fw_short} requirements',
-             f'Regulatory and technical compliance with international standards',
-             'Within 12 months'),
-            ('Standards Governance & Compliance Management Framework',
-             '100% governance framework adopted; compliance committee active',
-             'Ensure organisational consistency and reduce regulatory penalties',
-             'Within 6 months'),
-            ('Internal Audit & Compliance Assessment Programme',
-             'Quarterly internal audits across all applicable standards',
-             'Early detection of gaps and timely course correction',
-             'Within 9 months'),
-            ('Supplier Governance per International Standards',
-             '100% critical suppliers assessed against applicable standards',
-             'Reduce compliance risk across the supply chain',
-             'Within 12 months'),
-            ('Standards Awareness & Internal Capability Building',
-             '≥ 90% completion of standards training for relevant staff',
-             'Build a compliance culture and reduce external dependency',
-             'Within 9 months'),
-            ('Compliance Reporting to Board & Regulators',
-             'Quarterly compliance report; annual comprehensive review',
-             'Transparency with regulators and stakeholder confidence',
-             'Within 18 months'),
-        ]
-    # Cyber Security (default)
-    return [
-        ('Cybersecurity Governance Operating Model',
-         '100% governance structure maturity',
-         f'{fw_short} requirement; no formal governance structure exists',
-         'Within 6 months'),
-        (f'{fw_short} Control Implementation',
-         f'≥ 95% {fw_short} control implementation rate with audit evidence',
-         f'Mandatory regulatory compliance for {sector} sector',
-         'Within 12 months'),
-        ('Identity & Privileged Access Management (IAM/PAM)',
-         '100% privileged account PAM coverage + 100% MFA',
-         'Reduce risk of unauthorised access',
-         'Within 9 months'),
-        ('SIEM/SOC Monitoring & Incident Response',
-         'MTTD ≤ 60 min, MTTR ≤ 4 hrs',
-         'Detection gaps identified in assessment',
-         'Within 12 months'),
-        ('Vulnerability & Patch Management',
-         '100% critical vulnerability closure within 30 days',
-         'Reduce exposed attack surface',
-         'Within 6 months'),
-        ('Backup, DR & Cyber Resilience',
-         '100% backup restore test success rate',
-         'Ensure business continuity in emergencies',
-         'Within 9 months'),
-        ('Awareness & Phishing Resilience',
-         '≥ 90% training pass rate, ≤ 5% phishing click rate',
-         'Reduce human risk factor for cyber incidents',
-         'Within 12 months'),
-        ('Third-Party / Supply-Chain Cyber Risk',
-         '100% critical supplier assessment coverage',
-         'Close digital supply-chain cyber exposure',
-         'Within 18 months'),
-    ]
-
-
-def _build_domain_kpi_bank_ar(domain, fw_short):
-    """Return Arabic KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
-    for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
-    _dc = normalize_domain(domain or '')
-    if _dc == 'ai':
-        return [
-            (f'نسبة النماذج المُقيَّمة لمخاطر الذكاء الاصطناعي',
-             '≥ 95%',
-             '(النماذج المُقيَّمة ÷ الإجمالي) × 100',
-             'سجل النماذج',
-             f'رئيس {domain}',
-             'ربع سنوي',
-             'خلال 12 شهراً'),
-            ('نسبة حالات الاستخدام الحاصلة على الموافقة الأخلاقية',
-             '100%',
-             '(المعتمدة أخلاقياً ÷ الإجمالي) × 100',
-             'سجل حوكمة الذكاء الاصطناعي',
-             'لجنة الأخلاقيات',
-             'ربع سنوي',
-             'خلال 9 أشهر'),
-            ('دقة النماذج الإنتاجية',
-             '≥ 90%',
-             '(التنبؤات الصحيحة ÷ الإجمالي) × 100',
-             'منصة رصد النماذج',
-             f'فريق {domain}',
-             'شهري',
-             'خلال 6 أشهر'),
-            ('نسبة تغطية بيانات التدريب المصنّفة',
-             '100%',
-             '(مجموعات البيانات المصنّفة ÷ الإجمالي) × 100',
-             'كتالوج البيانات',
-             'مسؤول البيانات',
-             'ربع سنوي',
-             'خلال 9 أشهر'),
-            (f'نسبة امتثال نماذج الذكاء الاصطناعي لـ {fw_short}',
-             '≥ 95%',
-             '(النماذج الممتثلة ÷ الإجمالي) × 100',
-             f'سجل ضوابط {fw_short}',
-             'مسؤول الامتثال',
-             'نصف سنوي',
-             'خلال 12 شهراً'),
-            ('انجراف النماذج الإنتاجية (Model Drift)',
-             '≤ 5% انجراف',
-             'متوسط انحراف معيار التنبؤات خلال الفترة',
-             'منصة رصد النماذج',
-             f'فريق {domain}',
-             'شهري',
-             'خلال 12 شهراً'),
-            ('وقت الاستجابة للحوادث المرتبطة بالذكاء الاصطناعي',
-             '≤ 24 ساعة',
-             'متوسط زمن حل الحوادث ÷ عدد الحوادث',
-             'سجل الحوادث',
-             f'رئيس {domain}',
-             'شهري',
-             'خلال 9 أشهر'),
-        ]
-    if _dc == 'data':
-        return [
-            (f'نسبة دقة البيانات في الأنظمة الحيوية',
-             '≥ 95%',
-             '(السجلات الصحيحة ÷ الإجمالي) × 100',
-             'أداة جودة البيانات',
-             'مسؤول جودة البيانات',
-             'شهري',
-             'خلال 9 أشهر'),
-            ('نسبة تغطية كتالوج البيانات',
-             '100% أصول البيانات الحيوية',
-             '(الأصول المُسجَّلة ÷ الإجمالي) × 100',
-             'كتالوج البيانات',
-             'مسؤول البيانات',
-             'ربع سنوي',
-             'خلال 12 شهراً'),
-            (f'نسبة امتثال حماية البيانات لـ {fw_short}',
-             '≥ 95%',
-             '(الضوابط المطبّقة ÷ الإجمالي) × 100',
-             f'سجل ضوابط {fw_short}',
-             'مسؤول الامتثال',
-             'ربع سنوي',
-             'خلال 12 شهراً'),
-            ('نسبة مشكلات جودة البيانات المكتشفة آلياً',
-             '≥ 90%',
-             '(المكتشفة آلياً ÷ الإجمالي) × 100',
-             'أداة مراقبة جودة البيانات',
-             'مسؤول جودة البيانات',
-             'شهري',
-             'خلال 9 أشهر'),
-            ('وقت الاستجابة لمشكلات جودة البيانات',
-             '≤ 48 ساعة للمشاكل الحرجة',
-             'متوسط زمن المعالجة ÷ عدد الحوادث',
-             'نظام تتبع الحوادث',
-             'مسؤول البيانات',
-             'شهري',
-             'خلال 6 أشهر'),
-            ('نسبة إغلاق فجوات حوكمة البيانات',
-             '100%',
-             '(الفجوات المغلقة ÷ الإجمالي) × 100',
-             'سجل الفجوات',
-             f'رئيس {domain}',
-             'ربع سنوي',
-             'خلال 18 أشهر'),
-        ]
-    if _dc == 'erm':
-        return [
-            ('نسبة اكتمال سجل المخاطر المؤسسي',
-             '100%',
-             '(المخاطر الموثقة ÷ المحددة) × 100',
-             'نظام إدارة المخاطر',
-             'مسؤول المخاطر',
-             'ربع سنوي',
-             'خلال 9 أشهر'),
-            ('نسبة المخاطر الحرجة التي لها خطط معالجة معتمدة',
-             '100%',
-             '(ذات خطة ÷ الإجمالي الحرجة) × 100',
-             'سجل المخاطر',
-             'مسؤول المخاطر',
-             'ربع سنوي',
-             'خلال 12 أشهر'),
-            (f'نسبة الامتثال لإطار {fw_short}',
-             '≥ 95%',
-             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
-             f'سجل ضوابط {fw_short}',
-             'مسؤول الامتثال',
-             'نصف سنوي',
-             'خلال 12 أشهر'),
-            ('مؤشر اختراق شهية المخاطر',
-             '≤ 5% تجاوز',
-             '(المخاطر المتجاوزة للحد ÷ الإجمالي) × 100',
-             'نظام إدارة المخاطر',
-             'مسؤول المخاطر',
-             'شهري',
-             'خلال 9 أشهر'),
-            ('نسبة إغلاق حوادث المخاطر في الوقت المحدد',
-             '≥ 90%',
-             '(المُغلق في الموعد ÷ الإجمالي) × 100',
-             'سجل الحوادث',
-             'مسؤول المخاطر',
-             'شهري',
-             'خلال 6 أشهر'),
-            ('نسبة تقييم الموردين الحرجين',
-             '100%',
-             '(المُقيَّم ÷ الإجمالي) × 100',
-             'سجل الموردين',
-             'مسؤول سلسلة الإمداد',
-             'سنوي',
-             'خلال 18 أشهر'),
-        ]
-    if _dc == 'dt':
-        return [
-            ('نسبة رقمنة العمليات الحيوية',
-             '≥ 80%',
-             '(العمليات المرقمنة ÷ الإجمالي) × 100',
-             'سجل المشاريع الرقمية',
-             f'رئيس {domain}',
-             'ربع سنوي',
-             'خلال 24 شهراً'),
-            ('نسبة اعتماد الحوسبة السحابية',
-             '≥ 70%',
-             '(الأنظمة السحابية ÷ الإجمالي) × 100',
-             'سجل البنية التحتية',
-             'مدير تقنية المعلومات',
-             'ربع سنوي',
-             'خلال 24 شهراً'),
-            (f'نسبة الامتثال لمعايير {fw_short}',
-             '≥ 95%',
-             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
-             f'سجل ضوابط {fw_short}',
-             'مسؤول الامتثال',
-             'نصف سنوي',
-             'خلال 12 أشهر'),
-            ('نسبة الموظفين الحاصلين على تأهيل رقمي',
-             '≥ 90%',
-             '(المؤهَّلون ÷ الإجمالي) × 100',
-             'سجل التدريب',
-             'مدير الموارد البشرية',
-             'سنوي',
-             'خلال 12 أشهر'),
-            ('رضا المستخدمين عن الخدمات الرقمية',
-             '≥ 85% رضا',
-             'متوسط تقييمات الاستبيانات الدورية',
-             'نظام قياس رضا المستخدم',
-             f'رئيس {domain}',
-             'ربع سنوي',
-             'خلال 18 أشهر'),
-            ('معدل توافر الخدمات الرقمية الحيوية',
-             '≥ 99.5%',
-             '(وقت التشغيل الفعلي ÷ الإجمالي) × 100',
-             'منصة مراقبة الأداء',
-             'مدير تقنية المعلومات',
-             'شهري',
-             'خلال 9 أشهر'),
-        ]
-    if _dc == 'global':
-        return [
-            (f'نسبة الامتثال لمتطلبات {fw_short}',
-             '≥ 95%',
-             '(المتطلبات الممتثلة ÷ الإجمالي) × 100',
-             f'سجل ضوابط {fw_short}',
-             'مسؤول الامتثال',
-             'ربع سنوي',
-             'خلال 12 أشهر'),
-            ('عدد نتائج التدقيق الحرجة المفتوحة',
-             '≤ 2 نتيجة حرجة مفتوحة',
-             'عدد النتائج الحرجة غير المغلقة',
-             'تقارير التدقيق',
-             'مسؤول الامتثال',
-             'ربع سنوي',
-             'خلال 9 أشهر'),
-            ('نسبة إغلاق نتائج التدقيق في الوقت المحدد',
-             '≥ 90%',
-             '(المُغلق في الموعد ÷ الإجمالي) × 100',
-             'نظام تتبع التدقيق',
-             'مسؤول الامتثال',
-             'ربع سنوي',
-             'خلال 6 أشهر'),
-            ('نسبة تقييم الموردين وفق المعايير المطبقة',
-             '100% الموردين الحرجين',
-             '(المُقيَّم ÷ الإجمالي) × 100',
-             'سجل الموردين',
-             'مسؤول سلسلة الإمداد',
-             'سنوي',
-             'خلال 12 أشهر'),
-            ('نسبة إكمال تدريب المعايير للموظفين المعنيين',
-             '≥ 90%',
-             '(المُتدرَّبون ÷ المستهدفون) × 100',
-             'سجل التدريب',
-             'مدير الموارد البشرية',
-             'سنوي',
-             'خلال 9 أشهر'),
-            ('نسبة المتطلبات التنظيمية المُبلَّغ عنها للجهات',
-             '100%',
-             '(المُبلَّغ عنه ÷ الإجمالي المطلوب) × 100',
-             'سجل الامتثال التنظيمي',
-             'مسؤول الامتثال',
-             'ربع سنوي',
-             'خلال 12 أشهر'),
-        ]
-    # Cyber Security (default)
-    return [
-        (f'نسبة تطبيق ضوابط {fw_short}',
-         '≥ 95%',
-         '(المطبّق ÷ الإجمالي) × 100',
-         f'سجل ضوابط {fw_short}',
-         'مسؤول الامتثال',
-         'ربع سنوي',
-         'خلال 12 شهراً'),
-        ('نسبة تغطية MFA للحسابات المميزة',
-         '100%',
-         '(الحسابات المحمية ÷ الإجمالي) × 100',
-         'نظام إدارة الهوية',
-         'مسؤول IAM',
-         'شهري',
-         'خلال 6 أشهر'),
-        ('اكتمال مراجعة الوصول المميز',
-         '100% دورياً',
-         '(المراجعات المكتملة ÷ المجدولة) × 100',
-         'سجل مراجعة الوصول',
-         'مسؤول PAM',
-         'ربع سنوي',
-         'خلال 9 أشهر'),
-        ('إغلاق الثغرات الحرجة (SLA 30 يوماً)',
-         '100% خلال 30 يوماً',
-         '(المُغلقة في الموعد ÷ الإجمالي) × 100',
-         'نظام إدارة الثغرات',
-         'مسؤول العمليات',
-         'شهري',
-         'خلال 6 أشهر'),
-        ('تغطية مصادر السجلات في SIEM',
-         '≥ 90%',
-         '(المصادر المُدمجة ÷ الإجمالي) × 100',
-         'منصة SIEM',
-         'مدير SOC',
-         'شهري',
-         'خلال 9 أشهر'),
-        ('متوسط زمن الكشف MTTD',
-         '≤ 60 دقيقة',
-         'مجموع أوقات الكشف ÷ عدد الحوادث',
-         'تقارير SOC',
-         'مدير SOC',
-         'شهري',
-         'خلال 12 شهراً'),
-        ('متوسط زمن الاستجابة MTTR',
-         '≤ 4 ساعات',
-         'مجموع أوقات الاستجابة ÷ عدد الحوادث',
-         'نظام تتبع الحوادث',
-         'مسؤول الاستجابة',
-         'شهري',
-         'خلال 12 شهراً'),
-        ('معدل فشل محاكاة التصيد',
-         '≤ 5%',
-         '(الضحايا ÷ المستهدفين) × 100',
-         'منصة محاكاة التصيد',
-         'مسؤول التوعية',
-         'ربع سنوي',
-         'خلال 12 شهراً'),
-        ('نسبة نجاح اختبار استعادة النسخ الاحتياطي',
-         '100%',
-         '(نجاح الاختبار ÷ الإجمالي) × 100',
-         'سجلات اختبار DR',
-         'مسؤول الاستمرارية',
-         'نصف سنوي',
-         'خلال 9 أشهر'),
-        ('تغطية تقييم مخاطر الأطراف الثالثة',
-         '100% الموردين الحرجين',
-         '(المُقيَّم ÷ الإجمالي) × 100',
-         'سجل الموردين',
-         'مسؤول المخاطر',
-         'سنوي',
-         'خلال 18 أشهر'),
-    ]
-
-
-def _build_domain_kpi_bank_en(domain, fw_short):
-    """Return English KPI tuples (metric, target, formula, source, owner, frequency, timeframe)
-    for the given domain. Falls back to cybersecurity bank when domain is unmapped."""
-    _dc = normalize_domain(domain or '')
-    if _dc == 'ai':
-        return [
-            ('AI Model Risk Assessment Coverage',
-             '≥ 95%',
-             '(Models assessed ÷ Total) × 100',
-             'Model registry',
-             f'{domain} Lead',
-             'Quarterly',
-             'Within 12 months'),
-            ('Ethical Review Approval Rate for AI Use Cases',
-             '100%',
-             '(Ethically approved ÷ Total) × 100',
-             'AI governance register',
-             'Ethics Committee',
-             'Quarterly',
-             'Within 9 months'),
-            ('Production Model Accuracy',
-             '≥ 90%',
-             '(Correct predictions ÷ Total) × 100',
-             'Model monitoring platform',
-             f'{domain} Team',
-             'Monthly',
-             'Within 6 months'),
-            ('Training Data Classification Coverage',
-             '100%',
-             '(Classified datasets ÷ Total) × 100',
-             'Data catalogue',
-             'Data Steward',
-             'Quarterly',
-             'Within 9 months'),
-            (f'{fw_short} AI Model Compliance Rate',
-             '≥ 95%',
-             '(Compliant models ÷ Total) × 100',
-             f'{fw_short} control register',
-             'Compliance Officer',
-             'Semi-annual',
-             'Within 12 months'),
-            ('Production Model Drift Rate',
-             '≤ 5% drift',
-             'Mean prediction deviation over the review period',
-             'Model monitoring platform',
-             f'{domain} Team',
-             'Monthly',
-             'Within 12 months'),
-            ('Mean Time to Resolve AI-Related Incidents',
-             '≤ 24 hours',
-             'Sum of resolution times ÷ Incident count',
-             'Incident register',
-             f'{domain} Lead',
-             'Monthly',
-             'Within 9 months'),
-        ]
-    if _dc == 'data':
-        return [
-            ('Critical System Data Accuracy Rate',
-             '≥ 95%',
-             '(Correct records ÷ Total) × 100',
-             'Data quality tool',
-             'Data Quality Manager',
-             'Monthly',
-             'Within 9 months'),
-            ('Data Catalogue Coverage',
-             '100% of critical data assets',
-             '(Registered assets ÷ Total) × 100',
-             'Data catalogue',
-             'Data Steward',
-             'Quarterly',
-             'Within 12 months'),
-            (f'{fw_short} Data Protection Compliance Rate',
-             '≥ 95%',
-             '(Implemented controls ÷ Total) × 100',
-             f'{fw_short} control register',
-             'Compliance Officer',
-             'Quarterly',
-             'Within 12 months'),
-            ('Automated Data Quality Issue Detection Rate',
-             '≥ 90%',
-             '(Auto-detected issues ÷ Total) × 100',
-             'Data monitoring tool',
-             'Data Quality Manager',
-             'Monthly',
-             'Within 9 months'),
-            ('Data Quality Incident Mean Resolution Time',
-             '≤ 48 hours for critical issues',
-             'Sum of resolution times ÷ Incident count',
-             'Incident tracking system',
-             'Data Steward',
-             'Monthly',
-             'Within 6 months'),
-            ('Data Governance Gap Closure Rate',
-             '100%',
-             '(Closed gaps ÷ Total) × 100',
-             'Gap register',
-             f'{domain} Lead',
-             'Quarterly',
-             'Within 18 months'),
-        ]
-    if _dc == 'erm':
-        return [
-            ('Enterprise Risk Register Completeness',
-             '100%',
-             '(Documented risks ÷ Identified) × 100',
-             'Risk management system',
-             'Risk Officer',
-             'Quarterly',
-             'Within 9 months'),
-            ('Critical Risk Treatment Plan Coverage',
-             '100%',
-             '(Risks with plan ÷ Total critical) × 100',
-             'Risk register',
-             'Risk Officer',
-             'Quarterly',
-             'Within 12 months'),
-            (f'{fw_short} Framework Compliance Rate',
-             '≥ 95%',
-             '(Compliant requirements ÷ Total) × 100',
-             f'{fw_short} control register',
-             'Compliance Officer',
-             'Semi-annual',
-             'Within 12 months'),
-            ('Risk Appetite Breach Indicator',
-             '≤ 5% breach rate',
-             '(Risks exceeding threshold ÷ Total) × 100',
-             'Risk management system',
-             'Risk Officer',
-             'Monthly',
-             'Within 9 months'),
-            ('Risk Incident On-Time Closure Rate',
-             '≥ 90%',
-             '(Closed on-time ÷ Total) × 100',
-             'Incident register',
-             'Risk Officer',
-             'Monthly',
-             'Within 6 months'),
-            ('Critical Supplier Assessment Coverage',
-             '100% of critical suppliers',
-             '(Assessed ÷ Total) × 100',
-             'Supplier register',
-             'Supply Chain Manager',
-             'Annual',
-             'Within 18 months'),
-        ]
-    if _dc == 'dt':
-        return [
-            ('Core Process Digitalisation Rate',
-             '≥ 80%',
-             '(Digitalised processes ÷ Total) × 100',
-             'Digital project register',
-             f'{domain} Lead',
-             'Quarterly',
-             'Within 24 months'),
-            ('Cloud Adoption Rate',
-             '≥ 70%',
-             '(Cloud systems ÷ Total) × 100',
-             'Infrastructure register',
-             'IT Director',
-             'Quarterly',
-             'Within 24 months'),
-            (f'{fw_short} Standards Compliance Rate',
-             '≥ 95%',
-             '(Compliant requirements ÷ Total) × 100',
-             f'{fw_short} control register',
-             'Compliance Officer',
-             'Semi-annual',
-             'Within 12 months'),
-            ('Digital Skills Certification Rate',
-             '≥ 90%',
-             '(Certified staff ÷ Total) × 100',
-             'Training register',
-             'HR Director',
-             'Annual',
-             'Within 12 months'),
-            ('Digital Service User Satisfaction',
-             '≥ 85% satisfied',
-             'Mean score from periodic user surveys',
-             'User satisfaction system',
-             f'{domain} Lead',
-             'Quarterly',
-             'Within 18 months'),
-            ('Critical Digital Service Availability',
-             '≥ 99.5%',
-             '(Actual uptime ÷ Total) × 100',
-             'Performance monitoring platform',
-             'IT Director',
-             'Monthly',
-             'Within 9 months'),
-        ]
-    if _dc == 'global':
-        return [
-            (f'{fw_short} Compliance Rate',
-             '≥ 95%',
-             '(Compliant requirements ÷ Total) × 100',
-             f'{fw_short} control register',
-             'Compliance Officer',
-             'Quarterly',
-             'Within 12 months'),
-            ('Open Critical Audit Findings',
-             '≤ 2 open critical findings',
-             'Count of unresolved critical findings',
-             'Audit reports',
-             'Compliance Officer',
-             'Quarterly',
-             'Within 9 months'),
-            ('Audit Finding On-Time Closure Rate',
-             '≥ 90%',
-             '(Closed on-time ÷ Total) × 100',
-             'Audit tracking system',
-             'Compliance Officer',
-             'Quarterly',
-             'Within 6 months'),
-            ('Critical Supplier Standards Assessment Coverage',
-             '100% of critical suppliers',
-             '(Assessed ÷ Total) × 100',
-             'Supplier register',
-             'Supply Chain Manager',
-             'Annual',
-             'Within 12 months'),
-            ('Standards Training Completion Rate (Relevant Staff)',
-             '≥ 90%',
-             '(Trained ÷ Targeted) × 100',
-             'Training register',
-             'HR Director',
-             'Annual',
-             'Within 9 months'),
-            ('Regulatory Reporting Completeness',
-             '100%',
-             '(Reports submitted ÷ Required) × 100',
-             'Regulatory compliance register',
-             'Compliance Officer',
-             'Quarterly',
-             'Within 12 months'),
-        ]
-    # Cyber Security (default)
-    return [
-        (f'{fw_short} Control Compliance Rate',
-         '≥ 95%',
-         '(Implemented ÷ Total) × 100',
-         f'{fw_short} control register',
-         'Compliance Officer',
-         'Quarterly',
-         'Within 12 months'),
-        ('MFA Coverage Rate (Privileged Accounts)',
-         '100%',
-         '(Protected accounts ÷ Total) × 100',
-         'Identity management system',
-         'IAM Owner',
-         'Monthly',
-         'Within 6 months'),
-        ('Privileged Access Review Completion',
-         '100% quarterly',
-         '(Reviews completed ÷ Scheduled) × 100',
-         'Access review register',
-         'PAM Owner',
-         'Quarterly',
-         'Within 9 months'),
-        ('Critical Vulnerability Remediation SLA (30 days)',
-         '100% within 30 days',
-         '(Closed on-time ÷ Total) × 100',
-         'Vulnerability management system',
-         'Operations Owner',
-         'Monthly',
-         'Within 6 months'),
-        ('SIEM Log-Source Coverage',
-         '≥ 90%',
-         '(Integrated sources ÷ Total) × 100',
-         'SIEM platform',
-         'SOC Manager',
-         'Monthly',
-         'Within 9 months'),
-        ('Mean Time to Detect (MTTD)',
-         '≤ 60 minutes',
-         'Sum of detection times ÷ Incident count',
-         'SOC reports',
-         'SOC Manager',
-         'Monthly',
-         'Within 12 months'),
-        ('Mean Time to Respond (MTTR)',
-         '≤ 4 hours',
-         'Sum of response times ÷ Incident count',
-         'Incident tracking system',
-         'IR Owner',
-         'Monthly',
-         'Within 12 months'),
-        ('Phishing Simulation Failure Rate',
-         '≤ 5%',
-         '(Victims ÷ Targeted) × 100',
-         'Phishing simulation platform',
-         'Awareness Owner',
-         'Quarterly',
-         'Within 12 months'),
-        ('Backup Restore Test Success Rate',
-         '100%',
-         '(Successful tests ÷ Total) × 100',
-         'DR test records',
-         'BCM Owner',
-         'Semi-annual',
-         'Within 9 months'),
-        ('Third-Party Cyber Assessment Coverage',
-         '100% critical suppliers',
-         '(Assessed ÷ Total) × 100',
-         'Supplier register',
-         'Risk Owner',
-         'Annual',
-         'Within 18 months'),
-    ]
-
-
 def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                                       fw_short='NCA ECC', sector='General',
                                       org_name='The Organization',
@@ -23221,211 +21328,131 @@ def enforce_technical_strategy_depth(sections, lang, domain='Cyber Security',
                 parts.append(heading + body)
             sections['pillars'] = ''.join(parts)
 
-    # ── B. Strategic Objectives depth ───────────────────────────────────────
+    # ── B. Strategic Objectives depth ── (PR-5B.5F2: AI-first) ─────────────
+    # Deterministic SO bank top-up has been replaced with a delegation to
+    # ``synthesize_objectives_depth``.  On AI-repair failure the caller's
+    # post-normalization save gate (PR-5B.5F1) blocks the strategy.  The
+    # ``_build_domain_so_bank_ar/en`` helpers are no longer called from this
+    # function (they remain referenced by ``repair_vision_objectives_if_insufficient``,
+    # which is intentionally out of scope for PR-5B.5F2).
     _MIN_SO_DEPTH = 5   # consulting-grade minimum for cybersecurity
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _MIN_SO_DEPTH:
-        _so_to_add = _MIN_SO_DEPTH - n_so
-        _so_text = sections.get('vision', '') or ''
-        # Parse existing row numbers to continue numbering
-        _so_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _existing_so_nums = set()
-        for _cells in _ts_table_rows(_so_text, _so_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_so_nums.add(int(_cells[0]))
-        _next_so = max(_existing_so_nums) + 1 if _existing_so_nums else 1
-
-        # Canonical objectives bank — domain-aware
-        if is_ar:
-            _so_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
-        else:
-            _so_bank = _build_domain_so_bank_en(domain, fw_short, sector)
-
-        # Pick rows not already represented (keyword dedup)
-        _so_text_lc = _so_text.lower()
-        _added_rows = []
-        for _obj, _target, _just, _tf in _so_bank:
-            if len(_added_rows) >= _so_to_add:
-                break
-            # Skip if a similar objective is already in the text
-            _kws = _obj.lower().split()[:3]
-            if any(len(k) > 3 and k in _so_text_lc for k in _kws):
-                continue
-            _added_rows.append(
-                f'| {_next_so} | {_obj} | {_target} | {_just} | {_tf} |'
+        try:
+            synthesize_objectives_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                org_structure_is_none=False,
+                challenge_flags={},
+                diagnostic_gaps=diagnostic_gaps,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
-            _next_so += 1
+        except RepairError as _so_re:
+            # PR-5B.5F2: annotate with the section name so the caller can
+            # mark _synth_status without modifying the RepairError class
+            # contract globally.  Local attribute only.
+            setattr(_so_re, 'section', 'vision')
+            raise
+        n_so_after = count_valid_objective_rows(
+            sections.get('vision', '') or '')
+        summary['so_rows_added'] = max(0, n_so_after - n_so)
 
-        if _added_rows:
-            sections['vision'] = _append_rows_under_header(
-                _so_text, _so_hdr, _added_rows)
-            summary['so_rows_added'] = len(_added_rows)
-
-    # ── C. KPI depth (consulting/assurance: 6+ rows with richer columns) ───
+    # ── C. KPI depth ── (PR-5B.5F2: AI-first via synthesize_kpi_depth) ────
+    # Deterministic KPI bank top-up and the legacy 5-column skeleton emit
+    # have been replaced with a delegation to ``synthesize_kpi_depth``.
+    # On AI-repair failure the caller's post-normalization save gate
+    # (PR-5B.5F1) blocks the strategy.  ``_build_domain_kpi_bank_ar/en``
+    # are no longer called from this function (they remain referenced by
+    # ``repair_kpi_section_if_missing_frequency``, intentionally out of
+    # PR-5B.5F2 scope).
     _MIN_KPI_DEPTH = 6 if _mode_lc in ('consulting', 'assurance') else 4
-    _kpi_text = sections.get('kpis', '') or ''
-    _n_kpi = count_substantive_kpis(_kpi_text)
+    _n_kpi = count_substantive_kpis(sections.get('kpis', '') or '')
     if _n_kpi < _MIN_KPI_DEPTH:
-        _kpi_to_add = _MIN_KPI_DEPTH - _n_kpi
-        _kpi_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:KPI Description|وصف المؤشر|KPI)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _existing_kpi_nums = set()
-        for _cells in _ts_table_rows(_kpi_text, _kpi_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_kpi_nums.add(int(_cells[0]))
-        _next_kpi = max(_existing_kpi_nums) + 1 if _existing_kpi_nums else 1
-        _kpi_text_lc = _kpi_text.lower()
-
-        # KPI bank — domain-aware
-        if is_ar:
-            _kpi_bank = _build_domain_kpi_bank_ar(domain, fw_short)
-        else:
-            _kpi_bank = _build_domain_kpi_bank_en(domain, fw_short)
-
-        _kpi_rows_new = []
-        for _row in _kpi_bank:
-            if len(_kpi_rows_new) >= _kpi_to_add:
-                break
-            # Skip if already covered — use first 3 significant words
-            _kw = [k for k in _row[0].lower().split()[:4] if len(k) > 3]
-            if _kw and any(k in _kpi_text_lc for k in _kw):
-                continue
-            # Emit a 5-column row (# | description | target | formula | timeframe)
-            new_row_str = f'| {_next_kpi} | {_row[0]} | {_row[1]} | {_row[2]} | {_row[6]} |'
-            _kpi_rows_new.append(new_row_str)
-            # Update dedup text immediately so repeated calls don't add same row twice
-            _kpi_text_lc += ' ' + new_row_str.lower()
-            _next_kpi += 1
-
-        if _kpi_rows_new:
-            # Ensure table header exists before appending rows
-            if not _kpi_hdr.search(_kpi_text):
-                if is_ar:
-                    _kpi_skel = (
-                        '\n\n### مؤشرات الأداء الرئيسية:\n\n'
-                        '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | الإطار الزمني |\n'
-                        '|---|-------------|-----------------|----------------|----------------|\n'
-                    )
-                else:
-                    _kpi_skel = (
-                        '\n\n### Key Performance Indicators:\n\n'
-                        '| # | KPI Description | Target | Formula | Timeframe |\n'
-                        '|---|----------------|--------|---------|----------|\n'
-                    )
-                _kpi_text = _kpi_text.rstrip() + _kpi_skel
-                sections['kpis'] = _kpi_text
-            sections['kpis'] = _append_rows_under_header(
-                sections['kpis'], _kpi_hdr, _kpi_rows_new)
-            summary['kpi_rows_added'] = len(_kpi_rows_new)
-
-    # ── D. Risk register depth ──────────────────────────────────────────────
-    _MIN_RISK_DEPTH = 5
-    _conf_text = sections.get('confidence', '') or ''
-    _n_risk = _count_risk_rows_with_mitigation(_conf_text)
-    if _n_risk < _MIN_RISK_DEPTH:
-        _risk_to_add = _MIN_RISK_DEPTH - _n_risk
-        _risk_hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE | _ts_re.MULTILINE,
-        )
-        _existing_risk_nums = set()
-        for _cells in _ts_table_rows(_conf_text, _risk_hdr):
-            if _cells and _cells[0].replace('.', '').isdigit():
-                _existing_risk_nums.add(int(_cells[0]))
-        _next_risk = max(_existing_risk_nums) + 1 if _existing_risk_nums else 1
-        _conf_text_lc = _conf_text.lower()
-
-        if is_ar:
-            _risk_bank = [
-                ('تأخر اعتماد الحوكمة',
-                 'متوسط', 'عالٍ',
-                 'تنفيذ مبكر لورش العمل التنفيذية وعروض القيمة المعتمدة على المخاطر'),
-                ('محدودية الميزانية',
-                 'متوسط', 'عالٍ',
-                 'جدولة ميزانية متعددة السنوات وتحديد أولويات وفق درجة المخاطر'),
-                ('نقص الكفاءات السيبرانية المتخصصة',
-                 'عالٍ', 'عالٍ',
-                 'التوظيف المبكر وتوظيف خدمات MSSP كحل مؤقت'),
-                ('عدم اكتمال جرد الأصول',
-                 'متوسط', 'متوسط',
-                 f'إجراء جرد شامل للأصول كأول خطوة قبل تطبيق ضوابط {fw_short}'),
-                ('مقاومة نشر IAM/PAM',
-                 'متوسط', 'متوسط',
-                 'برنامج إدارة تغيير مع رعاية تنفيذية واضحة'),
-                ('فشل تكامل SIEM',
-                 'متوسط', 'عالٍ',
-                 'تنفيذ مرحلي مع اختبار قبول لكل مصدر سجلات قبل الاعتماد'),
-                ('عدم اختبار النسخ الاحتياطي/DR',
-                 'عالٍ', 'حرج',
-                 'جدولة اختبارات DR إلزامية ربع سنوية مع تقارير نتائج'),
-                ('مخاطر الأطراف الثالثة',
-                 'عالٍ', 'عالٍ',
-                 'تقييم الموردين الحرجين قبل التعاقد وشروط أمنية تعاقدية'),
-            ]
-        else:
-            _risk_bank = [
-                ('Delayed Governance Approval',
-                 'Medium', 'High',
-                 'Early executive workshops and risk-based value briefings'),
-                ('Insufficient Budget',
-                 'Medium', 'High',
-                 'Multi-year budget scheduling with risk-priority sequencing'),
-                ('Lack of Qualified Cybersecurity Staff',
-                 'High', 'High',
-                 'Early recruitment and interim MSSP services'),
-                ('Incomplete Asset Inventory',
-                 'Medium', 'Medium',
-                 f'Run comprehensive asset discovery before applying {fw_short} controls'),
-                ('IAM/PAM Rollout Resistance',
-                 'Medium', 'Medium',
-                 'Change management programme with clear executive sponsorship'),
-                ('SIEM Integration Failure',
-                 'Medium', 'High',
-                 'Phased integration with per-source acceptance testing before go-live'),
-                ('Untested Backup/DR',
-                 'High', 'Critical',
-                 'Schedule mandatory quarterly DR tests with results reporting'),
-                ('Third-Party Cyber Exposure',
-                 'High', 'High',
-                 'Pre-contract supplier assessments and cybersecurity contractual clauses'),
-            ]
-
-        _risk_rows_new = []
-        for _r in _risk_bank:
-            if len(_risk_rows_new) >= _risk_to_add:
-                break
-            _rw = _r[0].lower().split()[:3]
-            if any(len(k) > 3 and k in _conf_text_lc for k in _rw):
-                continue
-            _risk_rows_new.append(
-                f'| {_next_risk} | {_r[0]} | {_r[1]} | {_r[2]} | {_r[3]} |'
+        try:
+            synthesize_kpi_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                generation_mode=generation_mode,
+                org_structure_is_none=False,
+                challenge_flags={},
+                diagnostic_gaps=diagnostic_gaps,
+                sector=sector, org_name=org_name,
             )
-            _next_risk += 1
+        except RepairError as _kpi_re:
+            # PR-5B.5F2: annotate with the section name so the caller can
+            # mark _synth_status without modifying the RepairError class
+            # contract globally.  Local attribute only.
+            setattr(_kpi_re, 'section', 'kpis')
+            raise
+        _n_kpi_after = count_substantive_kpis(
+            sections.get('kpis', '') or '')
+        summary['kpi_rows_added'] = max(0, _n_kpi_after - _n_kpi)
 
-        if _risk_rows_new:
-            # Ensure the risk table skeleton exists first
-            if not _risk_hdr.search(_conf_text):
-                if is_ar:
-                    _conf_text += (
-                        "\n\n### المخاطر الرئيسية:\n\n"
-                        "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                        "|---|--------|-----------|--------|-------------|\n"
-                    )
-                else:
-                    _conf_text += (
-                        "\n\n### Key Risks:\n\n"
-                        "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                        "|---|------|------------|--------|-----------------|\n"
-                    )
-                sections['confidence'] = _conf_text
-            sections['confidence'] = _append_rows_under_header(
-                sections['confidence'], _risk_hdr, _risk_rows_new)
-            summary['risk_rows_added'] = len(_risk_rows_new)
+    # ── D. Risk register depth ── (PR-5B.6C.1: AI-first) ───────────────────
+    # Deterministic AR/EN risk-bank top-up has been replaced with a
+    # delegation to ``ai_repair_strategy_section(section_key="confidence")``.
+    # Cyber-specific literals (SIEM Integration Failure, IAM/PAM, Untested
+    # Backup/DR, Third-Party Cyber Exposure, نقص الكفاءات السيبرانية, MSSP,
+    # …) are no longer injected into the Key Risks table regardless of the
+    # active domain. On AI-repair failure, invalid repaired output, or
+    # strict-domain resolution failure, a ``RepairError`` annotated with
+    # ``section='confidence'`` is raised so the caller's
+    # ``_mark_synth_failed`` / final-audit gate (PR-5B.5F1) blocks the
+    # strategy. ``sections['confidence']`` is left UNCHANGED on failure.
+    _MIN_RISK_DEPTH = 5
+    _conf_text_before = sections.get('confidence', '') or ''
+    _n_risk_before = _count_risk_rows_with_mitigation(_conf_text_before)
+    if _n_risk_before < _MIN_RISK_DEPTH:
+        try:
+            _conf_domain_context = get_strategy_domain_context(
+                domain, lang,
+                selected_frameworks=[fw_short] if fw_short else None,
+            )
+        except DomainResolutionError as _de:
+            _err = RepairError(
+                f'enforce_technical_strategy_depth[D]: cannot resolve '
+                f'domain context for {domain!r}: {_de}'
+            )
+            setattr(_err, 'section', 'confidence')
+            raise _err
+
+        try:
+            _conf_repaired = ai_repair_strategy_section(
+                section_key='confidence',
+                sections=sections,
+                lang=lang,
+                domain_context=_conf_domain_context,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=generation_mode,
+                validation_error=(
+                    f'risk_rows_insufficient:{_n_risk_before}/{_MIN_RISK_DEPTH}'
+                ),
+                min_rows=_MIN_RISK_DEPTH,
+            )
+        except RepairError as _conf_re:
+            setattr(_conf_re, 'section', 'confidence')
+            raise
+
+        # Validate the AI-repaired confidence section BEFORE assignment.
+        # Reject if it contains fewer than ``_MIN_RISK_DEPTH`` risk rows
+        # with a mitigation column. Heading / domain-isolation / forbidden-
+        # term checks are already enforced inside ``ai_repair_strategy_section``.
+        _n_risk_after = _count_risk_rows_with_mitigation(_conf_repaired or '')
+        if _n_risk_after < _MIN_RISK_DEPTH:
+            _err = RepairError(
+                f'enforce_technical_strategy_depth[D]: AI-repaired '
+                f'confidence has {_n_risk_after}/{_MIN_RISK_DEPTH} '
+                f'risk rows with mitigation'
+            )
+            setattr(_err, 'section', 'confidence')
+            raise _err
+
+        sections['confidence'] = _conf_repaired
+        summary['risk_rows_added'] = max(0, _n_risk_after - _n_risk_before)
 
     # ── E. Cybersecurity capability coverage check ──────────────────────────
     if _mode_lc in ('consulting', 'assurance'):
@@ -23513,18 +21540,54 @@ _AI_REPAIR_SECTION_SCHEMA = {
     },
     "confidence": {
         "ar": (
-            "أرجع قسم \"## 7. تقييم الثقة والمخاطر\" فقط. "
-            "ضمّن جدولًا واحدًا للمخاطر بعنوان فرعي **المخاطر الرئيسية** "
-            "ذو 6 أعمدة:\n"
-            "| # | الخطر | الاحتمال | الأثر | المالك | استراتيجية المعالجة |\n"
-            "أنشئ على الأقل {min_rows} صفًا للمخاطر، بدون تكرار للعنوان."
+            "أرجع فقط القسم: \"## 7. تقييم الثقة والمخاطر\".\n"
+            "1) أدرج سطراً بصيغة:\n"
+            "**درجة الثقة:** NN%\n"
+            "حيث NN عدد صحيح بين 40 و 95.\n"
+            "2) ثم العنوان الفرعي:\n"
+            "### مبررات التقييم\n"
+            "متبوعاً بفقرة من جملتين جوهريتين على الأقل تشير إلى مستوى "
+            "النضج الحالي والفجوات الجوهرية.\n"
+            "3) ثم العنوان الفرعي:\n"
+            "### عوامل النجاح الحرجة\n"
+            "متبوعاً بجدول Markdown بأربعة أعمدة بالضبط:\n"
+            "| # | العامل | الوصف | الأهمية |\n"
+            "|---|-------|-------|--------|\n"
+            "بحد أدنى {min_csf_rows} صفوف.\n"
+            "4) ثم العنوان الفرعي:\n"
+            "### المخاطر الرئيسية\n"
+            "متبوعاً بجدول Markdown بخمسة أعمدة بالضبط:\n"
+            "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+            "|---|--------|-----------|--------|-------------|\n"
+            "بحد أدنى {min_risk_rows} صفوف.\n"
+            "5) يجب أن تتضمن كل خطة معالجة إجراءً محدداً وغير عام.\n"
+            "لا تُدرج أقساماً أخرى. لا تكرر العناوين. "
+            "لا تستخدم خلايا نائبة أو خلايا فارغة."
         ),
         "en": (
-            "Return ONLY the '## 7. Confidence & Risk Assessment' section. "
-            "Include exactly one risks table under the sub-heading **Key Risks** "
-            "with 6 columns:\n"
-            "| # | Risk | Likelihood | Impact | Owner | Treatment Strategy |\n"
-            "Generate at least {min_rows} risk rows; do not duplicate the heading."
+            "Return ONLY the section: \"## 7. Confidence Assessment & Risks\".\n"
+            "1) Include a line:\n"
+            "**Confidence Score:** NN%\n"
+            "where NN is an integer between 40 and 95.\n"
+            "2) Then the sub-heading:\n"
+            "### Score Justification\n"
+            "followed by at least two substantive sentences referencing the "
+            "current maturity posture and material gaps.\n"
+            "3) Then the sub-heading:\n"
+            "### Critical Success Factors\n"
+            "followed by a Markdown pipe table with EXACTLY 4 columns:\n"
+            "| # | Factor | Description | Importance |\n"
+            "|---|--------|-------------|------------|\n"
+            "minimum {min_csf_rows} rows.\n"
+            "4) Then the sub-heading:\n"
+            "### Key Risks\n"
+            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
+            "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
+            "|---|------|------------|--------|-----------------|\n"
+            "minimum {min_risk_rows} rows.\n"
+            "5) Every mitigation plan must be specific and non-generic.\n"
+            "Do not include other sections. Do not duplicate headings. "
+            "Do not use placeholder cells or empty cells."
         ),
     },
     "roadmap": {
@@ -23540,6 +21603,77 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "| # | Activity | Owner | Timeline | Deliverable |\n"
             "Generate at least {min_rows} rows. Do not include other "
             "headings or other sections."
+        ),
+    },
+    "gaps": {
+        "ar": (
+            "أرجع قسم \"## 4. تحليل الفجوات\" فقط.\n"
+            "أولاً: جدول Markdown أنبوبي ذو 5 أعمدة بالضبط بالترتيب التالي:\n"
+            "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
+            "|---|--------|-------|----------|--------|\n"
+            "أنشئ على الأقل {min_rows} صفًا.\n"
+            "ثم لكل فجوة في الجدول، أدرج كتلة دليل تنفيذ بالعنوان التالي:\n"
+            "#### دليل تنفيذ الفجوة رقم N: <اسم الفجوة>\n"
+            "متبوعاً بجدول Markdown أنبوبي بخمسة أعمدة بالضبط:\n"
+            "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
+            "|--------|---------|---------|----------------|--------|\n"
+            "بحد أدنى {min_steps_per_guide} خطوات لكل دليل.\n"
+            "لا تُدرج رؤوسًا أخرى ولا أقسامًا أخرى. "
+            "لا تستخدم خلايا نائبة أو خلايا فارغة."
+        ),
+        "en": (
+            "Return ONLY the '## 4. Gap Analysis' section.\n"
+            "First: a Markdown pipe table with EXACTLY 5 columns in this order:\n"
+            "| # | Gap | Description | Priority | Status |\n"
+            "|---|-----|-------------|----------|--------|\n"
+            "Generate at least {min_rows} rows.\n"
+            "Then for each gap row, include an implementation guide block with the heading:\n"
+            "#### Gap #N Implementation Guide: <gap title>\n"
+            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
+            "| Step | Action | Owner | Timeline | Output |\n"
+            "|------|--------|-------|----------|--------|\n"
+            "minimum {min_steps_per_guide} steps per guide.\n"
+            "Do not include other headings or other sections. "
+            "Do not use placeholder or empty cells."
+        ),
+    },
+    "pillars": {
+        "ar": (
+            "أرجع فقط القسم المسمى \"## 2. الركائز الاستراتيجية\".\n"
+            "لكل ركيزة استخدم تنسيق العنوان التالي: "
+            "\"### الركيزة N: عنوان الركيزة\".\n"
+            "يجب أن تتضمن كل ركيزة جدول Markdown أنبوبي بأربعة أعمدة بالضبط:\n"
+            "| # | المبادرة | الوصف | المخرج المتوقع |\n"
+            "ويجب أن يحتوي كل جدول على صف فاصل:\n"
+            "|---|---------|-------|----------------|\n"
+            "أنشئ على الأقل {min_rows} ركائز.\n"
+            "يجب أن تتضمن كل ركيزة صف مبادرة جوهري واحد على الأقل.\n"
+            "يجب أن يتضمن كل صف مبادرة:\n"
+            "- قيمة رقمية في عمود #\n"
+            "- اسم مبادرة محدد\n"
+            "- وصفًا جوهريًا\n"
+            "- مخرجًا متوقعًا قابلًا للقياس\n"
+            "لا تُدرج عناوين أقسام أخرى. "
+            "لا تُدرج خلايا نائبة أو خلايا فارغة أو حشوًا عامًا."
+        ),
+        "en": (
+            "Return ONLY the section named \"## 2. Strategic Pillars\".\n"
+            "For each pillar, use this heading format: "
+            "\"### Pillar N: pillar title\".\n"
+            "Each pillar must include a Markdown pipe table with EXACTLY "
+            "4 columns:\n"
+            "| # | Initiative | Description | Expected Deliverable |\n"
+            "Each table must have a separator row:\n"
+            "|---|------------|-------------|----------------------|\n"
+            "Generate at least {min_rows} pillars.\n"
+            "Each pillar must have at least one substantive initiative row.\n"
+            "Each initiative row must include:\n"
+            "- numeric # value\n"
+            "- specific initiative name\n"
+            "- substantive description\n"
+            "- measurable expected deliverable\n"
+            "Do not include other section headings. "
+            "Do not include placeholder cells, empty cells, or generic filler."
         ),
     },
 }
@@ -23626,8 +21760,46 @@ def ai_repair_strategy_section(
             "kpis":       rules.get("min_kpi_rows", 6),
             "vision":     rules.get("min_objective_rows", 5),
             "confidence": rules.get("min_risk_rows", 5),
+            "pillars":    rules.get("min_pillars", _RICHNESS_MIN_PILLARS_LOCAL),
         }.get(section_key, 5)
-    schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
+    # Confidence schema requires two distinct minimums (CSF rows and risk
+    # rows). Compute them from the validator constants / domain rules and
+    # never let `min_rows` reduce either below the validator threshold.
+    if section_key == "confidence" and schema_block:
+        _csf_floor = max(rules.get("min_csf_rows", 0) or 0,
+                         _RICHNESS_MIN_CSF_ROWS)
+        _risk_floor = max(rules.get("min_risk_rows", 0) or 0,
+                          _RICHNESS_MIN_RISK_ROWS)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = 0
+        _min_csf_rows = max(_csf_floor, _min_rows_int)
+        _min_risk_rows = max(_risk_floor, _min_rows_int)
+        schema_block = schema_block.format(
+            min_csf_rows=_min_csf_rows,
+            min_risk_rows=_min_risk_rows,
+        )
+    elif section_key == "gaps" and schema_block:
+        # Gaps schema requires two distinct minimums (table rows AND
+        # implementation-guide steps). Compute the row floor from the
+        # validator constant / domain rules and never let ``min_rows``
+        # reduce it below the validator threshold. ``min_steps_per_guide``
+        # mirrors the deterministic 4-step guide template.
+        _gap_floor = max(rules.get("min_gap_rows", 0) or 0,
+                         _RICHNESS_MIN_GAP_ROWS)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = _gap_floor
+        _min_rows_eff = max(_gap_floor, _min_rows_int)
+        _min_steps_per_guide = 4
+        schema_block = schema_block.format(
+            min_rows=_min_rows_eff,
+            min_steps_per_guide=_min_steps_per_guide,
+        )
+    else:
+        schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
 
     forbidden = list(domain_context.get("forbidden_terms", []) or [])
     capabilities = list(domain_context.get("allowed_capabilities", []) or [])
@@ -23744,18 +21916,28 @@ def repair_vision_objectives_if_insufficient(
         sections, lang, domain='Cyber Security',
         org_name='The Organization', frameworks=None,
         sector='Government'):
-    """Deterministic repair for the Strategic Objectives (SO) table.
+    """AI-first repair for the Strategic Objectives (SO) table (PR-5B.5F3).
 
-    Inspects sections['vision'].  If count_valid_objective_rows() < 6,
-    replaces the *entire* existing SO sub-section (the ### heading plus its
-    table) with a clean canonical 8-row Markdown pipe table.  No HTML, no
-    JSON, no AI calls.
+    Inspects sections['vision'].  Three phases:
 
-    Column schema (Arabic):  | # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |
-    Column schema (English): | # | Objective | Target Metric | Justification | Timeframe |
+      1. **Vision lede injection** (schema-only) — runs unconditionally to
+         ensure the keyword الرؤية / Vision appears in the section.
+      2. **Early return** when ``count_valid_objective_rows >= 6``: the
+         strategic-objectives subheading is restored if missing, and the
+         function returns 0 without invoking the AI.
+      3. **AI-first SO repair** when ``count_valid_objective_rows < 6``:
+         delegates to :func:`synthesize_objectives_depth` (which calls
+         :func:`ai_repair_strategy_section` with ``section_key='vision'``).
+         No deterministic priority bank is used, ``_build_domain_so_bank_ar``
+         / ``_build_domain_so_bank_en`` are never called, the existing SO
+         sub-section is not pre-stripped, and rows are not manually merged
+         or topped up.
 
-    Returns the number of rows written (0 if section was already ≥ 6 rows).
-    Raises AssertionError if the post-repair count is still < 6.
+    Returns the number of new SO rows added by the AI repair (or 0 when the
+    early-return path is taken).  On AI failure, or when the AI-repaired
+    vision still has fewer than 6 valid SO rows, raises :class:`RepairError`
+    with ``section='vision'`` annotated so the production caller can route
+    through ``_mark_synth_failed`` (PR-5B.5F1 gate).
     """
     frameworks = frameworks or ['NCA ECC']
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
@@ -23846,70 +22028,45 @@ def repair_vision_objectives_if_insufficient(
                 sections['vision'] = _vision_chk
         return 0
 
-    vision_text = sections.get('vision', '') or ''
-
-    if is_ar:
-        objectives_bank = _build_domain_so_bank_ar(domain, fw_short, sector)
-        hdr_line = (
-            '### الأهداف الاستراتيجية\n\n'
-            '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
-            '|---|-------|-----------------|--------|---------------|\n'
+    # ── PR-5B.5F3: AI-first SO repair ─────────────────────────────────────
+    # The deterministic _build_domain_so_bank_ar/en banks and the canonical
+    # 8-row table rebuild have been removed.  When the vision section has
+    # fewer than 6 valid Strategic Objective rows we delegate to
+    # ``synthesize_objectives_depth`` (PR-5B.5A AI-first helper) and let it
+    # rewrite ``sections['vision']`` via ``ai_repair_strategy_section``.  We
+    # do NOT pre-strip the existing SO sub-section (the AI helper grounds on
+    # the existing seed) and we do NOT manually merge or top up rows.
+    #
+    # ``repair_vision_objectives_if_insufficient`` enforces a stricter floor
+    # of 6 rows than ``synthesize_objectives_depth``'s internal
+    # ``_RICHNESS_MIN_SO_ROWS`` (4); if the AI-repaired vision still falls
+    # short of 6 we raise ``RepairError(section='vision')`` so the production
+    # caller can mark synth_failed:vision via PR-5B.5F1's gate.
+    n_before = count_valid_objective_rows(sections.get('vision', '') or '')
+    try:
+        synthesize_objectives_depth(
+            sections, lang,
+            domain=domain,
+            fw_short=fw_short,
+            sector=sector,
+            org_name=org_name,
+            generation_mode='consulting',
         )
-    else:
-        objectives_bank = _build_domain_so_bank_en(domain, fw_short, sector)
-        hdr_line = (
-            '### Strategic Objectives\n\n'
-            '| # | Objective | Target Metric | Justification | Timeframe |\n'
-            '|---|-----------|--------------|---------------|----------|\n'
-        )
+    except RepairError as _so_re:
+        setattr(_so_re, 'section', 'vision')
+        raise
 
-    # Remove the existing SO sub-section (### heading + table) entirely so we
-    # can replace it with the clean canonical table.  Match from the ### heading
-    # (if present) to avoid leaving a stale duplicate heading behind.
-    _so_section_re = _ts_re.compile(
-        r'^###\s+(?:الأهداف(?:\s+الاستراتيجية)?|Strategic\s+Objectives)[^\n]*$',
-        _ts_re.MULTILINE | _ts_re.IGNORECASE,
-    )
-    _m = _so_section_re.search(vision_text)
-    if _m:
-        vision_text = vision_text[:_m.start()].rstrip()
-    else:
-        # Fall back: strip from the table-header row if the ### heading is absent.
-        _tbl_hdr_re = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    n_after = count_valid_objective_rows(sections.get('vision', '') or '')
+    if n_after < 6:
+        _err = RepairError(
+            f'repair_vision_objectives_if_insufficient: AI-repaired vision '
+            f'has {n_after}/6 valid Strategic Objective rows (stricter than '
+            f'synthesize_objectives_depth\'s internal floor)'
         )
-        _tm = _tbl_hdr_re.search(vision_text)
-        if _tm:
-            vision_text = vision_text[:_tm.start()].rstrip()
+        setattr(_err, 'section', 'vision')
+        raise _err
 
-    # Build canonical 8-row table.
-    new_rows = [
-        f'| {i + 1} | {obj} | {metric} | {just} | {tf} |'
-        for i, (obj, metric, just, tf) in enumerate(objectives_bank)
-    ]
-    sections['vision'] = (
-        vision_text.rstrip() + '\n\n' + hdr_line
-        + '\n'.join(new_rows) + '\n'
-    )
-
-    # Post-repair assertion — must never fail given the canonical bank above.
-    _n_after = count_valid_objective_rows(sections['vision'])
-    if _n_after < 6:
-        import logging as _logging
-        _logging.error(
-            'repair_vision_objectives_if_insufficient: assertion FAILED '
-            '(count=%d after repair). Vision preview: %r',
-            _n_after, sections['vision'][:600],
-        )
-        raise AssertionError(
-            f'repair_vision_objectives_if_insufficient: expected ≥ 6 valid SO rows '
-            f'after repair; got {_n_after}. '
-            f'Check timeframe tokens in objectives_bank. '
-            f'Vision preview: {sections["vision"][:600]!r}'
-        )
-
-    return len(new_rows)
+    return max(0, n_after - n_before)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -23924,91 +22081,50 @@ def repair_confidence_risk_section(
         sections, lang, domain='Cyber Security',
         org_name='The Organization', frameworks=None,
         sector='Government'):
-    """Deterministic repair for the Confidence / Risk section.
+    """AI-first repair for the Confidence / Risk section (PR-5B.6C.3).
 
-    Steps:
-      1. Remove duplicate '### المخاطر الرئيسية' (or '### Key Risks') headings
-         by merging their table rows under the first heading.
-      2. Ensure a عوامل النجاح الحرجة (CSF) subsection exists with the
-         5-column schema: | # | العامل | الوصف | الأهمية | دليل القياس |
-         and at least _RICHNESS_MIN_CSF_ROWS rows.
-      3. Ensure a المخاطر الرئيسية (Key Risks) subsection exists with the
-         10-column schema and at least 6 valid rows.
+    Behaviour:
+      1. Schema-only cleanup: collapse duplicate
+         '### المخاطر الرئيسية' / '### Key Risks' headings (keep the first).
+      2. Sufficiency check (no AI call when satisfied):
+            * Confidence Score line present
+            * Score Justification / مبررات التقييم heading or inline marker
+            * ``_count_csf_rows >= _RICHNESS_MIN_CSF_ROWS``
+            * ``_count_risk_rows_with_mitigation >= _RISK_REPAIR_MIN``
+            * Exactly one risk heading
+      3. Otherwise delegate to
+         :func:`ai_repair_strategy_section` with
+         ``section_key='confidence'`` for BOTH cyber and non-cyber domains.
+         Validate the returned markdown BEFORE assignment.  Replace
+         ``sections['confidence']`` only if validation passes.
+      4. On :class:`DomainResolutionError`, AI failure, or invalid
+         repaired output: raise :class:`RepairError` annotated with
+         ``setattr(err, 'section', 'confidence')`` and leave
+         ``sections['confidence']`` untouched.  No deterministic CSF /
+         risk bank rows are ever inserted (no CISO, SOC, SIEM,
+         IAM/PAM/MFA, MSSP, DR/RTO, Tabletop Exercise, رئيس الأمن
+         السيبراني, فريق SOC, …).
 
-    Returns a summary dict describing what was changed.
+    Returns the summary dict (keys preserved for backward compatibility):
+        ``dup_headings_removed`` — int, duplicate risk headings collapsed
+        ``csf_rows_added``       — int, CSF rows present in repaired
+                                   section minus rows present beforehand
+                                   (0 on no-op, >=0 on AI replacement)
+        ``risk_rows_added``      — int, ``-1`` signals "AI replaced
+                                   section wholesale"; ``0`` on no-op
+        ``score_added``          — bool, True when AI repair injected a
+                                   Confidence Score line that was absent
+                                   in the original section
     """
-    frameworks = frameworks or ['NCA ECC']
-    fw_short = frameworks[0] if frameworks else 'NCA ECC'
     is_ar = (lang == 'ar')
-    conf = sections.get('confidence', '') or ''
+    conf_original = sections.get('confidence', '') or ''
+    conf = conf_original
     summary = {'dup_headings_removed': 0, 'csf_rows_added': 0,
                'risk_rows_added': 0, 'score_added': False}
 
-    # ── DOMAIN ISOLATION (problem statement PART 1 / PART 4) ─────────────────
-    # The deterministic risk/CSF banks below are cyber-specific (SOC, SIEM,
-    # IAM/PAM/MFA, DR, phishing, third-party cyber). For non-cyber domains we
-    # MUST NOT inject those rows. Try ai_repair_strategy_section first; if it
-    # fails we leave the section unchanged and surface the failure rather than
-    # contaminate non-cyber strategies with cyber content.
-    try:
-        _dctx_conf = get_strategy_domain_context(domain, lang, frameworks)
-    except DomainResolutionError:
-        _dctx_conf = None
-    if _dctx_conf is not None and _dctx_conf.get("code") != "cyber":
-        try:
-            _ai_conf = ai_repair_strategy_section(
-                section_key="confidence",
-                sections=sections,
-                lang=lang,
-                domain_context=_dctx_conf,
-                org_name=org_name,
-                sector=sector,
-                generation_mode="consulting",
-                validation_error="confidence/risk section needs domain-specific repair",
-            )
-            if _ai_conf and len(_ai_conf) >= 80:
-                sections['confidence'] = _ai_conf
-                summary['risk_rows_added'] = -1  # signal "AI replaced section"
-                return summary
-        except RepairError as _re:
-            print(f"[CONF-REPAIR] non-cyber AI repair failed for "
-                  f"domain={_dctx_conf.get('code')}: {_re}", flush=True)
-            return summary  # leave unchanged; no cyber injection
-
-    # ── Step 0: Ensure canonical top-level heading and confidence score ──
-    # Bounded repetitions prevent ReDoS on adversarial whitespace runs.
-    score_re = _ts_re.compile(
-        r'(?:\*\*)?(?:Confidence[ \t]{0,10}Score|درجة[ \t]{0,10}الثقة)(?:\*\*)?'
-        r'[ \t]{0,10}:?[ \t]{0,10}(?:\*\*)?[ \t]{0,10}\d{1,3}[ \t]{0,5}%',
-        _ts_re.IGNORECASE,
-    )
-    if not conf.strip():
-        if is_ar:
-            conf = (
-                '## 7. تقييم الثقة والمخاطر\n\n'
-                '**درجة الثقة:** 65%\n\n'
-                '### مبررات التقييم\n\n'
-                f'تعكس هذه الدرجة مستوى النضج الحالي لـ{org_name} '
-                f'والفجوات المحددة في ضوابط {domain} وفق {fw_short}.\n\n'
-            )
-        else:
-            conf = (
-                '## 7. Confidence Assessment & Risks\n\n'
-                '**Confidence Score:** 65%\n\n'
-                '### Score Justification\n\n'
-                f'This score reflects the current maturity posture of {org_name} '
-                f'and the gaps identified in {domain} controls against {fw_short}.\n\n'
-            )
-        summary['score_added'] = True
-    elif not score_re.search(conf):
-        score_line = (
-            '\n\n**درجة الثقة:** 65%\n' if is_ar
-            else '\n\n**Confidence Score:** 65%\n'
-        )
-        conf = conf.rstrip() + score_line
-        summary['score_added'] = True
-
-    # ── Step 1: Collapse duplicate risk-subsection headings ──────────────
+    # ── Schema-only cleanup: collapse duplicate risk subsection headings.
+    # Performed FIRST so the sufficiency check sees a single risk heading
+    # whenever the section is otherwise valid.
     if is_ar:
         _risk_hdr_pattern = (
             r'^###\s*(?:المخاطر\s+الرئيسية|المخاطر\s+الاستراتيجية|'
@@ -24021,305 +22137,131 @@ def repair_confidence_risk_section(
     _risk_hdr_re_dup = _ts_re.compile(
         _risk_hdr_pattern, _ts_re.MULTILINE | _ts_re.IGNORECASE)
     _risk_hdr_matches = list(_risk_hdr_re_dup.finditer(conf))
-
     if len(_risk_hdr_matches) >= 2:
-        # Collect all table rows from every duplicate block
-        _risk_tbl_row_re = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Risk|المخاطر|الخطر)\s*\|',
-            _ts_re.IGNORECASE,
-        )
-        _all_risk_rows = []
-        for _cells in _ts_table_rows(conf, _risk_tbl_row_re):
-            if (_cells and _cells[0].replace('.', '').isdigit()
-                    and len(_cells) >= 2
-                    and not _ts_is_placeholder(_cells[1])):
-                _all_risk_rows.append(_cells)
-
-        # Remove all risk subsection blocks beyond the first
-        first_pos = _risk_hdr_matches[0].start()
+        # Keep everything up to (not including) the second heading.
         second_pos = _risk_hdr_matches[1].start()
-        # Keep everything up to (not including) the second heading
         conf = conf[:second_pos].rstrip()
         summary['dup_headings_removed'] = len(_risk_hdr_matches) - 1
+        sections['confidence'] = conf
 
-    # ── Define canonical CSF and Risk banks ──────────────────────────────
-    if is_ar:
-        _csf_bank = [
-            ('دعم القيادة التنفيذية',
-             f'رعاية فعّالة من الإدارة العليا لـ{org_name} لتنفيذ استراتيجية {domain}',
-             'حرج',
-             'تقارير اجتماعات لجنة التوجيه'),
-            ('وضوح ملكية الضوابط',
-             'تعيين مالك لكل ضابط ومخرج تنفيذي مع مصفوفة RACI',
-             'حرج',
-             f'سجل الضوابط ومصفوفة RACI'),
-            (f'إطار حوكمة {domain} قابل للتشغيل',
-             'لجنة توجيه دورية وصلاحيات قرار واضحة ومسار تصعيد محدّد',
-             'عالٍ',
-             'محاضر الاجتماعات وسجل قرارات لجنة التوجيه'),
-            ('توفر الأدلة والتوثيق',
-             'حفظ أدلة التطبيق والاختبار والمراجعة بشكل منهجي',
-             'عالٍ',
-             'مستودع الأدلة وتقارير التدقيق'),
-            ('بيئة تقنية متكاملة',
-             f'منصات {domain} متكاملة مع الأنظمة التشغيلية وسجلات موحدة',
-             'متوسط',
-             'نسبة تغطية مصادر السجلات في SIEM'),
-        ]
-        _risk_bank = [
-            ('تأخر اعتماد نموذج الحوكمة',
-             'غياب هيكل حوكمة رسمي وبطء اتخاذ القرارات',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'الإدارة العليا',
-             'تنفيذ مبكر لورش العمل التنفيذية وعروض قيمة تعتمد على المخاطر',
-             'تأخر اعتماد ميثاق لجنة التوجيه',
-             'متوسط'),
-            ('نقص الكفاءات المتخصصة في الأمن السيبراني',
-             'سوق عمل متنافس وفجوة مهارات محلية',
-             'عالٍ', 'عالٍ', 'حرج',
-             'رئيس الأمن السيبراني',
-             'التوظيف المبكر واستخدام خدمات MSSP كحل مؤقت',
-             'تزايد الشواغر غير المملوءة في وحدة الأمن',
-             'عالٍ'),
-            ('عدم اكتمال جرد الأصول والأنظمة',
-             'غياب عملية جرد منهجية للأصول التقنية',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'تقنية المعلومات',
-             f'تنفيذ جرد أصول وربطه بإدارة الثغرات والمراقبة',
-             'أصول غير مصنفة أو غير مراقبة',
-             'متوسط'),
-            ('فشل تكامل SIEM مع مصادر السجلات الحرجة',
-             'تعقيد البيئة التقنية وتفاوت قدرات المورد',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'فريق SOC',
-             'تحديد مصادر السجلات الحرجة واختبار التكامل وحالات الاستخدام',
-             'انخفاض تغطية السجلات عن 80%',
-             'متوسط'),
-            ('تأخر تطبيق IAM/PAM/MFA',
-             'مقاومة المستخدمين وتعقيدات التكامل مع الأنظمة القديمة',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'مدير الهوية والوصول',
-             'تطبيق مرحلي للحسابات الحرجة مع برنامج إدارة تغيير',
-             'حسابات مميزة دون MFA أو مراجعة دورية',
-             'متوسط'),
-            ('عدم اختبار النسخ الاحتياطي والتعافي من الكوارث',
-             'غياب جدولة اختبارات DR إلزامية دورية',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'مدير البنية التحتية',
-             'تنفيذ اختبارات استعادة ربع سنوية وتوثيق النتائج',
-             'فشل اختبار الاستعادة أو تجاوز RTO',
-             'متوسط'),
-            ('ضعف جاهزية الاستجابة للحوادث',
-             'غياب خطة استجابة موثقة ومُختبرة',
-             'متوسط', 'عالٍ', 'عالٍ',
-             'رئيس الأمن السيبراني',
-             'اعتماد Playbooks وتنفيذ Tabletop Exercise',
-             'تأخر التصعيد أو عدم وضوح المسؤوليات',
-             'متوسط'),
-            (f'فجوات أدلة الامتثال لضوابط {fw_short}',
-             'ضعف التوثيق وعدم اتساق آليات جمع الأدلة',
-             'متوسط', 'متوسط', 'متوسط',
-             'فريق الحوكمة والامتثال',
-             'إنشاء مستودع أدلة وربطه بالضوابط والمتطلبات',
-             'ضوابط مطبقة دون دليل قابل للتدقيق',
-             'منخفض'),
-        ]
-    else:
-        _csf_bank = [
-            ('Executive Leadership Support',
-             f'Active sponsorship from {org_name} senior leadership '
-             f'to execute the {domain} strategy',
-             'Critical',
-             'Steering committee meeting reports'),
-            ('Control Ownership Clarity',
-             'Each control has an assigned owner with a clear RACI',
-             'Critical',
-             'Control register and RACI matrix'),
-            (f'Operable {domain} Governance Framework',
-             'Standing steering committee with clear decision rights',
-             'High',
-             'Meeting minutes and steering committee decision log'),
-            ('Evidence Availability',
-             'Systematic preservation of implementation and audit evidence',
-             'High',
-             'Evidence repository and audit reports'),
-            ('Integrated Technology Environment',
-             f'{domain} platforms integrated with operational systems '
-             'and unified logging',
-             'Medium',
-             'SIEM log-source coverage rate'),
-        ]
-        _risk_bank = [
-            ('Delayed Governance Model Approval',
-             'Absence of formal governance structure; slow decision-making',
-             'Medium', 'High', 'High',
-             'Senior Management',
-             'Early executive workshops and risk-based value briefings',
-             'Delay in steering committee charter approval',
-             'Medium'),
-            ('Lack of Specialised Cybersecurity Competencies',
-             'Competitive labour market and local skills gap',
-             'High', 'High', 'Critical',
-             'CISO',
-             'Early recruitment and interim MSSP services',
-             'Growing unfilled vacancies in security unit',
-             'High'),
-            ('Incomplete Asset and System Inventory',
-             'No systematic asset-discovery process in place',
-             'Medium', 'High', 'High',
-             'IT Operations Owner',
-             f'Run comprehensive asset discovery before applying {fw_short} controls',
-             'Gaps in asset-management reports',
-             'Medium'),
-            ('SIEM Integration Failure with Critical Log Sources',
-             'Complex tech environment and varying vendor capabilities',
-             'Medium', 'High', 'High',
-             'SOC Manager',
-             'Phased integration with per-source acceptance testing before go-live',
-             'Log-source coverage falling below 80%',
-             'Medium'),
-            ('Delayed IAM/PAM/MFA Rollout',
-             'User resistance and integration complexity with legacy systems',
-             'Medium', 'High', 'High',
-             'IAM Owner',
-             'Phased rollout for critical accounts with change management programme',
-             'PAM deployment phases behind schedule',
-             'Medium'),
-            ('Untested Backup and Disaster Recovery',
-             'Absence of mandatory periodic DR test scheduling',
-             'Medium', 'High', 'High',
-             'Infrastructure Manager',
-             'Schedule mandatory quarterly DR tests with results reporting',
-             'More than 90 days elapsed without a DR test',
-             'Medium'),
-            ('Weak Incident Response Readiness',
-             'No documented and tested incident response plan',
-             'Medium', 'High', 'High',
-             'CISO',
-             'Adopt Playbooks and conduct Tabletop Exercises',
-             'Delayed escalation or unclear responsibilities',
-             'Medium'),
-            (f'{fw_short} Compliance Evidence Gaps',
-             'Weak documentation and inconsistent evidence-collection practices',
-             'Medium', 'Medium', 'Medium',
-             'Governance and Compliance Team',
-             'Create evidence repository linked to controls and requirements',
-             'Controls applied without auditable evidence',
-             'Low'),
-        ]
-
-    # ── Step 2: Replace CSF subsection when insufficient ─────────────────
-    # Instead of appending rows to a potentially malformed table, cut from
-    # the CSF heading (or risk heading if CSF is missing) and replace the
-    # entire CSF block with the canonical bank.
-    _csf_heading_re = _ts_re.compile(
-        r'^###\s+(?:عوامل\s+النجاح\s+الحرجة|Critical\s+Success\s+Factors)[^\n]*$',
+    # ── Sufficiency probes (mirror synthesize_confidence_depth helpers).
+    score_re = _ts_re.compile(
+        r'(?:\*\*)?(?:Confidence[ \t]{0,10}Score|درجة[ \t]{0,10}الثقة)(?:\*\*)?'
+        r'[ \t]{0,10}:?[ \t]{0,10}(?:\*\*)?[ \t]{0,10}\d{1,3}[ \t]{0,5}%',
+        _ts_re.IGNORECASE,
+    )
+    just_heading_re = _ts_re.compile(
+        r'^#{2,4}\s*(?:Score\s+Justification|مبررات?\s+(?:التقييم|الثقة))',
         _ts_re.MULTILINE | _ts_re.IGNORECASE,
     )
-    n_csf = _count_csf_rows(conf)
-    if n_csf < _RICHNESS_MIN_CSF_ROWS:
-        _cm = _csf_heading_re.search(conf)
-        if _cm:
-            conf = conf[:_cm.start()].rstrip()
-        if is_ar:
-            _csf_block = (
-                '\n\n### عوامل النجاح الحرجة\n\n'
-                '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
-                '|---|-------|-------|---------|-------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                    for i, r in enumerate(_csf_bank)
-                ) + '\n'
-            )
-        else:
-            _csf_block = (
-                '\n\n### Critical Success Factors\n\n'
-                '| # | Factor | Description | Importance | Measurement Indicator |\n'
-                '|---|--------|-------------|------------|----------------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} |'
-                    for i, r in enumerate(_csf_bank)
-                ) + '\n'
-            )
-        conf = conf.rstrip() + _csf_block
-        summary['csf_rows_added'] = len(_csf_bank)
-
-    # ── Step 3: Replace risk subsection when insufficient ────────────────
-    # Cut from the risk heading and replace the entire block with the
-    # canonical 8-row bank so n_risk ≥ 6 is guaranteed.
-    _risk_heading_re = _ts_re.compile(
-        r'^###\s+(?:المخاطر\s+الرئيسية|المخاطر\s+الاستراتيجية|Key\s+Risks)[^\n]*$',
-        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+    just_inline_re = _ts_re.compile(
+        r'(?:justification|rationale|مبررات?|أسباب|تفسير)',
+        _ts_re.IGNORECASE,
     )
     _RISK_REPAIR_MIN = 6
-    n_risks = _count_risk_rows_with_mitigation(conf)
-    if n_risks < _RISK_REPAIR_MIN:
-        _rm = _risk_heading_re.search(conf)
-        if _rm:
-            conf = conf[:_rm.start()].rstrip()
-        if is_ar:
-            _risk_block = (
-                '\n\n### المخاطر الرئيسية\n\n'
-                '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر'
-                ' | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
-                '|---|-------|-------|-----------|--------|-------------|'
-                '--------|-------------|-----------------|---------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
-                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
-                    for i, r in enumerate(_risk_bank)
-                ) + '\n'
-            )
-        else:
-            _risk_block = (
-                '\n\n### Key Risks\n\n'
-                '| # | Risk | Root Cause | Likelihood | Impact | Risk Level'
-                ' | Owner | Treatment Plan | Warning Indicator | Residual Risk |\n'
-                '|---|------|-----------|-----------|--------|----------|'
-                '-----|--------------|-----------------|---------------|\n'
-                + '\n'.join(
-                    f'| {i + 1} | {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}'
-                    f' | {r[5]} | {r[6]} | {r[7]} | {r[8]} |'
-                    for i, r in enumerate(_risk_bank)
-                ) + '\n'
-            )
-        conf = conf.rstrip() + _risk_block
-        summary['risk_rows_added'] = len(_risk_bank)
 
-    sections['confidence'] = conf
+    def _is_sufficient(text):
+        if not text or not text.strip():
+            return False
+        if not score_re.search(text):
+            return False
+        if not (just_heading_re.search(text) or just_inline_re.search(text)):
+            return False
+        if _count_csf_rows(text) < _RICHNESS_MIN_CSF_ROWS:
+            return False
+        if _count_risk_rows_with_mitigation(text) < _RISK_REPAIR_MIN:
+            return False
+        if len(_risk_hdr_re_dup.findall(text)) != 1:
+            return False
+        return True
 
-    # ── Post-repair assertions ────────────────────────────────────────────
-    _n_csf_after = _count_csf_rows(conf)
-    _n_risk_after = _count_risk_rows_with_mitigation(conf)
-    _n_risk_hdrs = len(_ts_re.findall(
-        r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
-        conf, _ts_re.IGNORECASE,
-    ))
-    _csf_present = bool(_csf_heading_re.search(conf))
-    _risk_present = bool(_risk_heading_re.search(conf))
-    if (_n_csf_after < _RICHNESS_MIN_CSF_ROWS
-            or _n_risk_after < _RISK_REPAIR_MIN
-            or not _csf_present
-            or not _risk_present
-            or _n_risk_hdrs > 1):
-        import logging as _logging
-        _logging.error(
-            'repair_confidence_risk_section: assertion FAILED '
-            'csf=%d risk=%d risk_hdrs=%d csf_present=%s risk_present=%s. '
-            'Preview: %r',
-            _n_csf_after, _n_risk_after, _n_risk_hdrs,
-            _csf_present, _risk_present, conf[:600],
+    n_csf_before = _count_csf_rows(conf)
+    score_present_before = bool(score_re.search(conf))
+
+    if _is_sufficient(conf):
+        return summary
+
+    # ── AI-first repair (cyber AND non-cyber).  Strict-resolve the
+    # domain context — no ``domain or 'Cyber Security'`` fallback.  Any
+    # failure is annotated with ``section='confidence'`` so the
+    # production caller can route through ``_mark_synth_failed``
+    # (PR-5B.5F1 gate).
+    try:
+        domain_context = get_strategy_domain_context(
+            domain, lang,
+            selected_frameworks=list(frameworks) if frameworks else None,
         )
-        raise AssertionError(
-            f'repair_confidence_risk_section: post-repair assertions failed. '
-            f'csf_rows={_n_csf_after} (min {_RICHNESS_MIN_CSF_ROWS}), '
-            f'risk_rows={_n_risk_after} (min {_RISK_REPAIR_MIN}), '
-            f'risk_headings={_n_risk_hdrs} (must be 1), '
-            f'csf_present={_csf_present}, risk_present={_risk_present}. '
-            f'Preview: {conf[:600]!r}'
+    except DomainResolutionError as _de:
+        _err = RepairError(
+            f'repair_confidence_risk_section: cannot resolve domain '
+            f'context for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'confidence')
+        raise _err
 
+    _why = (
+        f'confidence_repair_needed:'
+        f'score_present={score_present_before},'
+        f'csf_rows={n_csf_before}/{_RICHNESS_MIN_CSF_ROWS},'
+        f'risk_rows={_count_risk_rows_with_mitigation(conf)}/{_RISK_REPAIR_MIN}'
+    )
+
+    try:
+        repaired = ai_repair_strategy_section(
+            section_key='confidence',
+            sections=sections,
+            lang=lang,
+            domain_context=domain_context,
+            org_name=org_name,
+            sector=sector,
+            generation_mode='consulting',
+            validation_error=_why,
+            min_rows=max(_RICHNESS_MIN_CSF_ROWS, _RISK_REPAIR_MIN),
+        )
+    except RepairError as _re:
+        setattr(_re, 'section', 'confidence')
+        raise
+
+    # ── Validate BEFORE assignment.  Heading / domain isolation is
+    # enforced inside ``ai_repair_strategy_section``.
+    rep_score = bool(score_re.search(repaired))
+    rep_just = bool(just_heading_re.search(repaired)) or bool(
+        just_inline_re.search(repaired))
+    rep_csf = _count_csf_rows(repaired)
+    rep_risk = _count_risk_rows_with_mitigation(repaired)
+    rep_risk_hdrs = len(_risk_hdr_re_dup.findall(repaired))
+    if (not rep_score or not rep_just
+            or rep_csf < _RICHNESS_MIN_CSF_ROWS
+            or rep_risk < _RISK_REPAIR_MIN
+            or rep_risk_hdrs != 1):
+        _err = RepairError(
+            f'repair_confidence_risk_section: AI-repaired confidence '
+            f'section invalid (score={rep_score}, justification={rep_just}, '
+            f'csf_rows={rep_csf}/{_RICHNESS_MIN_CSF_ROWS}, '
+            f'risk_rows={rep_risk}/{_RISK_REPAIR_MIN}, '
+            f'risk_headings={rep_risk_hdrs})'
+        )
+        setattr(_err, 'section', 'confidence')
+        raise _err
+
+    sections['confidence'] = repaired
+    summary['score_added'] = (not score_present_before) and rep_score
+    summary['csf_rows_added'] = max(0, rep_csf - n_csf_before)
+    # Sentinel: the AI replaced the section wholesale; the caller cannot
+    # interpret this as a row delta.  Mirrors the existing
+    # ``risk_rows_added = -1`` convention used by the previous non-cyber
+    # branch and asserted by the production diagnostic logger.
+    summary['risk_rows_added'] = -1
     return summary
+
+
+# Note: the deterministic CSF / risk banks (CISO, SOC, SIEM, IAM/PAM/MFA,
+# MSSP, DR/RTO, Tabletop Exercise, رئيس الأمن السيبراني, فريق SOC, …)
+# previously assembled inside ``repair_confidence_risk_section`` were
+# removed in PR-5B.6C.3.  The AI provider is now the single source of
+# truth for confidence / risk content, with
+# ``ai_repair_strategy_section(section_key='confidence', ...)``
+# enforcing domain isolation and schema.
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -24338,13 +22280,16 @@ def repair_kpi_section_if_missing_frequency(
         org_name='The Organization',
         sector='Government',
         frameworks=None):
-    """Deterministic KPI frequency repair.
+    """AI-first KPI frequency repair (PR-5B.5F3).
 
-    Inspects sections['kpis'].  If the KPI table is missing 'التكرار' or
-    'Frequency', replaces the entire KPI section with the canonical 9-column
-    KPI/KRI table plus 10 per-KPI guide blocks.
+    Inspects sections['kpis'].  If the KPI table already contains a
+    ``Frequency``/``التكرار`` token, returns 0 (no-op).  Otherwise delegates
+    to :func:`synthesize_kpi_depth` for the single AI-first repair path
+    (cyber and non-cyber).  No deterministic KPI bank is used, no per-KPI
+    guide blocks are inserted, and ``_build_domain_kpi_bank_ar`` /
+    ``_build_domain_kpi_bank_en`` are never called.
 
-    Canonical Arabic schema:
+    Canonical Arabic schema (enforced by ``synthesize_kpi_depth``):
       | # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |
       | مصدر البيانات | المالك | التكرار | الإطار الزمني |
 
@@ -24352,7 +22297,10 @@ def repair_kpi_section_if_missing_frequency(
       | # | Metric | Type KPI/KRI | Target Value | Calculation Formula |
       | Data Source | Owner | Frequency | Timeframe |
 
-    Returns the number of rows written (0 if section already had frequency).
+    Returns the number of substantive KPI rows after repair (0 if the
+    section already had a frequency token).  On AI failure, raises
+    :class:`RepairError` with ``section='kpis'`` annotated so the production
+    caller can route through ``_mark_synth_failed`` (PR-5B.5F1 gate).
     """
     frameworks = frameworks or ['NCA ECC']
     fw_short = frameworks[0] if frameworks else 'NCA ECC'
@@ -24367,216 +22315,40 @@ def repair_kpi_section_if_missing_frequency(
     if any(t in _kpi_lc for t in _kpi_freq_tokens):
         return 0  # Already has frequency — no repair needed
 
-    # ── DOMAIN ISOLATION (problem statement PART 1) ──────────────────────────
-    # The deterministic bank below is cyber-specific (NCA ECC / MFA / PAM /
-    # SIEM / MTTD / MTTR / phishing / backup / third-party cyber risk). For
-    # non-cyber domains we MUST NOT inject those rows; instead route through
-    # ai_repair_strategy_section() so the AI generates domain-specific KPIs
-    # under the canonical 9-column schema. If AI repair fails we leave the
-    # section unchanged and surface the failure (caller decides whether to
-    # block export). We do NOT silently fall back to cyber content.
+    # ── PR-5B.5F3: AI-first KPI repair (single path for all domains) ───────
+    # The previously-bifurcated cyber/non-cyber branches have been collapsed
+    # into a single delegation to ``synthesize_kpi_depth`` (PR-5B.5B AI-first
+    # helper).  The deterministic Arabic + English cyber KPI banks and the
+    # ``_make_guide`` factory have been removed; per-KPI guide blocks are
+    # owned by ``rebuild_canonical_kpi_section`` later in the save path.
+    #
+    # ``synthesize_kpi_depth`` itself enforces the 9-column schema with a
+    # ``Frequency``/``التكرار`` column header and the mode-aware floor; on
+    # AI failure or invalid output it raises ``RepairError``.  We annotate
+    # ``section='kpis'`` and re-raise so the production caller can mark
+    # synth_failed:kpis via PR-5B.5F1's gate.  We do NOT inject any
+    # deterministic rows or guide blocks.
+    n_before = count_substantive_kpis(sections.get('kpis', '') or '')
     try:
-        _dctx_kpi = get_strategy_domain_context(domain, lang, frameworks)
-    except DomainResolutionError:
-        _dctx_kpi = None
-    if _dctx_kpi is not None and _dctx_kpi.get("code") != "cyber":
-        try:
-            _ai_kpi = ai_repair_strategy_section(
-                section_key="kpis",
-                sections=sections,
-                lang=lang,
-                domain_context=_dctx_kpi,
-                org_name=org_name,
-                sector=sector,
-                generation_mode="consulting",
-                validation_error="kpi section missing frequency column",
-            )
-            if _ai_kpi and len(_ai_kpi) >= 80:
-                sections['kpis'] = _ai_kpi
-                # Count data rows (lines starting with '|' that aren't headers)
-                _row_lines = [ln for ln in _ai_kpi.splitlines()
-                              if ln.strip().startswith('|')
-                              and ln.strip().endswith('|')
-                              and not re.match(r'^\|[\s\-:|]+\|$', ln.strip())]
-                # Subtract 1 header row (best-effort)
-                return max(0, len(_row_lines) - 1)
-        except RepairError as _re:
-            print(f"[KPI-REPAIR] non-cyber AI repair failed for "
-                  f"domain={_dctx_kpi.get('code')}: {_re}", flush=True)
-            # Leave section unchanged; do NOT inject cyber bank.
-            return 0
-
-    # ── Build canonical Arabic table (cyber-only deterministic bank) ────────
-    if is_ar:
-        section_heading = '## 6. مؤشرات الأداء الرئيسية'
-        table_header = (
-            '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب '
-            '| مصدر البيانات | المالك | التكرار | الإطار الزمني |'
+        rows_after = synthesize_kpi_depth(
+            sections, lang,
+            domain=domain,
+            fw_short=fw_short,
+            sector=sector,
+            org_name=org_name,
+            generation_mode='consulting',
         )
-        table_sep = (
-            '|---|--------|---------------|-----------------|---------------|'
-            '----------------|--------|----------|----------------|'
-        )
-        guides_heading = '### أدلة تقييم مؤشرات الأداء'
+    except RepairError as _kpi_re:
+        setattr(_kpi_re, 'section', 'kpis')
+        raise
 
-        # 10-row NCA ECC canonical bank
-        data_rows_raw = [
-            ('نسبة تطبيق ضوابط NCA ECC و NCA DCC',
-             'KPI', '90% خلال السنة الأولى',
-             'عدد الضوابط المطبقة ÷ إجمالي الضوابط ذات العلاقة × 100',
-             'سجل الضوابط ومستودع الأدلة',
-             'فريق الحوكمة والامتثال', 'شهري', 'خلال 12 شهراً'),
-            ('تغطية المصادقة متعددة العوامل MFA',
-             'KPI', '95% للحسابات الحرجة',
-             'عدد الحسابات المحمية بـ MFA ÷ إجمالي الحسابات الحرجة × 100',
-             'نظام IAM وتقارير الوصول',
-             'مدير الهوية والوصول', 'شهري', 'خلال 9 أشهر'),
-            ('اكتمال مراجعة الصلاحيات المميزة',
-             'KPI', '100% ربعياً',
-             'عدد الحسابات المميزة التي تمت مراجعتها ÷ إجمالي الحسابات المميزة × 100',
-             'نظام PAM وسجلات المراجعة',
-             'مدير الهوية والوصول', 'ربع سنوي', 'خلال 12 شهراً'),
-            ('معالجة الثغرات الحرجة ضمن SLA',
-             'KPI', '95% خلال 15 يوماً',
-             'عدد الثغرات الحرجة المغلقة ضمن SLA ÷ إجمالي الثغرات الحرجة × 100',
-             'منصة إدارة الثغرات',
-             'فريق أمن البنية التحتية', 'أسبوعي', 'خلال 9 أشهر'),
-            ('تغطية مصادر السجلات في SIEM',
-             'KPI', '80% من المصادر الحرجة',
-             'عدد مصادر السجلات المربوطة ÷ إجمالي المصادر الحرجة × 100',
-             'منصة SIEM وسجل الأصول',
-             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
-            ('متوسط زمن اكتشاف الحوادث MTTD',
-             'KRI', 'أقل من 4 ساعات',
-             'مجموع زمن الاكتشاف ÷ عدد الحوادث',
-             'منصة SIEM ونظام إدارة الحوادث',
-             'فريق SOC', 'شهري', 'خلال 12 شهراً'),
-            ('متوسط زمن الاستجابة للحوادث MTTR',
-             'KRI', 'أقل من 24 ساعة للحوادث العالية',
-             'مجموع زمن الاستجابة ÷ عدد الحوادث',
-             'نظام إدارة الحوادث وتقارير الاستجابة',
-             'رئيس الأمن السيبراني', 'شهري', 'خلال 12 شهراً'),
-            ('معدل فشل محاكاة التصيد',
-             'KRI', 'أقل من 10%',
-             'عدد المستخدمين الذين فشلوا في المحاكاة ÷ إجمالي المشاركين × 100',
-             'منصة التوعية ومحاكاة التصيد',
-             'مسؤول التوعية الأمنية', 'ربع سنوي', 'خلال 9 أشهر'),
-            ('نجاح اختبارات استعادة النسخ الاحتياطي',
-             'KPI', '100% للأنظمة الحرجة',
-             'عدد اختبارات الاستعادة الناجحة ÷ إجمالي الاختبارات × 100',
-             'نظام النسخ الاحتياطي وتقارير DR',
-             'مدير البنية التحتية', 'ربع سنوي', 'خلال 18 شهراً'),
-            ('تغطية تقييم مخاطر الأطراف الثالثة',
-             'KPI', '100% للموردين الحرجيين',
-             'عدد الموردين الحرجيين المقيمين ÷ إجمالي الموردين الحرجيين × 100',
-             'سجل الموردين وتقييمات الأمن السيبراني',
-             'فريق الحوكمة والامتثال', 'نصف سنوي', 'خلال 12 شهراً'),
-        ]
-
-        def _make_guide(idx, name):
-            return [
-                f'#### دليل تقييم المؤشر رقم {idx}: {name}',
-                '',
-                '| الخطوة | الإجراء | الأداة/النظام | المسؤول | الناتج |',
-                '|--------|---------|----------------|---------|--------|',
-                f'| 1 | جمع البيانات من المصادر المعتمدة | نظام {domain} | فريق {domain} | سجل القياس |',
-                f'| 2 | تطبيق الصيغة الحسابية | لوحة التحكم | محلل {domain} | القيمة المحسوبة |',
-                f'| 3 | التحقق والمصادقة | مراجعة الإدارة | رئيس {domain} | تقرير التحقق |',
-                f'| 4 | الإبلاغ للإدارة العليا | عرض مجلس {domain} | مدير {domain} | بيان الأداء |',
-                '',
-            ]
-
-    else:
-        section_heading = '## 6. Key Performance Indicators'
-        table_header = (
-            '| # | Metric | Type KPI/KRI | Target Value | Calculation Formula '
-            '| Data Source | Owner | Frequency | Timeframe |'
-        )
-        table_sep = (
-            '|---|--------|--------------|--------------|---------------------|'
-            '-------------|-------|-----------|-----------|'
-        )
-        guides_heading = '### KPI Assessment Guidelines'
-
-        data_rows_raw = [
-            (f'{fw_short} Control Implementation Rate',
-             'KPI', '≥ 90% in Year 1',
-             '(Controls implemented ÷ Total applicable controls) × 100',
-             'Control register & evidence repository',
-             'Governance & Compliance Team', 'Monthly', 'Within 12 months'),
-            ('Multi-Factor Authentication (MFA) Coverage',
-             'KPI', '95% of critical accounts',
-             '(MFA-protected accounts ÷ Total critical accounts) × 100',
-             'IAM system & access reports',
-             'Identity & Access Manager', 'Monthly', 'Within 9 months'),
-            ('Privileged Access Review Completion',
-             'KPI', '100% quarterly',
-             '(Reviewed privileged accounts ÷ Total privileged accounts) × 100',
-             'PAM system & review logs',
-             'Identity & Access Manager', 'Quarterly', 'Within 12 months'),
-            ('Critical Vulnerability Remediation within SLA',
-             'KPI', '95% within 15 days',
-             '(Critical vulns closed within SLA ÷ Total critical vulns) × 100',
-             'Vulnerability management platform',
-             'Infrastructure Security Team', 'Weekly', 'Within 9 months'),
-            ('SIEM Log Source Coverage',
-             'KPI', '80% of critical sources',
-             '(Connected log sources ÷ Total critical sources) × 100',
-             'SIEM platform & asset register',
-             'SOC Team', 'Monthly', 'Within 12 months'),
-            ('Mean Time to Detect (MTTD)',
-             'KRI', '< 4 hours',
-             'Sum of detection times ÷ Number of incidents',
-             'SIEM platform & incident management system',
-             'SOC Team', 'Monthly', 'Within 12 months'),
-            ('Mean Time to Respond (MTTR)',
-             'KRI', '< 24 hours for high severity',
-             'Sum of response times ÷ Number of incidents',
-             'Incident management system & response reports',
-             'Chief Information Security Officer', 'Monthly', 'Within 12 months'),
-            ('Phishing Simulation Failure Rate',
-             'KRI', '< 10%',
-             '(Failed participants ÷ Total participants) × 100',
-             'Security awareness & phishing simulation platform',
-             'Security Awareness Officer', 'Quarterly', 'Within 9 months'),
-            ('Backup Recovery Test Success Rate',
-             'KPI', '100% for critical systems',
-             '(Successful restore tests ÷ Total tests) × 100',
-             'Backup system & DR reports',
-             'Infrastructure Manager', 'Quarterly', 'Within 18 months'),
-            ('Third-Party Risk Assessment Coverage',
-             'KPI', '100% of critical vendors',
-             '(Assessed critical vendors ÷ Total critical vendors) × 100',
-             'Vendor register & cybersecurity assessments',
-             'Governance & Compliance Team', 'Semi-annually', 'Within 12 months'),
-        ]
-
-        def _make_guide(idx, name):
-            return [
-                f'#### KPI #{idx} Assessment Guide: {name}',
-                '',
-                '| Step | Action | Tool / System | Owner | Output |',
-                '|------|--------|----------------|-------|--------|',
-                f'| 1 | Collect data from authoritative sources | {domain} platform | {domain} Team | Measurement log |',
-                f'| 2 | Apply calculation formula | Dashboard | {domain} Analyst | Computed value |',
-                f'| 3 | Validate and attest | Management review | {domain} Lead | Attestation report |',
-                f'| 4 | Report to executive governance | {domain} board pack | {domain} Director | Performance statement |',
-                '',
-            ]
-
-    # ── Assemble the canonical KPI section
-    out_lines = [section_heading, '', table_header, table_sep]
-    for idx, row_cells in enumerate(data_rows_raw, start=1):
-        out_lines.append('| ' + str(idx) + ' | ' + ' | '.join(row_cells) + ' |')
-    out_lines.append('')
-    out_lines.append(guides_heading)
-    out_lines.append('')
-    for idx, row_cells in enumerate(data_rows_raw, start=1):
-        out_lines.extend(_make_guide(idx, row_cells[0]))
-
-    sections['kpis'] = '\n'.join(out_lines).rstrip() + '\n'
-    return len(data_rows_raw)
-
+    # ``synthesize_kpi_depth`` returns the post-repair substantive KPI count
+    # (or 0 if the section already met the floor + had the Frequency column,
+    # which the early return above already handles for the frequency case).
+    if rows_after and rows_after > 0:
+        return rows_after
+    n_after = count_substantive_kpis(sections.get('kpis', '') or '')
+    return max(0, n_after - n_before)
 
 
 #
@@ -24923,64 +22695,12 @@ def enforce_cybersecurity_technical_depth(
         diagnostic_gaps=diagnostic_gaps,
     )
 
-    # ── Step 4: Ensure confidence section has TWO separate subsections ──────
-    if lang == 'ar':
-        _ensure_confidence_split(sections, fw_short=fw_short)
-
     return {
         'depth_summary': depth_summary,
         'heading_repairs': heading_repairs,
         'alignment_issues': alignment_issues,
         'capability_gaps': depth_summary.get('capability_gaps', []),
     }
-
-
-def _ensure_confidence_split(sections, fw_short='NCA ECC'):
-    """Ensure the confidence section has separate CSF and risk subsections.
-
-    If "عوامل النجاح الحرجة" is missing, adds a minimal header.
-    If "المخاطر الرئيسية" appears more than once, collapses to one occurrence.
-    Idempotent.
-    """
-    conf = sections.get('confidence', '') or ''
-    if not conf.strip():
-        return
-
-    has_csf = bool(_ts_re.search(r'###\s*عوامل\s+النجاح', conf))
-    has_risk = bool(_ts_re.search(r'###\s*المخاطر\s+الرئيسية', conf))
-
-    # If neither subsection header exists, try to split by looking for
-    # a pipe-table that uses risk columns vs CSF columns
-    if not has_csf:
-        # Inject minimal CSF block before the first pipe-table if no CSF header
-        risk_hdr_pos = conf.find('### المخاطر')
-        if risk_hdr_pos > 0:
-            insert_pos = risk_hdr_pos
-        else:
-            # Find the first pipe-table header
-            tbl_m = _ts_re.search(r'^(?:\|[^\n]+\|\n)+', conf, _ts_re.MULTILINE)
-            insert_pos = tbl_m.start() if tbl_m else len(conf)
-        csf_block = (
-            '\n\n### عوامل النجاح الحرجة:\n\n'
-            '| # | العامل | الوصف | الأهمية | دليل القياس |\n'
-            '|---|-------|-------|--------|-------------|\n'
-            f'| 1 | دعم القيادة التنفيذية | التزام الإدارة العليا بالأمن السيبراني | حرج | قرارات مجلس الإدارة |\n'
-            f'| 2 | توفر الميزانية | تخصيص ميزانية كافية لمتطلبات {fw_short} | عالٍ | سجل الميزانية المعتمد |\n'
-            f'| 3 | توفر الكفاءات | توظيف موارد بشرية مؤهلة في الأمن السيبراني | عالٍ | وصف وظيفي + شهادات |\n'
-        )
-        conf = conf[:insert_pos] + csf_block + conf[insert_pos:]
-        sections['confidence'] = conf
-
-    if not has_risk:
-        conf = sections.get('confidence', '') or ''
-        risk_block = (
-            '\n\n### المخاطر الرئيسية:\n\n'
-            '| # | الخطر | السبب | الاحتمالية | التأثير | مستوى الخطر | المالك | خطة المعالجة | المؤشر التحذيري | الخطر المتبقي |\n'
-            '|---|-------|-------|-----------|--------|------------|--------|--------------|-----------------|---------------|\n'
-            f'| 1 | تأخر اعتماد الحوكمة | تأخر القرارات التنفيذية | متوسط | عالٍ | متوسط | CISO | ورش عمل مبكرة وعروض قيمة مبنية على المخاطر | عدم انعقاد لجنة الحوكمة | مخاطر متبقية منخفضة |\n'
-            f'| 2 | نقص الكفاءات السيبرانية | صعوبة استقطاب المواهب | عالٍ | عالٍ | عالٍ | CISO | التوظيف المبكر + MSSP مؤقت | شواغر غير مشغولة > 30 يوماً | مخاطر متبقية متوسطة |\n'
-        )
-        sections['confidence'] = (sections.get('confidence', '') or '').rstrip() + risk_block
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -24994,280 +22714,122 @@ def _ensure_confidence_split(sections, fw_short='NCA ECC'):
 def _force_inject_mandatory_section(sections, flag, lang,
                                      domain='Cyber Security', fw_short='NCA ECC',
                                      org_name='The Organization',
-                                     budget='allocated budget', maturity='initial'):
-    """Force-inject canonical content for `flag` into the appropriate section.
+                                     budget='allocated budget', maturity='initial',
+                                     sector='General',
+                                     generation_mode='drafting'):
+    """AI-first mandatory-section repair (PR-5B.6D.1).
 
-    Audit patterns this function is designed to satisfy:
-      - kpi_assessment_guides_missing → "KPI #N Assessment Guide" / "دليل تقييم المؤشر رقم"
-      - confidence_score_missing      → "Confidence Score: NN%" / "درجة الثقة: NN%"
-      - score_justification_missing   → "Score Justification" / "مبررات التقييم"
-      - gap_guidance_missing          → "Gap #N Implementation Guide" / "دليل ... فجوة"
-      - strategic_objectives_*        → 5-row SO table
+    Routes each ``flag`` to the corresponding AI-first synthesizer:
+      - ``strategic_objectives_*``         → :func:`synthesize_objectives_depth`
+      - ``kpi_assessment_guides_missing``  → :func:`synthesize_kpi_depth`
+      - ``confidence_score_missing``       → :func:`synthesize_confidence_depth`
+      - ``score_justification_missing``    → :func:`synthesize_confidence_depth`
+      - ``gap_guidance_missing``           → :func:`synthesize_gaps_depth`
+        (PR-5B.6E AI-first delegation; on AI failure raises
+        :class:`RepairError` with ``section='gaps'``).
+      - any unknown flag                   → :class:`RepairError`
+        with ``section='strategy'``.
+
+    No deterministic content (canned KPI / gap / confidence / SO rows or
+    paragraphs) is ever authored by this function. On AI failure the
+    underlying synthesizer's :class:`RepairError` is re-raised with
+    ``setattr(err, 'section', <vision|kpis|confidence|gaps|strategy>)``
+    so the production caller can route through :func:`_mark_synth_failed`
+    and the post-normalization audit gate can block the save.
+
+    The legacy ``budget`` parameter is retained for signature
+    compatibility; it is no longer consumed because deterministic
+    confidence justification authoring has been removed.
     """
-    import re as _fi_re
-    is_ar = (lang == 'ar')
-
-    # 1. KPI Assessment Guides — append to 'kpis' section
-    if flag == 'kpi_assessment_guides_missing':
-        kpis = sections.get('kpis', '') or ''
-        if not kpis.strip():
-            # Inject minimal KPI section with table first, then the guides
-            if is_ar:
-                kpis = (
-                    "## 6. مؤشرات الأداء الرئيسية\n\n"
-                    "| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | المبرر | الإطار الزمني |\n"
-                    "|---|-------------|-----------------|----------------|--------|----------------|\n"
-                    f"| 1 | نسبة تطبيق ضوابط {fw_short} | ≥ 95% | (المطبّق ÷ الإجمالي) × 100 | امتثال {domain} | خلال 12 شهراً |\n"
-                    f"| 2 | نسبة إغلاق الفجوات | 100% | (المغلق ÷ الإجمالي) × 100 | نضج {domain} | خلال 9 أشهر |\n"
-                )
-            else:
-                kpis = (
-                    "## 6. Key Performance Indicators\n\n"
-                    "| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n"
-                    "|---|-----------------|--------------|---------------------|---------------|-----------|\n"
-                    f"| 1 | {fw_short} control implementation rate | ≥ 95% | (Implemented ÷ Total) × 100 | Compliance posture | Within 12 months |\n"
-                    f"| 2 | Gap closure rate | 100% | (Closed ÷ Total) × 100 | Maturity progression | Within 9 months |\n"
-                )
-        # Always append guides block — uses tokens the audit expects
-        if is_ar:
-            guides = (
-                "\n\n### أدلة تقييم مؤشرات الأداء\n\n"
-                f"#### دليل تقييم المؤشر رقم 1: نسبة تطبيق ضوابط {fw_short}\n\n"
-                "| الخطوة | الإجراء | المسؤول | الناتج |\n"
-                "|--------|---------|---------|--------|\n"
-                f"| 1 | جمع البيانات | فريق {domain} | سجل القياس |\n"
-                f"| 2 | الحساب | محلل {domain} | القيمة |\n"
-                f"| 3 | التحقق | رئيس {domain} | تقرير |\n"
-                f"| 4 | الإبلاغ | مدير {domain} | بيان الأداء |\n\n"
-                f"#### دليل تقييم المؤشر رقم 2: نسبة إغلاق الفجوات\n\n"
-                "| الخطوة | الإجراء | المسؤول | الناتج |\n"
-                "|--------|---------|---------|--------|\n"
-                f"| 1 | حصر الفجوات | فريق {domain} | سجل |\n"
-                f"| 2 | تتبع الإغلاق | رئيس {domain} | لوحة |\n"
-                f"| 3 | التحقق | مراجع {domain} | تقرير |\n"
-                f"| 4 | الإبلاغ | مدير {domain} | بيان |\n"
-            )
-        else:
-            guides = (
-                "\n\n### KPI Assessment Guidelines\n\n"
-                f"#### KPI #1 Assessment Guide: {fw_short} control implementation rate\n\n"
-                "| Step | Action | Owner | Output |\n"
-                "|------|--------|-------|--------|\n"
-                f"| 1 | Collect data | {domain} Team | Measurement log |\n"
-                f"| 2 | Compute | {domain} Analyst | Computed value |\n"
-                f"| 3 | Validate | {domain} Lead | Attestation |\n"
-                f"| 4 | Report | {domain} Director | Performance statement |\n\n"
-                "#### KPI #2 Assessment Guide: Gap closure rate\n\n"
-                "| Step | Action | Owner | Output |\n"
-                "|------|--------|-------|--------|\n"
-                f"| 1 | Inventory gaps | {domain} Team | Register |\n"
-                f"| 2 | Track closure | {domain} Lead | Dashboard |\n"
-                f"| 3 | Validate | {domain} Auditor | Report |\n"
-                f"| 4 | Report | {domain} Director | Statement |\n"
-            )
-        sections['kpis'] = kpis.rstrip() + guides
-        return
-
-    # 2 & 3. Confidence Score + Score Justification — write to 'confidence'
-    if flag in ('confidence_score_missing', 'score_justification_missing'):
-        conf = sections.get('confidence', '') or ''
-        # PASS-6 fix #2: do NOT blindly prepend the canonical block on top
-        # of existing confidence content — that produces duplicate sections.
-        # Surgical insertion strategy:
-        #   - If section is empty → write the full canonical block.
-        #   - If section has content but missing Score line → insert a
-        #     Score line (only) at top.
-        #   - If section has Score but missing Justification → insert
-        #     Justification block right after the Score line.
-        #   - dedupe_confidence_section is called later in the
-        #     completeness pass to clean up any residual duplicates.
-        score_present_re = _fi_re.compile(
-            r'\*\*(?:Confidence Score|درجة الثقة)\s*:?\s*\*\*\s*:?\s*\d+\s*%',
-            _fi_re.IGNORECASE,
-        )
-        justif_present_re = _fi_re.compile(
-            r'\*\*(?:Score Justification|مبررات التقييم)\s*:?\s*\*\*',
-            _fi_re.IGNORECASE,
-        )
-        has_score  = bool(score_present_re.search(conf))
-        has_justif = bool(justif_present_re.search(conf))
-        if is_ar:
-            full_block = (
-                "## 7. تقييم الثقة والمخاطر\n\n"
-                "**درجة الثقة:** 55%\n\n"
-                "**مبررات التقييم:**\n"
-                f"تعكس درجة الثقة مستوى نضج {org_name} ({maturity}) في {domain}. "
-                f"العوامل الإيجابية: تفويض {fw_short} وميزانية {budget} كافية للمرحلة 1. "
-                f"العوامل السلبية: مستوى النضج الأولي يتطلب إغلاق فجوات أساسية بالتوازي. "
-                f"العامل الأكثر حرجاً: استمرار الرعاية التنفيذية.\n\n"
-            )
-            score_line = "**درجة الثقة:** 55%\n\n"
-            justif_block = (
-                "**مبررات التقييم:**\n"
-                f"تعكس درجة الثقة مستوى نضج {org_name} ({maturity}) في {domain}. "
-                f"العوامل الإيجابية: تفويض {fw_short} وميزانية {budget} كافية للمرحلة 1. "
-                f"العوامل السلبية: مستوى النضج الأولي يتطلب إغلاق فجوات أساسية بالتوازي.\n\n"
-            )
-        else:
-            full_block = (
-                "## 7. Confidence Assessment & Risks\n\n"
-                "**Confidence Score:** 55%\n\n"
-                "**Score Justification:**\n"
-                f"The rating reflects {org_name}'s {maturity} maturity baseline in {domain}. "
-                f"Confidence-raising factors: {fw_short} regulatory mandate and {budget} budget "
-                f"sufficient for Phase 1. Confidence-reducing factors: {maturity} maturity "
-                f"requires simultaneous closure of foundational gaps. Most critical success "
-                f"factor: sustained executive sponsorship across all phases.\n\n"
-            )
-            score_line = "**Confidence Score:** 55%\n\n"
-            justif_block = (
-                "**Score Justification:**\n"
-                f"The rating reflects {org_name}'s {maturity} maturity baseline in {domain}. "
-                f"Confidence-raising factors: {fw_short} regulatory mandate and {budget} budget "
-                f"sufficient for Phase 1. Most critical success factor: sustained executive "
-                f"sponsorship across all phases.\n\n"
-            )
-        if not conf.strip():
-            sections['confidence'] = full_block
-        elif not has_score and not has_justif:
-            # Insert score+justif AFTER the section heading if present,
-            # otherwise at top.
-            heading_match = _fi_re.search(
-                r'^##\s*7\.\s*[^\n]*\n', conf, _fi_re.MULTILINE,
-            )
-            insertion = score_line + justif_block
-            if heading_match:
-                sections['confidence'] = (
-                    conf[:heading_match.end()] + '\n' + insertion
-                    + conf[heading_match.end():]
-                )
-            else:
-                sections['confidence'] = full_block + conf
-        elif not has_score:
-            # Insert just the score line at the top of section
-            heading_match = _fi_re.search(
-                r'^##\s*7\.\s*[^\n]*\n', conf, _fi_re.MULTILINE,
-            )
-            if heading_match:
-                sections['confidence'] = (
-                    conf[:heading_match.end()] + '\n' + score_line
-                    + conf[heading_match.end():]
-                )
-            else:
-                sections['confidence'] = score_line + conf
-        elif not has_justif:
-            # Insert just justification right after the score line
-            score_match = score_present_re.search(conf)
-            insert_at = conf.find('\n', score_match.end())
-            if insert_at < 0:
-                insert_at = score_match.end()
-            sections['confidence'] = (
-                conf[:insert_at + 1] + '\n' + justif_block + conf[insert_at + 1:]
-            )
-        # else: both present → no-op
-        return
-
-    # 4. Gap Implementation Guides — append to 'gaps' section
-    if flag == 'gap_guidance_missing':
-        gaps = sections.get('gaps', '') or ''
-        if not gaps.strip():
-            if is_ar:
-                gaps = (
-                    "## 4. تحليل الفجوات\n\n"
-                    "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                    "|---|--------|-------|----------|--------|\n"
-                    f"| 1 | غياب حوكمة {domain} | لا توجد لجنة حوكمة | حرج | مفتوح |\n"
-                    f"| 2 | قصور الضوابط | ضوابط {fw_short} غير مفعّلة | عالٍ | مفتوح |\n"
-                )
-            else:
-                gaps = (
-                    "## 4. Gap Analysis\n\n"
-                    "| # | Gap | Description | Priority | Status |\n"
-                    "|---|-----|-------------|----------|--------|\n"
-                    f"| 1 | {domain} governance absent | No committee | Critical | Open |\n"
-                    f"| 2 | Controls deficit | {fw_short} controls inactive | High | Open |\n"
-                )
-        if is_ar:
-            guides = (
-                "\n\n### أدلة تنفيذ الفجوات\n\n"
-                f"#### دليل تنفيذ الفجوة رقم 1: غياب حوكمة {domain}\n\n"
-                "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
-                "|--------|---------|---------|----------------|--------|\n"
-                f"| 1 | تقييم الوضع | فريق {domain} | الشهر 1 | تقرير تقييم |\n"
-                f"| 2 | تصميم المعالجة | رئيس {domain} | شهر 2-3 | خطة |\n"
-                f"| 3 | التنفيذ | فريق {domain} | شهر 4-6 | ضوابط |\n"
-                f"| 4 | الإغلاق | رئيس {domain} | شهر 7 | تقرير إغلاق |\n\n"
-                f"#### دليل تنفيذ الفجوة رقم 2: قصور الضوابط\n\n"
-                "| الخطوة | الإجراء | المسؤول | الإطار الزمني | الناتج |\n"
-                "|--------|---------|---------|----------------|--------|\n"
-                f"| 1 | التقييم | فريق {domain} | الشهر 1 | تقرير |\n"
-                f"| 2 | التصميم | رئيس {domain} | شهر 2-3 | خطة |\n"
-                f"| 3 | التنفيذ | فريق {domain} | شهر 4-6 | ضوابط |\n"
-                f"| 4 | الإغلاق | رئيس {domain} | شهر 7 | تقرير |\n"
-            )
-        else:
-            guides = (
-                "\n\n### Gap Implementation Guidance\n\n"
-                f"#### Gap #1 Implementation Guide: {domain} governance absent\n\n"
-                "**Description:** No dedicated governance committee.\n\n"
-                "| Step | Action | Owner | Timeline | Output |\n"
-                "|------|--------|-------|----------|--------|\n"
-                f"| 1 | Assess baseline | {domain} Team | Month 1 | Assessment |\n"
-                f"| 2 | Design remediation | {domain} Lead | M 2-3 | Plan |\n"
-                f"| 3 | Implement | {domain} Team | M 4-6 | Controls |\n"
-                f"| 4 | Close | {domain} Lead | Month 7 | Closure report |\n\n"
-                "#### Gap #2 Implementation Guide: Controls deficit\n\n"
-                f"**Description:** {fw_short} controls inactive.\n\n"
-                "| Step | Action | Owner | Timeline | Output |\n"
-                "|------|--------|-------|----------|--------|\n"
-                f"| 1 | Assess | {domain} Team | Month 1 | Report |\n"
-                f"| 2 | Design | {domain} Lead | M 2-3 | Plan |\n"
-                f"| 3 | Implement | {domain} Team | M 4-6 | Controls |\n"
-                f"| 4 | Close | {domain} Lead | Month 7 | Report |\n"
-            )
-        sections['gaps'] = gaps.rstrip() + guides
-        return
-
-    # 5. Strategic Objectives — write into 'vision' section
+    # 1. Strategic Objectives flags → AI-first vision synthesis.
     if flag in ('strategic_objectives_row_schema_violation',
                 'strategic_objectives_rows_insufficient',
                 'strategic_objectives_section_missing'):
-        vision = sections.get('vision', '') or ''
-        if is_ar:
-            so_block = (
-                "\n\n### الأهداف الاستراتيجية:\n\n"
-                "| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n"
-                "|---|-------|------------------|--------|----------------|\n"
-                f"| 1 | إنشاء حوكمة {domain} | اعتماد الميثاق | يغلق فجوة الحوكمة | خلال 6 أشهر |\n"
-                f"| 2 | نشر ضوابط {fw_short} | 100% | يغلق فجوات الضبط | خلال 12 شهراً |\n"
-                f"| 3 | تنفيذ التوعية | ≥ 90% | يغلق فجوة الوعي | خلال 9 أشهر |\n"
-                f"| 4 | تشغيل الاستجابة للحوادث | اعتماد الدليل | يغلق فجوة الاستجابة | خلال 12 شهراً |\n"
-                f"| 5 | إطلاق الرصد المستمر | لوحة شهرية | يغلق فجوة الضمان | خلال 18 شهراً |\n"
+        try:
+            synthesize_objectives_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
             )
-        else:
-            so_block = (
-                "\n\n### Strategic Objectives:\n\n"
-                "| # | Objective | Target Metric | Justification | Timeframe |\n"
-                "|---|-----------|---------------|---------------|-----------|\n"
-                f"| 1 | Establish {domain} governance | Charter approved | Closes governance gap | Within 6 months |\n"
-                f"| 2 | Deploy {fw_short} controls | 100% in scope | Closes control gaps | Within 12 months |\n"
-                f"| 3 | Implement training | ≥ 90% completion | Closes awareness gap | Within 9 months |\n"
-                f"| 4 | Operationalize IR | Playbook approved | Closes IR gap | Within 12 months |\n"
-                f"| 5 | Launch monitoring | Monthly dashboard | Closes assurance gap | Within 18 months |\n"
-            )
-        if not vision.strip():
-            heading = "## 1. الرؤية والأهداف" if is_ar else "## 1. Vision & Objectives"
-            sections['vision'] = heading + so_block
-        else:
-            # Replace any existing malformed SO block
-            so_re = _fi_re.compile(
-                r'(?:###\s*Strategic Objectives:?|###\s*الأهداف الاستراتيجية:?)'
-                r'[\s\S]*?(?=\n##\s|\Z)',
-                _fi_re.IGNORECASE,
-            )
-            new_v, n = so_re.subn(so_block.lstrip('\n') + '\n', vision, count=1)
-            sections['vision'] = new_v if n else (vision.rstrip() + so_block)
+        except RepairError as _vre:
+            setattr(_vre, 'section', 'vision')
+            raise
         return
+
+    # 2. KPI assessment guides flag → AI-first KPI synthesis.
+    #    NOTE: The deterministic per-KPI "Assessment Guide" block is no
+    #    longer authored here. If guide coverage remains missing after
+    #    AI repair, the downstream audit will fail closed rather than
+    #    have this function inject canned guide tables.
+    if flag == 'kpi_assessment_guides_missing':
+        try:
+            synthesize_kpi_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _kre:
+            setattr(_kre, 'section', 'kpis')
+            raise
+        return
+
+    # 3. Confidence Score / Score Justification flags → AI-first
+    #    confidence synthesis. ``synthesize_confidence_depth`` already
+    #    validates score, justification, CSF rows, and risk rows in a
+    #    single call and sets ``setattr(err, 'section', 'confidence')``
+    #    on its own RepairError, but we re-affirm the section attr
+    #    here defensively.
+    if flag in ('confidence_score_missing', 'score_justification_missing'):
+        try:
+            synthesize_confidence_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                org_name=org_name, maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _cre:
+            setattr(_cre, 'section', 'confidence')
+            raise
+        return
+
+    # 4. Gap guidance flag → AI-first gap synthesis (PR-5B.6E). No
+    #    deterministic gap rows or per-gap "Implementation Guide" tables
+    #    are authored by this function. ``synthesize_gaps_depth``
+    #    strict-resolves the domain context, calls
+    #    ``ai_repair_strategy_section(section_key='gaps')``, validates
+    #    the repaired markdown (rows + 1:1 implementation guides) BEFORE
+    #    assignment, and on failure raises ``RepairError`` with
+    #    ``setattr(err, 'section', 'gaps')``.  We re-affirm the section
+    #    attr here defensively so the production caller's
+    #    ``except RepairError`` branch routes through
+    #    ``_mark_synth_failed`` (PR-5B.5F1 / PR-5B.6D.1 plumbing).
+    if flag == 'gap_guidance_missing':
+        try:
+            synthesize_gaps_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                sector=sector, org_name=org_name,
+                maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _gre:
+            setattr(_gre, 'section', 'gaps')
+            raise
+        return
+
+    # 5. Unknown flag — never silently no-op when the caller expects a
+    #    repair. Attribute to the generic 'strategy' section so the gate
+    #    still observes the failure.
+    _err = RepairError(
+        f'_force_inject_mandatory_section: unknown flag {flag!r}; no '
+        f'AI-first repair path is registered for this flag'
+    )
+    setattr(_err, 'section', 'strategy')
+    raise _err
+
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -25739,115 +23301,30 @@ Write all {len(kpi_names)} guides now. NO prose intro. Start directly with ---""
                 print("[REPAIR] injected Score Justification block "
                       "(score was present, justification label missing)", flush=True)
 
-    # ── Repair: Gap Implementation Guidance (NEW, synthesized, no AI call) ──
+    # ── Repair: Gap Implementation Guidance (PR-5B.6E AI-first) ─────────────
     # Non-board technical strategies must include per-gap implementation
-    # guidance. When the AI omits both the gaps section AND the per-gap
-    # guides (drafting mode edge case), synthesize a minimal 5-row gaps
-    # table first so the guide builder below has rows to iterate.
-    # Remediation prompt pass 3 clause C/D/E/F.
+    # guidance. Delegate entirely to ``synthesize_gaps_depth``: no
+    # deterministic 5-row gaps table, no canned per-gap implementation
+    # guide blocks. ``synthesize_gaps_depth`` strict-resolves the domain
+    # context, calls ``ai_repair_strategy_section(section_key='gaps')``,
+    # validates the repaired markdown BEFORE assignment, and on failure
+    # raises ``RepairError`` with ``setattr(err, 'section', 'gaps')``.
+    # The production caller (``api_generate_strategy``) wraps each
+    # ``_targeted_section_repair`` invocation in
+    # ``except RepairError`` → ``_mark_synth_failed`` so the
+    # post-normalization save gate refuses to save the strategy when
+    # AI repair is unavailable.
     if 'gap_guidance_missing' in issues:
-        if not (sections.get('gaps') or '').strip():
-            _gap_hdr_en = "## 4. Gap Analysis"
-            _gap_hdr_ar = "## 4. تحليل الفجوات"
-            _gap_hdr = _gap_hdr_ar if lang == 'ar' else _gap_hdr_en
-            if lang == 'ar':
-                _synth_gaps = (
-                    f"{_gap_hdr}\n\n"
-                    f"### الفجوات المحددة:\n\n"
-                    f"| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                    f"|---|--------|-------|----------|--------|\n"
-                    f"| 1 | غياب حوكمة {domain} | لا توجد لجنة حوكمة مخصصة لـ {domain} متوائمة مع {fw_short} | حرج | مفتوح |\n"
-                    f"| 2 | قصور الضوابط التقنية | الضوابط الحالية لا تغطي متطلبات {fw_short} الإلزامية | عالٍ | مفتوح |\n"
-                    f"| 3 | ضعف الوعي | غياب برنامج توعية منتظم للموظفين في {domain} | عالٍ | مفتوح |\n"
-                    f"| 4 | غياب الاستجابة للحوادث | لا يوجد دليل معتمد للاستجابة لحوادث {domain} | عالٍ | مفتوح |\n"
-                    f"| 5 | ضعف الرصد المستمر | لا توجد لوحة متابعة للامتثال المستمر لـ {fw_short} | متوسط | مفتوح |\n"
-                )
-            else:
-                _synth_gaps = (
-                    f"{_gap_hdr}\n\n"
-                    f"### Identified Gaps:\n\n"
-                    f"| # | Gap | Description | Priority | Status |\n"
-                    f"|---|-----|-------------|----------|--------|\n"
-                    f"| 1 | {domain} governance absent | No dedicated {domain} governance committee aligned with {fw_short} | Critical | Open |\n"
-                    f"| 2 | Technical controls deficit | Current controls do not cover mandatory {fw_short} requirements | High | Open |\n"
-                    f"| 3 | Awareness weakness | No recurring {domain} awareness programme for workforce | High | Open |\n"
-                    f"| 4 | Incident response absent | No approved {domain} incident response playbook | High | Open |\n"
-                    f"| 5 | Continuous monitoring weak | No continuous compliance dashboard for {fw_short} | Medium | Open |\n"
-                )
-            sections['gaps'] = _synth_gaps
-            print(f"[REPAIR] synthesized minimal gaps table (was empty) — "
-                  f"5 rows, domain={domain}, framework={fw_short}", flush=True)
-        _gaps_text = sections['gaps']
-        # Extract gap rows: | # | Gap | Description | Priority | Status |
-        _gap_rows = _tr.findall(
-            r'^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|',
-            _gaps_text, _tr.MULTILINE
-        )
-        # Filter out header/separator remnants
-        _gap_rows = [(n, g, d, p) for (n, g, d, p) in _gap_rows
-                     if g.lower() not in ('gap', 'الفجوة', '#')
-                     and not _tr.match(r'^[-:]+$', g.strip())]
-        # Last-resort: if row extraction produces nothing (unusual table
-        # shape after synthesis), use 5 domain-generic rows so per-gap
-        # guide blocks always get written and the audit flag clears.
-        if not _gap_rows:
-            if lang == 'ar':
-                _gap_rows = [
-                    ('1', f'غياب حوكمة {domain}',      f'حوكمة {fw_short} غير مطبّقة',       'حرج'),
-                    ('2', f'قصور الضوابط التقنية',      f'ضوابط {fw_short} الأساسية غير مفعّلة', 'عالٍ'),
-                    ('3', 'ضعف الوعي',                  'لا يوجد برنامج توعية منتظم',          'عالٍ'),
-                    ('4', 'غياب الاستجابة للحوادث',     'لا يوجد دليل حوادث معتمد',            'عالٍ'),
-                    ('5', 'ضعف الرصد المستمر',          'لا توجد لوحة متابعة للامتثال',        'متوسط'),
-                ]
-            else:
-                _gap_rows = [
-                    ('1', f'{domain} governance absent', f'{fw_short} governance not operationalized', 'Critical'),
-                    ('2', 'Technical controls deficit',  f'{fw_short} core controls not implemented',   'High'),
-                    ('3', 'Awareness weakness',          'No recurring awareness programme',             'High'),
-                    ('4', 'Incident response absent',    'No approved IR playbook',                      'High'),
-                    ('5', 'Continuous monitoring weak',  'No continuous-compliance dashboard',           'Medium'),
-                ]
-            print('[REPAIR] _gap_rows empty — using 5 domain-generic rows for guide synthesis',
-                  flush=True)
-        if _gap_rows:
-            _guide_lines = []
-            if lang == 'ar':
-                _guide_lines.append("\n\n### أدلة تنفيذ الفجوات")
-            else:
-                _guide_lines.append("\n\n### Gap Implementation Guidance")
-            for (_n, _gap_name, _desc, _pri) in _gap_rows[:6]:  # cap at 6 gaps
-                _gn = _gap_name.strip()
-                if lang == 'ar':
-                    _guide_lines.extend([
-                        "",
-                        f"#### دليل تنفيذ الفجوة #{_n}: {_gn}",
-                        "",
-                        f"**الوصف:** {_desc.strip()}",
-                        "",
-                        "| الخطوة | الإجراء | المسؤول | الجدول الزمني | الناتج |",
-                        "|--------|---------|---------|----------------|--------|",
-                        f"| 1 | تقييم الوضع الحالي للفجوة ({_gn}) | فريق {domain} | الشهر 1 | تقرير تقييم الفجوة |",
-                        f"| 2 | تصميم ضوابط المعالجة وفق {fw_short} | رئيس {domain} | الشهر 2-3 | خطة المعالجة المعتمدة |",
-                        f"| 3 | تنفيذ الضوابط والاختبار | فريق {domain} | الشهر 4-6 | الضوابط المفعّلة |",
-                        f"| 4 | التحقق والإبلاغ للإدارة | رئيس {domain} | الشهر 7 | تقرير إغلاق الفجوة |",
-                    ])
-                else:
-                    _guide_lines.extend([
-                        "",
-                        f"#### Gap #{_n} Implementation Guide: {_gn}",
-                        "",
-                        f"**Description:** {_desc.strip()}",
-                        "",
-                        "| Step | Action | Owner | Timeline | Output |",
-                        "|------|--------|-------|----------|--------|",
-                        f"| 1 | Assess current-state baseline for {_gn} | {domain} Team | Month 1 | Gap assessment report |",
-                        f"| 2 | Design remediation controls aligned with {fw_short} | {domain} Lead | Months 2–3 | Approved remediation plan |",
-                        f"| 3 | Implement controls and validate effectiveness | {domain} Team | Months 4–6 | Operational controls |",
-                        f"| 4 | Verify closure and report to management | {domain} Lead | Month 7 | Gap closure report |",
-                    ])
-            _guide_text = "\n".join(_guide_lines)
-            sections['gaps'] = sections['gaps'].rstrip() + _guide_text
-            print(f"[REPAIR] injected synthesized gap implementation guides for {len(_gap_rows[:6])} gaps", flush=True)
+        try:
+            synthesize_gaps_depth(
+                sections, lang,
+                domain=domain, fw_short=fw_short,
+                org_name=org_name, maturity=maturity,
+                generation_mode=generation_mode,
+            )
+        except RepairError as _gre:
+            setattr(_gre, 'section', 'gaps')
+            raise
 
     # ── Repair: Assurance assumption block ───────────────────────────────────
     if 'assurance_assumptions_missing' in issues and generation_mode == 'assurance':
@@ -26057,6 +23534,14 @@ def api_generate_strategy():
         # ── Language — MUST be resolved first (used by org-memory and sector intel) ──
         lang = data.get('language', 'en')
         print(f"DEBUG: Language = {lang}", flush=True)
+
+        # ── PR-5B.6D.1: request-scoped fail-closed status dict.
+        # Initialized early so every Tier-3/Tier-4 ``_force_inject_mandatory_section``
+        # call site (and any AI-first synthesizer that raises ``RepairError``)
+        # can route through ``_mark_synth_failed(_synth_status, section, err)``.
+        # The post-normalization save gate consults this dict to refuse
+        # saving a strategy whose mandatory sections failed AI repair.
+        _synth_status = {}
 
         # ── PASS-7 FIX: initialize fw_short exactly once, early, before any
         # language branching or prompt selection. Previously assigned only
@@ -30411,18 +27896,34 @@ The confidence score is based on a comprehensive assessment of the organization'
             print(f"[STRATEGY] Quality audit ({doc_subtype}/{_generation_mode}): missing — {_quality_issues}", flush=True)
             # Downgrade quality label for generic-scaffold issues even after repair
             _has_generic = 'generic_scaffold_dominant' in _quality_issues
-            sections = _targeted_section_repair(
-                sections        = sections,
-                issues          = _quality_issues,
-                doc_subtype     = doc_subtype,
-                lang            = lang,
-                domain          = domain,
-                fw_short        = fw_short,
-                org_name        = data.get('org_name', 'The Organization'),
-                budget          = data.get('budget', 'allocated budget'),
-                maturity        = maturity,
-                generation_mode = _generation_mode,
-            )
+            try:
+                sections = _targeted_section_repair(
+                    sections        = sections,
+                    issues          = _quality_issues,
+                    doc_subtype     = doc_subtype,
+                    lang            = lang,
+                    domain          = domain,
+                    fw_short        = fw_short,
+                    org_name        = data.get('org_name', 'The Organization'),
+                    budget          = data.get('budget', 'allocated budget'),
+                    maturity        = maturity,
+                    generation_mode = _generation_mode,
+                )
+            except RepairError as _tsr_re:
+                # PR-5B.6E: AI-first gap repair (or another AI-first
+                # branch) failed inside _targeted_section_repair. Route
+                # through _mark_synth_failed so the post-normalization
+                # save gate refuses to save the strategy. Continue
+                # processing with the (un-repaired) sections — the
+                # downstream Tier-3 force-inject pass will still run
+                # and surface the same flag if applicable.
+                _mark_synth_failed(
+                    _synth_status,
+                    getattr(_tsr_re, 'section', 'gaps'),
+                    _tsr_re,
+                )
+                print(f"[STRATEGY] _targeted_section_repair RepairError: "
+                      f"{_tsr_re}", flush=True)
             _, _q2 = _audit_document_quality(sections, doc_subtype, lang)
             _quality_issues_post = list(_q2)
             if _q2:
@@ -30453,18 +27954,33 @@ The confidence score is based on a comprehensive assessment of the organization'
                 if _surviving_mandatory:
                     print(f"[STRATEGY] Defensive 2nd-pass repair for surviving "
                           f"mandatory flags: {_surviving_mandatory}", flush=True)
-                    sections = _targeted_section_repair(
-                        sections        = sections,
-                        issues          = _surviving_mandatory,
-                        doc_subtype     = doc_subtype,
-                        lang            = lang,
-                        domain          = domain,
-                        fw_short        = fw_short,
-                        org_name        = data.get('org_name', 'The Organization'),
-                        budget          = data.get('budget', 'allocated budget'),
-                        maturity        = maturity,
-                        generation_mode = _generation_mode,
-                    )
+                    try:
+                        sections = _targeted_section_repair(
+                            sections        = sections,
+                            issues          = _surviving_mandatory,
+                            doc_subtype     = doc_subtype,
+                            lang            = lang,
+                            domain          = domain,
+                            fw_short        = fw_short,
+                            org_name        = data.get('org_name', 'The Organization'),
+                            budget          = data.get('budget', 'allocated budget'),
+                            maturity        = maturity,
+                            generation_mode = _generation_mode,
+                        )
+                    except RepairError as _tsr2_re:
+                        # PR-5B.6E: AI-first gap repair (or another
+                        # AI-first branch) failed inside the defensive
+                        # 2nd-pass _targeted_section_repair. Mark
+                        # synth_status so the post-normalization save
+                        # gate refuses to save the strategy.
+                        _mark_synth_failed(
+                            _synth_status,
+                            getattr(_tsr2_re, 'section', 'gaps'),
+                            _tsr2_re,
+                        )
+                        print(f"[STRATEGY] _targeted_section_repair "
+                              f"(2nd pass) RepairError: {_tsr2_re}",
+                              flush=True)
                     _, _q3 = _audit_document_quality(sections, doc_subtype, lang)
                     _quality_issues_post = list(_q3)
                     _still_surviving = [i for i in _q3 if i in _mandatory_flags]
@@ -30483,9 +27999,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     org_name=data.get('org_name', 'The Organization'),
                                     budget=data.get('budget', 'allocated budget'),
                                     maturity=maturity,
+                                    sector=data.get('sector', 'General'),
+                                    generation_mode=_generation_mode,
                                 )
                                 print(f"[STRATEGY] FORCE-INJECTED mandatory section "
                                       f"for surviving flag: {_flag}", flush=True)
+                            except RepairError as _fi_re_err:
+                                # PR-5B.6D.1: AI-first delegation failed.
+                                # Route through _mark_synth_failed so the
+                                # post-normalization save gate blocks the
+                                # save instead of letting a deterministic
+                                # injector mask the failure.
+                                _mark_synth_failed(
+                                    _synth_status,
+                                    getattr(_fi_re_err, 'section', 'strategy'),
+                                    _fi_re_err,
+                                )
+                                print(f"[STRATEGY] Force-inject RepairError for "
+                                      f"{_flag}: {_fi_re_err}", flush=True)
                             except Exception as _fi_e:
                                 print(f"[STRATEGY] Force-inject failed for {_flag}: "
                                       f"{_fi_e}", flush=True)
@@ -31596,9 +29127,25 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 org_name=data.get('org_name', 'The Organization'),
                                 budget=data.get('budget', 'allocated budget'),
                                 maturity=maturity,
+                                sector=data.get('sector', 'General'),
+                                generation_mode=_generation_mode,
                             )
                             print(f'[STRATEGY-DIAG] postnorm_force_injected '
                                   f'flag={_f}', flush=True)
+                        except RepairError as _pn_re_err:
+                            # PR-5B.6D.1: AI-first delegation failed for a
+                            # mandatory post-normalization flag. Mark the
+                            # underlying section as synth_failed so the
+                            # final audit gate refuses to save.
+                            _mark_synth_failed(
+                                _synth_status,
+                                getattr(_pn_re_err, 'section', 'strategy'),
+                                _pn_re_err,
+                            )
+                            print(f'[STRATEGY-DIAG] postnorm_force_inject_repair_error '
+                                  f'flag={_f} section='
+                                  f'{getattr(_pn_re_err, "section", "strategy")!r} '
+                                  f'err={_pn_re_err}', flush=True)
                         except Exception as _pn_e:
                             print(f'[STRATEGY-DIAG] postnorm_force_inject_failed '
                                   f'flag={_f} err={_pn_e}', flush=True)
@@ -31745,6 +29292,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                             org_name=_cpl_org,
                             maturity=_cpl_mat,
                             generation_mode=_cpl_mode,
+                            synth_status=_synth_status,
                         )
                         print(f'[STRATEGY-DIAG] completeness_pass '
                               f'flags={_completeness_flags} '
@@ -31960,6 +29508,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # synthesizer would skip, and then resection would
                     # move the gap table out leaving env thin. Running
                     # synthesis here closes that edge case.
+                    # PR-5B.5F1: request-scoped fail-closed status dict.
+                    # PR-5B.6D.1: ``_synth_status`` is now hoisted to the
+                    # top of ``api_generate_strategy`` so Tier-3 / Tier-4
+                    # ``_force_inject_mandatory_section`` call sites can
+                    # also write into it. Re-asserted here as a no-op
+                    # ``setdefault``-style guard so an early-raise inside
+                    # this synthesis block does not lose the existing dict.
+                    if not isinstance(locals().get('_synth_status'), dict):
+                        _synth_status = {}
                     try:
                         # Build the authoritative diagnostic model (prompt
                         # Part 1). This is the single source of truth for
@@ -31988,11 +29545,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _diag_model['generation_mode'] = _generation_mode
                         log_diagnostic_model(_diag_model, tag='pre_synth')
                         _final_ctx = diagnostic_model_to_ctx(_diag_model)
+                        # PR-5B.5F1 status dict already initialized above.
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
                             print(f'[STRATEGY-DIAG] final_synthesis_pass='
                                   f'{_final_synth}', flush=True)
+                            for _sec, _st in (
+                                    _final_synth.get('synth_status') or {}
+                            ).items():
+                                if _st == 'failed':
+                                    _synth_status[_sec] = 'failed'
                             # Rebuild content once more so the pre-gate
                             # diagnostic + validators below see the
                             # synthesized payload.
@@ -32040,6 +29603,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'{_depth_result["capability_gaps"]}',
                                 flush=True,
                             )
+                    except RepairError as _dre:
+                        # PR-5B.5F2: AI repair failure inside
+                        # enforce_technical_strategy_depth (SO or KPI
+                        # branch). The branch annotated `section` on the
+                        # error before re-raising; mirror PR-5B.5F1's
+                        # _mark_synth_failed pattern so the post-
+                        # normalization save gate blocks the strategy.
+                        _section = getattr(_dre, 'section', 'strategy')
+                        _mark_synth_failed(_synth_status, _section, _dre)
+                        print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
+                              f'{_dre}', flush=True)
                     except Exception as _dep_e:
                         print(f'[STRATEGY-DIAG] depth_enrichment_failed: '
                               f'{_dep_e}', flush=True)
@@ -32084,6 +29658,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             if sections.get(sk) and sections[sk].strip()]
                         if _fixed_parts_cyber:
                             content = '\n\n'.join(_fixed_parts_cyber)
+                    except RepairError as _cdre:
+                        # PR-5B.5F2: RepairError raised by
+                        # enforce_technical_strategy_depth propagates up
+                        # through enforce_cybersecurity_technical_depth
+                        # (which doesn't catch it). The error carries a
+                        # local `section` attribute set by the SO/KPI
+                        # branch; record synth_failed using it.
+                        _section = getattr(_cdre, 'section', 'strategy')
+                        _mark_synth_failed(_synth_status, _section, _cdre)
+                        print(f'[STRATEGY-DIAG] cyber_depth_enrichment_failed: '
+                              f'{_cdre}', flush=True)
                     except Exception as _cde:
                         print(f'[STRATEGY-DIAG] cyber_depth_enrichment_failed: '
                               f'{_cde}', flush=True)
@@ -32127,6 +29712,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     technologies=_final_ctx.get(
                                         'technologies', []),
                                 )
+                            except RepairError as _ptre:
+                                # PR-5B.6B: AI repair unavailable —
+                                # fail closed via request-scoped
+                                # _synth_status; the post-normalization
+                                # gate refuses to save the strategy.
+                                _mark_synth_failed(
+                                    _synth_status, 'pillars', _ptre)
+                                print(f'[STRATEGY-DIAG] pillars_topup_failed: '
+                                      f'{_ptre}', flush=True)
                             except Exception as _pte:
                                 print(f'[STRATEGY-DIAG] pillars_topup_failed: '
                                       f'{_pte}', flush=True)
@@ -32189,6 +29783,18 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     org_name=_final_ctx.get(
                                         'org_name', 'The Organization'),
                                 )
+                            except RepairError as _rtre:
+                                # PR-5B.5F1: AI repair unavailable for the
+                                # roadmap top-up — fail closed via the
+                                # request-scoped _synth_status; the post-
+                                # normalization save gate refuses to save.
+                                try:
+                                    _mark_synth_failed(
+                                        _synth_status, 'roadmap', _rtre)
+                                except Exception:
+                                    pass
+                                print(f'[STRATEGY-DIAG] roadmap_topup_failed: '
+                                      f'{_rtre}', flush=True)
                             except Exception as _rte:
                                 print(f'[STRATEGY-DIAG] roadmap_topup_failed: '
                                       f'{_rte}', flush=True)
@@ -32229,6 +29835,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 ctx=_final_ctx, doc_subtype=doc_subtype,
                                 max_iter=3,
                             )
+                            # PR-5B.5F1: merge convergence-time synth
+                            # failures into the request-scoped
+                            # _synth_status so the post-normalization
+                            # save gate sees them.
+                            for _sec, _st in (
+                                    _converge.get('synth_status') or {}
+                            ).items():
+                                if _st == 'failed':
+                                    _synth_status[_sec] = 'failed'
                             print(
                                 '[STRATEGY-CONVERGE] '
                                 f'iterations={_converge["iterations"]} '
@@ -32427,6 +30042,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'rows_added={_vis_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _vrre:
+                            # PR-5B.5F3: AI repair failure inside
+                            # repair_vision_objectives_if_insufficient.
+                            # Mirror PR-5B.5F1's _mark_synth_failed pattern so
+                            # the post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_vrre, 'section', 'vision')
+                            _mark_synth_failed(_synth_status, _section, _vrre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_vision_objectives_failed: '
+                                f'{_vrre}',
+                                flush=True,
+                            )
                         except Exception as _vr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_vision_objectives_failed: '
@@ -32449,6 +30077,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'{_risk_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _crre:
+                            # PR-5B.6C.3: AI repair failure inside
+                            # repair_confidence_risk_section. Mirror
+                            # PR-5B.5F1's _mark_synth_failed pattern so the
+                            # post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_crre, 'section', 'confidence')
+                            _mark_synth_failed(_synth_status, _section, _crre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_confidence_risk_failed: '
+                                f'{_crre}',
+                                flush=True,
+                            )
                         except Exception as _rr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_confidence_risk_failed: '
@@ -32479,6 +30120,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'rows_written={_kpi_freq_repair}',
                                     flush=True,
                                 )
+                        except RepairError as _kfre:
+                            # PR-5B.5F3: AI repair failure inside
+                            # repair_kpi_section_if_missing_frequency.
+                            # Mirror PR-5B.5F1's _mark_synth_failed pattern so
+                            # the post-normalization save gate blocks the
+                            # strategy.
+                            _section = getattr(_kfre, 'section', 'kpis')
+                            _mark_synth_failed(_synth_status, _section, _kfre)
+                            print(
+                                f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '
+                                f'{_kfre}',
+                                flush=True,
+                            )
                         except Exception as _kfr_e:
                             print(
                                 f'[STRATEGY-DIAG] repair_kpi_frequency_failed: '
@@ -32678,7 +30332,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     if doc_subtype != 'board':
                         try:
                             _post_norm_defects = _final_strategy_audit(
-                                sections, lang, doc_subtype)
+                                sections, lang, doc_subtype,
+                                synth_status=_synth_status)
                             print(
                                 '[STRATEGY-DIAG] post_normalization_audit '
                                 f'defects={_post_norm_defects}',

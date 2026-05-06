@@ -247,31 +247,30 @@ class TestSynthesizeRoadmapAIFirstPR5B5C(unittest.TestCase):
     @_skip_if_no_app
     def test_no_unrelated_deterministic_bank_helpers_called(self):
         """10. The roadmap synth must not invoke any unrelated
-        deterministic bank helpers (SO banks, KPI banks). There is no
-        roadmap bank helper to begin with; this asserts the AI-first
-        contract is clean of cross-feature deterministic fallbacks."""
-        sections_en = {'roadmap': ''}
-        sections_ar = {'roadmap': ''}
-        with patch.object(_APP, 'ai_repair_strategy_section',
-                          return_value=_REPAIRED_ROADMAP_EN), \
-             patch.object(_APP, '_build_domain_so_bank_en') as so_en, \
-             patch.object(_APP, '_build_domain_so_bank_ar') as so_ar, \
-             patch.object(_APP, '_build_domain_kpi_bank_en') as kpi_en, \
-             patch.object(_APP, '_build_domain_kpi_bank_ar') as kpi_ar:
-            _APP.synthesize_roadmap_depth(
-                sections_en, lang='en',
-                domain='Cyber Security', fw_short='NCA ECC',
-                generation_mode='drafting',
-            )
-            _APP.synthesize_roadmap_depth(
-                sections_ar, lang='ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-                generation_mode='drafting',
-            )
-        so_en.assert_not_called()
-        so_ar.assert_not_called()
-        kpi_en.assert_not_called()
-        kpi_ar.assert_not_called()
+        deterministic bank helpers (SO banks, KPI banks). PR-5B.5H:
+        those four helpers no longer exist as symbols on app — assert
+        absence + no production call site via AST."""
+        import ast
+        import os
+        path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        with open(path, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        targets = {
+            '_build_domain_so_bank_ar', '_build_domain_so_bank_en',
+            '_build_domain_kpi_bank_ar', '_build_domain_kpi_bank_en',
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    f'PR-5B.5H: legacy bank helper {name!r} called at '
+                    f'app.py:{node.lineno}')
+        for n in targets:
+            self.assertFalse(hasattr(_APP, n),
+                f'PR-5B.5H: legacy bank helper {n} should be deleted')
 
 
 if __name__ == '__main__':

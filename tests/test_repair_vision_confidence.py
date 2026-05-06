@@ -69,6 +69,149 @@ def _skip_if_no_app(fn):
 
 
 # ---------------------------------------------------------------------------
+# PR-5B.5F3: repair_vision_objectives_if_insufficient now delegates to
+# synthesize_objectives_depth (AI-first).  Tests in this module exercise the
+# *post-repair schema/shape/count* contract; we stub the AI synth helper so
+# the tests run in environments without an AI provider.
+# ---------------------------------------------------------------------------
+
+def _stub_vision_section_ar(rows=8):
+    header = (
+        '## 1. الرؤية والأهداف الاستراتيجية\n\n'
+        '**الرؤية:** رؤية المنظمة نحو تحقيق الأمن السيبراني الشامل.\n\n'
+        '### الأهداف الاستراتيجية\n\n'
+        '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n'
+        '|---|-------|-----------------|--------|---------------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | الهدف الاستراتيجي رقم {i} | ≥ 95% '
+        f'| متطلب NCA ECC | خلال 12 شهراً |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_vision_section_en(rows=8):
+    header = (
+        '## 1. Vision & Strategic Objectives\n\n'
+        '**Vision:** The organization pursues comprehensive cyber resilience.\n\n'
+        '### Strategic Objectives\n\n'
+        '| # | Objective | Target Metric | Justification | Timeframe |\n'
+        '|---|-----------|--------------|---------------|----------|\n'
+    )
+    body = '\n'.join(
+        f'| {i} | Strategic Objective {i} | >= 95% '
+        f'| NCA ECC requirement | Within 12 months |'
+        for i in range(1, rows + 1)
+    )
+    return header + body + '\n'
+
+
+def _stub_synthesize_objectives_depth(sections, lang, **_kwargs):
+    if lang == 'ar':
+        sections['vision'] = _stub_vision_section_ar(rows=8)
+    else:
+        sections['vision'] = _stub_vision_section_en(rows=8)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# PR-5B.6C.3: repair_confidence_risk_section now delegates to
+# ai_repair_strategy_section (AI-first).  Stub that helper so the
+# post-repair schema/shape/count tests below run in environments
+# without an AI provider.  The stub returns a canonical confidence
+# section (score + justification + 4 CSF rows + 6 risk rows with
+# mitigation, exactly one risk heading) in the requested language.
+# ---------------------------------------------------------------------------
+
+def _stub_repaired_confidence_ar():
+    return (
+        '## 7. تقييم الثقة والمخاطر\n\n'
+        '**درجة الثقة:** 65%\n\n'
+        '### مبررات التقييم\n\n'
+        'تعكس هذه الدرجة الوضع الراهن للمنظمة.\n\n'
+        '### عوامل النجاح الحرجة\n\n'
+        '| # | العامل | الوصف | الأهمية |\n'
+        '|---|-------|-------|--------|\n'
+        '| 1 | دعم القيادة | رعاية تنفيذية | حرج |\n'
+        '| 2 | كفاءات | كوادر مؤهلة | عالٍ |\n'
+        '| 3 | حوكمة | لجنة توجيه | عالٍ |\n'
+        '| 4 | تمويل | ميزانية متعددة السنوات | عالٍ |\n\n'
+        '### المخاطر الرئيسية\n\n'
+        '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n'
+        '|---|--------|-----------|--------|-------------|\n'
+        '| 1 | تأخر الحوكمة | متوسط | عالٍ | ورش تنفيذية |\n'
+        '| 2 | نقص الميزانية | متوسط | عالٍ | جدولة متعددة السنوات |\n'
+        '| 3 | فجوات الكفاءات | عالٍ | عالٍ | برامج تدريب |\n'
+        '| 4 | تأخر التكامل | متوسط | عالٍ | تنفيذ مرحلي |\n'
+        '| 5 | تغيّر المتطلبات | متوسط | عالٍ | مراجعة ربع سنوية |\n'
+        '| 6 | تأخر التمويل | متوسط | عالٍ | اعتماد ميزانية |\n'
+    )
+
+
+def _stub_repaired_confidence_en():
+    return (
+        '## 7. Confidence Assessment & Risks\n\n'
+        '**Confidence Score:** 65%\n\n'
+        '### Score Justification\n\n'
+        'This score reflects the current maturity posture.\n\n'
+        '### Critical Success Factors\n\n'
+        '| # | Factor | Description | Importance |\n'
+        '|---|--------|-------------|------------|\n'
+        '| 1 | Sponsorship | Active leadership support | Critical |\n'
+        '| 2 | Resources | Qualified personnel | High |\n'
+        '| 3 | Governance | Standing steering committee | High |\n'
+        '| 4 | Funding | Multi-year budget | High |\n\n'
+        '### Key Risks\n\n'
+        '| # | Risk | Likelihood | Impact | Mitigation Plan |\n'
+        '|---|------|------------|--------|-----------------|\n'
+        '| 1 | Governance Delay | Medium | High | Executive workshops |\n'
+        '| 2 | Budget Lag | Medium | High | Multi-year plan |\n'
+        '| 3 | Capability Gap | High | High | Recruitment and training |\n'
+        '| 4 | Integration Delay | Medium | High | Phased rollout |\n'
+        '| 5 | Regulatory Change | Medium | High | Quarterly review |\n'
+        '| 6 | Funding Lag | Medium | High | Multi-year commitment |\n'
+    )
+
+
+def _stub_ai_repair_strategy_section(section_key, sections, lang, **_kw):
+    if section_key == 'confidence':
+        return (_stub_repaired_confidence_ar() if lang == 'ar'
+                else _stub_repaired_confidence_en())
+    # Fall back to the original for any other section_key.
+    orig = _ORIG_SYNTH_SO.get('ai_repair')
+    if orig is not None:
+        return orig(section_key=section_key, sections=sections, lang=lang, **_kw)
+    raise _APP.RepairError(f'no stub for section_key={section_key!r}')
+
+
+_ORIG_SYNTH_SO = {}
+
+
+def setUpModule():
+    """Patch synthesize_objectives_depth with a deterministic stub.  After
+    PR-5B.5F3, repair_vision_objectives_if_insufficient delegates to it.
+    Patch ai_repair_strategy_section similarly so PR-5B.6C.3
+    repair_confidence_risk_section's AI-first path runs without an AI
+    provider."""
+    if not _USING_REAL_APP:
+        return
+    _ORIG_SYNTH_SO['so'] = _APP.synthesize_objectives_depth
+    _APP.synthesize_objectives_depth = _stub_synthesize_objectives_depth
+    _ORIG_SYNTH_SO['ai_repair'] = _APP.ai_repair_strategy_section
+    _APP.ai_repair_strategy_section = _stub_ai_repair_strategy_section
+
+
+def tearDownModule():
+    if not _USING_REAL_APP:
+        return
+    if 'so' in _ORIG_SYNTH_SO:
+        _APP.synthesize_objectives_depth = _ORIG_SYNTH_SO['so']
+    if 'ai_repair' in _ORIG_SYNTH_SO:
+        _APP.ai_repair_strategy_section = _ORIG_SYNTH_SO['ai_repair']
+
+
+# ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
 

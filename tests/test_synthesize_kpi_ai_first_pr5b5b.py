@@ -159,23 +159,26 @@ class TestSynthesizeKPIAIFirstPR5B5B(unittest.TestCase):
 
     @_skip_if_no_app
     def test_domain_kpi_banks_are_not_called(self):
-        sections = {'kpis': ''}
-        with patch.object(_APP, 'ai_repair_strategy_section',
-                          return_value=_REPAIRED_KPIS_EN), \
-             patch.object(_APP, '_build_domain_kpi_bank_ar') as mock_ar, \
-             patch.object(_APP, '_build_domain_kpi_bank_en') as mock_en:
-            _APP.synthesize_kpi_depth(
-                sections, lang='en',
-                domain='Cyber Security', fw_short='NCA ECC',
-                generation_mode='drafting',
-            )
-            _APP.synthesize_kpi_depth(
-                {'kpis': ''}, lang='ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-                generation_mode='drafting',
-            )
-        mock_ar.assert_not_called()
-        mock_en.assert_not_called()
+        # PR-5B.5H: legacy _build_domain_kpi_bank_ar/_en helpers are
+        # deleted.  Replace the runtime patch with an AST scan + symbol
+        # absence assertion (no production call site, no module attr).
+        import ast
+        import os
+        path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        with open(path, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        targets = {'_build_domain_kpi_bank_ar', '_build_domain_kpi_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    f'PR-5B.5H: legacy KPI bank helper {name!r} called at '
+                    f'app.py:{node.lineno}')
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_kpi_bank_en'))
 
     @_skip_if_no_app
     def test_no_kpi_guide_rows_or_skeleton_inserted(self):

@@ -151,22 +151,29 @@ class TestSynthesizeObjectivesAIFirstPR5B5A(unittest.TestCase):
     @_skip_if_no_app
     def test_domain_so_banks_are_not_called(self):
         """_build_domain_so_bank_ar/_en must not be invoked from
-        synthesize_objectives_depth (deterministic banks are removed)."""
-        sections = {'vision': '## 1. Vision\n\nempty\n'}
-        with patch.object(_APP, 'ai_repair_strategy_section',
-                          return_value=_REPAIRED_VISION_EN), \
-             patch.object(_APP, '_build_domain_so_bank_ar') as mock_ar, \
-             patch.object(_APP, '_build_domain_so_bank_en') as mock_en:
-            _APP.synthesize_objectives_depth(
-                sections, lang='en',
-                domain='Cyber Security', fw_short='NCA ECC',
-            )
-            _APP.synthesize_objectives_depth(
-                {'vision': ''}, lang='ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-            )
-        mock_ar.assert_not_called()
-        mock_en.assert_not_called()
+        synthesize_objectives_depth (deterministic banks are removed in
+        PR-5B.5H — helpers no longer exist as Python symbols on app)."""
+        # PR-5B.5H: helpers are deleted, so the only remaining contract
+        # is "no production call site references those names." Use AST
+        # to assert that.
+        import ast
+        import os
+        path = os.path.join(os.path.dirname(__file__), '..', 'app.py')
+        with open(path, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        targets = {'_build_domain_so_bank_ar', '_build_domain_so_bank_en'}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else None)
+                self.assertNotIn(
+                    name, targets,
+                    f'PR-5B.5H: legacy SO bank helper {name!r} called at '
+                    f'app.py:{node.lineno}')
+        # And the symbols themselves must not be exposed by app.
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_ar'))
+        self.assertFalse(hasattr(_APP, '_build_domain_so_bank_en'))
 
     @_skip_if_no_app
     def test_ai_failure_raises_repair_error(self):

@@ -65,6 +65,147 @@ def _skip_if_no_app(fn):
 
 
 # ---------------------------------------------------------------------------
+# PR-5B.5F2: ``enforce_technical_strategy_depth`` is now AI-first for SO and
+# KPI top-up.  These tests exercise the schema/shape/count contract, not the
+# now-removed deterministic banks, so we install module-scoped mocks that
+# seed canonical SO/KPI content and let the surrounding deterministic
+# branches (pillars, risks, capability check) run unchanged.
+# ---------------------------------------------------------------------------
+
+_PR5F2_PATCHES = []
+_PR5F2_ORIGINALS = {}
+_PR5F2_MOCKED_VISION = (
+    "### الأهداف الاستراتيجية:\n\n"
+    "| # | الهدف الاستراتيجي | المؤشر المستهدف | المبرر | الإطار الزمني |\n"
+    "|---|--------------------|-----------------|--------|----------------|\n"
+    "| 1 | تعزيز الحوكمة | 100% | NCA ECC | 12 شهراً |\n"
+    "| 2 | إدارة الهوية والصلاحيات | 100% | NCA ECC IAM | 12 شهراً |\n"
+    "| 3 | المراقبة الأمنية | 24/7 | NCA ECC SIEM | 12 شهراً |\n"
+    "| 4 | الاستجابة للحوادث | < 4 ساعات | NCA ECC IR | 12 شهراً |\n"
+    "| 5 | حماية البيانات | 100% | NCA ECC DP | 12 شهراً |\n"
+    "| 6 | إدارة الثغرات | 30 يوم | NCA ECC VM | 12 شهراً |\n"
+)
+_PR5F2_MOCKED_KPIS = (
+    "### مؤشرات الأداء الرئيسية:\n\n"
+    "| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب |"
+    " مصدر البيانات | المالك | التكرار | الإطار الزمني |\n"
+    "|---|--------|---------------|-------------------|----------------|"
+    "----------------|--------|---------|----------------|\n"
+    "| 1 | تغطية ضوابط NCA | KPI | 100% | (مطبق/إجمالي)x100 |"
+    " GRC | CISO | شهري | 12 شهراً |\n"
+    "| 2 | تأهيل الكوادر | KPI | 100% | المُدرَّبون/الإجمالي |"
+    " HR | CISO | ربعي | 12 شهراً |\n"
+    "| 3 | جاهزية الاستجابة | KPI | < 4س | متوسط زمن الاستجابة |"
+    " SOC | CISO | شهري | 12 شهراً |\n"
+    "| 4 | جاهزية النسخ الاحتياطي | KPI | 100% | اختبارات/إجمالي |"
+    " DR | CIO | ربعي | 12 شهراً |\n"
+    "| 5 | متوسط زمن التصحيح | KPI | 30 يوم | متوسط أيام التصحيح |"
+    " VM | CISO | شهري | 12 شهراً |\n"
+    "| 6 | تقييم الأطراف الثالثة | KPI | 100% | المُقيّمون/الإجمالي |"
+    " TPRM | CISO | ربعي | 12 شهراً |\n"
+)
+
+
+# Canonical AR risk-table fixture used by the PR-5B.6C.1 AI-first
+# Section D mock. Five substantive risk rows (Risk + Likelihood + Impact +
+# Mitigation), all non-placeholder, satisfy
+# ``_count_risk_rows_with_mitigation >= 5``.
+_PR6C1_MOCKED_CONFIDENCE_AR = (
+    "## 7. تقييم الثقة والمخاطر\n\n"
+    "**درجة الثقة:** 65%\n\n"
+    "### مبررات التقييم\n\n"
+    "تستند هذه الدرجة إلى مستوى النضج الحالي والفجوات المحددة في "
+    "ضوابط الأمن السيبراني وفق الإطار المعتمد. كما تأخذ في الاعتبار "
+    "القدرة التنفيذية المتاحة لتنفيذ خطة المعالجة على مدى ثمانية عشر شهراً.\n\n"
+    "### عوامل النجاح الحرجة\n\n"
+    "| # | العامل | الوصف | الأهمية |\n"
+    "|---|-------|-------|--------|\n"
+    "| 1 | دعم القيادة التنفيذية | رعاية فعّالة من الإدارة العليا | حرج |\n"
+    "| 2 | توفر الكفاءات | كوادر قادرة على تشغيل الضوابط | عالٍ |\n"
+    "| 3 | حوكمة قابلة للتشغيل | لجنة توجيه دورية بصلاحيات واضحة | عالٍ |\n"
+    "| 4 | تمويل مستقر | ميزانية متعددة السنوات | عالٍ |\n\n"
+    "### المخاطر الرئيسية\n\n"
+    "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
+    "|---|--------|-----------|--------|-------------|\n"
+    "| 1 | تأخر اعتماد الحوكمة | متوسط | عالٍ | ورش تنفيذية مبكرة |\n"
+    "| 2 | محدودية الميزانية | متوسط | عالٍ | جدولة متعددة السنوات |\n"
+    "| 3 | عدم اكتمال جرد الأصول | متوسط | متوسط | جرد شامل قبل التطبيق |\n"
+    "| 4 | فجوات الكفاءات | عالٍ | عالٍ | برامج تدريب وتوظيف |\n"
+    "| 5 | تأخر تكامل الأنظمة | متوسط | عالٍ | تنفيذ مرحلي مع اختبار قبول |\n"
+)
+_PR6C1_MOCKED_CONFIDENCE_EN = (
+    "## 7. Confidence Assessment & Risks\n\n"
+    "**Confidence Score:** 65%\n\n"
+    "### Score Justification\n\n"
+    "This score reflects the current maturity posture and the gaps "
+    "identified in the cybersecurity controls against the chosen "
+    "framework. It also accounts for the executive capacity available "
+    "to execute the remediation plan over an 18-month horizon.\n\n"
+    "### Critical Success Factors\n\n"
+    "| # | Factor | Description | Importance |\n"
+    "|---|--------|-------------|------------|\n"
+    "| 1 | Executive Sponsorship | Active leadership support and oversight | Critical |\n"
+    "| 2 | Skilled Resources | Qualified personnel to operate controls | High |\n"
+    "| 3 | Operable Governance | Standing steering committee with clear remit | High |\n"
+    "| 4 | Stable Funding | Multi-year budget tied to remediation plan | High |\n\n"
+    "### Key Risks\n\n"
+    "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
+    "|---|------|------------|--------|-----------------|\n"
+    "| 1 | Delayed Governance Approval | Medium | High | Early executive workshops |\n"
+    "| 2 | Insufficient Budget | Medium | High | Multi-year budget scheduling |\n"
+    "| 3 | Incomplete Asset Inventory | Medium | Medium | Comprehensive asset discovery |\n"
+    "| 4 | Capability Gaps | High | High | Recruitment and training programmes |\n"
+    "| 5 | Integration Delays | Medium | High | Phased rollout with acceptance testing |\n"
+)
+
+
+def _mock_ai_repair_section(section_key, sections, lang, **_kwargs):
+    """PR-5B.6C.1: Section D delegates to ``ai_repair_strategy_section``
+    with ``section_key='confidence'``. Return a canonical rich confidence
+    section so depth-pass tests that incidentally trigger Section D
+    succeed without a live AI provider. For other section keys, raise
+    ``RepairError`` to mirror "no provider configured".
+    """
+    if section_key == 'confidence':
+        return (_PR6C1_MOCKED_CONFIDENCE_AR if lang == 'ar'
+                else _PR6C1_MOCKED_CONFIDENCE_EN)
+    raise _APP.RepairError(
+        f'_mock_ai_repair_section: no fixture for section_key={section_key!r}')
+
+
+def _mock_synth_objectives(sections, lang, **_kwargs):
+    sections['vision'] = _PR5F2_MOCKED_VISION
+
+
+def _mock_synth_kpis(sections, lang, **_kwargs):
+    sections['kpis'] = _PR5F2_MOCKED_KPIS
+    return 6
+
+
+def setUpModule():
+    """Monkey-patch the AI synth helpers used by
+    ``enforce_technical_strategy_depth`` (PR-5B.5F2 + PR-5B.6C.1)."""
+    if _APP is None:
+        return
+    for _name, _fn in (('synthesize_objectives_depth', _mock_synth_objectives),
+                       ('synthesize_kpi_depth', _mock_synth_kpis),
+                       ('ai_repair_strategy_section', _mock_ai_repair_section)):
+        if hasattr(_APP, _name):
+            _orig = getattr(_APP, _name)
+            _PR5F2_PATCHES.append((_name, _orig))
+            _PR5F2_ORIGINALS[_name] = _orig
+            setattr(_APP, _name, _fn)
+
+
+def tearDownModule():
+    if _APP is None:
+        return
+    while _PR5F2_PATCHES:
+        _name, _orig = _PR5F2_PATCHES.pop()
+        setattr(_APP, _name, _orig)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -189,39 +330,55 @@ class TestPillarInitiativeDepth(unittest.TestCase):
 
     @_skip_if_no_app
     def test_synthesized_pillars_have_three_initiatives(self):
-        """synthesize_pillars_depth() on thin input must build 3-init pillars."""
+        """PR-5B.6B: synthesize_pillars_depth is now AI-first. With no AI
+        provider configured (mocked), an empty pillars section triggers
+        ai_repair_strategy_section() which raises RepairError. The
+        contract guarantees that no deterministic bank pillars are
+        inserted when AI is unavailable — the section is left untouched
+        and the caller surfaces the failure (annotated
+        section='pillars')."""
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-            sector='Government', org_name='Test Org',
-        )
-        pillars = _parse_pillars(sections.get('pillars', ''))
-        self.assertGreaterEqual(len(pillars), 3,
-                                'Expected ≥3 pillars from synthesizer')
-        for title, body in pillars:
-            n = _count_initiative_rows(body)
-            self.assertGreaterEqual(
-                n, 3,
-                f'Synthesized pillar "{title}" has {n} initiative(s); expected ≥3',
-            )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError) as _ctx:
+                _APP.synthesize_pillars_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                    sector='Government', org_name='Test Org',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
+        self.assertEqual(getattr(_ctx.exception, 'section', None),
+                         'pillars')
+        self.assertEqual(sections.get('pillars', ''), '')
 
     @_skip_if_no_app
     def test_english_synthesized_pillars_have_three_initiatives(self):
+        """PR-5B.6B: see Arabic counterpart above."""
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='en',
-            domain='Cyber Security', fw_short='NCA ECC',
-            sector='Government', org_name='Test Org',
-        )
-        pillars = _parse_pillars(sections.get('pillars', ''))
-        self.assertGreaterEqual(len(pillars), 3)
-        for title, body in pillars:
-            n = _count_initiative_rows(body)
-            self.assertGreaterEqual(
-                n, 3,
-                f'EN pillar "{title}" has {n} initiative(s); expected ≥3',
-            )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError) as _ctx:
+                _APP.synthesize_pillars_depth(
+                    sections, lang='en',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                    sector='Government', org_name='Test Org',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
+        self.assertEqual(getattr(_ctx.exception, 'section', None),
+                         'pillars')
+        self.assertEqual(sections.get('pillars', ''), '')
 
     @_skip_if_no_app
     def test_already_rich_pillars_untouched(self):
@@ -465,14 +622,30 @@ class TestNoTraceComments(unittest.TestCase):
 
     @_skip_if_no_app
     def test_synthesized_pillars_have_no_trace_comments(self):
+        # PR-5B.6B: synthesize_pillars_depth is now AI-first. With no AI
+        # provider available (mocked), an empty pillars section triggers
+        # ai_repair_strategy_section() which raises RepairError. The
+        # contract guarantees that no deterministic cyber-default rows
+        # / trace comments are inserted when AI is unavailable — the
+        # section is left untouched and the caller surfaces the failure.
         sections = {'pillars': ''}
-        _APP.synthesize_pillars_depth(
-            sections, lang='ar',
-            domain='Cyber Security', fw_short='NCA ECC',
-        )
+        _orig = getattr(_APP, 'ai_repair_strategy_section')
+
+        def _no_provider(**_kw):
+            raise _APP.RepairError('test: no AI provider')
+
+        setattr(_APP, 'ai_repair_strategy_section', _no_provider)
+        try:
+            with self.assertRaises(_APP.RepairError):
+                _APP.synthesize_pillars_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                )
+        finally:
+            setattr(_APP, 'ai_repair_strategy_section', _orig)
         self.assertFalse(
             _has_trace_comments(sections.get('pillars', '')),
-            'Synthesized pillars contain trace comments',
+            'Untouched pillars section must not contain trace comments',
         )
 
     @_skip_if_no_app
@@ -485,11 +658,22 @@ class TestNoTraceComments(unittest.TestCase):
         # unavailable — the section is left untouched and the caller
         # surfaces the failure.
         sections = {'kpis': ''}
-        with self.assertRaises(_APP.RepairError):
-            _APP.synthesize_kpi_depth(
-                sections, lang='ar',
-                domain='Cyber Security', fw_short='NCA ECC',
-            )
+        # PR-5B.5F2: restore the real synthesize_kpi_depth (this module
+        # mocks it for the enforce_technical_strategy_depth tests; this
+        # specific test exercises the no-AI-provider behaviour directly).
+        _orig_kpi = _PR5F2_ORIGINALS.get('synthesize_kpi_depth')
+        if _orig_kpi is None:
+            self.skipTest('original synthesize_kpi_depth not captured')
+        _mock_kpi = getattr(_APP, 'synthesize_kpi_depth')
+        setattr(_APP, 'synthesize_kpi_depth', _orig_kpi)
+        try:
+            with self.assertRaises(_APP.RepairError):
+                _APP.synthesize_kpi_depth(
+                    sections, lang='ar',
+                    domain='Cyber Security', fw_short='NCA ECC',
+                )
+        finally:
+            setattr(_APP, 'synthesize_kpi_depth', _mock_kpi)
         self.assertFalse(
             _has_trace_comments(sections.get('kpis', '')),
             'Untouched KPI section must not contain trace comments',
