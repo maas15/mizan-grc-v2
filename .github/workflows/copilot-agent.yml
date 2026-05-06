@@ -1,0 +1,70 @@
+name: Copilot agent
+
+# Manual trigger only (preferred option from spec) to reduce trigger frequency
+# and avoid hitting Copilot Pro+ session/rate limits.
+on:
+  workflow_dispatch:
+
+# Cancel any prior in-flight Copilot agent runs for the same PR / ref.
+concurrency:
+  group: copilot-agent-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  copilot:
+    runs-on: ubuntu-latest
+    # Manual-only trigger; this guard also makes the job safe to extend later
+    # with a `pull_request` trigger gated by a `copilot` label.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'copilot')
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute diff against base branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Prefer the PR base ref when available; fall back to the repo
+          # default branch. Never hardcode "main".
+          BASE_REF="${GITHUB_BASE_REF:-${DEFAULT_BRANCH:-}}"
+
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')"
+          fi
+
+          echo "Using BASE_REF=$BASE_REF"
+
+          git fetch --no-tags --prune origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || \
+          git fetch --no-tags --prune origin "${BASE_REF}"
+
+          git diff "origin/${BASE_REF}...HEAD"
+
+      - name: Copilot agent
+        id: copilot
+        continue-on-error: true
+        uses: github/copilot-cli-action@v1
+        with:
+          # Let the action pick an available model so a single overloaded
+          # model does not cause a hard failure.
+          model: auto
+
+      - name: Fail if Copilot failed for non-rate-limit reasons
+        if: steps.copilot.outcome == 'failure'
+        shell: bash
+        run: |
+          set +e
+          if grep -R -E "status.*429|user_global_rate_limited|exceeded your 5 hour session limits|Retry after .* too long" -n "$RUNNER_TEMP" "$GITHUB_WORKSPACE" 2>/dev/null; then
+            echo "Copilot was rate-limited; not failing CI."
+            exit 0
+          fi
+          echo "Copilot failed for a non-rate-limit reason."
+          exit 1
