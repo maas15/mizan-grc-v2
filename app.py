@@ -1501,13 +1501,24 @@ def generate_raci_for_domain(domain):
             ]
         },
     }
-    d = RACI_MAP.get(domain, RACI_MAP['Cyber Security'])
+    # Strict domain resolution — accept English/Arabic display names,
+    # canonical codes (cyber/data/ai/dt/erm/global), and slug forms.
+    # Unknown/missing domain raises DomainResolutionError. No silent
+    # fallback to Cyber Security.
+    _code = normalize_domain_strict(domain)
+    _canonical_display = _DOMAIN_DISPLAY_EN.get(_code)
+    if _canonical_display is None or _canonical_display not in RACI_MAP:
+        raise DomainResolutionError(
+            f'generate_raci_for_domain: no RACI mapping for resolved '
+            f'domain code {_code!r} (input {domain!r})'
+        )
+    d = RACI_MAP[_canonical_display]
     rows = '\n'.join(
         f'| {act} | {r} | {a} | {c} | {i} |'
         for act, r, a, c, i in d['activities']
     )
     return (
-        f"DOMAIN RACI ({domain}):\n"
+        f"DOMAIN RACI ({_canonical_display}):\n"
         f"Sponsor: {d['sponsor']} | Primary Accountable: {d['accountable']}\n"
         f"| Activity | Responsible | Accountable | Consulted | Informed |\n"
         f"|---|---|---|---|---|\n"
@@ -16507,14 +16518,16 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
     # bank, no top-up.
     try:
         domain_context = get_strategy_domain_context(
-            domain or 'Cyber Security', lang,
+            domain, lang,
             selected_frameworks=[fw_short] if fw_short else None,
         )
     except DomainResolutionError as _de:
-        raise RepairError(
+        _err = RepairError(
             f'synthesize_objectives_depth: cannot resolve domain '
             f'context for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'vision')
+        raise _err
 
     repaired = ai_repair_strategy_section(
         section_key='vision',
@@ -16697,14 +16710,16 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
     # Insufficient or schema missing — AI-first repair.
     try:
         domain_context = get_strategy_domain_context(
-            domain or 'Cyber Security', lang,
+            domain, lang,
             selected_frameworks=[fw_short] if fw_short else None,
         )
     except DomainResolutionError as _de:
-        raise RepairError(
+        _err = RepairError(
             f'synthesize_kpi_depth: cannot resolve domain context '
             f'for {domain!r}: {_de}'
         )
+        setattr(_err, 'section', 'kpis')
+        raise _err
 
     if current < needed_floor:
         _why = f'kpi_rows_insufficient:{current}/{needed_floor}'
