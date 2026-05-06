@@ -13044,6 +13044,7 @@ def api_strategy_latest():
     finishing the INSERT.
     """
     import json as _json_sl
+    import hashlib as _hl_sl
     domain = request.args.get('domain', '')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
@@ -13057,21 +13058,95 @@ def api_strategy_latest():
                 'error': 'No strategy found',
                 'attempts': attempts,
             }), 404
-        _cj = _json_sl.loads(row['content_json']) if row['content_json'] else None
-        _sj = _json_sl.loads(row['sections_json']) if row['sections_json'] else None
+        _row_keys = row.keys() if hasattr(row, 'keys') else []
+        _sections_json_raw = row['sections_json'] if 'sections_json' in _row_keys else None
+        _content_json_raw  = row['content_json']  if 'content_json'  in _row_keys else None
+        _row_content       = row['content']       if 'content'       in _row_keys else None
+        _row_domain        = row['domain']        if 'domain'        in _row_keys else None
+        _row_language      = row['language']      if 'language'      in _row_keys else None
+        _row_id            = row['id']            if 'id'            in _row_keys else None
+        _cj = _json_sl.loads(_content_json_raw) if _content_json_raw else None
+        _sj = _json_sl.loads(_sections_json_raw) if _sections_json_raw else None
+        # PR-5B.7B.4: canonical content + parity hash + export-domain guard.
+        # Mirrors _canonical_content_from_db so preview ↔ DB ↔ export
+        # produce the same canonical payload and same canonical_hash.
+        _canonical_content = ''
+        _canonical_source  = None
+        try:
+            if isinstance(_sj, dict) and _sj:
+                _enforce_export_domain_isolation(
+                    _sj,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type='strategy',
+                    artifact_id=_row_id,
+                )
+                _canonical_content = _assemble_canonical_from_sections(_sj)
+                _canonical_source  = 'sections_json'
+            elif _row_content and isinstance(_row_content, str) and _row_content.strip():
+                _enforce_export_domain_isolation_from_text(
+                    _row_content,
+                    domain=_row_domain,
+                    language=_row_language,
+                    artifact_type='strategy',
+                    artifact_id=_row_id,
+                )
+                try:
+                    _canonical_content = ensure_markdown_formatting(_row_content)
+                except Exception as _fmt_e:
+                    print(f'[STRATEGY-LATEST] ensure_markdown_formatting failed '
+                          f'(non-fatal): {_fmt_e}', flush=True)
+                    _canonical_content = _row_content
+                _canonical_source = 'content_fallback'
+        except DomainContaminationError as _dce:
+            # Saved strategy contains cross-domain content — fail CLOSED with
+            # 422 to match PR-5B.7B.3 export-route behaviour. Otherwise the
+            # user would see a "clean" preview that immediately fails on
+            # download.
+            print(f'[EXPORT-DOMAIN-GUARD] strategy-latest denied for '
+                  f'strategy/{_row_id}: {_dce}', flush=True)
+            return jsonify({
+                'error': 'Preview blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': _row_domain,
+                'artifact_type': 'strategy',
+                'artifact_id': _row_id,
+            }), 422
         # Last-resort: wrap full raw content so at least the vision tab renders
-        if _sj is None and row['content']:
-            _sj = {'vision': row['content']}
+        if _sj is None and _row_content:
+            _sj = {'vision': _row_content}
+            if not _canonical_source:
+                _canonical_source = 'wrap_vision'
+        # Parity hash — sha256(canonical || raw_sections_json_str)[:16].
+        # Computed against the RAW sections_json string read from DB so it
+        # equals the export-time hash logged by _canonical_content_from_db
+        # for the same row.
+        _canonical_hash = None
+        try:
+            _canonical_hash = _hl_sl.sha256(
+                ((_canonical_content or '') + '||' + (_sections_json_raw or ''))
+                .encode('utf-8')
+            ).hexdigest()[:16]
+            print(f'[STRATEGY-PARITY] latest canonical_hash={_canonical_hash} '
+                  f'artifact=strategy/{_row_id} '
+                  f'source={_canonical_source} '
+                  f'content_len={len(_canonical_content or "")}', flush=True)
+        except Exception as _hash_e:
+            print(f'[STRATEGY-LATEST] hash compute failed (non-fatal): {_hash_e}',
+                  flush=True)
         return jsonify({
             'success': True,
-            'id': row['id'],
-            'strategy_id': row['id'],
+            'id': _row_id,
+            'strategy_id': _row_id,
             'sections': _sj,
             'content_json': _cj,
-            'domain': row['domain'],
-            'language': row['language'],
+            'domain': _row_domain,
+            'language': _row_language,
             'document_title': row['document_title'] or '',
             'recovery_attempts': attempts,
+            'content': _canonical_content,
+            'canonical_hash': _canonical_hash,
+            'canonical_source': _canonical_source,
         })
     except Exception as _sle:
         print(f"[STRATEGY-LATEST] error: {_sle}", flush=True)
@@ -26509,7 +26584,7 @@ RAW STRATEGY TO ENHANCE:
                         print(f"DEBUG: Extracted {section_name} ({len(section_content)} chars)", flush=True)
         
         # Ensure all 7 sections are filled
-        section_order = ['vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence']
+        section_order = list(STRATEGY_SECTION_ORDER)
         
         # Order-based assignment: fill EMPTY sections with UNASSIGNED parts only
         # This prevents the bug where part 0 (vision) gets duplicated into pillars slot
@@ -28922,13 +28997,13 @@ The confidence score is based on a comprehensive assessment of the organization'
             sections['gaps'] = _fix_gap_table_header(sections['gaps'])
 
         # Normalize every strategy section before building JSON.
-        for _k in ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence'):
+        for _k in STRATEGY_SECTION_ORDER:
             if sections.get(_k):
                 sections[_k] = ensure_markdown_formatting(sections[_k])
 
 
         # ── Reassemble content from the fixed sections ────────────────────────
-        _section_order = ['vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis', 'confidence']
+        _section_order = list(STRATEGY_SECTION_ORDER)
         _fixed_parts = [sections[sk] for sk in _section_order if sections.get(sk) and sections[sk].strip()]
         if _fixed_parts:
             content = '\n\n'.join(_fixed_parts)
@@ -29136,8 +29211,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # sections that just satisfied the audit. Without this,
                     # `content` would still hold the pre-Tier-4 normalized
                     # version that lacked the canonical markers.
-                    _section_order_t4 = ['vision', 'pillars', 'environment',
-                                         'gaps', 'roadmap', 'kpis', 'confidence']
+                    _section_order_t4 = list(STRATEGY_SECTION_ORDER)
                     _fixed_parts_t4 = [sections[sk] for sk in _section_order_t4
                                        if sections.get(sk) and sections[sk].strip()]
                     if _fixed_parts_t4:
@@ -29237,8 +29311,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                               flush=True)
                         _completeness_flags = []
                     # Rebuild content from completeness-fixed sections
-                    _section_order_c = ['vision', 'pillars', 'environment',
-                                        'gaps', 'roadmap', 'kpis', 'confidence']
+                    _section_order_c = list(STRATEGY_SECTION_ORDER)
                     _fixed_parts_c = [sections[sk] for sk in _section_order_c
                                       if sections.get(sk) and sections[sk].strip()]
                     if _fixed_parts_c:
@@ -40460,6 +40533,58 @@ def _enforce_export_domain_isolation_from_text(text, domain, language,
     )
 
 
+# ── Shared canonical section order (PR-5B.7B.4) ────────────────────────────────
+# Single source of truth for the 7-section assembly order used by save-time
+# normalization, _canonical_content_from_db (export), and /api/strategy/latest
+# (preview recovery). Board-summary order is intentionally different (6 keys
+# without 'environment') and is NOT covered by this tuple.
+STRATEGY_SECTION_ORDER = (
+    "vision",
+    "pillars",
+    "environment",
+    "gaps",
+    "roadmap",
+    "kpis",
+    "confidence",
+)
+
+
+def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -> str:
+    """Assemble canonical strategy markdown from a per-section dict.
+
+    PR-5B.7B.4: shared helper used by both export (_canonical_content_from_db)
+    and preview recovery (/api/strategy/latest) so both code paths produce
+    byte-identical canonical content.
+
+    Behaviour:
+      * Iterates ``STRATEGY_SECTION_ORDER``; includes only non-empty string
+        sections.
+      * Joins included sections with two newlines.
+      * If ``apply_formatting=True``, runs ``ensure_markdown_formatting`` on
+        the joined string. If formatting fails, returns the unformatted
+        joined string (matches the existing non-fatal try/except inside
+        _canonical_content_from_db).
+      * Empty / non-dict input returns ``""``.
+    """
+    if not isinstance(sections_dict, dict) or not sections_dict:
+        return ""
+    parts = [sections_dict[k] for k in STRATEGY_SECTION_ORDER
+             if sections_dict.get(k)
+             and isinstance(sections_dict[k], str)
+             and sections_dict[k].strip()]
+    if not parts:
+        return ""
+    canonical = "\n\n".join(parts)
+    if not apply_formatting:
+        return canonical
+    try:
+        return ensure_markdown_formatting(canonical)
+    except Exception as _fmt_e:
+        print(f'[CANON] ensure_markdown_formatting failed (non-fatal): {_fmt_e}',
+              flush=True)
+        return canonical
+
+
 # ── Hard publishability gate for export (internal helper — not a route) ────────
 def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) -> str:
     """Load the canonical markdown for an artifact directly from the DB.
@@ -40532,18 +40657,12 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                     artifact_type=artifact_type,
                     artifact_id=_art_id,
                 )
-                _order = ['vision', 'pillars', 'environment', 'gaps',
-                          'roadmap', 'kpis', 'confidence']
-                _parts = [_secs[k] for k in _order
-                          if _secs.get(k) and isinstance(_secs[k], str) and _secs[k].strip()]
-                if _parts:
-                    _canonical = '\n\n'.join(_parts)
-                    # Apply final pass through normalizer so any late structural
-                    # tweaks (ghost-row drop, cascade split) are reflected here too.
-                    try:
-                        _canonical = ensure_markdown_formatting(_canonical)
-                    except Exception as _fmt_e:
-                        print(f'[CANON] ensure_markdown_formatting failed (non-fatal): {_fmt_e}', flush=True)
+                # PR-5B.7B.4: delegate to shared helper for order + formatting.
+                # Behaviour preserved: same STRATEGY_SECTION_ORDER, same
+                # ensure_markdown_formatting application, same non-fatal
+                # fallback to unformatted join on formatting error.
+                _canonical = _assemble_canonical_from_sections(_secs)
+                if _canonical:
                     # Parity hash — matches the hash logged at save time.
                     # Operators should see the SAME 16-char hash at save
                     # and at every subsequent export of the same artifact.
