@@ -28407,117 +28407,35 @@ The confidence score is based on a comprehensive assessment of the organization'
             _struct_valid2, _struct_broken2 = _validate_strategy_structure(sections, lang)
 
             if _struct_broken2:
+                # PR-5B.7B.1: Pass-2 deterministic fallback reconstruction REMOVED.
+                # The previous block synthesised hardcoded bilingual tables for
+                # pillars/gaps/kpis/confidence (with a silent "Cyber Security"
+                # default) when the Pass-1 AI repair still failed the structure
+                # validator. That bypassed every AI-first synth contract and
+                # _mark_synth_failed telemetry. We now fail-closed: each broken
+                # section is marked synth_failed in the request-local
+                # _synth_status dict; sections[<sec>] is left untouched. The
+                # downstream re-validation (_struct_broken3) and the existing
+                # warning-bypass / _wb_flags 422 gate handle the response.
                 print(
-                    f"[STRATEGY] Still broken after AI repair — running fallback reconstruction: "
+                    f"[STRATEGY] Still broken after AI repair — marking "
+                    f"synth_failed (no deterministic fallback): "
                     f"{list(_struct_broken2.keys())}", flush=True
                 )
-
-                # ── Pass 2: deterministic Python fallback reconstruction ────────
-                # When the AI repair still fails the schema validator, inject a
-                # hardcoded minimal valid table for each outstanding broken schema.
-                # Content is domain-aware and organisation-scoped.  The 422 is only
-                # returned if this pass also cannot satisfy the validator.
-                def _build_fallback_section(fb_sec, fb_lang, fb_domain, fb_org, fb_sector):
-                    """Return a minimal but validator-compliant section string, or None."""
-                    _ar = fb_lang == 'ar'
-                    _ds = (fb_domain or 'Cyber Security').split()[0]  # e.g. "Cyber"
-
-                    if fb_sec == 'pillars':
-                        if _ar:
-                            return (
-                                "## 2. الركائز الاستراتيجية\n\n"
-                                "| # | المبادرة | الوصف | المخرج المتوقع |\n"
-                                "|---|---------|-------|---------------|\n"
-                                f"| 1 | إطار الحوكمة | إنشاء هيكل الحوكمة والسياسات اللازمة لـ {fb_org} | وثيقة إطار الحوكمة المعتمدة |\n"
-                                f"| 2 | إدارة المخاطر | تطبيق برنامج شامل لتقييم المخاطر ومعالجتها | سجل المخاطر وخطط المعالجة |\n"
-                                f"| 3 | بناء القدرات | تطوير كفاءات الموظفين في مجال {_ds} | مصفوفة الكفاءات وسجل التدريب |\n"
-                            )
-                        return (
-                            "## 2. Strategic Pillars\n\n"
-                            "| # | Initiative | Description | Expected Deliverable |\n"
-                            "|---|-----------|-------------|---------------------|\n"
-                            f"| 1 | Governance Framework | Establish {_ds} governance structure and policies for {fb_org} | Approved governance framework document |\n"
-                            f"| 2 | Risk Management | Implement comprehensive risk assessment and mitigation programme | Risk register and treatment plans |\n"
-                            f"| 3 | Capability Development | Build organisational {_ds} competency across {fb_org} | Training programme and competency matrix |\n"
-                        )
-
-                    if fb_sec == 'gaps':
-                        if _ar:
-                            return (
-                                "## 4. تحليل الفجوات\n\n"
-                                "| # | الفجوة | الوصف | الأولوية | الحالة |\n"
-                                "|---|-------|-------|----------|--------|\n"
-                                f"| 1 | غياب إطار الحوكمة | لا يوجد هيكل رسمي لحوكمة {_ds} في {fb_org} | عالٍ | مفتوح - مؤكد |\n"
-                                f"| 2 | نقص توثيق السياسات | السياسات والإجراءات المتعلقة بـ {_ds} غير مكتملة | عالٍ | مفتوح - مؤكد |\n"
-                                f"| 3 | ضعف برامج التوعية | لا يوجد برنامج رسمي لتوعية الموظفين | متوسط | مفتوح - مؤكد |\n"
-                            )
-                        return (
-                            "## 4. Gap Analysis\n\n"
-                            "| # | Gap | Description | Priority | Status |\n"
-                            "|---|-----|-------------|----------|--------|\n"
-                            f"| 1 | {_ds} Governance Absence | No formal {_ds} governance structure exists at {fb_org} | High | Open - Confirmed |\n"
-                            f"| 2 | Policy Documentation | {_ds} policies and procedures are incomplete or absent | High | Open - Confirmed |\n"
-                            f"| 3 | Awareness Programme | No formal {_ds} awareness programme for staff exists | Medium | Open - Confirmed |\n"
-                        )
-
-                    if fb_sec == 'kpis':
-                        if _ar:
-                            return (
-                                "## 6. مؤشرات الأداء الرئيسية\n\n"
-                                "| # | وصف مؤشر الأداء | القيمة المستهدفة | صيغة الحساب | المبرر | الإطار الزمني |\n"
-                                "|---|----------------|-----------------|-------------|--------|---------------|\n"
-                                f"| 1 | معدل الامتثال للإطار | 90% | (الضوابط المنفذة ÷ إجمالي الضوابط) × 100 | قياس مدى الالتزام بمتطلبات الإطار | 12 شهراً |\n"
-                                f"| 2 | نسبة إغلاق الفجوات | 80% | (الفجوات المغلقة ÷ إجمالي الفجوات) × 100 | تتبع تقدم معالجة الفجوات المحددة | 18 شهراً |\n"
-                            )
-                        return (
-                            "## 6. Key Performance Indicators\n\n"
-                            "| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n"
-                            "|---|----------------|--------------|---------------------|---------------|-----------|\n"
-                            f"| 1 | {_ds} Framework Compliance Rate | 90% | (Implemented controls ÷ Total controls) × 100 | Measures adherence to framework requirements | 12 months |\n"
-                            f"| 2 | Gap Closure Rate | 80% | (Closed gaps ÷ Total identified gaps) × 100 | Tracks remediation progress against identified gaps | 18 months |\n"
-                        )
-
-                    if fb_sec == 'confidence':
-                        if _ar:
-                            return (
-                                "## 7. تقييم الثقة والمخاطر\n\n"
-                                "**درجة الثقة:** 60%\n\n"
-                                "### عوامل النجاح الحرجة:\n\n"
-                                "| # | العامل | الوصف | الأهمية |\n"
-                                "|---|-------|-------|--------|\n"
-                                f"| 1 | دعم القيادة التنفيذية | الدعم الفعّال والالتزام من الإدارة العليا في {fb_org} | حرج |\n"
-                                f"| 2 | توفر الكوادر المؤهلة | توافر الكفاءات البشرية القادرة على تنفيذ استراتيجية {_ds} | عالٍ |\n\n"
-                                "### المخاطر الرئيسية:\n\n"
-                                "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-                                "|---|--------|-----------|--------|-------------|\n"
-                                "| 1 | محدودية الموارد | متوسط | عالٍ | التنفيذ المرحلي مع تحديد الأولويات وفق المخاطر |\n"
-                                "| 2 | مقاومة التغيير | عالٍ | متوسط | خطة إدارة تغيير شاملة مع دعم القيادة التنفيذية |\n"
-                            )
-                        return (
-                            "## 7. Confidence Assessment & Risks\n\n"
-                            "**Confidence Score:** 60%\n\n"
-                            "### Critical Success Factors:\n\n"
-                            "| # | Factor | Description | Importance |\n"
-                            "|---|--------|-------------|------------|\n"
-                            f"| 1 | Executive Leadership Support | Active sponsorship and commitment from senior leadership at {fb_org} | Critical |\n"
-                            f"| 2 | Qualified Resources | Availability of {_ds} competent personnel to execute the strategy | High |\n\n"
-                            "### Key Risks:\n\n"
-                            "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-                            "|---|------|------------|--------|----------------|\n"
-                            "| 1 | Resource Constraints | Medium | High | Phased implementation with risk-based prioritisation |\n"
-                            "| 2 | Resistance to Change | High | Medium | Comprehensive change management programme with executive sponsorship |\n"
-                        )
-                    return None
-
                 for _bsec2, _reason2 in _struct_broken2.items():
-                    _fallback = _build_fallback_section(
-                        _bsec2, lang, _domain_v, _org_v, _sector_v
-                    )
-                    if _fallback:
-                        sections[_bsec2] = _fallback
-                        print(f"[STRATEGY] Fallback reconstruction applied for '{_bsec2}'", flush=True)
+                    try:
+                        _err2 = RepairError(
+                            f"Pass-2 AI repair could not satisfy structure "
+                            f"validator for '{_bsec2}': {_reason2}"
+                        )
+                        setattr(_err2, 'section', _bsec2)
+                        _mark_synth_failed(_synth_status, _bsec2, _err2)
+                    except Exception:
+                        # Defensive: never let telemetry plumbing raise out of
+                        # the request handler.
+                        pass
 
-                # ── Final validation after fallback reconstruction ─────────────
+                # ── Final validation after AI repair (no deterministic Pass-2) ─
                 _struct_valid3, _struct_broken3 = _validate_strategy_structure(sections, lang)
                 if _struct_broken3:
                     _broken_list3 = ', '.join(_struct_broken3.keys())
