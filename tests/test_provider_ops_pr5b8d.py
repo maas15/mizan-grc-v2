@@ -150,12 +150,16 @@ def test_skipped_fallback_log_does_not_include_api_key():
     # Find the line(s) matching the skipped-fallback log emission.
     lines = [ln for ln in src.splitlines() if "Skipping fallback provider" in ln]
     assert lines, "Expected at least one Skipping fallback provider log line"
+    # Forbid any of the known key references / generic key-shaped tokens
+    # (whole-word match so harmless prose like "no API key" doesn't trip).
+    forbidden = re.compile(
+        r'\b(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|GROQ_API_KEY|'
+        r'DEEPSEEK_API_KEY|key_map\.get|config\.[A-Z_]+_KEY)\b'
+    )
     for ln in lines:
-        assert 'API_KEY' not in ln.upper().replace('NO API KEY', ''), (
-            f"Skipped-fallback log must not reference API key values: {ln!r}"
-        )
-        assert 'config.' not in ln, (
-            f"Skipped-fallback log must not interpolate config.* values: {ln!r}"
+        assert not forbidden.search(ln), (
+            f"Skipped-fallback log must not reference any API key value or "
+            f"config.*_KEY attribute: {ln!r}"
         )
 
 
