@@ -95,8 +95,9 @@ def complete_background_task(task_id, result):
     try:
         with closing(get_db_direct()) as conn:
             conn.execute(
-                'UPDATE background_tasks SET status = ?, result = ? WHERE task_id = ?',
-                ('done', result, task_id)
+                'UPDATE background_tasks SET status = ?, result = ?, '
+                'stage = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                ('done', result, 'task_completed', task_id)
             )
             conn.commit()
     except Exception as e:
@@ -107,12 +108,54 @@ def fail_background_task(task_id, error):
     try:
         with closing(get_db_direct()) as conn:
             conn.execute(
-                'UPDATE background_tasks SET status = ?, error = ? WHERE task_id = ?',
-                ('error', error, task_id)
+                'UPDATE background_tasks SET status = ?, error = ?, '
+                'stage = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                ('error', error, 'task_failed', task_id)
             )
             conn.commit()
     except Exception as e:
         print(f"Task fail error: {e}", flush=True)
+
+def bump_background_task_progress(task_id, stage):
+    """PR-5B.8B Section A: lightweight progress beacon for long-running
+    strategy generation. Writes the current ``stage`` (sanitized and
+    truncated to 80 chars) and ``updated_at = now`` on the task row, and
+    emits a single structured log line.
+
+    MUST NEVER raise: if the columns don't exist (pre-migration DB) or
+    the UPDATE fails for any reason, swallow the error so callers can
+    sprinkle progress beacons into the generation pipeline without
+    risking the whole task. Also no-ops on falsy ``task_id``.
+    """
+    if not task_id:
+        return
+    try:
+        # Sanitize: coerce to str, strip control chars / newlines that
+        # would corrupt the single-line log format, then cap at 80 chars.
+        stage_str = '' if stage is None else str(stage)
+        stage_str = stage_str.replace('\n', ' ').replace('\r', ' ').strip()
+        if len(stage_str) > 80:
+            stage_str = stage_str[:80]
+    except Exception:
+        stage_str = ''
+    try:
+        with closing(get_db_direct()) as conn:
+            conn.execute(
+                'UPDATE background_tasks SET stage = ?, '
+                'updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                (stage_str, task_id)
+            )
+            conn.commit()
+    except Exception as e:
+        # Pre-migration DB or transient lock — never block the generation
+        # pipeline. Log once at debug level (stderr via print) and move on.
+        print(f"[STRATEGY-ASYNC] stage_bump_db_error task={task_id[:8]} "
+              f"err={e}", flush=True)
+    try:
+        print(f"[STRATEGY-ASYNC] stage_bump task={task_id[:8]} "
+              f"stage={stage_str}", flush=True)
+    except Exception:
+        pass
 
 def get_background_task(task_id):
     """Get task status from database."""
@@ -856,9 +899,26 @@ def init_db():
             result TEXT,
             error TEXT,
             callback_domain TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            stage TEXT
         )
     ''')
+    # PR-5B.8B Section A: guarded migration for pre-existing DBs that
+    # were created before stage/updated_at columns existed. ALTER TABLE
+    # ADD COLUMN is idempotent only via PRAGMA inspection on SQLite.
+    try:
+        _bg_cols = {row[1] for row in cursor.execute(
+            "PRAGMA table_info(background_tasks)").fetchall()}
+        if 'updated_at' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks ADD COLUMN updated_at TIMESTAMP")
+        if 'stage' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks ADD COLUMN stage TEXT")
+    except Exception as _bg_mig_err:
+        print(f"[STRATEGY-ASYNC] background_tasks migration skipped: "
+              f"{_bg_mig_err}", flush=True)
     # Clean up old tasks on startup
     cursor.execute("DELETE FROM background_tasks WHERE created_at < datetime('now', '-1 hour')")
     
