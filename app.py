@@ -17023,21 +17023,37 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
                                  challenge_flags=None,
                                  diagnostic_gaps=None,
                                  maturity='initial',
-                                 generation_mode='drafting'):
-    """AI-first Strategic Objectives synthesis (PR-5B.5A).
+                                 generation_mode='drafting',
+                                 min_rows=None):
+    """AI-first Strategic Objectives synthesis (PR-5B.5A; PR-5B.8E
+    alignment).
 
     Behaviour:
-      * If ``sections['vision']`` already has
-        ``>= _RICHNESS_MIN_SO_ROWS`` valid Strategic Objective rows
-        (``count_valid_objective_rows``), return unchanged with
-        ``rebuilt=False``. AI repair is not invoked.
+      * If ``sections['vision']`` already has ``>= eff_min`` valid
+        Strategic Objective rows (``count_valid_objective_rows``),
+        return unchanged with ``rebuilt=False``. AI repair is not
+        invoked.
       * Otherwise, call :func:`ai_repair_strategy_section` with
-        ``section_key='vision'``, validate the repaired markdown, and
-        replace ``sections['vision']`` with the repaired text.
+        ``section_key='vision'`` (passing ``min_rows=eff_min`` so the
+        prompt schema asks the AI for the same floor the post-AI check
+        will enforce), validate the repaired markdown, and replace
+        ``sections['vision']`` with the repaired text.
       * On AI failure or invalid repaired output, raise
         :class:`RepairError`. No deterministic priority bank is used,
         no top-up rows are appended, and ``_build_domain_so_bank_ar``
         / ``_build_domain_so_bank_en`` are never called.
+
+    The effective minimum (``eff_min``) is derived as follows:
+      * If the caller supplies ``min_rows`` explicitly, that value is
+        used (and is also clamped to be at least
+        ``_RICHNESS_MIN_SO_ROWS`` so the richness gate cannot be
+        weakened).
+      * Otherwise, ``generation_mode == 'consulting'`` (or
+        ``'assurance'``) yields ``6`` — matching the consulting-grade
+        floor enforced by the post-repair save gate and by
+        :func:`repair_vision_objectives_if_insufficient`.
+      * Any other mode (e.g. ``'drafting'``) yields
+        ``_RICHNESS_MIN_SO_ROWS``.
 
     The legacy ``challenge_flags`` / ``diagnostic_gaps`` /
     ``org_structure_is_none`` / ``maturity`` / ``generation_mode``
@@ -17049,14 +17065,32 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
     valid SO row count before repair), and, on success,
     ``total_after`` (int — valid SO row count after AI repair).
     """
-    summary = {'rebuilt': False, 'preserved': 0, 'injected': []}
+    # Effective minimum row count — aligned with the post-repair audit
+    # so that an AI-repair pass which "succeeds" here cannot be
+    # subsequently rejected by the audit gate (PR-5B.8E).
+    _mode_lc = (generation_mode or '').strip().lower()
+    if min_rows is None:
+        if _mode_lc in ('consulting', 'assurance'):
+            eff_min = 6
+        else:
+            eff_min = _RICHNESS_MIN_SO_ROWS
+    else:
+        try:
+            eff_min = int(min_rows)
+        except (TypeError, ValueError):
+            eff_min = _RICHNESS_MIN_SO_ROWS
+        # Never weaken the global richness floor.
+        eff_min = max(eff_min, _RICHNESS_MIN_SO_ROWS)
+
+    summary = {'rebuilt': False, 'preserved': 0, 'injected': [],
+               'min_rows': eff_min}
     vision = sections.get('vision', '') or ''
     n_so = count_valid_objective_rows(vision)
     summary['preserved'] = n_so
 
-    # Threshold: sufficient if the vision already meets the richness
-    # gate's minimum (no AI call needed).
-    if n_so >= _RICHNESS_MIN_SO_ROWS:
+    # Threshold: sufficient if the vision already meets the effective
+    # minimum (no AI call needed).
+    if n_so >= eff_min:
         return summary
 
     # Insufficient — AI-first repair. Build the canonical domain context
@@ -17085,16 +17119,17 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         maturity=maturity,
         generation_mode=generation_mode,
         validation_error=(
-            f'so_rows_insufficient:{n_so}/{_RICHNESS_MIN_SO_ROWS}'
+            f'so_rows_insufficient:{n_so}/{eff_min}'
         ),
+        min_rows=eff_min,
     )
 
     n_after = count_valid_objective_rows(repaired)
-    if n_after < _RICHNESS_MIN_SO_ROWS:
+    if n_after < eff_min:
         raise RepairError(
             f'synthesize_objectives_depth: AI-repaired vision has '
-            f'{n_after}/{_RICHNESS_MIN_SO_ROWS} valid Strategic '
-            f'Objective rows'
+            f'{n_after}/{eff_min} valid Strategic Objective rows '
+            f'(generation_mode={generation_mode!r})'
         )
 
     sections['vision'] = repaired
@@ -22627,6 +22662,7 @@ def repair_vision_objectives_if_insufficient(
             sector=sector,
             org_name=org_name,
             generation_mode='consulting',
+            min_rows=6,
         )
     except RepairError as _so_re:
         setattr(_so_re, 'section', 'vision')
@@ -30800,6 +30836,52 @@ The confidence score is based on a comprehensive assessment of the organization'
                             ))
                             _pa_failures = []
                             if _pa_so < 6:
+                                # Safe diagnostic logging — surfaces why the
+                                # post-repair vision audit rejected the
+                                # repaired section. Only structural metadata
+                                # (lengths, header/table-header lines, row
+                                # counts) is logged; never the prompt body or
+                                # AI provider keys.
+                                try:
+                                    _pa_vis_raw = sections.get(
+                                        'vision', '') or ''
+                                    _pa_vis_len = len(_pa_vis_raw)
+                                    _pa_so_hdr_m = _ts_re.search(
+                                        r'^###\s+(?:الأهداف(?:\s+الاستراتيجية)?'
+                                        r'|(?:Strategic\s+)?Objectives)'
+                                        r'[^\n]*$',
+                                        _pa_vis_raw,
+                                        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+                                    )
+                                    _pa_so_hdr = (
+                                        _pa_so_hdr_m.group(0).strip()
+                                        if _pa_so_hdr_m else '<missing>')
+                                    _pa_tbl_hdr_m = _ts_re.search(
+                                        r'^\|\s*#\s*\|\s*'
+                                        r'(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+                                        r'|الأهداف)[^\n]*$',
+                                        _pa_vis_raw,
+                                        _ts_re.MULTILINE | _ts_re.IGNORECASE,
+                                    )
+                                    _pa_tbl_hdr = (
+                                        _pa_tbl_hdr_m.group(0).strip()
+                                        if _pa_tbl_hdr_m else '<missing>')
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        f'post_repair_vision_so_diag '
+                                        f'rows={_pa_so} required=6 '
+                                        f'vision_len={_pa_vis_len} '
+                                        f'so_heading={_pa_so_hdr!r} '
+                                        f'table_header={_pa_tbl_hdr!r}',
+                                        flush=True,
+                                    )
+                                except Exception as _pa_diag_err:
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        'post_repair_vision_so_diag_failed: '
+                                        f'{_pa_diag_err}',
+                                        flush=True,
+                                    )
                                 _pa_failures.append(
                                     f'vision_so_rows={_pa_so} (need ≥ 6)')
                             if not _pa_csf_present:
