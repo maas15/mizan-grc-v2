@@ -1576,14 +1576,29 @@ try{
   /* Start progress animation */
   startStrategyProgressAnimation();
   /* ── Poll strategy-status until done ──────────────────────────────────────
-     maxTries × 3 s = 5 min hard ceiling.
-     Terminal non-retryable states (not_found, timeout) immediately call
-     _recoverLatestStrategy() which fetches the most recently saved strategy
-     for this domain directly from the strategies table, bypassing the task
-     system entirely.  This handles: server restarts that purge background_tasks,
-     silent complete_background_task write failures (task stuck 'pending'), and
-     any other scenario where the task record is lost but the strategy was saved. */
-  var tid=startData.task_id;var tries=0;var maxTries=120;/* 6 min ceiling (120×3 s); +1 min grace for the final convergence/post-normalization passes */
+     PR-5B.8B Section D: stall-aware polling. Backend now publishes per-stage
+     heartbeats (stage / updated_at) and computes wall-clock telemetry
+     (elapsed_s / idle_s) on every poll response. Polling continues as long
+     as the backend is making progress, bounded by:
+       IDLE_CEILING_S  = 180  // matches backend IDLE_THRESHOLD_SECONDS;
+                              // stops polling once backend has terminalized
+                              // the task as a stall.
+       WALL_CEILING_S  = 900  // hard wall-clock ceiling, after which we
+                              // hand off to the existing latest-strategy
+                              // recovery instead of the generic timeout
+                              // toast.
+     The previous bare `maxTries=120 × 3s = 6min` ceiling stopped polling
+     even when the backend was still actively bumping the stage.  Now we
+     only stop when the backend itself is idle or wall time is exhausted.
+     Terminal non-retryable states (not_found, error) still short-circuit
+     immediately; recovery still calls /api/strategy/latest. */
+  var IDLE_CEILING_S=180;
+  var WALL_CEILING_S=900;
+  var tid=startData.task_id;var tries=0;
+  /* Legacy maxTries kept ONLY as a defensive absolute ceiling far above
+     WALL_CEILING_S/3s so a runaway poll loop can never spin forever even
+     if the backend stops returning telemetry; not a generation timeout. */
+  var maxTries=400;
 
   /* Recovery: load the most recently saved strategy for this domain.
      RACE-WINDOW FIX: before showing the generic timeout toast, re-check
@@ -1663,8 +1678,9 @@ try{
 
   function pollStrategy(){
     tries++;
-    /* Ceiling hit — attempt recovery before giving up */
-    if(tries>maxTries){_recoverLatestStrategy('timeout');return;}
+    /* Defensive absolute ceiling — should never be hit; WALL_CEILING_S
+       below is the real wall-clock guard. */
+    if(tries>maxTries){_recoverLatestStrategy('absolute_ceiling');return;}
     fetch('/api/strategy-status/'+tid)
     .then(function(r){
       /* Guard: backend always returns JSON but a proxy/CDN 502/504 may not.
@@ -1716,7 +1732,8 @@ try{
         stopStrategyProgressAnimation();
         _onStrategyResult(_r);
       }else if(s.status==='error'){
-        /* REAL backend error (e.g. richness gate blocked the strategy).
+        /* REAL backend error (e.g. richness gate blocked the strategy,
+           or PR-5B.8B Section C stall detector terminalized the task).
            Surface it verbatim. Do NOT degrade to timeout; do NOT attempt
            recovery — that would load the previous saved strategy and
            mislead the user. */
@@ -1733,9 +1750,68 @@ try{
                      ' triggering_recovery=true');
         _recoverLatestStrategy('not_found');
       }else{
-        /* status === 'pending' or any other unknown transient state */
+        /* status === 'pending'/'running' or any unknown transient state.
+           PR-5B.8B Section D: consult backend telemetry instead of a
+           hard try-count ceiling. */
+        var _elapsed = (typeof s.elapsed_s === 'number') ? s.elapsed_s : null;
+        var _idle    = (typeof s.idle_s    === 'number') ? s.idle_s    : null;
+        /* Wall-clock ceiling: hand off to /api/strategy/latest recovery,
+           which tries to surface a real saved strategy before falling
+           back to the generic timeout toast. */
+        if(_elapsed !== null && _elapsed >= WALL_CEILING_S){
+          console.warn('[STRATEGY-UI] poll_wall_ceiling task='+tid.slice(0,8)+
+                       ' elapsed_s='+_elapsed+' wall='+WALL_CEILING_S+
+                       ' triggering_recovery=true');
+          _recoverLatestStrategy('wall_ceiling');
+          return;
+        }
+        /* Idle ceiling: backend hasn't bumped the stage in IDLE_CEILING_S
+           seconds. The backend stall detector should already have flipped
+           the task to 'error' on this very poll, but if we got here the
+           response was a snapshot taken just before that flip. Issue ONE
+           extra status call so the backend has a chance to terminalize
+           the task; surface the resulting error verbatim, or fall back
+           to recovery if the task is still not terminal. */
+        if(_idle !== null && _idle >= IDLE_CEILING_S){
+          console.warn('[STRATEGY-UI] poll_idle_ceiling task='+tid.slice(0,8)+
+                       ' idle_s='+_idle+' ceiling='+IDLE_CEILING_S+
+                       ' issuing_terminalization_probe=true');
+          fetch('/api/strategy-status/'+tid).then(function(rr){
+            return rr.json().catch(function(){return null;});
+          }).then(function(ts){
+            if(ts && ts.status==='error' && ts.error){
+              console.error('[STRATEGY-UI] poll_idle_terminalized task='+
+                            tid.slice(0,8)+' err='+ts.error);
+              stopStrategyProgressAnimation();
+              hideLoading();
+              Toast.error((isRtl?'خطأ: ':'Error: ')+ts.error);
+              return;
+            }
+            if(ts && ts.status==='done'){
+              /* Race won by completion — render normally. */
+              var _rr = ts.result || {};
+              if(_rr && _rr.success === false){
+                stopStrategyProgressAnimation();
+                hideLoading();
+                Toast.error((isRtl?'خطأ: ':'Error: ')+(_rr.error||'Unknown'));
+                return;
+              }
+              stopStrategyProgressAnimation();
+              _onStrategyResult(_rr);
+              return;
+            }
+            /* Backend failed to terminalize (e.g. ensure_strategy_task_
+               terminal_state errored). Fall back to latest-strategy
+               recovery; generic timeout toast is the last resort. */
+            _recoverLatestStrategy('idle_ceiling');
+          }).catch(function(){
+            _recoverLatestStrategy('idle_ceiling');
+          });
+          return;
+        }
         console.log('[STRATEGY-UI] poll_pending task='+tid.slice(0,8)+
-                    ' tries='+tries);
+                    ' tries='+tries+' elapsed_s='+_elapsed+
+                    ' idle_s='+_idle+' stage='+(s.stage||'?'));
         setTimeout(pollStrategy,3000);
       }
     })

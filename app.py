@@ -95,8 +95,9 @@ def complete_background_task(task_id, result):
     try:
         with closing(get_db_direct()) as conn:
             conn.execute(
-                'UPDATE background_tasks SET status = ?, result = ? WHERE task_id = ?',
-                ('done', result, task_id)
+                'UPDATE background_tasks SET status = ?, result = ?, '
+                'stage = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                ('done', result, 'task_completed', task_id)
             )
             conn.commit()
     except Exception as e:
@@ -107,21 +108,137 @@ def fail_background_task(task_id, error):
     try:
         with closing(get_db_direct()) as conn:
             conn.execute(
-                'UPDATE background_tasks SET status = ?, error = ? WHERE task_id = ?',
-                ('error', error, task_id)
+                'UPDATE background_tasks SET status = ?, error = ?, '
+                'stage = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                ('error', error, 'task_failed', task_id)
             )
             conn.commit()
     except Exception as e:
         print(f"Task fail error: {e}", flush=True)
 
-def get_background_task(task_id):
-    """Get task status from database."""
+# PR-5B.8B Section C (heartbeat/stall): if a pending task hasn't produced
+# a progress beacon (or even existed) for more than this many seconds, the
+# poll endpoint marks it failed so the frontend stops polling and surfaces
+# a real error instead of the generic timeout. Tuned for the longest known
+# AI-first repair pass; do NOT lower without re-measuring p99 generation.
+IDLE_THRESHOLD_SECONDS = 180
+
+
+def _parse_db_timestamp(ts):
+    """Parse a SQLite CURRENT_TIMESTAMP string ('YYYY-MM-DD HH:MM:SS[.ffffff]')
+    into a naive UTC datetime. Returns None on any failure so callers can
+    skip elapsed/idle math without crashing the poll endpoint.
+    """
+    if not ts:
+        return None
+    try:
+        from datetime import datetime as _dt
+        s = str(ts).strip()
+        # Strip a trailing 'Z' if present, and the 'T' separator some
+        # drivers emit instead of a space.
+        if s.endswith('Z'):
+            s = s[:-1]
+        s = s.replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def bump_background_task_progress(task_id, stage):
+    """PR-5B.8B Section A: lightweight progress beacon for long-running
+    strategy generation. Writes the current ``stage`` (sanitized and
+    truncated to 80 chars) and ``updated_at = now`` on the task row, and
+    emits a single structured log line.
+
+    MUST NEVER raise: if the columns don't exist (pre-migration DB) or
+    the UPDATE fails for any reason, swallow the error so callers can
+    sprinkle progress beacons into the generation pipeline without
+    risking the whole task. Also no-ops on falsy ``task_id``.
+    """
+    if not task_id:
+        return
+    try:
+        # Sanitize: coerce to str, strip control chars / newlines that
+        # would corrupt the single-line log format, then cap at 80 chars.
+        stage_str = '' if stage is None else str(stage)
+        stage_str = stage_str.replace('\n', ' ').replace('\r', ' ').strip()
+        if len(stage_str) > 80:
+            stage_str = stage_str[:80]
+    except Exception:
+        stage_str = ''
     try:
         with closing(get_db_direct()) as conn:
-            task = conn.execute(
-                'SELECT task_id, user_id, status, result, error, callback_domain FROM background_tasks WHERE task_id = ?',
-                (task_id,)
-            ).fetchone()
+            conn.execute(
+                'UPDATE background_tasks SET stage = ?, '
+                'updated_at = CURRENT_TIMESTAMP WHERE task_id = ?',
+                (stage_str, task_id)
+            )
+            conn.commit()
+    except Exception as e:
+        # Pre-migration DB or transient lock — never block the generation
+        # pipeline. Log once at debug level (stderr via print) and move on.
+        print(f"[STRATEGY-ASYNC] stage_bump_db_error task={task_id[:8]} "
+              f"err={e}", flush=True)
+    try:
+        print(f"[STRATEGY-ASYNC] stage_bump task={task_id[:8]} "
+              f"stage={stage_str}", flush=True)
+    except Exception:
+        pass
+
+
+def _bump_stage(stage):
+    """PR-5B.8B Section E: thin convenience wrapper that resolves the
+    background task id off Flask ``g`` (set by
+    ``_run_strategy_generation_task``) and forwards to
+    ``bump_background_task_progress``. No-op when called outside a
+    background-task request context (e.g. synchronous callers, tests),
+    so sprinkling these into the generation pipeline is safe.
+    """
+    try:
+        from flask import g as _g
+        _tid = getattr(_g, '_strategy_task_id', None)
+    except Exception:
+        _tid = None
+    if not _tid:
+        return
+    try:
+        bump_background_task_progress(_tid, stage)
+    except Exception:
+        # bump_background_task_progress already swallows; belt+braces.
+        pass
+
+
+def get_background_task(task_id):
+    """Get task status from database.
+
+    PR-5B.8B Section C: also returns ``stage`` and ``updated_at`` so the
+    poll endpoint can surface live progress. Schema-tolerant — if the
+    PR-5B.8B migration hasn't run yet (e.g. the column-add failed at
+    startup on an exotic DB), falls back to the legacy SELECT so the
+    endpoint keeps working.
+    """
+    try:
+        with closing(get_db_direct()) as conn:
+            try:
+                task = conn.execute(
+                    'SELECT task_id, user_id, status, result, error, '
+                    'callback_domain, stage, updated_at, created_at '
+                    'FROM background_tasks WHERE task_id = ?',
+                    (task_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Pre-migration DB: stage/updated_at columns missing.
+                task = conn.execute(
+                    'SELECT task_id, user_id, status, result, error, '
+                    'callback_domain, created_at '
+                    'FROM background_tasks WHERE task_id = ?',
+                    (task_id,)
+                ).fetchone()
             return task
     except Exception as e:
         print(f"Task get error: {e}", flush=True)
@@ -856,9 +973,26 @@ def init_db():
             result TEXT,
             error TEXT,
             callback_domain TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            stage TEXT
         )
     ''')
+    # PR-5B.8B Section A: guarded migration for pre-existing DBs that
+    # were created before stage/updated_at columns existed. ALTER TABLE
+    # ADD COLUMN is idempotent only via PRAGMA inspection on SQLite.
+    try:
+        _bg_cols = {row[1] for row in cursor.execute(
+            "PRAGMA table_info(background_tasks)").fetchall()}
+        if 'updated_at' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks ADD COLUMN updated_at TIMESTAMP")
+        if 'stage' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks ADD COLUMN stage TEXT")
+    except Exception as _bg_mig_err:
+        print(f"[STRATEGY-ASYNC] background_tasks migration skipped: "
+              f"{_bg_mig_err}", flush=True)
     # Clean up old tasks on startup
     cursor.execute("DELETE FROM background_tasks WHERE created_at < datetime('now', '-1 hour')")
     
@@ -12700,6 +12834,8 @@ def _run_strategy_generation_task(task_id, user_id, data):
     import json as _json_st
     print(f"[STRATEGY-ASYNC] task_started task={task_id[:8]} "
           f"user={user_id} domain={data.get('domain','?')!r}", flush=True)
+    # PR-5B.8B Section E: coarse stage beacon — task_started.
+    bump_background_task_progress(task_id, 'task_started')
     try:
         with app.test_request_context(
             '/api/generate-strategy',
@@ -12707,8 +12843,15 @@ def _run_strategy_generation_task(task_id, user_id, data):
             json=data,
             headers={'Content-Type': 'application/json'}
         ):
-            from flask import session as _sess
+            from flask import session as _sess, g as _g
             _sess['user_id'] = user_id
+            # PR-5B.8B Section E: stash task id on Flask ``g`` so the in-
+            # pipeline ``_bump_stage`` helper can find it without changing
+            # api_generate_strategy's signature. Also emit the
+            # request_context_ready beacon now that the test request +
+            # session are wired up.
+            _g._strategy_task_id = task_id
+            _bump_stage('request_context_ready')
             resp = api_generate_strategy()
 
         # Extract JSON result from Flask response object
@@ -12951,6 +13094,75 @@ def api_strategy_status(task_id):
         print(f"[STRATEGY-STATUS] not_found task={task_id[:8]}", flush=True)
         return jsonify({'status': 'not_found'}), 404
     status = task['status']
+    # PR-5B.8B Section C: surface live progress beacons. Both fields are
+    # nullable (pre-migration DB or task that hasn't been bumped yet) and
+    # the SELECT in get_background_task is schema-tolerant, so we read
+    # defensively and fall back to None instead of KeyError-ing the poll.
+    _task_keys = task.keys() if hasattr(task, 'keys') else []
+    _stage_val = task['stage'] if 'stage' in _task_keys else None
+    _updated_at_val = task['updated_at'] if 'updated_at' in _task_keys else None
+    _created_at_val = task['created_at'] if 'created_at' in _task_keys else None
+    # PR-5B.8B Section C (heartbeat/stall): compute wall-clock telemetry.
+    # elapsed_s = seconds since created_at.
+    # idle_s    = seconds since updated_at (falling back to created_at when
+    #             the task has never been bumped or the column is missing).
+    # Both are None if we can't parse the timestamps, so the frontend can
+    # tell "unknown" apart from "0".
+    from datetime import datetime as _dt_now
+    _now_utc = _dt_now.utcnow()
+    _created_dt = _parse_db_timestamp(_created_at_val)
+    _updated_dt = _parse_db_timestamp(_updated_at_val)
+    _elapsed_s = None
+    _idle_s = None
+    if _created_dt is not None:
+        try:
+            _elapsed_s = max(0, int((_now_utc - _created_dt).total_seconds()))
+        except Exception:
+            _elapsed_s = None
+    _idle_basis = _updated_dt if _updated_dt is not None else _created_dt
+    if _idle_basis is not None:
+        try:
+            _idle_s = max(0, int((_now_utc - _idle_basis).total_seconds()))
+        except Exception:
+            _idle_s = None
+    # PR-5B.8B Section C (heartbeat/stall): if a non-terminal task has
+    # gone idle for longer than IDLE_THRESHOLD_SECONDS, force it to
+    # 'error' so the frontend stops polling and renders a real message.
+    # Uses ensure_strategy_task_terminal_state which atomically guards
+    # the UPDATE on status (no transition if the worker just flipped it
+    # to done/error in the same millisecond). After the transition we
+    # re-read the row so the response reflects the new status + error.
+    if (status in ('pending', 'running')
+            and _idle_s is not None
+            and _idle_s > IDLE_THRESHOLD_SECONDS):
+        _stall_msg = f"Generation stalled: no progress for {_idle_s}s"
+        print(f"[STRATEGY-ASYNC] stall_detected task={task_id[:8]} "
+              f"idle_s={_idle_s} threshold={IDLE_THRESHOLD_SECONDS}",
+              flush=True)
+        try:
+            ensure_strategy_task_terminal_state(task_id, error_message=_stall_msg)
+        except Exception as _ste:
+            print(f"[STRATEGY-ASYNC] stall_terminal_error task="
+                  f"{task_id[:8]} err={_ste!r}", flush=True)
+        # Re-read so we surface the freshly-written status/error and the
+        # caller sees status:'error' on this same poll.
+        task = get_background_task(task_id) or task
+        _task_keys = task.keys() if hasattr(task, 'keys') else []
+        status = task['status']
+        _stage_val = task['stage'] if 'stage' in _task_keys else _stage_val
+        _updated_at_val = (task['updated_at']
+                           if 'updated_at' in _task_keys else _updated_at_val)
+    def _with_progress(payload):
+        """Attach stage + updated_at + elapsed_s + idle_s to a status
+        payload (pending/done/error). Uses setdefault so caller-set values
+        win.
+        """
+        if isinstance(payload, dict):
+            payload.setdefault('stage', _stage_val)
+            payload.setdefault('updated_at', _updated_at_val)
+            payload.setdefault('elapsed_s', _elapsed_s)
+            payload.setdefault('idle_s', _idle_s)
+        return payload
     if status == 'done':
         # ── Unpack compact task envelope ──────────────────────────────────────
         try:
@@ -12967,7 +13179,7 @@ def api_strategy_status(task_id):
             _err_msg = compact.get('error') or 'Strategy generation failed'
             print(f"[STRATEGY-STATUS] returning_error_from_done task="
                   f"{task_id[:8]} error={_err_msg!r}", flush=True)
-            return jsonify({'status': 'error', 'error': _err_msg})
+            return jsonify(_with_progress({'status': 'error', 'error': _err_msg}))
 
         strategy_id = compact.get('strategy_id')
 
@@ -13008,7 +13220,7 @@ def api_strategy_status(task_id):
             # No strategy_id — generation failed before the DB INSERT
             result = compact
 
-        return jsonify({'status': 'done', 'result': result})
+        return jsonify(_with_progress({'status': 'done', 'result': result}))
     if status == 'error':
         # Return HTTP 200 so the frontend's fetch().then().json() chain
         # reliably parses the body and sees status: 'error' + the real
@@ -13022,10 +13234,10 @@ def api_strategy_status(task_id):
         _err_payload = task['error'] or 'Unknown'
         print(f"[STRATEGY-STATUS] returning_error task={task_id[:8]} "
               f"error={_err_payload!r}", flush=True)
-        return jsonify({'status': 'error', 'error': _err_payload})
+        return jsonify(_with_progress({'status': 'error', 'error': _err_payload}))
     print(f"[STRATEGY-STATUS] returning_pending task={task_id[:8]}",
           flush=True)
-    return jsonify({'status': 'pending'})
+    return jsonify(_with_progress({'status': 'pending'}))
 
 
 @app.route('/api/strategy/latest')
@@ -23602,6 +23814,10 @@ def api_generate_strategy():
     
     try:
         data = request.json
+        # PR-5B.8B Section E: coarse stage beacon — generation_pipeline.
+        # Earliest safe point inside api_generate_strategy where ``data``
+        # is bound; no generation logic depends on this call.
+        _bump_stage('generation_pipeline')
         # Strict domain resolution — never silently default to Cyber Security
         # for strategy generation. See get_strategy_domain_context().
         try:
@@ -25054,6 +25270,11 @@ Populate with the ACTUAL data from your strategy above. The "formula" field must
         import time as _time_mod
         _provider_for_log = get_ai_provider('generate')
         _prompt_chars = len(prompt)
+        # PR-5B.8B Section E: coarse stage beacon — prompt_build. Emitted
+        # AFTER ``prompt`` is fully assembled (both Arabic + English
+        # branches converge here) and BEFORE the heavy AI call so the
+        # frontend sees a heartbeat right at the prompt→AI handoff.
+        _bump_stage('prompt_build')
         _t0 = _time_mod.perf_counter()
         print(
             f"[STRATEGY] domain={domain!r} lang={lang!r} "
@@ -25062,6 +25283,12 @@ Populate with the ACTUAL data from your strategy above. The "formula" field must
         )
         _gen_error = None
         try:
+            # PR-5B.8B Section E: coarse stage beacon — ai_generation_started.
+            # Emitted IMMEDIATELY before the main AI call. This is the most
+            # important heartbeat: the AI call is the single longest segment
+            # of the pipeline (often 30-90s) and the most likely place for
+            # a stall.
+            _bump_stage('ai_generation_started')
             content = generate_ai_content(prompt, lang, content_type='strategy')
         except Exception as _gen_exc:
             _elapsed = round(_time_mod.perf_counter() - _t0, 2)
@@ -29576,6 +29803,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                         log_diagnostic_model(_diag_model, tag='pre_synth')
                         _final_ctx = diagnostic_model_to_ctx(_diag_model)
                         # PR-5B.5F1 status dict already initialized above.
+                        # PR-5B.8B Section E: coarse stage beacon — final_synthesis.
+                        _bump_stage('final_synthesis')
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
@@ -29860,6 +30089,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # next downstream gate fire alone.
                     if doc_subtype != 'board':
                         try:
+                            # PR-5B.8B Section E: coarse stage beacon — convergence.
+                            _bump_stage('convergence')
                             _converge = converge_strategy_sections(
                                 sections, lang, domain, fw_short,
                                 ctx=_final_ctx, doc_subtype=doc_subtype,
@@ -30361,6 +30592,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # re-break repaired sections" requirement.
                     if doc_subtype != 'board':
                         try:
+                            # PR-5B.8B Section E: coarse stage beacon — final_audit.
+                            _bump_stage('final_audit')
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status)
@@ -31490,6 +31723,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                 # exact content length being persisted (which is the SAME
                 # content later returned to preview and used for PDF/DOCX
                 # export via _canonical_content_from_db).
+                # PR-5B.8B Section E: coarse stage beacon — save_gate.
+                _bump_stage('save_gate')
                 print(
                     f"[STRATEGY-GATE] save_decision=ALLOWED "
                     f"doc_subtype={doc_subtype!r} "
