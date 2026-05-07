@@ -116,6 +116,39 @@ def fail_background_task(task_id, error):
     except Exception as e:
         print(f"Task fail error: {e}", flush=True)
 
+# PR-5B.8B Section C (heartbeat/stall): if a pending task hasn't produced
+# a progress beacon (or even existed) for more than this many seconds, the
+# poll endpoint marks it failed so the frontend stops polling and surfaces
+# a real error instead of the generic timeout. Tuned for the longest known
+# AI-first repair pass; do NOT lower without re-measuring p99 generation.
+IDLE_THRESHOLD_SECONDS = 180
+
+
+def _parse_db_timestamp(ts):
+    """Parse a SQLite CURRENT_TIMESTAMP string ('YYYY-MM-DD HH:MM:SS[.ffffff]')
+    into a naive UTC datetime. Returns None on any failure so callers can
+    skip elapsed/idle math without crashing the poll endpoint.
+    """
+    if not ts:
+        return None
+    try:
+        from datetime import datetime as _dt
+        s = str(ts).strip()
+        # Strip a trailing 'Z' if present, and the 'T' separator some
+        # drivers emit instead of a space.
+        if s.endswith('Z'):
+            s = s[:-1]
+        s = s.replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def bump_background_task_progress(task_id, stage):
     """PR-5B.8B Section A: lightweight progress beacon for long-running
     strategy generation. Writes the current ``stage`` (sanitized and
@@ -171,7 +204,7 @@ def get_background_task(task_id):
             try:
                 task = conn.execute(
                     'SELECT task_id, user_id, status, result, error, '
-                    'callback_domain, stage, updated_at '
+                    'callback_domain, stage, updated_at, created_at '
                     'FROM background_tasks WHERE task_id = ?',
                     (task_id,)
                 ).fetchone()
@@ -179,7 +212,7 @@ def get_background_task(task_id):
                 # Pre-migration DB: stage/updated_at columns missing.
                 task = conn.execute(
                     'SELECT task_id, user_id, status, result, error, '
-                    'callback_domain '
+                    'callback_domain, created_at '
                     'FROM background_tasks WHERE task_id = ?',
                     (task_id,)
                 ).fetchone()
@@ -13036,11 +13069,67 @@ def api_strategy_status(task_id):
     _task_keys = task.keys() if hasattr(task, 'keys') else []
     _stage_val = task['stage'] if 'stage' in _task_keys else None
     _updated_at_val = task['updated_at'] if 'updated_at' in _task_keys else None
+    _created_at_val = task['created_at'] if 'created_at' in _task_keys else None
+    # PR-5B.8B Section C (heartbeat/stall): compute wall-clock telemetry.
+    # elapsed_s = seconds since created_at.
+    # idle_s    = seconds since updated_at (falling back to created_at when
+    #             the task has never been bumped or the column is missing).
+    # Both are None if we can't parse the timestamps, so the frontend can
+    # tell "unknown" apart from "0".
+    from datetime import datetime as _dt_now
+    _now_utc = _dt_now.utcnow()
+    _created_dt = _parse_db_timestamp(_created_at_val)
+    _updated_dt = _parse_db_timestamp(_updated_at_val)
+    _elapsed_s = None
+    _idle_s = None
+    if _created_dt is not None:
+        try:
+            _elapsed_s = max(0, int((_now_utc - _created_dt).total_seconds()))
+        except Exception:
+            _elapsed_s = None
+    _idle_basis = _updated_dt if _updated_dt is not None else _created_dt
+    if _idle_basis is not None:
+        try:
+            _idle_s = max(0, int((_now_utc - _idle_basis).total_seconds()))
+        except Exception:
+            _idle_s = None
+    # PR-5B.8B Section C (heartbeat/stall): if a non-terminal task has
+    # gone idle for longer than IDLE_THRESHOLD_SECONDS, force it to
+    # 'error' so the frontend stops polling and renders a real message.
+    # Uses ensure_strategy_task_terminal_state which atomically guards
+    # the UPDATE on status (no transition if the worker just flipped it
+    # to done/error in the same millisecond). After the transition we
+    # re-read the row so the response reflects the new status + error.
+    if (status in ('pending', 'running')
+            and _idle_s is not None
+            and _idle_s > IDLE_THRESHOLD_SECONDS):
+        _stall_msg = f"Generation stalled: no progress for {_idle_s}s"
+        print(f"[STRATEGY-ASYNC] stall_detected task={task_id[:8]} "
+              f"idle_s={_idle_s} threshold={IDLE_THRESHOLD_SECONDS}",
+              flush=True)
+        try:
+            ensure_strategy_task_terminal_state(task_id, error_message=_stall_msg)
+        except Exception as _ste:
+            print(f"[STRATEGY-ASYNC] stall_terminal_error task="
+                  f"{task_id[:8]} err={_ste!r}", flush=True)
+        # Re-read so we surface the freshly-written status/error and the
+        # caller sees status:'error' on this same poll.
+        task = get_background_task(task_id) or task
+        _task_keys = task.keys() if hasattr(task, 'keys') else []
+        status = task['status']
+        _stage_val = task['stage'] if 'stage' in _task_keys else _stage_val
+        _updated_at_val = (task['updated_at']
+                           if 'updated_at' in _task_keys else _updated_at_val)
     def _with_progress(payload):
-        """Attach stage + updated_at to a status payload (pending/done/error)."""
+        """Attach stage + updated_at + elapsed_s + idle_s to a status
+        payload (pending/done/error). Uses setdefault so caller-set values
+        win.
+        """
         if isinstance(payload, dict):
             payload.setdefault('stage', _stage_val)
             payload.setdefault('updated_at', _updated_at_val)
+            payload.setdefault('elapsed_s', _elapsed_s)
+            payload.setdefault('idle_s', _idle_s)
         return payload
     if status == 'done':
         # ── Unpack compact task envelope ──────────────────────────────────────
