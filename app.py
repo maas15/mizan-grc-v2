@@ -17284,8 +17284,22 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
         r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
         kpis, _ts_re.IGNORECASE | _ts_re.MULTILINE,
     ))
+    # PR-5B.6F: KPI guide coverage is part of the section contract enforced
+    # by the final integrity gate (kpis_guides_heading_count_invalid /
+    # kpis_per_guide_count_mismatch). Treat the section as sufficient ONLY
+    # when it ALSO carries exactly one ``### KPI Assessment Guidelines`` /
+    # ``### أدلة تقييم مؤشرات الأداء`` heading and one
+    # ``#### KPI #N Assessment Guide`` / ``#### دليل تقييم المؤشر رقم N``
+    # block per substantive KPI row. Without these tokens the section will
+    # 422 at the save gate even though rows + Frequency are present, so we
+    # MUST drive an AI-first repair here instead of returning the no-op.
+    n_guides_hdr = len(_KPI_GUIDES_HEADING_RE.findall(kpis))
+    n_per_kpi_guide = len(_PER_KPI_GUIDE_HEADING_RE.findall(kpis))
+    has_full_guides = (n_guides_hdr == 1 and
+                       current > 0 and
+                       n_per_kpi_guide == current)
 
-    if current >= needed_floor and has_freq_col:
+    if current >= needed_floor and has_freq_col and has_full_guides:
         return 0
 
     # Insufficient or schema missing — AI-first repair.
@@ -17304,8 +17318,14 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
 
     if current < needed_floor:
         _why = f'kpi_rows_insufficient:{current}/{needed_floor}'
-    else:
+    elif not has_freq_col:
         _why = 'kpi_section_missing_frequency_column'
+    elif n_guides_hdr != 1:
+        _why = (f'kpi_guides_heading_count_invalid:{n_guides_hdr}'
+                f' (expected exactly 1)')
+    else:
+        _why = (f'kpi_per_guide_count_mismatch:{n_per_kpi_guide}'
+                f' guide blocks vs {current} substantive rows')
 
     repaired = ai_repair_strategy_section(
         section_key='kpis',
@@ -17325,11 +17345,19 @@ def synthesize_kpi_depth(sections, lang, domain='Cyber Security',
         r'(?:^|\|)\s*(?:Frequency|التكرار)\s*(?:\||$)',
         repaired, _ts_re.IGNORECASE | _ts_re.MULTILINE,
     ))
-    if n_after < needed_floor or not has_freq_after:
+    n_guides_hdr_after = len(_KPI_GUIDES_HEADING_RE.findall(repaired))
+    n_per_kpi_guide_after = len(_PER_KPI_GUIDE_HEADING_RE.findall(repaired))
+    if (n_after < needed_floor
+            or not has_freq_after
+            or n_guides_hdr_after != 1
+            or n_per_kpi_guide_after != n_after):
         raise RepairError(
             f'synthesize_kpi_depth: AI-repaired KPI section invalid '
             f'(rows={n_after}/{needed_floor}, '
-            f'has_frequency_column={has_freq_after})'
+            f'has_frequency_column={has_freq_after}, '
+            f'guides_heading_count={n_guides_hdr_after} (expected 1), '
+            f'per_kpi_guide_blocks={n_per_kpi_guide_after} '
+            f'(expected {n_after}))'
         )
 
     sections['kpis'] = repaired
@@ -22103,19 +22131,51 @@ class RepairError(RuntimeError):
 _AI_REPAIR_SECTION_SCHEMA = {
     "kpis": {
         "ar": (
-            "أرجع قسم \"## 6. مؤشرات الأداء الرئيسية\" فقط، باستخدام "
-            "جدول Markdown ذي 9 أعمدة بالضبط بالترتيب التالي:\n"
+            "أرجع قسم \"## 6. مؤشرات الأداء الرئيسية\" فقط.\n"
+            "أولاً: جدول Markdown أنبوبي ذو 9 أعمدة بالضبط بالترتيب التالي:\n"
             "| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة | صيغة الاحتساب "
             "| مصدر البيانات | المالك | التكرار | الإطار الزمني |\n"
-            "أنشئ على الأقل {min_rows} صفًا. لا تُدرج رؤوسًا أخرى ولا أقسامًا أخرى."
+            "|---|--------|---------------|------------------|----------------|"
+            "---------------|--------|---------|----------------|\n"
+            "أنشئ على الأقل {min_rows} صفًا جوهريًا (لا خلايا نائبة أو فارغة).\n"
+            "ثانياً: ضع عنواناً فرعياً واحداً بالضبط بهذه الصيغة الحرفية:\n"
+            "### أدلة تقييم مؤشرات الأداء\n"
+            "ثم لكل صف مؤشر في الجدول أعلاه (بنفس الترقيم N والاسم)، أدرج "
+            "كتلة دليل تقييم بالعنوان التالي حرفياً:\n"
+            "#### دليل تقييم المؤشر رقم N: <اسم المؤشر كما ورد في الجدول>\n"
+            "متبوعاً بجدول Markdown أنبوبي بخمسة أعمدة بالضبط:\n"
+            "| الخطوة | الإجراء | الأداة / النظام | المسؤول | الناتج |\n"
+            "|--------|---------|------------------|---------|--------|\n"
+            "بحد أدنى {min_steps_per_guide} خطوات لكل دليل، ثم سطر:\n"
+            "**الصيغة:** <التعبير الرياضي الدقيق للمؤشر>\n"
+            "يجب أن يكون عدد كتل الأدلة مساوياً تماماً لعدد صفوف المؤشرات. "
+            "لا تُدرج عنوان \"### أدلة تقييم مؤشرات الأداء\" أكثر من مرة. "
+            "لا تُدرج رؤوسًا أو أقساماً أخرى. "
+            "لا تستخدم خلايا نائبة أو خلايا فارغة."
         ),
         "en": (
-            "Return ONLY the '## 6. Key Performance Indicators' section as "
-            "a Markdown pipe table with EXACTLY 9 columns in this order:\n"
+            "Return ONLY the '## 6. Key Performance Indicators' section.\n"
+            "First: a Markdown pipe table with EXACTLY 9 columns in this order:\n"
             "| # | Metric | Type KPI/KRI | Target Value | Calculation Formula "
             "| Data Source | Owner | Frequency | Timeframe |\n"
-            "Generate at least {min_rows} rows. Do not include other headings "
-            "or other sections."
+            "|---|--------|--------------|--------------|---------------------|"
+            "-------------|-------|-----------|-----------|\n"
+            "Generate at least {min_rows} substantive rows (no placeholder or "
+            "empty cells).\n"
+            "Then: add EXACTLY ONE sub-heading with this literal text:\n"
+            "### KPI Assessment Guidelines\n"
+            "Then for EACH KPI row in the table above (same N and name), include "
+            "an assessment guide block with this literal heading:\n"
+            "#### KPI #N Assessment Guide: <metric name as written in the table>\n"
+            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
+            "| Step | Action | Tool / System | Owner | Output |\n"
+            "|------|--------|---------------|-------|--------|\n"
+            "minimum {min_steps_per_guide} steps per guide, then a line:\n"
+            "**Formula:** <exact mathematical expression for the metric>\n"
+            "The number of guide blocks MUST equal the number of KPI rows. "
+            "Do not emit '### KPI Assessment Guidelines' more than once. "
+            "Do not include other headings or other sections. "
+            "Do not use placeholder or empty cells."
         ),
     },
     "vision": {
@@ -22375,6 +22435,25 @@ def ai_repair_strategy_section(
         schema_block = schema_block.format(
             min_csf_rows=_min_csf_rows,
             min_risk_rows=_min_risk_rows,
+        )
+    elif section_key == "kpis" and schema_block:
+        # KPIs schema requires both a table-row floor AND a per-guide step
+        # floor (since the KPI section embeds one assessment-guide block per
+        # KPI row). Compute the row floor from the validator constant /
+        # domain rules and never let ``min_rows`` reduce it below the
+        # validator threshold. ``min_steps_per_guide`` mirrors the
+        # deterministic 4-step guide template.
+        _kpi_floor = max(rules.get("min_kpi_rows", 0) or 0,
+                         _RICHNESS_MIN_KPI_ROWS)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = _kpi_floor
+        _min_rows_eff = max(_kpi_floor, _min_rows_int)
+        _min_steps_per_guide = 4
+        schema_block = schema_block.format(
+            min_rows=_min_rows_eff,
+            min_steps_per_guide=_min_steps_per_guide,
         )
     elif section_key == "gaps" and schema_block:
         # Gaps schema requires two distinct minimums (table rows AND

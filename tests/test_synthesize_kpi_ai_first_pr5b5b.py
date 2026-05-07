@@ -73,6 +73,36 @@ _VALID_KPIS_EN = (
     "| ITSM | IT Ops | Monthly | 6 months |\n"
 )
 
+def _kpi_guides_en(names):
+    """Build a canonical English KPI Assessment Guidelines block with one
+    per-KPI guide table per name (matches the post-PR-5B.6F contract
+    enforced by ``synthesize_kpi_depth`` and the final integrity gate)."""
+    lines = ["", "### KPI Assessment Guidelines", ""]
+    for i, n in enumerate(names, start=1):
+        lines.extend([
+            f"#### KPI #{i} Assessment Guide: {n}",
+            "",
+            "| Step | Action | Tool / System | Owner | Output |",
+            "|------|--------|---------------|-------|--------|",
+            "| 1 | Collect data | GRC platform | Owner | Log |",
+            "| 2 | Apply formula | Spreadsheet | Owner | Value |",
+            "| 3 | Validate | Review | Owner | Report |",
+            "| 4 | Report | Dashboard | Owner | Statement |",
+            "**Formula:** (Numerator / Denominator) * 100",
+            "",
+        ])
+    return "\n".join(lines)
+
+
+_VALID_KPIS_EN = _VALID_KPIS_EN + _kpi_guides_en([
+    "Control implementation rate",
+    "Awareness pass rate",
+    "Mean time to detect",
+    "Mean time to respond",
+    "Third-party assessment coverage",
+    "Patch SLA compliance",
+])
+
 _REPAIRED_KPIS_EN = (
     "## 6. Key Performance Indicators\n\n"
     "| # | Metric | Type KPI/KRI | Target Value | Calculation Formula "
@@ -91,7 +121,14 @@ _REPAIRED_KPIS_EN = (
     "| owner-5 | Quarterly | 12 months |\n"
     "| 6 | AI metric six | KPI | >= 95% | (g / h) * 100 | source-6 "
     "| owner-6 | Monthly | 6 months |\n"
-)
+) + _kpi_guides_en([
+    "AI metric one",
+    "AI metric two",
+    "AI metric three",
+    "AI metric four",
+    "AI metric five",
+    "AI metric six",
+])
 
 _KPIS_MISSING_FREQ = (
     "## 6. Key Performance Indicators\n\n"
