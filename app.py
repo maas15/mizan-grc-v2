@@ -22212,11 +22212,14 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "بحد أدنى {min_csf_rows} صفوف.\n"
             "4) ثم العنوان الفرعي:\n"
             "### المخاطر الرئيسية\n"
-            "متبوعاً بجدول Markdown بخمسة أعمدة بالضبط:\n"
-            "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة |\n"
-            "|---|--------|-----------|--------|-------------|\n"
+            "متبوعاً بجدول Markdown بستة أعمدة بالضبط بالترتيب التالي:\n"
+            "| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة | المالك |\n"
+            "|---|--------|-----------|--------|-------------|--------|\n"
             "بحد أدنى {min_risk_rows} صفوف.\n"
             "5) يجب أن تتضمن كل خطة معالجة إجراءً محدداً وغير عام.\n"
+            "6) يجب أن يحتوي عمود \"المالك\" على دور أو فريق محدد لكل صف "
+            "(مثل: CISO، مدير مركز العمليات الأمنية SOC، رئيس وحدة إدارة "
+            "الهوية والوصول)؛ لا يجوز ترك خلية المالك فارغة أو نائبة.\n"
             "لا تُدرج أقساماً أخرى. لا تكرر العناوين. "
             "لا تستخدم خلايا نائبة أو خلايا فارغة."
         ),
@@ -22237,11 +22240,14 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "minimum {min_csf_rows} rows.\n"
             "4) Then the sub-heading:\n"
             "### Key Risks\n"
-            "followed by a Markdown pipe table with EXACTLY 5 columns:\n"
-            "| # | Risk | Likelihood | Impact | Mitigation Plan |\n"
-            "|---|------|------------|--------|-----------------|\n"
+            "followed by a Markdown pipe table with EXACTLY 6 columns in this order:\n"
+            "| # | Risk | Likelihood | Impact | Mitigation Plan | Owner |\n"
+            "|---|------|------------|--------|-----------------|-------|\n"
             "minimum {min_risk_rows} rows.\n"
             "5) Every mitigation plan must be specific and non-generic.\n"
+            "6) The \"Owner\" column must name a specific role or team for "
+            "every row (e.g. CISO, SOC Manager, IAM/PAM Lead); the Owner "
+            "cell must never be empty or a placeholder.\n"
             "Do not include other sections. Do not duplicate headings. "
             "Do not use placeholder cells or empty cells."
         ),
@@ -22525,6 +22531,54 @@ def ai_repair_strategy_section(
             prompt += f"\n\nDiagnostic context:\n{diagnostic_context.strip()[:2000]}"
         if validation_error:
             prompt += f"\n\nRepair reason: {validation_error.strip()[:500]}"
+
+    # ── Cybersecurity capability coverage requirement ────────────────────────
+    # validate_arabic_strategy_semantic_richness emits
+    # ``cybersecurity_capabilities_missing`` when the assembled strategy text
+    # for vision/pillars/environment/gaps/roadmap/kpis lacks at least one
+    # accepted keyword from EACH of the 8 capability families (IAM/PAM, MFA,
+    # SIEM/SOC, Incident Response, Vulnerability Management, Backup/DR,
+    # Awareness, Data Protection). Per-section AI repair would otherwise have
+    # no signal that the section it is regenerating is expected to surface
+    # those keywords. We append an explicit coverage clause whenever the
+    # resolved domain is cybersecurity AND the section being repaired is one
+    # that naturally hosts capability vocabulary.
+    if (domain_context.get("code") == "cyber"
+            and section_key in ("pillars", "environment", "kpis", "roadmap")):
+        if is_ar:
+            prompt += (
+                "\n\nتغطية القدرات السيبرانية الإلزامية:\n"
+                "يجب أن يتضمن نص هذا القسم على الأقل كلمة مفتاحية واحدة من "
+                "كل عائلة من العائلات الثماني التالية، حتى ولو ضمن أوصاف "
+                "المبادرات أو خطط المعالجة أو أسماء المؤشرات:\n"
+                "- إدارة الهوية والوصول المميز (IAM/PAM، الهوية، وصول مميز)\n"
+                "- المصادقة متعددة العوامل (MFA، عامل مصادقة متعدد، "
+                "المصادقة الثنائية)\n"
+                "- مركز العمليات الأمنية والمراقبة (SIEM، SOC، مراقبة)\n"
+                "- الاستجابة للحوادث (الاستجابة، الحوادث)\n"
+                "- إدارة الثغرات (ثغرات، التصحيح)\n"
+                "- النسخ الاحتياطي والتعافي من الكوارث (نسخ احتياطي، تعافي، "
+                "استعادة)\n"
+                "- التوعية والتدريب (توعية، التدريب، تصيد)\n"
+                "- حماية البيانات (حماية البيانات، تشفير، DLP)"
+            )
+        else:
+            prompt += (
+                "\n\nMandatory cybersecurity capability coverage:\n"
+                "The text of this section MUST contain at least one keyword "
+                "from EACH of the following 8 capability families — they may "
+                "appear inside initiative descriptions, mitigation plans, KPI "
+                "metric names, or activity titles:\n"
+                "- Identity & Privileged Access (IAM, PAM, identity)\n"
+                "- Multi-factor Authentication (MFA, multi-factor)\n"
+                "- Security Operations & Monitoring (SIEM, SOC, monitoring)\n"
+                "- Incident Response (incident, response)\n"
+                "- Vulnerability Management (vulnerability, patching)\n"
+                "- Backup & Disaster Recovery (backup, DR, recovery)\n"
+                "- Security Awareness & Training (awareness, phishing, "
+                "training)\n"
+                "- Data Protection (data protection, encryption, DLP)"
+            )
 
     # ── Single AI call (content_type='strategy' makes generate_ai_content
     #    raise RuntimeError when no provider is configured, as required) ─────
