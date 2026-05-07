@@ -190,6 +190,29 @@ def bump_background_task_progress(task_id, stage):
     except Exception:
         pass
 
+
+def _bump_stage(stage):
+    """PR-5B.8B Section E: thin convenience wrapper that resolves the
+    background task id off Flask ``g`` (set by
+    ``_run_strategy_generation_task``) and forwards to
+    ``bump_background_task_progress``. No-op when called outside a
+    background-task request context (e.g. synchronous callers, tests),
+    so sprinkling these into the generation pipeline is safe.
+    """
+    try:
+        from flask import g as _g
+        _tid = getattr(_g, '_strategy_task_id', None)
+    except Exception:
+        _tid = None
+    if not _tid:
+        return
+    try:
+        bump_background_task_progress(_tid, stage)
+    except Exception:
+        # bump_background_task_progress already swallows; belt+braces.
+        pass
+
+
 def get_background_task(task_id):
     """Get task status from database.
 
@@ -12811,6 +12834,8 @@ def _run_strategy_generation_task(task_id, user_id, data):
     import json as _json_st
     print(f"[STRATEGY-ASYNC] task_started task={task_id[:8]} "
           f"user={user_id} domain={data.get('domain','?')!r}", flush=True)
+    # PR-5B.8B Section E: coarse stage beacon — task_started.
+    bump_background_task_progress(task_id, 'task_started')
     try:
         with app.test_request_context(
             '/api/generate-strategy',
@@ -12818,8 +12843,15 @@ def _run_strategy_generation_task(task_id, user_id, data):
             json=data,
             headers={'Content-Type': 'application/json'}
         ):
-            from flask import session as _sess
+            from flask import session as _sess, g as _g
             _sess['user_id'] = user_id
+            # PR-5B.8B Section E: stash task id on Flask ``g`` so the in-
+            # pipeline ``_bump_stage`` helper can find it without changing
+            # api_generate_strategy's signature. Also emit the
+            # request_context_ready beacon now that the test request +
+            # session are wired up.
+            _g._strategy_task_id = task_id
+            _bump_stage('request_context_ready')
             resp = api_generate_strategy()
 
         # Extract JSON result from Flask response object
@@ -23782,6 +23814,10 @@ def api_generate_strategy():
     
     try:
         data = request.json
+        # PR-5B.8B Section E: coarse stage beacon — generation_pipeline.
+        # Earliest safe point inside api_generate_strategy where ``data``
+        # is bound; no generation logic depends on this call.
+        _bump_stage('generation_pipeline')
         # Strict domain resolution — never silently default to Cyber Security
         # for strategy generation. See get_strategy_domain_context().
         try:
@@ -25234,6 +25270,11 @@ Populate with the ACTUAL data from your strategy above. The "formula" field must
         import time as _time_mod
         _provider_for_log = get_ai_provider('generate')
         _prompt_chars = len(prompt)
+        # PR-5B.8B Section E: coarse stage beacon — prompt_build. Emitted
+        # AFTER ``prompt`` is fully assembled (both Arabic + English
+        # branches converge here) and BEFORE the heavy AI call so the
+        # frontend sees a heartbeat right at the prompt→AI handoff.
+        _bump_stage('prompt_build')
         _t0 = _time_mod.perf_counter()
         print(
             f"[STRATEGY] domain={domain!r} lang={lang!r} "
@@ -25242,6 +25283,12 @@ Populate with the ACTUAL data from your strategy above. The "formula" field must
         )
         _gen_error = None
         try:
+            # PR-5B.8B Section E: coarse stage beacon — ai_generation_started.
+            # Emitted IMMEDIATELY before the main AI call. This is the most
+            # important heartbeat: the AI call is the single longest segment
+            # of the pipeline (often 30-90s) and the most likely place for
+            # a stall.
+            _bump_stage('ai_generation_started')
             content = generate_ai_content(prompt, lang, content_type='strategy')
         except Exception as _gen_exc:
             _elapsed = round(_time_mod.perf_counter() - _t0, 2)
@@ -29756,6 +29803,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                         log_diagnostic_model(_diag_model, tag='pre_synth')
                         _final_ctx = diagnostic_model_to_ctx(_diag_model)
                         # PR-5B.5F1 status dict already initialized above.
+                        # PR-5B.8B Section E: coarse stage beacon — final_synthesis.
+                        _bump_stage('final_synthesis')
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
@@ -30040,6 +30089,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # next downstream gate fire alone.
                     if doc_subtype != 'board':
                         try:
+                            # PR-5B.8B Section E: coarse stage beacon — convergence.
+                            _bump_stage('convergence')
                             _converge = converge_strategy_sections(
                                 sections, lang, domain, fw_short,
                                 ctx=_final_ctx, doc_subtype=doc_subtype,
@@ -30541,6 +30592,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # re-break repaired sections" requirement.
                     if doc_subtype != 'board':
                         try:
+                            # PR-5B.8B Section E: coarse stage beacon — final_audit.
+                            _bump_stage('final_audit')
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status)
@@ -31670,6 +31723,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                 # exact content length being persisted (which is the SAME
                 # content later returned to preview and used for PDF/DOCX
                 # export via _canonical_content_from_db).
+                # PR-5B.8B Section E: coarse stage beacon — save_gate.
+                _bump_stage('save_gate')
                 print(
                     f"[STRATEGY-GATE] save_decision=ALLOWED "
                     f"doc_subtype={doc_subtype!r} "
