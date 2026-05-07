@@ -543,6 +543,17 @@ class Config:
     DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')  # DeepSeek (R1, V3)
     AI_PROVIDER = os.getenv('AI_PROVIDER', 'auto')  # auto, openai, anthropic, google, groq, deepseek
     AI_MODEL = os.getenv('AI_MODEL', '')  # Override model name
+    # PR-5B.8C: bounded per-provider AI call timeout. Env-tunable, clamped to a
+    # safe range so the worker fails fast with a clear ProviderTimeoutError
+    # instead of stalling past the poll-side IDLE_THRESHOLD_SECONDS (180s).
+    try:
+        AI_CALL_TIMEOUT_SECONDS = int(os.getenv('AI_CALL_TIMEOUT_SECONDS', '120') or '120')
+    except (TypeError, ValueError):
+        AI_CALL_TIMEOUT_SECONDS = 120
+    if AI_CALL_TIMEOUT_SECONDS < 10:
+        AI_CALL_TIMEOUT_SECONDS = 10
+    elif AI_CALL_TIMEOUT_SECONDS > 600:
+        AI_CALL_TIMEOUT_SECONDS = 600
     # Email settings (using SMTP)
     SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
@@ -9925,6 +9936,111 @@ def ensure_markdown_formatting(text):
     return text.strip()
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# PR-5B.8C: bounded AI provider timeout handling.
+#
+# ProviderTimeoutError is raised by the per-provider wrappers
+# (_generate_openai / _generate_anthropic / _generate_google / _generate_groq /
+# _generate_deepseek) when a single provider call exceeds
+# config.AI_CALL_TIMEOUT_SECONDS, and re-raised by generate_ai_content when
+# every fallback provider has timed out.  ai_repair_strategy_section converts
+# it to a RepairError so the existing _mark_synth_failed plumbing still fires.
+#
+# The message is intentionally sanitized: provider name + timeout seconds only.
+# It MUST NEVER contain API keys or raw provider response bodies.
+# ────────────────────────────────────────────────────────────────────────────
+class ProviderTimeoutError(RuntimeError):
+    """Raised when a per-provider AI SDK call exceeds AI_CALL_TIMEOUT_SECONDS.
+
+    The exception message is intentionally sanitized: it carries only the
+    provider name and the configured timeout in seconds. It MUST NEVER
+    contain API keys, request URLs, response headers, or raw provider
+    response bodies (any of which can echo credentials in pathological
+    cases).
+
+    Attributes
+    ----------
+    provider : str
+        The provider identifier ('openai', 'anthropic', 'google', 'groq',
+        'deepseek', or 'all' for the aggregated all-providers-failed case).
+    timeout_seconds : int
+        The timeout value that was exceeded, in seconds.
+    """
+
+    def __init__(self, provider: str = 'unknown',
+                 timeout_seconds: int = 0,
+                 message: str = ''):
+        # Sanitize: keep only provider name + timeout seconds; never embed
+        # raw SDK exception payloads (which can carry request URLs, headers,
+        # or in pathological cases echoed API keys).
+        self.provider = str(provider or 'unknown')
+        try:
+            self.timeout_seconds = int(timeout_seconds or 0)
+        except (TypeError, ValueError):
+            self.timeout_seconds = 0
+        if message:
+            msg = (
+                f"AI provider {self.provider!r} timed out after "
+                f"{self.timeout_seconds}s: {message}"
+            )
+        else:
+            msg = (
+                f"AI provider {self.provider!r} timed out after "
+                f"{self.timeout_seconds}s"
+            )
+        super().__init__(msg)
+
+
+def _resolve_provider_timeout_excs(provider: str):
+    """Return a tuple of exception classes that represent a provider timeout
+    for the given provider key.  Imports are best-effort: if the SDK is not
+    installed in this environment the helper returns an empty tuple so that
+    the wrapper still works (used in tests where SDKs are stubbed)."""
+    excs: list = []
+    if provider in ('openai', 'groq', 'deepseek'):
+        try:
+            import openai as _oai  # type: ignore
+            for name in ('APITimeoutError', 'Timeout'):
+                cls = getattr(_oai, name, None)
+                if isinstance(cls, type) and issubclass(cls, BaseException):
+                    excs.append(cls)
+        except Exception:
+            pass
+    elif provider == 'anthropic':
+        try:
+            import anthropic as _ant  # type: ignore
+            for name in ('APITimeoutError', 'APIConnectionError'):
+                cls = getattr(_ant, name, None)
+                if isinstance(cls, type) and issubclass(cls, BaseException):
+                    if name == 'APITimeoutError':
+                        excs.append(cls)
+        except Exception:
+            pass
+    elif provider == 'google':
+        try:
+            from google.api_core import exceptions as _gax  # type: ignore
+            for name in ('DeadlineExceeded', 'RetryError'):
+                cls = getattr(_gax, name, None)
+                if isinstance(cls, type) and issubclass(cls, BaseException):
+                    excs.append(cls)
+        except Exception:
+            pass
+    # Generic transport-level timeouts (httpx / requests / socket).
+    try:
+        import httpx as _httpx  # type: ignore
+        cls = getattr(_httpx, 'TimeoutException', None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            excs.append(cls)
+    except Exception:
+        pass
+    try:
+        import socket as _socket
+        excs.append(_socket.timeout)
+    except Exception:
+        pass
+    return tuple(excs)
+
+
 def generate_ai_content(prompt, language='en', task_type='generate', content_type=None):
     """Generate content using the user's preferred AI provider.
     
@@ -10203,6 +10319,9 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
 
     _attempted_providers = [provider]
     _provider_errors: dict = {}   # {provider_name: error_string} — one entry per failure
+    # PR-5B.8C: track which providers timed out so the caller can be told the
+    # difference between "provider hung" and "provider returned 4xx/5xx".
+    _provider_timeouts: dict = {}  # {provider_name: timeout_seconds}
 
     result = None
     try:
@@ -10216,9 +10335,19 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
             result = _generate_groq(system_prompt, prompt, language)
         elif provider == 'deepseek':
             result = _generate_deepseek(system_prompt, prompt, language)
+    except ProviderTimeoutError as _pte:
+        _provider_errors[provider] = str(_pte)
+        _provider_timeouts[provider] = _pte.timeout_seconds
+        print(f"[AI] {provider} timed out after {_pte.timeout_seconds}s "
+              f"— trying fallback providers", flush=True)
+        _initial_failed = True
     except Exception as e:
         _provider_errors[provider] = str(e)
         print(f"[AI] {provider} failed: {e} — trying fallback providers", flush=True)
+        _initial_failed = True
+    else:
+        _initial_failed = False
+    if _initial_failed:
         # Try fallback providers in size-aware priority order
         for fallback in _fallback_order:
             if fallback == provider:
@@ -10246,6 +10375,11 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
                         result = _generate_deepseek(system_prompt, prompt, language)
                     print(f"[AI] Fallback {fallback} succeeded", flush=True)
                     break
+                except ProviderTimeoutError as _pte2:
+                    _provider_errors[fallback] = str(_pte2)
+                    _provider_timeouts[fallback] = _pte2.timeout_seconds
+                    print(f"[AI] Fallback {fallback} timed out after "
+                          f"{_pte2.timeout_seconds}s", flush=True)
                 except Exception as e2:
                     _provider_errors[fallback] = str(e2)
                     print(f"[AI] Fallback {fallback} failed: {e2}", flush=True)
@@ -10281,6 +10415,22 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
         f"errors: {_error_detail} | content_type={content_type}",
         flush=True
     )
+    # PR-5B.8C: when at least one provider in the chain timed out, surface a
+    # ProviderTimeoutError so callers (ai_repair_strategy_section, the main
+    # api_generate_strategy AI call, the background worker) can produce a
+    # clear "provider timed out" error instead of a generic stall. Sanitized
+    # message: provider list + timeout value only — no API keys, no raw
+    # provider payloads.
+    if _provider_timeouts:
+        _to_summary = ', '.join(
+            f"{p}({s}s)" for p, s in _provider_timeouts.items()
+        )
+        _agg_to = max(_provider_timeouts.values())
+        raise ProviderTimeoutError(
+            'all',
+            _agg_to,
+            f"all attempted providers exhausted; timeouts: {_to_summary}"
+        )
     if content_type == 'strategy':
         raise RuntimeError(
             f"All AI providers failed. "
@@ -10324,21 +10474,36 @@ def _estimate_prompt_tokens(system_prompt: str, user_prompt: str, language: str 
 def _generate_openai(system_prompt, prompt, language='en'):
     """Generate using OpenAI API."""
     import openai
-    client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+    # PR-5B.8C: bounded timeout + no SDK-level retries (the application-level
+    # fallback chain in generate_ai_content is authoritative).  Older SDKs may
+    # not support both kwargs at the constructor — fall back gracefully.
+    _to = config.AI_CALL_TIMEOUT_SECONDS
+    try:
+        client = openai.OpenAI(api_key=config.OPENAI_API_KEY,
+                               timeout=_to, max_retries=0)
+    except TypeError:
+        try:
+            client = openai.OpenAI(api_key=config.OPENAI_API_KEY, timeout=_to)
+        except TypeError:
+            client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
     model = config.AI_MODEL if config.AI_MODEL and 'gpt' in config.AI_MODEL.lower() else 'gpt-4-turbo'
-    
+
     # gpt-4-turbo hard-caps output at 4 096 tokens; gpt-4o+ supports up to 16 384.
     _out_cap = 8192 if any(model.startswith(p) for p in _GPT4O_MODEL_PREFIXES) else 4096
-    print(f"[AI] Calling OpenAI ({model}), max_tokens={_out_cap}...", flush=True)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=_out_cap,
-        temperature=0.7
-    )
+    print(f"[AI] Calling OpenAI ({model}), max_tokens={_out_cap}, timeout={_to}s...", flush=True)
+    _timeout_excs = _resolve_provider_timeout_excs('openai')
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=_out_cap,
+            temperature=0.7
+        )
+    except _timeout_excs as _te:  # type: ignore[misc]
+        raise ProviderTimeoutError('openai', _to, type(_te).__name__) from None
     result = response.choices[0].message.content
     print(f"[AI] OpenAI success, length: {len(result)}", flush=True)
     return result
@@ -10346,19 +10511,33 @@ def _generate_openai(system_prompt, prompt, language='en'):
 def _generate_anthropic(system_prompt, prompt, language='en'):
     """Generate using Anthropic Claude API."""
     import anthropic
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    # PR-5B.8C: bounded timeout + no SDK-level retries.
+    _to = config.AI_CALL_TIMEOUT_SECONDS
+    try:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
+                                     timeout=_to, max_retries=0)
+    except TypeError:
+        try:
+            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
+                                         timeout=_to)
+        except TypeError:
+            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     model = config.AI_MODEL if config.AI_MODEL and 'claude' in config.AI_MODEL.lower() else 'claude-sonnet-4-20250514'
-    
-    print(f"[AI] Calling Anthropic ({model})...", flush=True)
-    response = client.messages.create(
-        model=model,
-        # 8 192 is the safe output cap for all Anthropic billing tiers.
-        # Requesting 16 000 triggers an invalid-request / credit error on
-        # accounts that have not been granted the extended-output add-on.
-        max_tokens=8192,
-        system=system_prompt,
-        messages=[{"role": "user", "content": prompt}]
-    )
+
+    print(f"[AI] Calling Anthropic ({model}), timeout={_to}s...", flush=True)
+    _timeout_excs = _resolve_provider_timeout_excs('anthropic')
+    try:
+        response = client.messages.create(
+            model=model,
+            # 8 192 is the safe output cap for all Anthropic billing tiers.
+            # Requesting 16 000 triggers an invalid-request / credit error on
+            # accounts that have not been granted the extended-output add-on.
+            max_tokens=8192,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except _timeout_excs as _te:  # type: ignore[misc]
+        raise ProviderTimeoutError('anthropic', _to, type(_te).__name__) from None
     result = response.content[0].text
     print(f"[AI] Anthropic success, length: {len(result)}", flush=True)
     return result
@@ -10368,16 +10547,35 @@ def _generate_google(system_prompt, prompt, language='en'):
     import google.generativeai as genai
     genai.configure(api_key=config.GOOGLE_API_KEY)
     model_name = config.AI_MODEL if config.AI_MODEL and 'gemini' in config.AI_MODEL.lower() else 'gemini-2.0-flash'
-    
-    print(f"DEBUG: Calling Google Gemini ({model_name})...", flush=True)
+
+    _to = config.AI_CALL_TIMEOUT_SECONDS
+    print(f"DEBUG: Calling Google Gemini ({model_name}), timeout={_to}s...", flush=True)
     model = genai.GenerativeModel(model_name)
-    response = model.generate_content(
-        f"{system_prompt}\n\n{prompt}",
-        generation_config=genai.types.GenerationConfig(
-            max_output_tokens=16000,
-            temperature=0.7
+    _timeout_excs = _resolve_provider_timeout_excs('google')
+    # PR-5B.8C: forward timeout via request_options. Older versions of the
+    # google-generativeai SDK don't accept this kwarg — fall back gracefully.
+    try:
+        response = model.generate_content(
+            f"{system_prompt}\n\n{prompt}",
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=16000,
+                temperature=0.7
+            ),
+            request_options={"timeout": _to}
         )
-    )
+    except TypeError:
+        try:
+            response = model.generate_content(
+                f"{system_prompt}\n\n{prompt}",
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=16000,
+                    temperature=0.7
+                )
+            )
+        except _timeout_excs as _te:  # type: ignore[misc]
+            raise ProviderTimeoutError('google', _to, type(_te).__name__) from None
+    except _timeout_excs as _te:  # type: ignore[misc]
+        raise ProviderTimeoutError('google', _to, type(_te).__name__) from None
     result = response.text
     print(f"DEBUG: Google Gemini success, length: {len(result)}", flush=True)
     return result
@@ -10385,13 +10583,30 @@ def _generate_google(system_prompt, prompt, language='en'):
 def _generate_groq(system_prompt, prompt, language='en'):
     """Generate using Groq API (Llama 3.3, Llama 3.1, Gemma 2, Mixtral)."""
     from openai import OpenAI
-    
-    # Groq uses OpenAI-compatible API
-    client = OpenAI(
-        api_key=config.GROQ_API_KEY,
-        base_url="https://api.groq.com/openai/v1"
-    )
-    
+
+    # Groq uses OpenAI-compatible API.
+    # PR-5B.8C: bounded timeout + no SDK-level retries.
+    _to = config.AI_CALL_TIMEOUT_SECONDS
+    try:
+        client = OpenAI(
+            api_key=config.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=_to,
+            max_retries=0,
+        )
+    except TypeError:
+        try:
+            client = OpenAI(
+                api_key=config.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
+                timeout=_to,
+            )
+        except TypeError:
+            client = OpenAI(
+                api_key=config.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
+            )
+
     # Whitelist of currently supported Groq models (as of 2025).
     # llama-3.1-70b-versatile was decommissioned — do not use it.
     # config.AI_MODEL override is honoured only when it names a valid Groq model.
@@ -10407,8 +10622,8 @@ def _generate_groq(system_prompt, prompt, language='en'):
     model = (config.AI_MODEL
              if config.AI_MODEL and config.AI_MODEL in _GROQ_SUPPORTED
              else _GROQ_DEFAULT)
-    
-    print(f"[AI] Calling Groq ({model})...", flush=True)
+
+    print(f"[AI] Calling Groq ({model}), timeout={_to}s...", flush=True)
 
     # Groq enforces tight per-request token budgets.  Reject oversized prompts
     # early so the caller can route to a higher-capacity provider instead of
@@ -10421,16 +10636,20 @@ def _generate_groq(system_prompt, prompt, language='en'):
             "Use Anthropic, OpenAI, or Google for large strategy generation."
         )
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        # Groq rate-limit budget is tight; 4 096 avoids most throttle failures.
-        max_tokens=4096,
-        temperature=0.7
-    )
+    _timeout_excs = _resolve_provider_timeout_excs('groq')
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            # Groq rate-limit budget is tight; 4 096 avoids most throttle failures.
+            max_tokens=4096,
+            temperature=0.7
+        )
+    except _timeout_excs as _te:  # type: ignore[misc]
+        raise ProviderTimeoutError('groq', _to, type(_te).__name__) from None
     result = response.choices[0].message.content
     print(f"[AI] Groq success — length: {len(result)}", flush=True)
     return result
@@ -10439,24 +10658,45 @@ def _generate_groq(system_prompt, prompt, language='en'):
 def _generate_deepseek(system_prompt, prompt, language='en'):
     """Generate using DeepSeek API (OpenAI-compatible)."""
     from openai import OpenAI
-    
-    client = OpenAI(
-        api_key=config.DEEPSEEK_API_KEY,
-        base_url="https://api.deepseek.com"
-    )
-    
+
+    # PR-5B.8C: bounded timeout + no SDK-level retries.
+    _to = config.AI_CALL_TIMEOUT_SECONDS
+    try:
+        client = OpenAI(
+            api_key=config.DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com",
+            timeout=_to,
+            max_retries=0,
+        )
+    except TypeError:
+        try:
+            client = OpenAI(
+                api_key=config.DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com",
+                timeout=_to,
+            )
+        except TypeError:
+            client = OpenAI(
+                api_key=config.DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com",
+            )
+
     model = config.AI_MODEL if config.AI_MODEL and 'deepseek' in config.AI_MODEL.lower() else 'deepseek-chat'
-    
-    print(f"DEBUG: Calling DeepSeek ({model})...", flush=True)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=16000,
-        temperature=0.7
-    )
+
+    print(f"DEBUG: Calling DeepSeek ({model}), timeout={_to}s...", flush=True)
+    _timeout_excs = _resolve_provider_timeout_excs('deepseek')
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=16000,
+            temperature=0.7
+        )
+    except _timeout_excs as _te:  # type: ignore[misc]
+        raise ProviderTimeoutError('deepseek', _to, type(_te).__name__) from None
     result = response.choices[0].message.content
     print(f"DEBUG: DeepSeek success, length: {len(result)}", flush=True)
     return result
@@ -22158,12 +22398,27 @@ def ai_repair_strategy_section(
     try:
         raw = generate_ai_content(prompt, language=("ar" if is_ar else "en"),
                                   task_type="generate", content_type="strategy")
+    except ProviderTimeoutError as _pte:
+        # PR-5B.8C: convert provider timeouts to a RepairError tagged with
+        # ``section`` so the existing ``except RepairError`` branches in
+        # production callers route through ``_mark_synth_failed`` (PR-5B.5F1
+        # / 5B.6D.1 / 5B.6E plumbing).  Sanitized message only.
+        _re = RepairError(
+            f"ai_repair[{section_key}]: provider timed out after "
+            f"{_pte.timeout_seconds}s ({_pte.provider})"
+        )
+        setattr(_re, 'section', section_key)
+        raise _re from None
     except RuntimeError as _e:
         # Re-wrap as RepairError so the caller can distinguish "AI failure"
         # from other deterministic errors.
-        raise RepairError(f"ai_repair[{section_key}]: AI provider unavailable — {_e}")
+        _re = RepairError(f"ai_repair[{section_key}]: AI provider unavailable — {_e}")
+        setattr(_re, 'section', section_key)
+        raise _re
     except Exception as _e:  # noqa: BLE001 — defensive
-        raise RepairError(f"ai_repair[{section_key}]: AI call failed — {_e}")
+        _re = RepairError(f"ai_repair[{section_key}]: AI call failed — {_e}")
+        setattr(_re, 'section', section_key)
+        raise _re
 
     cleaned = _ai_repair_strip_html_and_trace(raw or "")
     if not cleaned or len(cleaned) < 40:
