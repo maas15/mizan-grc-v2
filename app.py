@@ -158,13 +158,31 @@ def bump_background_task_progress(task_id, stage):
         pass
 
 def get_background_task(task_id):
-    """Get task status from database."""
+    """Get task status from database.
+
+    PR-5B.8B Section C: also returns ``stage`` and ``updated_at`` so the
+    poll endpoint can surface live progress. Schema-tolerant — if the
+    PR-5B.8B migration hasn't run yet (e.g. the column-add failed at
+    startup on an exotic DB), falls back to the legacy SELECT so the
+    endpoint keeps working.
+    """
     try:
         with closing(get_db_direct()) as conn:
-            task = conn.execute(
-                'SELECT task_id, user_id, status, result, error, callback_domain FROM background_tasks WHERE task_id = ?',
-                (task_id,)
-            ).fetchone()
+            try:
+                task = conn.execute(
+                    'SELECT task_id, user_id, status, result, error, '
+                    'callback_domain, stage, updated_at '
+                    'FROM background_tasks WHERE task_id = ?',
+                    (task_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Pre-migration DB: stage/updated_at columns missing.
+                task = conn.execute(
+                    'SELECT task_id, user_id, status, result, error, '
+                    'callback_domain '
+                    'FROM background_tasks WHERE task_id = ?',
+                    (task_id,)
+                ).fetchone()
             return task
     except Exception as e:
         print(f"Task get error: {e}", flush=True)
@@ -13011,6 +13029,19 @@ def api_strategy_status(task_id):
         print(f"[STRATEGY-STATUS] not_found task={task_id[:8]}", flush=True)
         return jsonify({'status': 'not_found'}), 404
     status = task['status']
+    # PR-5B.8B Section C: surface live progress beacons. Both fields are
+    # nullable (pre-migration DB or task that hasn't been bumped yet) and
+    # the SELECT in get_background_task is schema-tolerant, so we read
+    # defensively and fall back to None instead of KeyError-ing the poll.
+    _task_keys = task.keys() if hasattr(task, 'keys') else []
+    _stage_val = task['stage'] if 'stage' in _task_keys else None
+    _updated_at_val = task['updated_at'] if 'updated_at' in _task_keys else None
+    def _with_progress(payload):
+        """Attach stage + updated_at to a status payload (pending/done/error)."""
+        if isinstance(payload, dict):
+            payload.setdefault('stage', _stage_val)
+            payload.setdefault('updated_at', _updated_at_val)
+        return payload
     if status == 'done':
         # ── Unpack compact task envelope ──────────────────────────────────────
         try:
@@ -13027,7 +13058,7 @@ def api_strategy_status(task_id):
             _err_msg = compact.get('error') or 'Strategy generation failed'
             print(f"[STRATEGY-STATUS] returning_error_from_done task="
                   f"{task_id[:8]} error={_err_msg!r}", flush=True)
-            return jsonify({'status': 'error', 'error': _err_msg})
+            return jsonify(_with_progress({'status': 'error', 'error': _err_msg}))
 
         strategy_id = compact.get('strategy_id')
 
@@ -13068,7 +13099,7 @@ def api_strategy_status(task_id):
             # No strategy_id — generation failed before the DB INSERT
             result = compact
 
-        return jsonify({'status': 'done', 'result': result})
+        return jsonify(_with_progress({'status': 'done', 'result': result}))
     if status == 'error':
         # Return HTTP 200 so the frontend's fetch().then().json() chain
         # reliably parses the body and sees status: 'error' + the real
@@ -13082,10 +13113,10 @@ def api_strategy_status(task_id):
         _err_payload = task['error'] or 'Unknown'
         print(f"[STRATEGY-STATUS] returning_error task={task_id[:8]} "
               f"error={_err_payload!r}", flush=True)
-        return jsonify({'status': 'error', 'error': _err_payload})
+        return jsonify(_with_progress({'status': 'error', 'error': _err_payload}))
     print(f"[STRATEGY-STATUS] returning_pending task={task_id[:8]}",
           flush=True)
-    return jsonify({'status': 'pending'})
+    return jsonify(_with_progress({'status': 'pending'}))
 
 
 @app.route('/api/strategy/latest')
