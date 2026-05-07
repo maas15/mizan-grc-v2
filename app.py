@@ -121,7 +121,20 @@ def fail_background_task(task_id, error):
 # poll endpoint marks it failed so the frontend stops polling and surfaces
 # a real error instead of the generic timeout. Tuned for the longest known
 # AI-first repair pass; do NOT lower without re-measuring p99 generation.
-IDLE_THRESHOLD_SECONDS = 180
+#
+# PR-5B.8D: env-driven so operators can raise this in tandem with the
+# per-provider AI call timeout (see Config below) without a code change.
+# Invariant the operator must preserve: provider call timeout strictly less
+# than the idle stall threshold. Default 180, clamped to a safe range
+# [60, 1800]; any invalid env value falls back to 180.
+try:
+    IDLE_THRESHOLD_SECONDS = int(os.getenv('IDLE_THRESHOLD_SECONDS', '180') or '180')
+except (TypeError, ValueError):
+    IDLE_THRESHOLD_SECONDS = 180
+if IDLE_THRESHOLD_SECONDS < 60:
+    IDLE_THRESHOLD_SECONDS = 60
+elif IDLE_THRESHOLD_SECONDS > 1800:
+    IDLE_THRESHOLD_SECONDS = 1800
 
 
 def _parse_db_timestamp(ts):
@@ -10383,6 +10396,12 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
                 except Exception as e2:
                     _provider_errors[fallback] = str(e2)
                     print(f"[AI] Fallback {fallback} failed: {e2}", flush=True)
+            else:
+                # PR-5B.8D: surface skipped fallback providers in the log so
+                # operators can tell at a glance when the chain has effectively
+                # collapsed to a single provider (e.g. only OPENAI_API_KEY set).
+                # No keys or secrets are emitted — only the provider name.
+                print(f"[AI] Skipping fallback provider={fallback} — no API key configured", flush=True)
     
     if result:
         # Clean AI response to remove any instruction artifacts

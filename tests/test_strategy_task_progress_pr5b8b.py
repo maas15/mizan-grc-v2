@@ -33,8 +33,12 @@ def _read(path: str) -> str:
 
 def test_backend_idle_threshold_constant():
     src = _read(APP_PY)
-    assert re.search(r'^IDLE_THRESHOLD_SECONDS\s*=\s*180\b', src, re.MULTILINE), (
-        'app.py must declare module-level IDLE_THRESHOLD_SECONDS = 180'
+    # PR-5B.8D: IDLE_THRESHOLD_SECONDS is now env-driven (default 180,
+    # clamped to [60, 1800]).  Verify the env-read remains and the default
+    # is still 180 so the existing 180s contract is preserved when the env
+    # var is unset.
+    assert "os.getenv('IDLE_THRESHOLD_SECONDS', '180')" in src, (
+        'app.py must read IDLE_THRESHOLD_SECONDS from env with default 180'
     )
 
 
