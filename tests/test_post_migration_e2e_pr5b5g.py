@@ -199,7 +199,10 @@ def _ai_repaired_vision_for(domain):
 
 
 def _ai_repaired_kpi_for(domain):
-    """Canonical 9-column Arabic KPI schema (with Frequency / التكرار)."""
+    """Canonical 9-column Arabic KPI schema (with Frequency / التكرار)
+    plus the per-KPI Assessment Guides block required by the post-PR-5B.6F
+    contract enforced by ``synthesize_kpi_depth`` and the final integrity
+    gate."""
     n = max(getattr(_APP, '_RICHNESS_MIN_KPI_ROWS', 4), 6)
     header = (
         '## 6. مؤشرات الأداء الرئيسية\n\n'
@@ -214,7 +217,21 @@ def _ai_repaired_kpi_for(domain):
         f'| فريق حوكمة {domain} | شهري | خلال 12 شهراً |'
         for i in range(1, n + 1)
     )
-    return header + body + '\n'
+    guide_lines = ['', '### أدلة تقييم مؤشرات الأداء', '']
+    for i in range(1, n + 1):
+        guide_lines.extend([
+            f'#### دليل تقييم المؤشر رقم {i}: مؤشر {i} لـ {domain}',
+            '',
+            '| الخطوة | الإجراء | الأداة / النظام | المسؤول | الناتج |',
+            '|--------|---------|------------------|---------|--------|',
+            f'| 1 | جمع البيانات | منصة حوكمة {domain} | فريق {domain} | سجل |',
+            f'| 2 | تطبيق الصيغة | جداول البيانات | محلل {domain} | قيمة |',
+            f'| 3 | التحقق | مراجعة الإدارة | رئيس {domain} | تقرير |',
+            f'| 4 | الإبلاغ | لوحة التحكم | مدير {domain} | بيان |',
+            '**الصيغة:** (المطبّق ÷ الإجمالي) × 100',
+            '',
+        ])
+    return header + body + '\n' + '\n'.join(guide_lines)
 
 
 def _ai_repaired_roadmap_for(domain):
