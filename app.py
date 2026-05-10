@@ -9513,6 +9513,19 @@ def ensure_markdown_formatting(text):
         r'^\*\*\s*((?:الركيزة|ركيزة)\s*\d+\s*:\s*[^*\n]+?)\s*\*\*\s*([\u0600-\u06FF])',
         r'### \1\n\n\2', text, flags=re.MULTILINE
     )
+    # PRE-PILLAR (standalone). Convert bold pillar titles that are ALONE on
+    # their line (no following narrative) into H3 headings as well. Without
+    # this, pillars rendered as "**الركيزة 2: ...**" appear as highlighted
+    # inline bold blocks in the Arabic preview/export instead of clean
+    # full-width section subheadings.
+    text = re.sub(
+        r'^\*\*\s*(Pillar\s+\d+\s*:\s*[^*\n]+?)\s*\*\*\s*$',
+        r'### \1', text, flags=re.MULTILINE
+    )
+    text = re.sub(
+        r'^\*\*\s*((?:الركيزة|ركيزة)\s*\d+\s*:\s*[^*\n]+?)\s*\*\*\s*$',
+        r'### \1', text, flags=re.MULTILINE
+    )
 
     # 0. CRITICAL: Split heading appearing in the MIDDLE of a line (text ### Heading)
     # e.g., "...across all service offerings. ### Strategic Objectives:" → split them
