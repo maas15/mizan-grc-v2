@@ -9443,7 +9443,81 @@ def ensure_markdown_formatting(text):
         except Exception as _e:
             print(f'[FORMAT] repair step "{label or fn.__name__}" failed (non-fatal): {_e}', flush=True)
             return t
-    
+
+    # PRE-ARABIC-KPI-TITLE. Normalize Arabic KPI Assessment Guide titles
+    # where the colon was misplaced BEFORE the index ("رقم :1") instead of
+    # AFTER ("رقم 1:"). The misplaced colon comes from RTL editors / AI
+    # output where a stray colon was glued to the literal "رقم".
+    #   "#### دليل تقييم المؤشر رقم :1 ..."  →  "#### دليل تقييم المؤشر رقم 1: ..."
+    # Also covers the bare phrase used in narrative/footnotes.
+    text = re.sub(
+        r'(دليل\s+تقييم\s+المؤشر\s+رقم)\s*:\s*(\d+)',
+        r'\1 \2:',
+        text,
+    )
+
+    # PRE-FORMULA-LATEX. AI sometimes emits formula cells / lines wrapped in
+    # LaTeX (e.g. ``\text{Numerator}\div \text{Denominator}\times 100``) or
+    # leaves stray LaTeX fragments such as ``\100 times}``. The PDF/DOCX
+    # exporter has no LaTeX renderer, so these characters reach the user as
+    # broken markup. Strip the most common LaTeX-style wrappers and
+    # operator escapes so a clean math expression remains.
+    def _delatexify(t):
+        # ``\text{ABC}``  →  ``ABC``  (common AI artifact)
+        # NOTE: bounded character class + no surrounding ``\s*`` to avoid
+        # polynomial backtracking on adversarial inputs (CodeQL py/polynomial-redos).
+        t = re.sub(r'\\text\{([^{}]{0,500})\}', r'\1', t)
+        # ``\mathrm{X}`` / ``\mathit{X}`` / ``\mathbf{X}`` etc.  →  ``X``
+        t = re.sub(r'\\math(?:rm|it|bf|sf|tt)\{([^{}]{0,500})\}', r'\1', t)
+        # ``\frac{a}{b}``  →  ``(a) / (b)``
+        t = re.sub(
+            r'\\frac\{([^{}]{0,500})\}\{([^{}]{0,500})\}',
+            r'(\1) / (\2)',
+            t,
+        )
+        # Operator macros → glyphs (kept as ASCII so PDF font has them all).
+        t = re.sub(r'\\times\b\s?', ' × ', t)
+        t = re.sub(r'\\div\b\s?',   ' ÷ ', t)
+        t = re.sub(r'\\cdot\b\s?',  ' · ', t)
+        t = re.sub(r'\\pm\b\s?',    ' ± ', t)
+        t = re.sub(r'\\leq\b\s?',   ' ≤ ', t)
+        t = re.sub(r'\\geq\b\s?',   ' ≥ ', t)
+        # Escaped percent / dollar / hash / underscore that are leftovers.
+        t = re.sub(r'\\([%$#_&])', r'\1', t)
+        # Strip stray ``\NNN`` numeric escapes (e.g. ``\100`` → ``100``).
+        t = re.sub(r'\\(\d)', r'\1', t)
+        # Inline math delimiters ``$...$`` and ``\(...\)`` → strip wrappers,
+        # keep inner content (already de-LaTeX'd above). Bounded length to
+        # block polynomial backtracking.
+        t = re.sub(r'\\\(([^)]{0,500})\\\)', r'\1', t)
+        t = re.sub(r'(?<!\\)\$([^$\n]{1,200})\$', r'\1', t)
+        # Drop dangling closing braces that survive the stripping above
+        # (e.g. ``× 100}`` → ``× 100``). Per-line balance check: if a
+        # line has more ``}`` than ``{``, remove the surplus ``}`` chars
+        # from the right. This never touches code blocks (which keep
+        # balanced braces) or prose with curly quotes (no braces at all).
+        def _balance_braces_per_line(s):
+            out_lines = []
+            for ln in s.split('\n'):
+                excess = ln.count('}') - ln.count('{')
+                if excess > 0:
+                    # Remove rightmost `excess` '}' characters.
+                    new_ln = ln
+                    for _ in range(excess):
+                        idx = new_ln.rfind('}')
+                        if idx == -1:
+                            break
+                        new_ln = new_ln[:idx] + new_ln[idx + 1:]
+                    out_lines.append(new_ln)
+                else:
+                    out_lines.append(ln)
+            return '\n'.join(out_lines)
+        t = _balance_braces_per_line(t)
+        # Collapse double spaces left by macro removal.
+        t = re.sub(r'[ \t]{2,}', ' ', t)
+        return t
+    text = _safe(_delatexify, text, '_delatexify')
+
     # PRE-0a. Split heading (any level) from inline pipe table on same line.
     # Handles both empty-cell tables "| | |" and real headers "| Step | Action |".
     # Old pattern only matched (\|\s*[|\s]*\|) = pipes with only whitespace between.
@@ -13581,6 +13655,11 @@ def api_strategy_latest():
                     print(f'[STRATEGY-LATEST] ensure_markdown_formatting failed '
                           f'(non-fatal): {_fmt_e}', flush=True)
                     _canonical_content = _row_content
+                # PR-5B.7C: strip non-trace HTML comments (e.g. mizan-synth-env-v2)
+                try:
+                    _canonical_content = _strip_html_comments(_canonical_content)
+                except Exception:
+                    pass
                 _canonical_source = 'content_fallback'
         except DomainContaminationError as _dce:
             # Saved strategy contains cross-domain content — fail CLOSED with
@@ -14718,6 +14797,32 @@ def _strip_trace_comments(text):
     correct without weakening any content validation.
     """
     return _TS_TRACE_COMMENT_RE.sub('', text or '')
+
+
+# ── ALL HTML comment stripper (PR-5B.7C) ───────────────────────────────────
+# In addition to <!-- trace:... --> tags, the synthesizers insert idempotency
+# sentinel markers such as ``<!-- mizan-synth-env-v2 -->`` into section
+# bodies. These markers must NEVER reach the user-visible preview, the PDF
+# story, or the DOCX paragraph stream. ``_strip_trace_comments`` only handles
+# the trace prefix, so a separate generic stripper is required for previews
+# and exports.
+#
+# ReDoS-safe canonical HTML-comment form:  <!--  ( [^-] | -(?!->) )*  -->
+_HTML_COMMENT_RE = _ts_re.compile(
+    r'<!--(?:[^-]|-(?!->))*-->',
+    _ts_re.IGNORECASE,
+)
+
+
+def _strip_html_comments(text):
+    """Remove every HTML comment (``<!-- ... -->``) from ``text``.
+
+    Applied at preview/export entry points so internal sentinel markers
+    (e.g. ``<!-- mizan-synth-env-v2 -->`` inserted by the environment
+    synthesizer for idempotency) never leak into the rendered output.
+    Safe on ``None``/empty input.
+    """
+    return _HTML_COMMENT_RE.sub('', text or '')
 
 
 def _ts_is_placeholder(cell):
@@ -18052,6 +18157,44 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
             f'{n_after}/{_RICHNESS_MIN_PILLARS_LOCAL} substantive '
             f'pillars and {_with_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
             f'with substantive initiative tables'
+        )
+        setattr(_err, 'section', 'pillars')
+        raise _err
+
+    # PR-5B.7C: pillar-heading sequence contract. The AI-repaired pillars
+    # MUST expose visible H3 headings numbered 1, 2, 3, … starting at 1
+    # in the canonical phrasing for the language. Without this, a missing
+    # ``### الركيزة 1:`` heading lets the first pillar render as anonymous
+    # narrative + bold inline blocks for pillars #2 / #3 in the preview.
+    # We pre-normalize a LOCAL copy through ensure_markdown_formatting so
+    # that standalone-bold pillar titles (``**الركيزة 1: ...**``) are
+    # promoted to ``### الركيزة 1: ...`` before the regex check, matching
+    # what the preview/export pipeline will eventually render.
+    try:
+        _repaired_norm = ensure_markdown_formatting(repaired)
+    except Exception:
+        _repaired_norm = repaired
+    _pillar_num_re = _ts_re.compile(
+        r'^###\s+(?:Pillar|Strategic\s+Pillar|الركيزة(?:\s+الاستراتيجية)?)'
+        r'\s+(\d+)\s*[:：\-]',
+        _ts_re.IGNORECASE | _ts_re.MULTILINE,
+    )
+    _seen_nums = [int(m.group(1)) for m in _pillar_num_re.finditer(_repaired_norm)]
+    if not _seen_nums or _seen_nums[0] != 1:
+        _err = RepairError(
+            'synthesize_pillars_depth: AI-repaired pillars missing the '
+            f'mandatory leading Pillar 1 / الركيزة 1 H3 heading '
+            f'(observed numbers={_seen_nums!r})'
+        )
+        setattr(_err, 'section', 'pillars')
+        raise _err
+    # Sequential 1..N — reject gaps (e.g. 1, 3, 4) which would render as
+    # missing Pillar #2 in the preview.
+    _expected = list(range(1, len(_seen_nums) + 1))
+    if _seen_nums != _expected:
+        _err = RepairError(
+            'synthesize_pillars_depth: AI-repaired pillar headings are '
+            f'not sequential (observed={_seen_nums!r}, expected={_expected!r})'
         )
         setattr(_err, 'section', 'pillars')
         raise _err
@@ -35499,6 +35642,12 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     # Trace tags contain | characters that would break pipe-table cell splitting
     # if not removed before any markdown/table parsing.
     content = re_docx.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_docx.IGNORECASE)
+    # PR-5B.7C: also strip non-trace HTML comments (e.g. synthesizer
+    # idempotency sentinels like ``<!-- mizan-synth-env-v2 -->``).
+    try:
+        content = _strip_html_comments(content)
+    except Exception:
+        pass
 
     is_arabic = lang == 'ar'
     doc = Document()
@@ -36687,6 +36836,23 @@ def api_generate_docx():
                 'artifact_type': _art_type,
                 'artifact_id': _art_id,
             }), 422
+        # PR-5B.7C: completeness gate — see PDF route for rationale.
+        if _art_type == 'strategy':
+            _found_secs = _detect_canonical_sections_in_text(content)
+            if len(_found_secs) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
+                print(f'[DOCX-COMPLETENESS] denied for {_art_type}/{_art_id}: '
+                      f'found_sections={sorted(_found_secs)} '
+                      f'min={_MIN_CANONICAL_SECTIONS_FOR_EXPORT}', flush=True)
+                return jsonify({
+                    'error': ('Export blocked — incomplete strategy content. '
+                              'Please regenerate the strategy or wait for '
+                              'preview to finish loading before exporting.'),
+                    'reason': 'incomplete_canonical_content',
+                    'found_sections': sorted(_found_secs),
+                    'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                    'artifact_type': _art_type,
+                    'artifact_id': _art_id,
+                }), 422
 
     try:
         log_action(session.get('user_id'), 'export_docx', {'filename': filename})
@@ -36971,6 +37137,27 @@ def api_generate_pdf():
                 'artifact_type': _art_type_p,
                 'artifact_id': _art_id_p,
             }), 422
+        # PR-5B.7C: completeness gate — for strategy artifacts the client
+        # fallback content MUST carry multiple canonical sections (vision,
+        # pillars, environment, gaps, roadmap, KPIs, confidence). When the
+        # frontend exports only the currently-visible tab (e.g. KPI guides
+        # + confidence), refuse rather than ship a fragmentary PDF.
+        if _art_type_p == 'strategy':
+            _found_secs = _detect_canonical_sections_in_text(content)
+            if len(_found_secs) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
+                print(f'[PDF-COMPLETENESS] denied for {_art_type_p}/{_art_id_p}: '
+                      f'found_sections={sorted(_found_secs)} '
+                      f'min={_MIN_CANONICAL_SECTIONS_FOR_EXPORT}', flush=True)
+                return jsonify({
+                    'error': ('Export blocked — incomplete strategy content. '
+                              'Please regenerate the strategy or wait for '
+                              'preview to finish loading before exporting.'),
+                    'reason': 'incomplete_canonical_content',
+                    'found_sections': sorted(_found_secs),
+                    'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                    'artifact_type': _art_type_p,
+                    'artifact_id': _art_id_p,
+                }), 422
 
     try:
         log_action(session.get('user_id'), 'export_pdf', {'filename': filename})
@@ -37777,6 +37964,12 @@ def api_generate_pdf():
         # Strip trace comment tags before any further processing so they never
         # appear in the exported PDF and so embedded | chars don't break tables.
         content = re_pdf.sub(r'<!--\s*trace:[^>]*-->', '', content or '', flags=re_pdf.IGNORECASE)
+        # PR-5B.7C: also strip non-trace HTML comments (e.g. synthesizer
+        # idempotency sentinels like ``<!-- mizan-synth-env-v2 -->``).
+        try:
+            content = _strip_html_comments(content)
+        except Exception:
+            pass
         try:
             content = ensure_markdown_formatting(content)
         except Exception as fmt_err:
@@ -41420,6 +41613,13 @@ def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -
     if not parts:
         return ""
     canonical = "\n\n".join(parts)
+    # PR-5B.7C: strip ALL HTML comments (trace + synthesizer idempotency
+    # sentinels like ``<!-- mizan-synth-env-v2 -->``) BEFORE applying
+    # markdown formatting so they never leak into preview, PDF, or DOCX.
+    try:
+        canonical = _strip_html_comments(canonical)
+    except Exception:
+        pass
     if not apply_formatting:
         return canonical
     try:
@@ -41428,6 +41628,52 @@ def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -
         print(f'[CANON] ensure_markdown_formatting failed (non-fatal): {_fmt_e}',
               flush=True)
         return canonical
+
+
+# ── Canonical strategy section detector (PR-5B.7C) ─────────────────────────
+# Heuristic detector used by the export-completeness gate to decide whether
+# a flat markdown blob (client-payload fallback) actually carries the major
+# strategy sections — vision, pillars, environment, gaps, roadmap, KPIs,
+# confidence — or only a fragmentary slice (e.g. just the KPI Assessment
+# Guides + Confidence section, the bug we are fixing).
+#
+# A section is considered present when EITHER its English heading token OR
+# its Arabic heading token is found anywhere in the text. This is heading-
+# based (not table-based) so it stays robust against the AI rephrasing
+# table headers.
+_STRATEGY_SECTION_HEADING_TOKENS = {
+    'vision':      ('vision', 'الرؤية'),
+    'pillars':     ('pillar', 'الركيزة', 'الركائز'),
+    'environment': ('business environment', 'regulatory context', 'البيئة'),
+    'gaps':        ('gap analysis', 'gap implementation', 'تحليل الفجوات', 'الفجوات'),
+    'roadmap':     ('roadmap', 'phase 1', 'phase 2', 'خارطة الطريق', 'المرحلة'),
+    'kpis':        ('strategic kpi', 'key performance', 'kpis', 'مؤشرات الأداء', 'المؤشرات الرئيسية'),
+    'confidence':  ('confidence assessment', 'confidence score', 'تقييم الثقة', 'درجة الثقة'),
+}
+
+
+def _detect_canonical_sections_in_text(text: str):
+    """Return the set of canonical section keys whose heading tokens appear
+    anywhere in ``text``. Case-insensitive substring match. Used by the
+    export-completeness gate to detect fragmentary client payloads.
+    """
+    if not text:
+        return set()
+    blob = text.lower()
+    found = set()
+    for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items():
+        for tok in tokens:
+            if tok.lower() in blob:
+                found.add(key)
+                break
+    return found
+
+
+# Minimum number of canonical sections that a non-DB (client-payload)
+# strategy export must carry. Below this floor the export is rejected with
+# HTTP 422 so the user does not receive a fragmentary PDF/DOCX consisting
+# only of the currently-visible tab (e.g. KPI guides + confidence).
+_MIN_CANONICAL_SECTIONS_FOR_EXPORT = 3
 
 
 # ── Hard publishability gate for export (internal helper — not a route) ────────
@@ -41545,6 +41791,10 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
             artifact_type=artifact_type,
             artifact_id=_art_id,
         )
+        try:
+            _content_db = _strip_html_comments(_content_db)
+        except Exception:
+            pass
         try:
             return ensure_markdown_formatting(_content_db)
         except Exception as _fmt_e:

@@ -11,6 +11,10 @@ function grcMarkdownToHTML(md){
   // cell-splitting if left in place. Strip them unconditionally before
   // any other processing.
   md = md.replace(/<!--\s*trace:[^>]*-->/gi, '');
+  // PR-5B.7C: also strip ALL other HTML comments — synthesizers insert
+  // idempotency sentinel markers such as ``<!-- mizan-synth-env-v2 -->``
+  // into section bodies which must NEVER be visible in the preview.
+  md = md.replace(/<!--[\s\S]*?-->/g, '');
 
   // ── Step 1: cleanup helpers (same as server-side) ────────────────────────
   // PRE-PIPE-FENCE: ensure every pipe-table block is preceded by a blank line.
@@ -156,6 +160,12 @@ function grcMarkdownToHTML(md){
   // "**Pillar 1: Title** Narrative text" → "### Pillar 1: Title\n\nNarrative text"
   md = md.replace(/^\*\*\s*(Pillar\s+\d+\s*:\s*[^*\n]+?)\s*\*\*\s*([A-Z\u0600-\u06FF])/gm, '### $1\n\n$2');
   md = md.replace(/^\*\*\s*((?:\u0627\u0644\u0631\u0643\u064a\u0632\u0629|\u0631\u0643\u064a\u0632\u0629)\s*\d+\s*:\s*[^*\n]+?)\s*\*\*\s*([\u0600-\u06FF])/gm, '### $1\n\n$2');
+  // PRE-PILLAR (standalone): Convert bold pillar titles that are alone on
+  // their line into H3 headings as well. Without this, pillars rendered as
+  // "**الركيزة 2: ...**" appear as inline highlighted bold blocks in the
+  // Arabic preview instead of clean full-width section subheadings.
+  md = md.replace(/^\*\*\s*(Pillar\s+\d+\s*:\s*[^*\n]+?)\s*\*\*\s*$/gm, '### $1');
+  md = md.replace(/^\*\*\s*((?:\u0627\u0644\u0631\u0643\u064a\u0632\u0629|\u0631\u0643\u064a\u0632\u0629)\s*\d+\s*:\s*[^*\n]+?)\s*\*\*\s*$/gm, '### $1');
 
   // ── Step 2: collect all table blocks then process line-by-line ───────────
   var lines = md.split('\n');
