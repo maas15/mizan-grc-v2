@@ -18028,6 +18028,7 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 f'{_RICHNESS_MIN_PILLARS_LOCAL}'
                 + ('' if _gov_contract_ok else ',governance_pillar_missing')
             ),
+            org_structure_is_none=bool(org_structure_is_none),
         )
     except RepairError as _re:
         setattr(_re, 'section', 'pillars')
@@ -18054,6 +18055,46 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
         )
         setattr(_err, 'section', 'pillars')
         raise _err
+
+    # Post-repair governance-pillar contract re-check. When
+    # ``org_structure_is_none=True``, the AI-repaired pillars MUST
+    # satisfy the same first-pillar governance/structure contract that
+    # the post-normalization save gate
+    # (``diagnosis_pillars_missing_governance``) enforces. Failing to
+    # re-check here would let an AI-repaired pillars set that still
+    # lacks governance wording in the FIRST pillar reach the save gate
+    # and 422. We leave ``sections['pillars']`` UNCHANGED on failure
+    # (no deterministic fallback rows) and raise ``RepairError`` with
+    # ``section='pillars'``.
+    if org_structure_is_none:
+        _gov_tokens_ar2 = ('الحوكمة', 'حوكمة', 'الهيكل', 'هيكل',
+                           'الهيكلة', 'هيكلة', 'اللجنة', 'لجنة',
+                           'التوجيه', 'توجيه')
+        _gov_tokens_en2 = ('governance', 'structure', 'steering',
+                           'committee', 'organizational',
+                           'reporting model', 'org design')
+        _has_gov_first2 = False
+        if repaired_pillars:
+            _first_title2, _first_body2 = repaired_pillars[0]
+            _first_blob_lower2 = (
+                (_first_title2 or '') + '\n' + (_first_body2 or '')
+            ).lower()
+            _first_blob_raw2 = (
+                (_first_title2 or '') + '\n' + (_first_body2 or '')
+            )
+            if any(t in _first_blob_lower2 for t in _gov_tokens_en2):
+                _has_gov_first2 = True
+            elif any(t in _first_blob_raw2 for t in _gov_tokens_ar2):
+                _has_gov_first2 = True
+        if not _has_gov_first2:
+            _err = RepairError(
+                'synthesize_pillars_depth: AI-repaired pillars do not '
+                'satisfy the org_structure_is_none governance-pillar '
+                'contract (first pillar missing '
+                'governance/structure/operating-model wording)'
+            )
+            setattr(_err, 'section', 'pillars')
+            raise _err
 
     sections['pillars'] = repaired
     summary['rebuilt'] = True
@@ -22405,7 +22446,8 @@ def ai_repair_strategy_section(
         generation_mode: str = "consulting",
         diagnostic_context: str = "",
         validation_error: str = "",
-        min_rows: int = None) -> str:
+        min_rows: int = None,
+        org_structure_is_none: bool = False) -> str:
     """Repair a single failed strategy section via the configured AI provider.
 
     Architectural rules (problem statement PART 3):
@@ -22544,6 +22586,48 @@ def ai_repair_strategy_section(
             prompt += f"\n\nDiagnostic context:\n{diagnostic_context.strip()[:2000]}"
         if validation_error:
             prompt += f"\n\nRepair reason: {validation_error.strip()[:500]}"
+
+    # ── org_structure_is_none governance-first pillar contract ───────────────
+    # When the user reported no defined organisational structure, the FIRST
+    # pillar of the pillars section MUST be a governance / operating-model /
+    # structure pillar. The post-normalization save gate
+    # (``diagnosis_pillars_missing_governance``) and
+    # ``synthesize_pillars_depth``'s governance-pillar contract both check
+    # for this, so the AI must be told explicitly when repairing the
+    # pillars section. We surface this requirement only for the pillars
+    # section; other sections retain their existing prompt.
+    if section_key == "pillars" and org_structure_is_none:
+        if is_ar:
+            prompt += (
+                "\n\nقاعدة الهيكل التنظيمي المفقود (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي معتمد، يجب أن تكون "
+                "الركيزة **الأولى** (### الركيزة 1) مكرسة للحوكمة والهيكل "
+                "التنظيمي ونموذج التشغيل. يجب أن يحتوي عنوان الركيزة الأولى "
+                "و/أو وصف مبادراتها على واحد على الأقل من المصطلحات التالية "
+                "بشكل صريح: الحوكمة، الهيكل التنظيمي، نموذج التشغيل، "
+                "الأدوار والمسؤوليات، الصلاحيات، اللجان، خطوط الرفع، "
+                "اللجنة التوجيهية. ويجب أن تتناول مبادراتها تأسيس اللجنة "
+                "التوجيهية واعتماد الهيكل التنظيمي وتعريف الأدوار "
+                "والمسؤوليات وخطوط الرفع. لا تجعل الركيزة الأولى تقنية "
+                "بحتة قبل معالجة الحوكمة والهيكل."
+            )
+        else:
+            prompt += (
+                "\n\nMissing organisational structure rule (MANDATORY):\n"
+                "Because the organisation reported no defined organisational "
+                "structure, the **FIRST** pillar (### Pillar 1) MUST be a "
+                "governance / operating-model / organisational-structure "
+                "pillar. The first pillar's title and/or its initiative "
+                "descriptions MUST explicitly include at least one of: "
+                "governance, organizational structure, operating model, "
+                "roles and responsibilities, authority matrix, committees, "
+                "reporting lines, steering committee, org design. Its "
+                "initiatives MUST address establishing a steering "
+                "committee, approving the organisational structure, and "
+                "defining roles, responsibilities, and reporting lines. Do "
+                "not make the first pillar a purely technical pillar "
+                "before governance and structure are addressed."
+            )
 
     # ── Cybersecurity capability coverage requirement ────────────────────────
     # validate_arabic_strategy_semantic_richness emits
