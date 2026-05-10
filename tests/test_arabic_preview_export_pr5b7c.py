@@ -284,7 +284,7 @@ class TestExportCompletenessDetector(unittest.TestCase):
     def test_kpi_guides_only_fragment_is_below_export_floor(self):
         """The exact failure mode the user reported: a fragmentary client
         payload that contains only KPI Assessment Guides + Confidence
-        section must NOT meet the 3-section export-completeness floor.
+        section must NOT meet the export-completeness floor.
         """
         fragment = (
             '### أدلة تقييم مؤشرات الأداء\n\n'
@@ -297,6 +297,85 @@ class TestExportCompletenessDetector(unittest.TestCase):
         # KPIs (via مؤشرات الأداء) + confidence — exactly 2 sections.
         self.assertLess(len(found), _APP._MIN_CANONICAL_SECTIONS_FOR_EXPORT,
                         f'fragment should be below floor; found={sorted(found)}')
+
+    # ── PR-5B.7C.1 additions ───────────────────────────────────────────
+    @_skip_if_no_app
+    def test_detector_is_heading_anchored(self):
+        """Substrings inside narrative / table cells must NOT count.
+
+        The pre-PR-5B.7C.1 substring detector matched ``vision`` inside
+        ``"This KPI supports the vision of …"`` and similar, which let
+        a kpis+confidence fragment appear to carry 4-5 sections and
+        sneak past the gate.
+        """
+        narrative_only = (
+            '### أدلة تقييم مؤشرات الأداء\n\n'
+            'This KPI supports the vision of the program. '
+            'It maps to the first pillar of governance and feeds '
+            'into phase 1 of the roadmap. The gap analysis showed '
+            'a delta with the regulatory context.\n\n'
+            '## 7. تقييم الثقة\n\nbody.\n'
+        )
+        found = _APP._detect_canonical_sections_in_text(narrative_only)
+        # Only the two real headings (kpis + confidence) should match.
+        self.assertEqual(found, {'kpis', 'confidence'},
+                         f'expected exactly {{kpis,confidence}} from headings; '
+                         f'got {sorted(found)}')
+
+    @_skip_if_no_app
+    def test_is_strategy_export_fragment_flags_kpi_only_payload(self):
+        """The kpis+confidence fragment from the bug must be flagged."""
+        fragment = (
+            '### أدلة تقييم مؤشرات الأداء\n\n'
+            '#### دليل تقييم المؤشر رقم 1: اسم\n\n'
+            'detail.\n\n'
+            '## 7. تقييم الثقة والمخاطر\n\nbody.\n'
+        )
+        is_frag, found, why = _APP._is_strategy_export_fragment(fragment)
+        self.assertTrue(is_frag, f'fragment should be flagged; found={sorted(found)} why={why}')
+        self.assertNotIn('vision', found)
+        self.assertNotIn('pillars', found)
+
+    @_skip_if_no_app
+    def test_is_strategy_export_fragment_passes_full_strategy(self):
+        secs = {
+            'vision': '## 1. الرؤية\n\nنص.\n',
+            'pillars': '## 2. الركائز\n\n### الركيزة 1: الحوكمة\n',
+            'environment': '## 3. البيئة التنظيمية\n\nنص.\n',
+            'gaps': '## 4. تحليل الفجوات\n\nنص.\n',
+            'roadmap': '## 5. خارطة الطريق\n\n### المرحلة 1\n',
+            'kpis': '## 6. مؤشرات الأداء\n\nجدول.\n',
+            'confidence': '## 7. تقييم الثقة\n\nنص.\n',
+        }
+        canonical = _APP._assemble_canonical_from_sections(secs)
+        is_frag, found, why = _APP._is_strategy_export_fragment(canonical)
+        self.assertFalse(is_frag,
+                         f'full strategy should NOT be flagged; '
+                         f'found={sorted(found)} why={why}')
+
+
+# ── 7. PR-5B.7C.1 — Arabic formula label normalization ─────────────────────
+class TestArabicFormulaLabelNormalization(unittest.TestCase):
+    @_skip_if_no_app
+    def test_space_before_colon_inside_bold_is_collapsed(self):
+        src = '** الصيغة :** (A÷B)×100'
+        out = _APP.ensure_markdown_formatting(src)
+        self.assertIn('**الصيغة:**', out)
+        self.assertNotIn(' :**', out)
+
+    @_skip_if_no_app
+    def test_colon_outside_bold_is_moved_inside(self):
+        src = '**الصيغة**: (A÷B)×100'
+        out = _APP.ensure_markdown_formatting(src)
+        self.assertIn('**الصيغة:**', out)
+        self.assertNotIn('**:', out)
+
+    @_skip_if_no_app
+    def test_bare_label_with_extra_space_is_normalized(self):
+        src = 'الصيغة : (A÷B)×100'
+        out = _APP.ensure_markdown_formatting(src)
+        self.assertIn('الصيغة:', out)
+        self.assertNotIn('الصيغة :', out)
 
 
 # ── 6. Canonical 7-section order ───────────────────────────────────────────

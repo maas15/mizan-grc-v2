@@ -9456,6 +9456,20 @@ def ensure_markdown_formatting(text):
         text,
     )
 
+    # PRE-ARABIC-FORMULA-LABEL. Normalize the Arabic formula label
+    # ``**الصيغة:**`` so the colon is always glued to the word and the
+    # bold markers tightly wrap the label. Variants seen from the AI
+    # / RTL editors that we collapse to the canonical form:
+    #   ``** الصيغة :**``   →  ``**الصيغة:**``
+    #   ``**الصيغة :**``    →  ``**الصيغة:**``
+    #   ``** الصيغة:**``    →  ``**الصيغة:**``
+    #   ``**الصيغة**: ``    →  ``**الصيغة:** ``
+    #   bare ``الصيغة :``   →  ``الصيغة:``  (single space after)
+    text = re.sub(r'\*\*\s*(الصيغة)\s*:\s*\*\*\s*', r'**\1:** ', text)
+    text = re.sub(r'\*\*\s*(الصيغة)\s*\*\*\s*:\s*', r'**\1:** ', text)
+    # Bare label variant (no bold markers) — keep a single trailing space.
+    text = re.sub(r'(?<!\*)\b(الصيغة)\s+:\s*', r'\1: ', text)
+
     # PRE-FORMULA-LATEX. AI sometimes emits formula cells / lines wrapped in
     # LaTeX (e.g. ``\text{Numerator}\div \text{Denominator}\times 100``) or
     # leaves stray LaTeX fragments such as ``\100 times}``. The PDF/DOCX
@@ -35510,6 +35524,34 @@ def api_generate_pdf_async():
                 'artifact_id': _art_id_a,
             }), 422
 
+    # PR-5B.7C.1: synchronous fragment gate — refuse early so the user
+    # gets a clear error instead of a queued task that produces a
+    # misleading PDF. The inner sync api_generate_pdf() also runs this
+    # gate (defence in depth) once we forward the artifact metadata.
+    if _art_type_a == 'strategy':
+        _is_frag_a, _found_a, _why_a = _is_strategy_export_fragment(content)
+        if _is_frag_a:
+            print(
+                f'[EXPORT-DIAG] PDF-async denied — fragment detected for '
+                f'{_art_type_a}/{_art_id_a}: '
+                f'found_sections={sorted(_found_a)} reason="{_why_a}" '
+                f'final_content_len={len(content)}',
+                flush=True,
+            )
+            return jsonify({
+                'error': ('Export blocked — incomplete strategy content. '
+                          'Please regenerate the strategy or wait for '
+                          'preview to finish loading before exporting.'),
+                'reason': 'export_fragment_detected',
+                'detail': _why_a,
+                'found_sections': sorted(_found_a),
+                'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                'required_leading_sections': list(
+                    _REQUIRED_LEADING_SECTIONS_FOR_EXPORT),
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
+
     task_id = str(uuid.uuid4())
     _export_store[task_id] = {'status': 'pending', 'filename': filename}
 
@@ -35521,6 +35563,13 @@ def api_generate_pdf_async():
     _doc_type = doc_type
     _domain   = domain
     _task_id  = task_id
+    # PR-5B.7C.1: forward artifact metadata so the inner sync route can
+    # re-resolve DB-canonical content authoritatively and apply the same
+    # fail-CLOSED gates with full context (instead of seeing artifact_id
+    # as None and silently falling through to the client-fallback path).
+    _art_id_inner    = _art_id_a
+    _art_type_inner  = _art_type_a
+    _gen_mode_inner  = _gen_mode_a
 
     def _build_pdf():
         import tempfile
@@ -35538,7 +35587,15 @@ def api_generate_pdf_async():
                 '/api/generate-pdf',
                 method='POST',
                 json={'content': _content, 'filename': _filename, 'language': _lang,
-                      'org_name': _org_name, 'sector': _sector, 'doc_type': _doc_type, 'domain': _domain},
+                      'org_name': _org_name, 'sector': _sector, 'doc_type': _doc_type,
+                      'domain': _domain,
+                      # PR-5B.7C.1: forward artifact metadata so the inner
+                      # canonical-from-DB resolution and export gates apply
+                      # consistently (was silently falling through to
+                      # client-payload path with artifact_id=None).
+                      'artifact_id': _art_id_inner,
+                      'artifact_type': _art_type_inner,
+                      'generation_mode': _gen_mode_inner},
                 headers={'Content-Type': 'application/json'}
             ):
                 # Manually patch session for auth
@@ -35704,6 +35761,50 @@ def api_generate_docx_async():
                 'error': 'Export blocked — saved strategy contains cross-domain content',
                 'reason': 'domain_contamination',
                 'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
+
+    # PR-5B.7C.1: synchronous fragment gate — refuse early so the user
+    # gets a clear error instead of a queued task that produces a
+    # misleading DOCX. The async DOCX path calls _build_docx_bytes
+    # directly (no inner sync route), so this is the ONLY layer of
+    # fragment defence on this code path. The diagnostic log is also
+    # the export source-of-truth for this route.
+    try:
+        _client_secs_da = _detect_canonical_sections_in_text(content)
+        _db_secs_da = _detect_canonical_sections_in_text(_db_canonical or '')
+        print(
+            f'[EXPORT-DIAG] route=docx-async artifact_type={_art_type_a} '
+            f'artifact_id={_art_id_a} db_canon_found={bool(_db_canonical and _db_canonical.strip())} '
+            f'db_canon_len={len(_db_canonical or "")} '
+            f'db_sections={sorted(_db_secs_da)} '
+            f'final_content_len={len(content or "")} '
+            f'final_sections={sorted(_client_secs_da)}',
+            flush=True,
+        )
+    except Exception:
+        pass
+    if _art_type_a == 'strategy':
+        _is_frag_da, _found_da, _why_da = _is_strategy_export_fragment(content)
+        if _is_frag_da:
+            print(
+                f'[EXPORT-DIAG] DOCX-async denied — fragment detected for '
+                f'{_art_type_a}/{_art_id_a}: '
+                f'found_sections={sorted(_found_da)} reason="{_why_da}" '
+                f'final_content_len={len(content)}',
+                flush=True,
+            )
+            return jsonify({
+                'error': ('Export blocked — incomplete strategy content. '
+                          'Please regenerate the strategy or wait for '
+                          'preview to finish loading before exporting.'),
+                'reason': 'export_fragment_detected',
+                'detail': _why_da,
+                'found_sections': sorted(_found_da),
+                'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                'required_leading_sections': list(
+                    _REQUIRED_LEADING_SECTIONS_FOR_EXPORT),
                 'artifact_type': _art_type_a,
                 'artifact_id': _art_id_a,
             }), 422
@@ -37003,6 +37104,21 @@ def api_generate_docx():
     except Exception as _cn_e:
         print(f'[DOCX-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_d = ''
+    # PR-5B.7C.1: structured diagnostic — every export, every artifact.
+    try:
+        _client_secs_d = _detect_canonical_sections_in_text(content)
+        _db_secs_d = _detect_canonical_sections_in_text(_db_canonical_d or '')
+        print(
+            f'[EXPORT-DIAG] route=docx artifact_type={_art_type} '
+            f'artifact_id={_art_id} db_canon_found={bool(_db_canonical_d and _db_canonical_d.strip())} '
+            f'db_canon_len={len(_db_canonical_d or "")} '
+            f'db_sections={sorted(_db_secs_d)} '
+            f'client_len={len(content or "")} '
+            f'client_sections={sorted(_client_secs_d)}',
+            flush=True,
+        )
+    except Exception:
+        pass
     if _db_canonical_d and _db_canonical_d.strip():
         try:
             _parity = _compare_content_parity(_db_canonical_d, content)
@@ -37034,23 +37150,33 @@ def api_generate_docx():
                 'artifact_type': _art_type,
                 'artifact_id': _art_id,
             }), 422
-        # PR-5B.7C: completeness gate — see PDF route for rationale.
-        if _art_type == 'strategy':
-            _found_secs = _detect_canonical_sections_in_text(content)
-            if len(_found_secs) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
-                print(f'[DOCX-COMPLETENESS] denied for {_art_type}/{_art_id}: '
-                      f'found_sections={sorted(_found_secs)} '
-                      f'min={_MIN_CANONICAL_SECTIONS_FOR_EXPORT}', flush=True)
-                return jsonify({
-                    'error': ('Export blocked — incomplete strategy content. '
-                              'Please regenerate the strategy or wait for '
-                              'preview to finish loading before exporting.'),
-                    'reason': 'incomplete_canonical_content',
-                    'found_sections': sorted(_found_secs),
-                    'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
-                    'artifact_type': _art_type,
-                    'artifact_id': _art_id,
-                }), 422
+
+    # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
+    # source won (DB canonical OR client payload). See PDF route for the
+    # full rationale (kpis+confidence fragment bug).
+    if _art_type == 'strategy':
+        _is_frag_d, _found_secs_d, _why_d = _is_strategy_export_fragment(content)
+        if _is_frag_d:
+            print(
+                f'[EXPORT-DIAG] DOCX denied — fragment detected for '
+                f'{_art_type}/{_art_id}: '
+                f'found_sections={sorted(_found_secs_d)} reason="{_why_d}" '
+                f'final_content_len={len(content)}',
+                flush=True,
+            )
+            return jsonify({
+                'error': ('Export blocked — incomplete strategy content. '
+                          'Please regenerate the strategy or wait for '
+                          'preview to finish loading before exporting.'),
+                'reason': 'export_fragment_detected',
+                'detail': _why_d,
+                'found_sections': sorted(_found_secs_d),
+                'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                'required_leading_sections': list(
+                    _REQUIRED_LEADING_SECTIONS_FOR_EXPORT),
+                'artifact_type': _art_type,
+                'artifact_id': _art_id,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_docx', {'filename': filename})
@@ -37306,6 +37432,21 @@ def api_generate_pdf():
     except Exception as _cn_e:
         print(f'[PDF-CANON] lookup failed, using client content: {_cn_e}', flush=True)
         _db_canonical_p = ''
+    # PR-5B.7C.1: structured diagnostic — every export, every artifact.
+    try:
+        _client_secs_p = _detect_canonical_sections_in_text(content)
+        _db_secs_p = _detect_canonical_sections_in_text(_db_canonical_p or '')
+        print(
+            f'[EXPORT-DIAG] route=pdf artifact_type={_art_type_p} '
+            f'artifact_id={_art_id_p} db_canon_found={bool(_db_canonical_p and _db_canonical_p.strip())} '
+            f'db_canon_len={len(_db_canonical_p or "")} '
+            f'db_sections={sorted(_db_secs_p)} '
+            f'client_len={len(content or "")} '
+            f'client_sections={sorted(_client_secs_p)}',
+            flush=True,
+        )
+    except Exception:
+        pass
     if _db_canonical_p and _db_canonical_p.strip():
         try:
             _parity = _compare_content_parity(_db_canonical_p, content)
@@ -37335,27 +37476,39 @@ def api_generate_pdf():
                 'artifact_type': _art_type_p,
                 'artifact_id': _art_id_p,
             }), 422
-        # PR-5B.7C: completeness gate — for strategy artifacts the client
-        # fallback content MUST carry multiple canonical sections (vision,
-        # pillars, environment, gaps, roadmap, KPIs, confidence). When the
-        # frontend exports only the currently-visible tab (e.g. KPI guides
-        # + confidence), refuse rather than ship a fragmentary PDF.
-        if _art_type_p == 'strategy':
-            _found_secs = _detect_canonical_sections_in_text(content)
-            if len(_found_secs) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
-                print(f'[PDF-COMPLETENESS] denied for {_art_type_p}/{_art_id_p}: '
-                      f'found_sections={sorted(_found_secs)} '
-                      f'min={_MIN_CANONICAL_SECTIONS_FOR_EXPORT}', flush=True)
-                return jsonify({
-                    'error': ('Export blocked — incomplete strategy content. '
-                              'Please regenerate the strategy or wait for '
-                              'preview to finish loading before exporting.'),
-                    'reason': 'incomplete_canonical_content',
-                    'found_sections': sorted(_found_secs),
-                    'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
-                    'artifact_type': _art_type_p,
-                    'artifact_id': _art_id_p,
-                }), 422
+
+    # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
+    # source won (DB canonical OR client payload). The previous code only
+    # ran the gate on the client-fallback branch, so a fragmentary
+    # sections_json stored in the DB would silently overwrite a complete
+    # client payload and ship a kpis+confidence-only PDF — the bug the
+    # user reported. The DB-side fragment guard inside
+    # _canonical_content_from_db now refuses to return such fragments,
+    # but we keep this final gate as defence-in-depth so the build
+    # function never sees a fragmentary strategy.
+    if _art_type_p == 'strategy':
+        _is_frag_p, _found_secs_p, _why_p = _is_strategy_export_fragment(content)
+        if _is_frag_p:
+            print(
+                f'[EXPORT-DIAG] PDF denied — fragment detected for '
+                f'{_art_type_p}/{_art_id_p}: '
+                f'found_sections={sorted(_found_secs_p)} reason="{_why_p}" '
+                f'final_content_len={len(content)}',
+                flush=True,
+            )
+            return jsonify({
+                'error': ('Export blocked — incomplete strategy content. '
+                          'Please regenerate the strategy or wait for '
+                          'preview to finish loading before exporting.'),
+                'reason': 'export_fragment_detected',
+                'detail': _why_p,
+                'found_sections': sorted(_found_secs_p),
+                'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                'required_leading_sections': list(
+                    _REQUIRED_LEADING_SECTIONS_FOR_EXPORT),
+                'artifact_type': _art_type_p,
+                'artifact_id': _art_id_p,
+            }), 422
 
     try:
         log_action(session.get('user_id'), 'export_pdf', {'filename': filename})
@@ -41842,28 +41995,59 @@ def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -
 _STRATEGY_SECTION_HEADING_TOKENS = {
     'vision':      ('vision', 'الرؤية'),
     'pillars':     ('pillar', 'الركيزة', 'الركائز'),
-    'environment': ('business environment', 'regulatory context', 'البيئة'),
-    'gaps':        ('gap analysis', 'gap implementation', 'تحليل الفجوات', 'الفجوات'),
-    'roadmap':     ('roadmap', 'phase 1', 'phase 2', 'خارطة الطريق', 'المرحلة'),
-    'kpis':        ('strategic kpi', 'key performance', 'kpis', 'مؤشرات الأداء', 'المؤشرات الرئيسية'),
-    'confidence':  ('confidence assessment', 'confidence score', 'تقييم الثقة', 'درجة الثقة'),
+    'environment': ('business environment', 'regulatory context',
+                    'البيئة', 'السياق التنظيمي'),
+    'gaps':        ('gap analysis', 'gap implementation', 'gaps',
+                    'تحليل الفجوات', 'الفجوات'),
+    'roadmap':     ('roadmap', 'phase 1', 'phase 2', 'execution roadmap',
+                    'خارطة الطريق', 'المرحلة'),
+    'kpis':        ('strategic kpi', 'key performance', 'kpis',
+                    'مؤشرات الأداء', 'المؤشرات الرئيسية'),
+    'confidence':  ('confidence assessment', 'confidence score',
+                    'risk assessment', 'تقييم الثقة', 'درجة الثقة',
+                    'تقييم المخاطر'),
 }
 
 
 def _detect_canonical_sections_in_text(text: str):
     """Return the set of canonical section keys whose heading tokens appear
-    anywhere in ``text``. Case-insensitive substring match. Used by the
-    export-completeness gate to detect fragmentary client payloads.
+    on a markdown HEADING line (``^#{1,6} ...``) in ``text``.
+
+    PR-5B.7C.1 — heading-anchored to fix two failure modes:
+      * narrative substrings (e.g. the word "vision" inside a KPI-guide
+        body) producing false positives that let fragmentary payloads
+        bypass the export-completeness gate;
+      * the kpis-only fragment described in the bug report (only
+        ``### أدلة تقييم مؤشرات الأداء`` + ``## 7. تقييم الثقة``)
+        accidentally matching ``pillars`` / ``vision`` / ``roadmap``
+        because those words happen to appear in KPI-guide commentary.
+
+    Case-insensitive substring match constrained to lines whose first
+    non-blank character is ``#`` (any heading depth). Hash-prefixed
+    inline references inside table cells are ignored because cells
+    start with ``|``, not ``#``.
     """
     if not text:
         return set()
-    blob = text.lower()
     found = set()
-    for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items():
-        for tok in tokens:
-            if tok.lower() in blob:
-                found.add(key)
-                break
+    # Normalise once; iterate line-by-line so substring noise inside
+    # tables / narrative cannot trip the gate.
+    for raw_line in text.split('\n'):
+        ls = raw_line.lstrip()
+        if not ls or ls[0] != '#':
+            continue
+        # Strip leading hashes + whitespace, lowercase, then match.
+        # Heading bodies are short (< ~120 chars) so lower() is cheap.
+        head = ls.lstrip('#').strip().lower()
+        if not head:
+            continue
+        for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items():
+            if key in found:
+                continue
+            for tok in tokens:
+                if tok.lower() in head:
+                    found.add(key)
+                    break
     return found
 
 
@@ -41871,7 +42055,45 @@ def _detect_canonical_sections_in_text(text: str):
 # strategy export must carry. Below this floor the export is rejected with
 # HTTP 422 so the user does not receive a fragmentary PDF/DOCX consisting
 # only of the currently-visible tab (e.g. KPI guides + confidence).
-_MIN_CANONICAL_SECTIONS_FOR_EXPORT = 3
+#
+# PR-5B.7C.1 — bumped from 3 → 5 (heading-anchored detection now reliable).
+# A complete strategy carries all 7 sections; allowing 2 to be missing
+# tolerates legacy artifacts where one section heading was rewritten by
+# the AI in a non-canonical way, while still catching the real fragment
+# bug (KPI guides + confidence = 2 sections).
+_MIN_CANONICAL_SECTIONS_FOR_EXPORT = 5
+
+# Sections whose absence definitively proves a fragmentary export — the
+# strategy starts at vision/pillars, so missing BOTH is a clear signal
+# that only the tail of the document was sent (the exact failure mode
+# in the bug report). Used in addition to the count floor.
+_REQUIRED_LEADING_SECTIONS_FOR_EXPORT = ('vision', 'pillars')
+
+
+def _is_strategy_export_fragment(text: str):
+    """Return (is_fragment: bool, found_sections: set, reason: str).
+
+    A strategy export is a "fragment" when EITHER:
+      * fewer than ``_MIN_CANONICAL_SECTIONS_FOR_EXPORT`` of the 7
+        canonical sections are detected via heading-anchored matching, OR
+      * BOTH leading sections (``vision`` and ``pillars``) are missing —
+        the precise signature of the kpis+confidence fragment bug.
+    """
+    found = _detect_canonical_sections_in_text(text)
+    if len(found) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
+        return True, found, (
+            f'only {len(found)} of 7 canonical sections detected '
+            f'(min {_MIN_CANONICAL_SECTIONS_FOR_EXPORT})'
+        )
+    missing_leading = [s for s in _REQUIRED_LEADING_SECTIONS_FOR_EXPORT
+                       if s not in found]
+    if len(missing_leading) == len(_REQUIRED_LEADING_SECTIONS_FOR_EXPORT):
+        return True, found, (
+            'leading sections '
+            f'{list(_REQUIRED_LEADING_SECTIONS_FOR_EXPORT)} are all missing '
+            '— payload looks like the kpis+confidence tail only'
+        )
+    return False, found, ''
 
 
 # ── Hard publishability gate for export (internal helper — not a route) ────────
@@ -41952,6 +42174,34 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                 # fallback to unformatted join on formatting error.
                 _canonical = _assemble_canonical_from_sections(_secs)
                 if _canonical:
+                    # PR-5B.7C.1: refuse to return a fragmentary canonical
+                    # for a STRATEGY artifact. When sections_json was
+                    # persisted with only a subset of the 7 canonical
+                    # sections (the bug the user reported: only KPI
+                    # guides + confidence reach the PDF), returning that
+                    # fragment would silently overwrite a complete client
+                    # payload in the export route. Log + return '' so the
+                    # caller falls through to the `content` fallback (and
+                    # ultimately to the client payload, which preview
+                    # already assembled from all 7 tabs).
+                    if artifact_type == 'strategy':
+                        try:
+                            _is_frag, _found, _why = _is_strategy_export_fragment(_canonical)
+                        except Exception:
+                            _is_frag, _found, _why = False, set(), ''
+                        if _is_frag:
+                            print(
+                                '[EXPORT-DIAG] DB sections_json is a strategy '
+                                f'fragment for strategy/{artifact_id} — '
+                                f'sections_in_json={sorted(list(_secs.keys()))} '
+                                f'detected_headings={sorted(_found)} '
+                                f'reason="{_why}". Falling through to content '
+                                'fallback / client payload.', flush=True)
+                            # Skip the sections_json branch entirely; let
+                            # the `content` fallback or the client payload
+                            # supply a complete document.
+                            _canonical = ''
+                if _canonical:
                     # Parity hash — matches the hash logged at save time.
                     # Operators should see the SAME 16-char hash at save
                     # and at every subsequent export of the same artifact.
@@ -41994,10 +42244,26 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
         except Exception:
             pass
         try:
-            return ensure_markdown_formatting(_content_db)
+            _content_db_final = ensure_markdown_formatting(_content_db)
         except Exception as _fmt_e:
             print(f'[CANON] ensure_markdown_formatting failed on content (non-fatal): {_fmt_e}', flush=True)
-            return _content_db
+            _content_db_final = _content_db
+        # PR-5B.7C.1: same fragment guard for the content-fallback path —
+        # if the stored content blob is itself a strategy fragment, return
+        # '' so the export route falls through to the client payload.
+        if artifact_type == 'strategy':
+            try:
+                _is_frag2, _found2, _why2 = _is_strategy_export_fragment(_content_db_final)
+            except Exception:
+                _is_frag2, _found2, _why2 = False, set(), ''
+            if _is_frag2:
+                print(
+                    '[EXPORT-DIAG] DB content blob is a strategy fragment for '
+                    f'strategy/{artifact_id} — '
+                    f'detected_headings={sorted(_found2)} reason="{_why2}". '
+                    'Falling through to client payload.', flush=True)
+                return ''
+        return _content_db_final
 
     return ''
 
