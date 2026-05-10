@@ -22587,6 +22587,68 @@ _AI_REPAIR_SECTION_SCHEMA = {
             "Do not include placeholder cells, empty cells, or generic filler."
         ),
     },
+    "environment": {
+        "ar": (
+            "أرجع فقط القسم: \"## 3. البيئة التنظيمية والتهديدات\".\n"
+            "ابدأ بالعنوان أعلاه حرفياً، ثم اكتب على الأقل ثلاث فقرات سرديّة "
+            "جوهريّة (لا تقل عن 80 حرفاً لكل فقرة)، فقرة لكل فئة من الفئات "
+            "الثلاث الإلزامية:\n"
+            "1) **السياق التنظيمي:** فقرة تذكر صراحةً المتطلبات التنظيمية "
+            "والأطر المعمول بها (مع كلمات مثل: تنظيمي، اللوائح، الامتثال، "
+            "الإطار التنظيمي).\n"
+            "2) **سياق التهديدات:** فقرة تذكر صراحةً مشهد التهديدات (مع "
+            "كلمات مثل: تهديد، التهديدات، الهجمات، الحوادث، اختراق).\n"
+            "3) **السياق التشغيلي وسياق الأعمال:** فقرة تذكر صراحةً سياق "
+            "الأعمال (مع كلمات مثل: الأعمال، تشغيلي، استمرارية، التحول "
+            "الرقمي، القطاع).\n"
+            "ثم أدرج جدول Markdown أنبوبي بخمسة أعمدة بالضبط لمصفوفة "
+            "التهديدات / الفجوات البيئية بالترتيب التالي:\n"
+            "| # | البُعد / التهديد | المصدر / الإشارة | التأثير المحتمل | "
+            "المبادرة أو الإجراء المرتبط |\n"
+            "|---|-----------------|-------------------|------------------|"
+            "----------------------------|\n"
+            "بحد أدنى {min_rows} صفوف جوهرية.\n"
+            "يجب أن يغطّي الجدول البُعد التنظيمي والتهديد والأعمال على "
+            "الأقل مرة واحدة لكل بُعد، وأن يربط كل صف بمبادرة أو نشاط أو "
+            "إجراء معالجة محدد.\n"
+            "لا تترك أي خلية فارغة أو نائبة (مثل: غير محدد، N/A، —). "
+            "لا تُدرج تعليقات HTML أو علامات تتبع داخلية "
+            "(مثل mizan-synth-env-v2). "
+            "لا تُدرج عناوين أقسام أخرى ولا تكرر العناوين."
+        ),
+        "en": (
+            "Return ONLY the section: \"## 3. Regulatory Environment & "
+            "Threat Landscape\".\n"
+            "Begin with the heading above verbatim, then write at least "
+            "three substantive narrative paragraphs (each ≥ 80 characters), "
+            "one paragraph per mandatory category:\n"
+            "1) **Regulatory context:** a paragraph that explicitly names "
+            "the applicable regulatory obligations and frameworks (using "
+            "words such as: regulatory, regulation, compliance, framework, "
+            "directive, mandate).\n"
+            "2) **Threat context:** a paragraph that explicitly describes "
+            "the threat landscape (using words such as: threat, attack, "
+            "incident, breach, intrusion, supply-chain).\n"
+            "3) **Business & operational context:** a paragraph that "
+            "explicitly references the business / operational context "
+            "(using words such as: business, operational, continuity, "
+            "transformation, sector, services).\n"
+            "Then include a Markdown pipe table with EXACTLY 5 columns "
+            "for the environmental threat / gap matrix in this order:\n"
+            "| # | Dimension / Threat | Source / Signal | Potential "
+            "Impact | Linked Initiative or Action |\n"
+            "|---|--------------------|-----------------|------------------|"
+            "-----------------------------|\n"
+            "Generate at least {min_rows} substantive rows.\n"
+            "The table MUST cover the regulatory, threat, and business "
+            "dimensions at least once each, and every row MUST link to a "
+            "specific initiative, activity, or treatment action.\n"
+            "Do not leave any empty or placeholder cells (e.g. Not "
+            "specified, N/A, —). Do not emit HTML comments or internal "
+            "trace markers (e.g. mizan-synth-env-v2). Do not include "
+            "other section headings. Do not duplicate headings."
+        ),
+    },
 }
 
 # Canonical section heading per (key, lang). Used to validate that the
@@ -22597,7 +22659,7 @@ _AI_REPAIR_SECTION_HEADINGS = {
     "pillars":     {"ar": "2. الركائز الاستراتيجية",
                     "en": "2. Strategic Pillars"},
     "environment": {"ar": "3. البيئة التنظيمية والتهديدات",
-                    "en": "3. Organizational Environment"},
+                    "en": "3. Regulatory Environment & Threat Landscape"},
     "gaps":        {"ar": "4. تحليل الفجوات",
                     "en": "4. Gap Analysis"},
     "roadmap":     {"ar": "5. خارطة الطريق التنفيذية",
@@ -32260,6 +32322,148 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'missing_after={_missing_after}',
                                     flush=True,
                                 )
+                    # ── PR-5B.8L: targeted AI repair for environment-section
+                    # depth defects ───────────────────────────────────────────
+                    # When ``validate_arabic_strategy_semantic_richness`` flags
+                    # any of the environment_* defects (missing,
+                    # paragraphs_insufficient, structured_block_missing,
+                    # topic_coverage_incomplete) survive to the final save
+                    # gate, the previous fail-closed path would 422 with no
+                    # corrective AI attempt.  Per the prompt's AI-first
+                    # contract: invoke ai_repair_strategy_section with
+                    # section_key="environment", pass a validation_error
+                    # naming the failing depth defects, then re-run the same
+                    # validator.  If repair still cannot satisfy the
+                    # validator, the existing 422 fail-closed path below
+                    # fires.  No deterministic environment rows are injected
+                    # and no cyber-specific defaults are forced for non-cyber
+                    # domains.
+                    _ENV_DEPTH_DEFECT_TAGS = {
+                        'environment_missing',
+                        'environment_paragraphs_insufficient',
+                        'environment_structured_block_missing',
+                        'environment_topic_coverage_incomplete',
+                    }
+                    try:
+                        _env_depth_present = sorted({
+                            t for t, _ in (_richness_defects or [])
+                            if t in _ENV_DEPTH_DEFECT_TAGS
+                        })
+                    except Exception:
+                        _env_depth_present = []
+                    if _env_depth_present:
+                        try:
+                            _env_dctx = get_strategy_domain_context(
+                                domain, lang=lang,
+                                selected_frameworks=fw_short)
+                        except Exception as _edctx_e:
+                            print('[STRATEGY-DIAG] env_repair_skip_domain_context_failed: '
+                                  f'{_edctx_e}', flush=True)
+                            _env_dctx = None
+                        if _env_dctx:
+                            _env_ve_en = (
+                                'The environment section fails the depth '
+                                'validator with: '
+                                + ', '.join(_env_depth_present)
+                                + '. Produce three substantive narrative '
+                                'paragraphs covering regulatory, threat, and '
+                                'business/operational context, AND a 5-column '
+                                'environmental threat/gap matrix linking each '
+                                'row to a specific initiative or treatment '
+                                'action. No placeholder cells, no HTML '
+                                'comments, no internal trace markers.'
+                            )
+                            _env_ve_ar = (
+                                'قسم البيئة لا يجتاز مدقق العمق بسبب: '
+                                + '، '.join(_env_depth_present)
+                                + '. أنشئ ثلاث فقرات سرديّة جوهريّة تغطّي '
+                                'السياق التنظيمي والتهديدات وسياق الأعمال/'
+                                'التشغيل، مع جدول مصفوفة تهديدات/فجوات بيئية '
+                                'بخمسة أعمدة، حيث يربط كل صف بمبادرة أو '
+                                'إجراء معالجة محدد. لا تستخدم خلايا نائبة '
+                                'ولا تعليقات HTML ولا علامات تتبع داخلية.'
+                            )
+                            _env_ve = _env_ve_ar if lang == 'ar' else _env_ve_en
+                            _env_repair_status = 'skipped'
+                            _env_repaired = None
+                            try:
+                                _env_repaired = ai_repair_strategy_section(
+                                    section_key='environment',
+                                    sections=sections,
+                                    lang=lang,
+                                    domain_context=_env_dctx,
+                                    org_name=_final_ctx.get(
+                                        'org_name', 'The Organization'),
+                                    sector=_final_ctx.get(
+                                        'sector', 'Government'),
+                                    maturity=_final_ctx.get('maturity', '') or '',
+                                    generation_mode=_final_ctx.get(
+                                        'generation_mode', 'consulting'),
+                                    validation_error=_env_ve,
+                                )
+                            except RepairError as _erpe:
+                                _env_repair_status = f'repair_error:{_erpe}'
+                            except Exception as _ergen:  # noqa: BLE001
+                                _env_repair_status = f'unexpected_error:{_ergen}'
+                            if _env_repaired and _env_repaired.strip():
+                                # Validate the AI repair output against the
+                                # SAME richness validator BEFORE assigning it.
+                                # If the repaired payload still fails the
+                                # environment depth check, leave the original
+                                # section unchanged and fail closed via the
+                                # existing 422 gate below.
+                                _env_trial = dict(sections)
+                                _env_trial['environment'] = _env_repaired
+                                try:
+                                    _env_trial_defects = (
+                                        validate_environment_richness(
+                                            _env_trial, lang,
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting')))
+                                except Exception as _etv_e:
+                                    print('[STRATEGY-DIAG] env_repair_revalidate_failed: '
+                                          f'{_etv_e}', flush=True)
+                                    _env_trial_defects = [(
+                                        'environment_missing',
+                                        f'revalidation crashed: {_etv_e}')]
+                                if not _env_trial_defects:
+                                    sections['environment'] = _env_repaired
+                                    _env_repair_status = 'ok'
+                                else:
+                                    _env_repair_status = (
+                                        'rejected_post_repair:'
+                                        + ','.join(
+                                            t for t, _ in _env_trial_defects))
+                            print(
+                                '[STRATEGY-DIAG] environment_depth_repair '
+                                f'defects_before={_env_depth_present} '
+                                f'status={_env_repair_status}',
+                                flush=True,
+                            )
+                            # Re-apply canonical headings (the AI may have
+                            # emitted a near-variant) — heading-only, no
+                            # content rows.
+                            try:
+                                _reapply_canonical_section_headings(
+                                    sections, lang)
+                            except Exception as _rch_e3:
+                                print('[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                                      f'{_rch_e3}', flush=True)
+                            # Re-run the richness validator so the gate
+                            # decision below sees the post-repair defect set.
+                            try:
+                                _richness_defects = (
+                                    validate_arabic_strategy_semantic_richness(
+                                        sections, lang,
+                                        doc_subtype=doc_subtype,
+                                        generation_mode=_final_ctx.get(
+                                            'generation_mode',
+                                            'consulting'),
+                                        domain=domain))
+                            except Exception as _rde3:
+                                print('[STRATEGY-DIAG] env_richness_revalidate_failed: '
+                                      f'{_rde3}', flush=True)
                     # Diagnostic logging before final save (prompt H/I):
                     try:
                         _diag_so       = count_valid_objective_rows(
