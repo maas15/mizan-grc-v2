@@ -32075,6 +32075,23 @@ The confidence score is based on a comprehensive assessment of the organization'
                               f'{_fam_locs}', flush=True)
                     except Exception:
                         pass
+                    # ── PRE-VALIDATOR CANONICAL HEADING REAPPLY ─────────
+                    # PR-5B.8J: late synthesizers / convergence cycles /
+                    # capability-repair AI calls that ran AFTER the single
+                    # ``enforce_cybersecurity_technical_depth`` pass may
+                    # have rewritten section bodies whose first ``## N.``
+                    # heading is a near-variant of the canonical title
+                    # (e.g. missing trailing word, swapped numbering, or
+                    # an alternative phrasing). Re-invoke the existing
+                    # canonical heading normalizer once more so the
+                    # validator below sees the same canonical heading it
+                    # expects. Heading-only normalization — no content
+                    # changes, no deterministic fallback rows.
+                    try:
+                        _reapply_canonical_section_headings(sections, lang)
+                    except Exception as _rch_e:
+                        print(f'[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                              f'{_rch_e}', flush=True)
                     # ── SEMANTIC RICHNESS GATE ──────────────────────────
                     # Fail-closed if any Technical Strategy section falls
                     # below the consultancy-grade richness bar. Runs on
@@ -32191,6 +32208,20 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'per_section={_cap_repair_log}',
                                     flush=True,
                                 )
+                                # PR-5B.8J: re-normalize canonical headings
+                                # because ``ai_repair_strategy_section`` just
+                                # rewrote one or more section bodies and may
+                                # have emitted a near-variant of the canonical
+                                # title that the validator below would reject
+                                # as ``<section>_canonical_heading_mismatch``.
+                                # Heading-only normalization, no content rows.
+                                try:
+                                    _reapply_canonical_section_headings(
+                                        sections, lang)
+                                except Exception as _rch_e2:
+                                    print(
+                                        '[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                                        f'{_rch_e2}', flush=True)
                                 # Re-run the same validator on the repaired
                                 # payload so the gate decision below sees
                                 # the post-repair defect set.
