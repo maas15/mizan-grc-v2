@@ -12481,6 +12481,36 @@ def api_get_document(doc_type, doc_id):
             _content_json = doc['content_json'] if 'content_json' in _doc_keys and doc['content_json'] else None
             _sections_json = doc['sections_json'] if 'sections_json' in _doc_keys and doc['sections_json'] else None
             content = ensure_markdown_formatting(doc['content']) if doc['content'] else ''
+            # PR-5B.7C.2: preview/export parity at the read path. The
+            # viewer (history.html, profile.html) renders ``content`` and
+            # then echoes it back to /api/generate-{pdf,docx}{,-async}.
+            # When the stored ``content`` column is fragmentary but
+            # ``sections_json`` carries the complete repaired 7-section
+            # assembly, we previously sent the fragment to the viewer →
+            # the viewer sent the fragment to export → fragment guard
+            # 422'd. By returning the canonical assembly here, the viewer
+            # always sees (and re-submits) the complete document, and
+            # downstream exports succeed without the user having to
+            # regenerate. Falls back to the raw ``content`` column if the
+            # canonical resolver returns empty (e.g. no sections_json,
+            # or sections_json itself is fragmentary — in which case the
+            # canonical resolver intentionally returns '').
+            try:
+                _canonical_view = _canonical_content_from_db(
+                    'strategy', doc_id, user_id
+                )
+                if _canonical_view and _canonical_view.strip():
+                    content = _canonical_view
+            except DomainContaminationError as _dce_v:
+                print(
+                    f'[GET-DOC] canonical assembly blocked for strategy/{doc_id} '
+                    f'(domain contamination): {_dce_v}', flush=True
+                )
+            except Exception as _e_v:
+                print(
+                    f'[GET-DOC] canonical assembly failed for strategy/{doc_id} '
+                    f'(non-fatal, using raw content column): {_e_v}', flush=True
+                )
             return jsonify({
                 'success': True,
                 'content': content,
@@ -36128,7 +36158,17 @@ def api_export_download(task_id):
 
 
 def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type='Strategy Document', domain=''):
-    """Build a DOCX and return raw bytes. Called by both the sync route and async thread."""
+    """Build a DOCX and return raw bytes. Called by both the sync route and async thread.
+
+    PR-5B.7C.2 — final-mile fragment guard. Every PDF/DOCX route already
+    runs ``_is_strategy_export_fragment`` before reaching this builder, but
+    we re-run it here so that ANY caller (sync route, async worker, or any
+    future internal caller) is physically incapable of emitting a
+    fragmentary strategy DOCX. Raises ``ValueError`` with a structured
+    JSON payload prefix so callers can convert to HTTP 422 — the async
+    worker's existing ``except Exception`` already records the error and
+    surfaces it via /api/export-status as ``error``.
+    """
     from io import BytesIO
     import re
     from docx import Document
@@ -36137,6 +36177,34 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.oxml.ns import nsdecls, qn
     from docx.oxml import parse_xml
+
+    # ── PR-5B.7C.2: build-layer fragment guard ─────────────────────────────
+    # Strategy artifacts only — other doc_types (policy, audit, risk) have
+    # their own structure and are not subject to the 7-section schema.
+    _is_strategy_doc = (doc_type or '').strip().lower() in (
+        'strategy document', 'strategy', 'استراتيجية',
+    )
+    if _is_strategy_doc and content:
+        try:
+            _is_frag_b, _found_b, _why_b = _is_strategy_export_fragment(content)
+        except Exception:
+            _is_frag_b, _found_b, _why_b = False, set(), ''
+        print(
+            f'[EXPORT-DIAG] route=_build_docx_bytes doc_type="{doc_type}" '
+            f'lang={lang} domain="{domain}" content_len={len(content)} '
+            f'detected_sections={sorted(_found_b)} is_fragment={_is_frag_b}',
+            flush=True,
+        )
+        if _is_frag_b:
+            print(
+                f'[EXPORT-DIAG] DOCX build-layer denied — fragment detected: '
+                f'reason="{_why_b}" found={sorted(_found_b)}',
+                flush=True,
+            )
+            raise ValueError(
+                'export_fragment_detected: strategy DOCX build refused — '
+                f'{_why_b} (found_sections={sorted(_found_b)})'
+            )
 
     # Preprocessing (same as before)
     import re as re_docx
@@ -39734,6 +39802,52 @@ def api_generate_pdf():
             story = _sanitize_pdf_story(story)
         except Exception as _ss_e:
             print(f"[PDF-BUILD] story sanitisation failed: {_ss_e}", flush=True)
+
+        # ── PR-5B.7C.2: final-mile fragment guard ─────────────────────────
+        # Re-run the fragment check immediately before doc.build() — the
+        # last point at which we can refuse to emit bytes. The earlier
+        # gate at the top of api_generate_pdf already catches this case,
+        # but we keep this as defence-in-depth so any future code path
+        # that lands here with strategy content cannot ship a fragment.
+        try:
+            _final_art_type = (data.get('artifact_type', 'strategy') or 'strategy')
+            _final_doc_type = (doc_type_pdf or '').strip().lower()
+            _is_strategy_pdf = (_final_art_type == 'strategy') or (
+                _final_doc_type in ('strategy document', 'strategy', 'استراتيجية')
+            )
+        except Exception:
+            _is_strategy_pdf = False
+        if _is_strategy_pdf and content:
+            try:
+                _is_frag_b2, _found_b2, _why_b2 = _is_strategy_export_fragment(content)
+            except Exception:
+                _is_frag_b2, _found_b2, _why_b2 = False, set(), ''
+            print(
+                f'[EXPORT-DIAG] route=pdf-build doc_type="{doc_type_pdf}" '
+                f'lang={lang} domain="{domain_pdf}" content_len={len(content)} '
+                f'detected_sections={sorted(_found_b2)} is_fragment={_is_frag_b2}',
+                flush=True,
+            )
+            if _is_frag_b2:
+                print(
+                    f'[EXPORT-DIAG] PDF build-layer denied — fragment detected: '
+                    f'reason="{_why_b2}" found={sorted(_found_b2)}',
+                    flush=True,
+                )
+                return jsonify({
+                    'error': ('Export blocked — incomplete strategy content. '
+                              'Please regenerate the strategy or wait for '
+                              'preview to finish loading before exporting.'),
+                    'reason': 'export_fragment_detected',
+                    'detail': _why_b2,
+                    'found_sections': sorted(_found_b2),
+                    'required_minimum': _MIN_CANONICAL_SECTIONS_FOR_EXPORT,
+                    'required_leading_sections': list(
+                        _REQUIRED_LEADING_SECTIONS_FOR_EXPORT),
+                    'artifact_type': _final_art_type,
+                    'artifact_id': data.get('artifact_id'),
+                    'route': 'pdf-build',
+                }), 422
 
         # Wrap doc.build() in a try-except to catch ReportLab layout errors
         # (e.g. TypeError: '<' not supported between NoneType and NoneType
