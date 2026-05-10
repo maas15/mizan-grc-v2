@@ -9464,30 +9464,33 @@ def ensure_markdown_formatting(text):
     # operator escapes so a clean math expression remains.
     def _delatexify(t):
         # ``\text{ABC}``  →  ``ABC``  (common AI artifact)
-        t = re.sub(r'\\text\s*\{\s*([^{}]*?)\s*\}', r'\1', t)
-        # ``\mathrm{X}`` / ``\mathit{X}``  →  ``X``
-        t = re.sub(r'\\math(?:rm|it|bf|sf|tt)\s*\{\s*([^{}]*?)\s*\}', r'\1', t)
+        # NOTE: bounded character class + no surrounding ``\s*`` to avoid
+        # polynomial backtracking on adversarial inputs (CodeQL py/polynomial-redos).
+        t = re.sub(r'\\text\{([^{}]{0,500})\}', r'\1', t)
+        # ``\mathrm{X}`` / ``\mathit{X}`` / ``\mathbf{X}`` etc.  →  ``X``
+        t = re.sub(r'\\math(?:rm|it|bf|sf|tt)\{([^{}]{0,500})\}', r'\1', t)
         # ``\frac{a}{b}``  →  ``(a) / (b)``
         t = re.sub(
-            r'\\frac\s*\{\s*([^{}]*?)\s*\}\s*\{\s*([^{}]*?)\s*\}',
+            r'\\frac\{([^{}]{0,500})\}\{([^{}]{0,500})\}',
             r'(\1) / (\2)',
             t,
         )
         # Operator macros → glyphs (kept as ASCII so PDF font has them all).
-        t = re.sub(r'\\times\b\s*', ' × ', t)
-        t = re.sub(r'\\div\b\s*',   ' ÷ ', t)
-        t = re.sub(r'\\cdot\b\s*',  ' · ', t)
-        t = re.sub(r'\\pm\b\s*',    ' ± ', t)
-        t = re.sub(r'\\leq\b\s*',   ' ≤ ', t)
-        t = re.sub(r'\\geq\b\s*',   ' ≥ ', t)
+        t = re.sub(r'\\times\b\s?', ' × ', t)
+        t = re.sub(r'\\div\b\s?',   ' ÷ ', t)
+        t = re.sub(r'\\cdot\b\s?',  ' · ', t)
+        t = re.sub(r'\\pm\b\s?',    ' ± ', t)
+        t = re.sub(r'\\leq\b\s?',   ' ≤ ', t)
+        t = re.sub(r'\\geq\b\s?',   ' ≥ ', t)
         # Escaped percent / dollar / hash / underscore that are leftovers.
         t = re.sub(r'\\([%$#_&])', r'\1', t)
         # Strip stray ``\NNN`` numeric escapes (e.g. ``\100`` → ``100``).
         t = re.sub(r'\\(\d)', r'\1', t)
         # Inline math delimiters ``$...$`` and ``\(...\)`` → strip wrappers,
-        # keep inner content (already de-LaTeX'd above).
-        t = re.sub(r'\\\(\s*([^)]*?)\s*\\\)', r'\1', t)
-        t = re.sub(r'(?<!\\)\$([^$\n]{1,200}?)\$', r'\1', t)
+        # keep inner content (already de-LaTeX'd above). Bounded length to
+        # block polynomial backtracking.
+        t = re.sub(r'\\\(([^)]{0,500})\\\)', r'\1', t)
+        t = re.sub(r'(?<!\\)\$([^$\n]{1,200})\$', r'\1', t)
         # Drop dangling closing braces that survive the stripping above
         # (e.g. ``× 100}`` → ``× 100``). Per-line balance check: if a
         # line has more ``}`` than ``{``, remove the surplus ``}`` chars

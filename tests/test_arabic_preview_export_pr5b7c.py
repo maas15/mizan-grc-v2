@@ -29,12 +29,16 @@ Run:
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 
+_TMP_DB_DIR = tempfile.mkdtemp(prefix='test_arabic_preview_export_pr5b7c_')
 os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key')
-os.environ.setdefault('DATABASE_URL',
-                      'sqlite:///tmp/test_arabic_preview_export_pr5b7c.db')
+os.environ.setdefault(
+    'DATABASE_URL',
+    'sqlite:///' + os.path.join(_TMP_DB_DIR, 'test.db'),
+)
 os.environ.setdefault('OPENAI_API_KEY', '')
 os.environ.setdefault('ANTHROPIC_API_KEY', '')
 os.environ.setdefault('GOOGLE_API_KEY', '')
@@ -47,7 +51,7 @@ try:
     )
     _APP = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_APP)
-except Exception as _e:   # pragma: no cover
+except (ImportError, ModuleNotFoundError) as _e:   # pragma: no cover
     print(f'[WARN] Could not import app.py: {_e}')
     _APP = None
 
