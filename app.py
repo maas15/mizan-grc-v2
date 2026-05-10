@@ -16611,8 +16611,50 @@ def validate_confidence_richness(sections, lang, generation_mode='consulting'):
     return defects
 
 
+# ── Cybersecurity capability families (single source of truth) ──────────────
+# These are the 8 required capability families and accepted Arabic/English
+# tokens.  validate_arabic_strategy_semantic_richness flags
+# ``cybersecurity_capabilities_missing`` when the assembled strategy text
+# (vision + pillars + environment + gaps + roadmap + kpis) lacks at least
+# one accepted token from EACH family.  The same map is reused by the
+# targeted save-gate AI repair path so the prompt's missing-family list
+# stays in lock-step with the validator.
+_CYBER_CAPABILITY_FAMILIES = {
+    'IAM/PAM': ('iam', 'pam', 'هوية', 'هويات', 'الهوية', 'وصول مميز', 'identity'),
+    'MFA': ('mfa', 'multi-factor', 'عامل مصادقة متعدد', 'المصادقة الثنائية'),
+    'SIEM/SOC': ('siem', 'soc', 'مراقبة', 'monitoring'),
+    'Incident Response': ('incident', 'استجابة', 'حوادث', 'response'),
+    'Vulnerability Management': ('vulnerability', 'ثغرات', 'vulner', 'التصحيح'),
+    'Backup/DR': ('backup', 'نسخ احتياطي', 'dr', 'تعافي', 'استعادة'),
+    'Awareness': ('awareness', 'توعية', 'phishing', 'تصيد', 'التدريب'),
+    'Data Protection': ('dlp', 'data protection', 'حماية البيانات', 'encryption', 'تشفير'),
+}
+
+
+def _compute_missing_cyber_capabilities(sections):
+    """Return the list of cyber capability families NOT covered anywhere in
+    the assembled vision/pillars/environment/gaps/roadmap/kpis text.
+
+    Mirrors exactly what ``validate_arabic_strategy_semantic_richness``
+    checks so callers (e.g. the targeted save-gate AI repair) can build a
+    precise ``validation_error`` payload and re-validate without diverging
+    from the validator's own logic.
+    """
+    text = ' '.join(
+        (sections.get(k) or '') for k in
+        ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis')
+    )
+    text_lc = text.lower()
+    missing = []
+    for fam, tokens in _CYBER_CAPABILITY_FAMILIES.items():
+        if not any((t in text_lc) or (t in text) for t in tokens):
+            missing.append(fam)
+    return missing
+
+
 def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
-                                               generation_mode='consulting'):
+                                               generation_mode='consulting',
+                                               domain=None):
     """Orchestrator for semantic richness of the final Technical Strategy
     payload. Runs per-section richness validators and aggregates defects.
 
@@ -16705,30 +16747,26 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                 ))
 
     # ── Cybersecurity capabilities must be present across sections ───────────
-    _all_strategy_text = ' '.join(
-        (sections.get(k) or '') for k in
-        ('vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis')
-    )
-    _caps_required = {
-        'IAM/PAM': ('iam', 'pam', 'هوية', 'هويات', 'الهوية', 'وصول مميز', 'identity'),
-        'MFA': ('mfa', 'multi-factor', 'عامل مصادقة متعدد', 'المصادقة الثنائية'),
-        'SIEM/SOC': ('siem', 'soc', 'مراقبة', 'monitoring'),
-        'Incident Response': ('incident', 'استجابة', 'حوادث', 'response'),
-        'Vulnerability Management': ('vulnerability', 'ثغرات', 'vulner', 'التصحيح'),
-        'Backup/DR': ('backup', 'نسخ احتياطي', 'dr', 'تعافي', 'استعادة'),
-        'Awareness': ('awareness', 'توعية', 'phishing', 'تصيد', 'التدريب'),
-        'Data Protection': ('dlp', 'data protection', 'حماية البيانات', 'encryption', 'تشفير'),
-    }
-    _all_lc = _all_strategy_text.lower()
-    _missing_caps = []
-    for _cap_name, _tokens in _caps_required.items():
-        if not any(t in _all_lc or t in _all_strategy_text for t in _tokens):
-            _missing_caps.append(_cap_name)
-    if _missing_caps:
-        defects.append((
-            'cybersecurity_capabilities_missing',
-            f'Missing technical capabilities: {", ".join(_missing_caps)}',
-        ))
+    # Skip the cyber-capability requirement entirely for non-cyber domains.
+    # When ``domain`` is omitted (legacy callers / unit tests), behaviour is
+    # preserved: the check runs as before.  When ``domain`` is supplied the
+    # check only fires for the cyber domain — non-cyber strategies must not
+    # be forced to surface cyber-specific vocabulary.
+    _check_cyber_caps = True
+    if domain is not None and str(domain).strip():
+        try:
+            _dcode = normalize_domain(domain)
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode = ''
+        if _dcode and _dcode != 'cyber':
+            _check_cyber_caps = False
+    if _check_cyber_caps:
+        _missing_caps = _compute_missing_cyber_capabilities(sections)
+        if _missing_caps:
+            defects.append((
+                'cybersecurity_capabilities_missing',
+                f'Missing technical capabilities: {", ".join(_missing_caps)}',
+            ))
 
     # ── Gap guides must be unique (not identical repeated templates) ──────────
     gaps_text = sections.get('gaps', '') or ''
@@ -29541,7 +29579,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                             try:
                                 _wb_rich = validate_arabic_strategy_semantic_richness(
                                     sections, lang, doc_subtype=doc_subtype,
-                                    generation_mode=_generation_mode)
+                                    generation_mode=_generation_mode,
+                                    domain=domain)
                                 if _wb_rich:
                                     for _rtag, _rdetail in _wb_rich:
                                         _wb_flags.append((_rtag, _rdetail))
@@ -32047,11 +32086,135 @@ The confidence score is based on a comprehensive assessment of the organization'
                         _richness_defects = validate_arabic_strategy_semantic_richness(
                             sections, lang, doc_subtype=doc_subtype,
                             generation_mode=_final_ctx.get(
-                                'generation_mode', 'consulting'))
+                                'generation_mode', 'consulting'),
+                            domain=domain)
                     except Exception as _rde:
                         print(f'[STRATEGY-DIAG] richness_validator_failed: '
                               f'{_rde}', flush=True)
                         _richness_defects = []
+                    # ── PR-5B.8I: targeted AI repair for missing cyber
+                    # capability coverage ─────────────────────────────────
+                    # When ``cybersecurity_capabilities_missing`` survives
+                    # to the final save gate the previous fail-closed path
+                    # would 422 with no corrective attempt.  Per the Option-A
+                    # remediation: invoke ai_repair_strategy_section on the
+                    # sections that naturally host capability vocabulary
+                    # (pillars + roadmap + kpis + environment), pass a
+                    # validation_error that NAMES the missing families, and
+                    # then re-run the same validator.  If repair still
+                    # cannot cover the families, the existing 422 fail-
+                    # closed path below fires.  No deterministic rows are
+                    # injected.  AI-first; fail-closed on RepairError.
+                    try:
+                        _cap_tag_present = any(
+                            t == 'cybersecurity_capabilities_missing'
+                            for t, _ in (_richness_defects or [])
+                        )
+                    except Exception:
+                        _cap_tag_present = False
+                    if _cap_tag_present:
+                        try:
+                            _cap_dctx = get_strategy_domain_context(
+                                domain, lang=lang,
+                                selected_frameworks=fw_short)
+                        except Exception as _dctx_e:
+                            print(f'[STRATEGY-DIAG] cap_repair_skip_domain_context_failed: '
+                                  f'{_dctx_e}', flush=True)
+                            _cap_dctx = None
+                        if _cap_dctx and _cap_dctx.get('code') == 'cyber':
+                            _missing_now = _compute_missing_cyber_capabilities(
+                                sections)
+                            if _missing_now:
+                                _ve_en = (
+                                    'The assembled strategy is missing the '
+                                    'following cybersecurity capability '
+                                    'families: ' + ', '.join(_missing_now)
+                                    + '. Each family MUST appear at least once '
+                                    'in this section using its accepted '
+                                    'vocabulary (initiative descriptions, '
+                                    'mitigation plans, KPI metric names, or '
+                                    'activity titles).'
+                                )
+                                _ve_ar = (
+                                    'النص الحالي للاستراتيجية يفتقر إلى '
+                                    'العائلات التالية من القدرات السيبرانية: '
+                                    + ', '.join(_missing_now)
+                                    + '. يجب أن تظهر كل عائلة مرة واحدة على '
+                                    'الأقل في هذا القسم بمفرداتها المعتمدة '
+                                    '(داخل وصف المبادرات أو خطط المعالجة أو '
+                                    'أسماء المؤشرات أو عناوين الأنشطة).'
+                                )
+                                _cap_ve = _ve_ar if lang == 'ar' else _ve_en
+                                _cap_org_struct_none = bool(
+                                    _final_ctx.get('org_structure_is_none'))
+                                _cap_repair_log = {}
+                                for _csec in (
+                                        'pillars', 'roadmap', 'kpis',
+                                        'environment'):
+                                    try:
+                                        _new_text = ai_repair_strategy_section(
+                                            section_key=_csec,
+                                            sections=sections,
+                                            lang=lang,
+                                            domain_context=_cap_dctx,
+                                            org_name=_final_ctx.get(
+                                                'org_name',
+                                                'The Organization'),
+                                            sector=_final_ctx.get(
+                                                'sector', 'Government'),
+                                            maturity=_final_ctx.get(
+                                                'maturity', '') or '',
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            validation_error=_cap_ve,
+                                            org_structure_is_none=(
+                                                _cap_org_struct_none
+                                                if _csec == 'pillars'
+                                                else False),
+                                        )
+                                        if _new_text and _new_text.strip():
+                                            sections[_csec] = _new_text
+                                            _cap_repair_log[_csec] = 'ok'
+                                        else:
+                                            _cap_repair_log[_csec] = 'empty'
+                                    except RepairError as _rpe:
+                                        _cap_repair_log[_csec] = (
+                                            f'repair_error:{_rpe}')
+                                    except Exception as _rgen:  # noqa: BLE001
+                                        _cap_repair_log[_csec] = (
+                                            f'unexpected_error:{_rgen}')
+                                print(
+                                    '[STRATEGY-DIAG] cybersecurity_capabilities_'
+                                    'repair_attempted '
+                                    f'missing_before={_missing_now} '
+                                    f'per_section={_cap_repair_log}',
+                                    flush=True,
+                                )
+                                # Re-run the same validator on the repaired
+                                # payload so the gate decision below sees
+                                # the post-repair defect set.
+                                try:
+                                    _richness_defects = (
+                                        validate_arabic_strategy_semantic_richness(
+                                            sections, lang,
+                                            doc_subtype=doc_subtype,
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            domain=domain))
+                                except Exception as _rde2:
+                                    print(
+                                        '[STRATEGY-DIAG] richness_revalidate_failed: '
+                                        f'{_rde2}', flush=True)
+                                _missing_after = _compute_missing_cyber_capabilities(
+                                    sections)
+                                print(
+                                    '[STRATEGY-DIAG] cybersecurity_capabilities_'
+                                    'repair_result '
+                                    f'missing_after={_missing_after}',
+                                    flush=True,
+                                )
                     # Diagnostic logging before final save (prompt H/I):
                     try:
                         _diag_so       = count_valid_objective_rows(
@@ -32213,6 +32376,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 'Confidence section has fewer than 4 critical success factors',
                             'confidence_risks_insufficient':
                                 'Confidence section has fewer than 4 key risks with non-placeholder mitigation plans',
+                            'cybersecurity_capabilities_missing':
+                                'Cybersecurity strategy is missing one or more required technical capability families (IAM/PAM, MFA, SIEM/SOC, Incident Response, Vulnerability Management, Backup/DR, Awareness, Data Protection)',
                         }
                         _contam_msg_ar = {
                             'environment_contains_gap_guides':
@@ -32284,6 +32449,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 'قسم تقييم الثقة يحتوي على أقل من 4 عوامل نجاح حاسمة',
                             'confidence_risks_insufficient':
                                 'قسم تقييم الثقة يحتوي على أقل من 4 مخاطر رئيسية مع خطط معالجة غير نائبة',
+                            'cybersecurity_capabilities_missing':
+                                'الاستراتيجية السيبرانية تفتقر إلى عائلة أو أكثر من عائلات القدرات التقنية المطلوبة (IAM/PAM، MFA، SIEM/SOC، الاستجابة للحوادث، إدارة الثغرات، النسخ الاحتياطي والتعافي، التوعية، حماية البيانات)',
                         }
                         _msgmap = _contam_msg_ar if lang == 'ar' else _contam_msg_en
                         _tags = sorted({t for t, _ in _all_defects})
