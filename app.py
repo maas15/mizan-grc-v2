@@ -9479,6 +9479,631 @@ def _arabic_pdf_heading_normalize(text):
         return text
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.8R — Professional strategy document composer
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Builds an ordered, consulting-grade document model used by the PDF and
+# DOCX export builders. The composer is strictly a *rearrangement / extraction*
+# helper:
+#
+#   * It does NOT call any AI provider.
+#   * It does NOT invent fixed deterministic strategy rows (no canned KPIs,
+#     pillars, gaps or risks). Cells in derived tables are populated from
+#     the AI-generated ``content`` markdown that has already passed all
+#     validators and the final audit.
+#   * It does NOT modify ``content`` in place. The composer is pure.
+#   * It does NOT change preview rendering — preview routes do not call
+#     it. It is invoked only by the PDF and DOCX export endpoints.
+#
+# When the AI-generated ``content`` does not contain a piece of evidence
+# the composer needs (e.g. no Risk table → traceability "Risk" column is
+# "—"), the composer leaves the cell blank rather than fabricate content.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Display labels for composed sections, in both languages.
+_STRATEGY_DOC_SECTION_LABELS = {
+    'ar': {
+        'doc_control':          'بطاقة ضبط الوثيقة',
+        'toc':                  'المحتويات',
+        'executive_summary':    'الملخص التنفيذي',
+        'scope_frameworks':     'النطاق والأطر المرجعية المعتمدة',
+        'methodology':          'المنهجية',
+        'current_state':        'ملخص الوضع الراهن ومستوى النضج',
+        'vision':               'الرؤية والأهداف الاستراتيجية',
+        'pillars':              'الركائز الاستراتيجية',
+        'environment':          'البيئة التنظيمية والتهديدات',
+        'gaps':                 'تحليل الفجوات',
+        'roadmap':              'خارطة الطريق التنفيذية',
+        'kpis':                 'مؤشرات الأداء الرئيسية',
+        'confidence':           'تقييم الثقة والمخاطر',
+        'governance_ownership': 'نموذج الحوكمة والمسؤوليات',
+        'traceability_matrix':  'مصفوفة تتبع الأطر المرجعية',
+        'appendices':           'الملاحق',
+    },
+    'en': {
+        'doc_control':          'Document Control',
+        'toc':                  'Contents',
+        'executive_summary':    'Executive Summary',
+        'scope_frameworks':     'Scope and Selected Frameworks',
+        'methodology':          'Methodology',
+        'current_state':        'Current-State and Maturity Summary',
+        'vision':               'Strategic Vision and Objectives',
+        'pillars':              'Strategic Pillars',
+        'environment':          'Regulatory Environment and Threat Landscape',
+        'gaps':                 'Gap Analysis',
+        'roadmap':              'Implementation Roadmap',
+        'kpis':                 'KPI / KRI Framework',
+        'confidence':           'Confidence Score and Risk Register',
+        'governance_ownership': 'Governance and Ownership Model',
+        'traceability_matrix':  'Framework Traceability Matrix',
+        'appendices':           'Appendices',
+    },
+}
+
+
+def _strategy_doc_label(key, lang):
+    return _STRATEGY_DOC_SECTION_LABELS.get(
+        'ar' if lang == 'ar' else 'en', {}
+    ).get(key, key)
+
+
+def _split_strategy_sections_by_h2(content):
+    """Split a strategy markdown blob into ``{section_key: section_text}``
+    keyed by canonical section. Pure text inspection — no AI.
+
+    Returns a dict with keys from
+    ``vision|pillars|environment|gaps|roadmap|kpis|confidence`` for any
+    H2 heading whose text matches the canonical Arabic or English label.
+    Sections that are not present are simply absent from the dict.
+    """
+    if not content:
+        return {}
+    import re as _re_s
+    # Map H2 heading patterns → canonical key. Match Arabic and English
+    # forms; tolerate leading "## N." numbering.
+    _patterns = [
+        ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
+        ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
+        ('environment', r'(?:البيئة|Environment|Regulatory)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
+        ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
+        ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
+    ]
+    lines = (content or '').split('\n')
+    # Find all H2 indices with their key.
+    section_starts = []  # list of (line_index, key)
+    for idx, ln in enumerate(lines):
+        s = ln.lstrip()
+        if not s.startswith('## '):
+            continue
+        head = s[3:].strip()
+        for key, pat in _patterns:
+            if _re_s.search(pat, head, _re_s.IGNORECASE):
+                section_starts.append((idx, key))
+                break
+    if not section_starts:
+        return {}
+    out = {}
+    for i, (start, key) in enumerate(section_starts):
+        end = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(lines)
+        if key in out:
+            continue  # keep first occurrence
+        out[key] = '\n'.join(lines[start:end]).strip()
+    return out
+
+
+def _extract_first_paragraphs(section_text, max_paras=2, max_chars=1200):
+    """Return the leading non-table, non-heading paragraphs of a section.
+
+    Pure text extraction; never invents content. Returns a list of
+    paragraph strings (may be empty).
+    """
+    if not section_text:
+        return []
+    paras = []
+    buf = []
+    for ln in section_text.split('\n'):
+        s = ln.rstrip()
+        if not s:
+            if buf:
+                joined = ' '.join(x.strip() for x in buf if x.strip())
+                if joined and not joined.lstrip().startswith(('|', '#', '-')):
+                    paras.append(joined)
+                    if len(paras) >= max_paras:
+                        break
+                buf = []
+            continue
+        if s.lstrip().startswith(('|', '#')):
+            # Flush buffer (without table/heading line)
+            if buf:
+                joined = ' '.join(x.strip() for x in buf if x.strip())
+                if joined:
+                    paras.append(joined)
+                    if len(paras) >= max_paras:
+                        break
+                buf = []
+            continue
+        buf.append(s)
+    if buf and len(paras) < max_paras:
+        joined = ' '.join(x.strip() for x in buf if x.strip())
+        if joined and not joined.lstrip().startswith(('|', '#', '-')):
+            paras.append(joined)
+    # Truncate overall length safely
+    out = []
+    total = 0
+    for p in paras:
+        if total + len(p) > max_chars:
+            out.append(p[: max_chars - total].rstrip() + '…')
+            break
+        out.append(p)
+        total += len(p)
+    return out
+
+
+def _parse_markdown_tables(section_text):
+    """Return a list of parsed tables. Each table is a list of rows; each
+    row is a list of cell strings. Empty rows / separator rows are
+    skipped. Pure text parsing.
+    """
+    if not section_text:
+        return []
+    tables = []
+    cur = []
+    for ln in section_text.split('\n'):
+        s = ln.strip()
+        if not s.startswith('|'):
+            if cur:
+                tables.append(cur)
+                cur = []
+            continue
+        # separator row like |---|---|
+        if set(s.replace('|', '').strip()) <= set('-: '):
+            continue
+        cells = [c.strip() for c in s.strip('|').split('|')]
+        if any(c for c in cells):
+            cur.append(cells)
+    if cur:
+        tables.append(cur)
+    # Drop tables with fewer than 2 rows (header + at least one data row)
+    return [t for t in tables if len(t) >= 2]
+
+
+def _build_executive_summary_block(content_sections, metadata, selected_fws_keys, lang):
+    """Compose executive-summary paragraphs from already-validated content.
+
+    Pulls the leading paragraphs of the vision/objectives section. Adds a
+    short factual lead (org / sector / framework count) — these are not
+    invented strategy claims; they restate metadata the user supplied.
+    """
+    paras = []
+    org    = (metadata or {}).get('org_name') or ('المنظمة' if lang == 'ar' else 'the organization')
+    sector = (metadata or {}).get('sector') or ('—')
+    domain = (metadata or {}).get('domain') or ('—')
+    fw_count = len(selected_fws_keys or [])
+    fw_disp = ', '.join(
+        _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {}).get('display', k)
+        for k in (selected_fws_keys or [])
+    ) or ('—')
+    if lang == 'ar':
+        lead = (
+            f"تُلخّص هذه الوثيقة الاستراتيجية المُعدّة لـ{org} في قطاع {sector} "
+            f"للمجال {domain}، وتغطي {fw_count} من الأطر المرجعية المختارة "
+            f"({fw_disp}). تستند الوثيقة إلى تحليل التشخيص المُدخل وتمر "
+            f"بسلسلة من بوابات التحقق قبل النشر."
+        )
+    else:
+        lead = (
+            f"This document summarises the strategy prepared for {org} "
+            f"(sector: {sector}; domain: {domain}). It covers {fw_count} "
+            f"selected reference framework(s) — {fw_disp} — derived from "
+            f"the diagnostic input and validated through the platform's "
+            f"validation gates before publication."
+        )
+    paras.append(lead)
+    vision_text = (content_sections or {}).get('vision', '')
+    paras.extend(_extract_first_paragraphs(vision_text, max_paras=2, max_chars=900))
+    return paras
+
+
+def _build_scope_frameworks_block(metadata, selected_fws_keys, lang):
+    """Return a list of dicts: ``[{key, display, description}]`` describing
+    each selected framework. Descriptions are derived from the registry —
+    they describe how the framework is reflected in the strategy
+    (capability families); they do not invent strategy content.
+    """
+    out = []
+    for key in (selected_fws_keys or []):
+        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(key)
+        if not spec:
+            continue
+        display = spec.get('display', key)
+        caps = spec.get('capabilities', []) or []
+        if lang == 'ar':
+            cap_labels = []
+            for fam in caps:
+                # fam = (family_id, ar_kws, en_kws)
+                ar_kws = fam[1] if len(fam) > 1 else []
+                cap_labels.append(ar_kws[0] if ar_kws else fam[0])
+            desc = (
+                f"يُعكَس هذا الإطار في الاستراتيجية عبر مجالات: "
+                + '، '.join(cap_labels[:6])
+                + '.'
+            ) if cap_labels else (
+                'يُعكَس هذا الإطار ضمن قسمَي الفجوات وخارطة الطريق.'
+            )
+        else:
+            cap_labels = []
+            for fam in caps:
+                en_kws = fam[2] if len(fam) > 2 else []
+                cap_labels.append((en_kws[0] if en_kws else fam[0]).title())
+            desc = (
+                'Reflected in the strategy through capability areas: '
+                + ', '.join(cap_labels[:6])
+                + '.'
+            ) if cap_labels else (
+                'Reflected within the gap analysis and roadmap sections.'
+            )
+        out.append({'key': key, 'display': display, 'description': desc})
+    return out
+
+
+def _build_methodology_block(metadata, selected_fws_keys, lang):
+    """Return a list of (label, body) tuples describing the *process* used
+    to produce the strategy. This is procedural metadata, not strategy
+    content — the same four phases run for every export.
+    """
+    fw_disp = ', '.join(
+        _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {}).get('display', k)
+        for k in (selected_fws_keys or [])
+    ) or ('—')
+    if lang == 'ar':
+        return [
+            ('1. تشخيص المُدخلات',
+             'تحليل البيانات التشخيصية المُقدَّمة من المنظمة بما في ذلك القطاع والحجم '
+             'ومستوى النضج الحالي والأنظمة القائمة.'),
+            ('2. الأطر المرجعية المختارة',
+             f'اعتماد الأطر التالية كأساس للتحليل والمواءمة: {fw_disp}.'),
+            ('3. التحليل بدعم الذكاء الاصطناعي',
+             'توليد محتوى الاستراتيجية عبر منصة الذكاء الاصطناعي مع قواعد '
+             'تحقق صارمة وعمق مطلوب لكل قسم.'),
+            ('4. بوابات التحقق',
+             'تخضع المخرجات لسلسلة من بوابات التحقق: التحقق من المجال، '
+             'كثافة المحتوى، تغطية الأطر، ثم التدقيق النهائي قبل النشر.'),
+        ]
+    return [
+        ('1. Input diagnosis',
+         'Analysis of the diagnostic data supplied by the organisation, '
+         'including sector, size, current maturity level, and existing controls.'),
+        ('2. Selected frameworks',
+         f'The following reference frameworks were adopted as the basis '
+         f'for analysis and alignment: {fw_disp}.'),
+        ('3. AI-assisted analysis',
+         'Strategy content is generated by the AI engine under strict '
+         'validation rules and per-section depth requirements.'),
+        ('4. Validation gates',
+         'Outputs pass through a chain of validation gates: domain check, '
+         'content density, framework coverage, then final audit before publication.'),
+    ]
+
+
+def _extract_owners_from_content(content_sections, lang):
+    """Return up to N ``(role, scope, accountability)`` rows derived from
+    owners that the AI already wrote into KPI / pillar / roadmap tables.
+
+    Pure parsing of the canonical 9-column KPI table (column 7 = owner) and
+    pillar tables (last column = responsible). Never invents new owners.
+    """
+    rows = []
+    seen = set()
+    # KPI table — column index 6 in the canonical 9-col table is "المالك" / Owner.
+    # We accept either the 9-col or any wider/narrower table by scanning each
+    # data row for the column whose header normalises to ``owner / المالك``.
+    for sec_key in ('kpis', 'pillars', 'roadmap'):
+        sec_text = (content_sections or {}).get(sec_key) or ''
+        for tbl in _parse_markdown_tables(sec_text):
+            if len(tbl) < 2:
+                continue
+            header = [h.strip().strip('*').lower() for h in tbl[0]]
+            owner_idx = -1
+            for i, h in enumerate(header):
+                if (h in ('المالك', 'owner', 'responsible', 'المسؤول')
+                        or 'owner' in h or 'مسؤول' in h or 'مالك' in h):
+                    owner_idx = i
+                    break
+            if owner_idx < 0:
+                continue
+            for r in tbl[1:]:
+                if owner_idx >= len(r):
+                    continue
+                role = (r[owner_idx] or '').strip()
+                if not role or role in seen:
+                    continue
+                seen.add(role)
+                # Scope = the row's "name" cell (col 1 if numbered, else col 0).
+                scope = ''
+                if len(r) >= 2:
+                    scope = (r[1] if r[0].strip().isdigit() else r[0]) or ''
+                scope = scope.strip()
+                if lang == 'ar':
+                    accountability = (
+                        'مساءَل عن تنفيذ ومتابعة البند المحدد ضمن الإطار العام للحوكمة.'
+                    )
+                else:
+                    accountability = (
+                        'Accountable for delivery and oversight of the listed item '
+                        'within the overall governance framework.'
+                    )
+                rows.append((role, scope, accountability))
+                if len(rows) >= 12:
+                    return rows
+    return rows
+
+
+def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
+    """Build the framework traceability matrix.
+
+    Columns: Framework | Capability | Gap | Initiative | KPI / KRI | Risk.
+    Rows: one per (framework, capability_family). Cells are derived from
+    the AI-generated content by simple keyword matching against the
+    relevant section's table rows. Cells with no match render as ``—``.
+    No content is invented; this is a pure cross-reference helper.
+    """
+    if not selected_fws_keys:
+        return {'header': [], 'rows': []}
+
+    def _row_label(row, fallback_idx=1):
+        """Pick the most descriptive cell text from a parsed table row."""
+        if not row:
+            return ''
+        # Prefer column 1 (commonly "name/title") if column 0 is a number.
+        try:
+            return (row[fallback_idx] if (len(row) > fallback_idx
+                    and row[0].strip().isdigit()) else row[0]).strip()
+        except Exception:
+            return (row[0] if row else '').strip()
+
+    def _find_match(section_key, ar_kws, en_kws):
+        """Return the first row (as label) in section_key whose any cell
+        matches one of the keyword lists. None if no match.
+        """
+        sec_text = (content_sections or {}).get(section_key) or ''
+        for tbl in _parse_markdown_tables(sec_text):
+            for r in tbl[1:]:
+                blob = ' '.join(r).lower()
+                for kw in (ar_kws or []) + (en_kws or []):
+                    if kw and kw.lower() in blob:
+                        return _row_label(r)
+        return None
+
+    if lang == 'ar':
+        header = ['الإطار', 'مجال القدرة', 'الفجوة المرتبطة',
+                  'المبادرة المرتبطة', 'المؤشر / المؤشر الرئيسي',
+                  'الخطر المرتبط']
+        dash = '—'
+    else:
+        header = ['Framework', 'Capability', 'Related Gap',
+                  'Related Initiative', 'KPI / KRI', 'Related Risk']
+        dash = '—'
+
+    rows = []
+    for fw_key in selected_fws_keys:
+        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key)
+        if not spec:
+            continue
+        fw_display = spec.get('display', fw_key)
+        for fam in spec.get('capabilities', []) or []:
+            family_id = fam[0]
+            ar_kws = fam[1] if len(fam) > 1 else []
+            en_kws = fam[2] if len(fam) > 2 else []
+            cap_label = (ar_kws[0] if (lang == 'ar' and ar_kws)
+                         else (en_kws[0].title() if en_kws
+                               else family_id.replace('_', ' ').title()))
+            gap        = _find_match('gaps',       ar_kws, en_kws) or dash
+            initiative = (_find_match('pillars',   ar_kws, en_kws)
+                          or _find_match('roadmap', ar_kws, en_kws) or dash)
+            kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
+            risk       = _find_match('confidence', ar_kws, en_kws) or dash
+            rows.append([fw_display, cap_label, gap, initiative, kpi, risk])
+    return {'header': header, 'rows': rows}
+
+
+def _build_document_control_rows(metadata, lang):
+    """Return ``[(label, value)]`` pairs for the document-control table."""
+    import datetime as _dt
+    today = _dt.date.today().strftime('%d %B %Y')
+    org      = (metadata or {}).get('org_name')   or '—'
+    sector   = (metadata or {}).get('sector')     or '—'
+    domain   = (metadata or {}).get('domain')     or '—'
+    doc_type = (metadata or {}).get('doc_type')   or '—'
+    classification = (metadata or {}).get('classification') or (
+        'سري' if lang == 'ar' else 'Confidential')
+    version  = (metadata or {}).get('version')    or '1.0'
+    status   = (metadata or {}).get('status')     or (
+        'مسودة' if lang == 'ar' else 'Draft')
+    prepared_by = (metadata or {}).get('prepared_by') or 'Mizan GRC Platform'
+    if lang == 'ar':
+        return [
+            ('المنظمة',         org),
+            ('القطاع',          sector),
+            ('المجال',          domain),
+            ('نوع الوثيقة',     doc_type),
+            ('التصنيف',         classification),
+            ('الإصدار',         version),
+            ('الحالة',          status),
+            ('تاريخ الإعداد',   today),
+            ('أُعدّ بواسطة',     prepared_by),
+        ]
+    return [
+        ('Organization',   org),
+        ('Sector',         sector),
+        ('Domain',         domain),
+        ('Document Type',  doc_type),
+        ('Classification', classification),
+        ('Version',        version),
+        ('Status',         status),
+        ('Prepared',       today),
+        ('Prepared by',    prepared_by),
+    ]
+
+
+def _build_appendices_block(selected_fws_keys, lang):
+    """Return a list of (label, body) appendices entries — purely
+    references to the frameworks already used; no strategy content.
+    """
+    if lang == 'ar':
+        out = [(
+            'الملحق أ — الأطر المرجعية',
+            'الأطر المرجعية المستخدمة في إعداد هذه الوثيقة:',
+        )]
+        for k in (selected_fws_keys or []):
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
+            out.append(('• ' + k, spec.get('display', k)))
+        out.append((
+            'الملحق ب — قاموس المصطلحات',
+            'يُرجى الرجوع إلى المسرد الداخلي للمنصة للاطلاع على تعريفات '
+            'المصطلحات المستخدمة (KPI، KRI، RTO، RPO، MFA، ZTNA…).'
+        ))
+        return out
+    out = [(
+        'Appendix A — Reference Frameworks',
+        'Reference frameworks used to prepare this document:',
+    )]
+    for k in (selected_fws_keys or []):
+        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
+        out.append(('• ' + k, spec.get('display', k)))
+    out.append((
+        'Appendix B — Glossary',
+        'Refer to the platform internal glossary for definitions of the '
+        'terms used (KPI, KRI, RTO, RPO, MFA, ZTNA, …).'
+    ))
+    return out
+
+
+def _build_strategy_document_model(content, metadata=None, sections=None,
+                                   selected_frameworks=None, lang='ar'):
+    """Compose the ordered, professional strategy document model.
+
+    Parameters
+    ----------
+    content : str
+        The validated strategy markdown (post-audit). The composer never
+        mutates this string.
+    metadata : dict | None
+        Cover/document-control metadata: ``org_name``, ``sector``,
+        ``domain``, ``doc_type``, ``classification``, ``version``,
+        ``status``, ``prepared_by``. All fields optional.
+    sections : dict | None
+        Optional pre-split ``{key: section_text}`` map (saves re-parsing
+        when the caller already has it). When ``None`` the composer
+        parses ``content`` itself.
+    selected_frameworks : list[str] | None
+        Free-form framework labels (e.g. ``['ECC', 'TCC']``). Resolved
+        through ``_resolve_selected_frameworks`` against the registry.
+    lang : str
+        ``'ar'`` for Arabic layout, otherwise English.
+
+    Returns
+    -------
+    dict
+        ``{'lang': str, 'order': [block_kind, ...], 'blocks': {kind: payload}}``
+
+        ``order`` is the canonical professional order. ``blocks`` always
+        contains an entry for every kind in ``order`` — the value is a
+        structured payload (list / dict) the renderer can consume.
+    """
+    lang_n = 'ar' if lang == 'ar' else 'en'
+    metadata = metadata or {}
+    domain = metadata.get('domain') or ''
+    fws_keys = _resolve_selected_frameworks(
+        selected_frameworks or metadata.get('selected_frameworks') or [],
+        domain or None,
+    )
+    content_sections = sections if isinstance(sections, dict) else \
+        _split_strategy_sections_by_h2(content or '')
+
+    L = lambda key: _strategy_doc_label(key, lang_n)  # noqa: E731
+
+    # Block payloads
+    doc_control_rows = _build_document_control_rows(metadata, lang_n)
+    exec_paras       = _build_executive_summary_block(
+        content_sections, metadata, fws_keys, lang_n)
+    scope_items      = _build_scope_frameworks_block(metadata, fws_keys, lang_n)
+    methodology_rows = _build_methodology_block(metadata, fws_keys, lang_n)
+    current_state_paras = _extract_first_paragraphs(
+        (content_sections or {}).get('environment', ''),
+        max_paras=2, max_chars=900,
+    )
+    if not current_state_paras:
+        current_state_paras = _extract_first_paragraphs(
+            (content_sections or {}).get('gaps', ''),
+            max_paras=1, max_chars=600,
+        )
+    governance_rows  = _extract_owners_from_content(content_sections, lang_n)
+    traceability     = _build_traceability_matrix(
+        content_sections, fws_keys, lang_n)
+    appendices       = _build_appendices_block(fws_keys, lang_n)
+
+    # Canonical ordered block list. ``strategy_body`` is the original
+    # AI-generated markdown rendered as the "main strategy sections".
+    order = [
+        'cover', 'doc_control', 'toc', 'executive_summary',
+        'scope_frameworks', 'methodology', 'current_state',
+        'strategy_body', 'governance_ownership',
+        'traceability_matrix', 'appendices',
+    ]
+
+    # TOC entries — the user-facing list of section titles. Strategy body
+    # is exploded into its 7 canonical sub-sections so the TOC is fully
+    # informative (not just a placeholder).
+    toc_entries = [
+        ('1', L('executive_summary')),
+        ('2', L('scope_frameworks')),
+        ('3', L('methodology')),
+        ('4', L('current_state')),
+        ('5', L('vision')),
+        ('6', L('pillars')),
+        ('7', L('environment')),
+        ('8', L('gaps')),
+        ('9', L('roadmap')),
+        ('10', L('kpis')),
+        ('11', L('confidence')),
+        ('12', L('governance_ownership')),
+        ('13', L('traceability_matrix')),
+        ('14', L('appendices')),
+    ]
+
+    blocks = {
+        'cover':                {'title': L('doc_control'),
+                                 'rendered_by': 'pdf_canvas_or_docx_cover'},
+        'doc_control':          {'title': L('doc_control'),
+                                 'rows': doc_control_rows},
+        'toc':                  {'title': L('toc'),
+                                 'entries': toc_entries},
+        'executive_summary':    {'title': L('executive_summary'),
+                                 'paragraphs': exec_paras},
+        'scope_frameworks':     {'title': L('scope_frameworks'),
+                                 'frameworks': scope_items,
+                                 'frameworks_keys': list(fws_keys)},
+        'methodology':          {'title': L('methodology'),
+                                 'rows': methodology_rows},
+        'current_state':        {'title': L('current_state'),
+                                 'paragraphs': current_state_paras},
+        'strategy_body':        {'title': L('vision'),
+                                 'content': content or ''},
+        'governance_ownership': {'title': L('governance_ownership'),
+                                 'rows': governance_rows},
+        'traceability_matrix':  {'title': L('traceability_matrix'),
+                                 'header': traceability['header'],
+                                 'rows': traceability['rows']},
+        'appendices':           {'title': L('appendices'),
+                                 'entries': appendices},
+    }
+    return {'lang': lang_n, 'order': order, 'blocks': blocks,
+            'selected_frameworks': list(fws_keys)}
+
+
 def ensure_markdown_formatting(text):
     """Post-process AI output to ensure proper Markdown structure.
     
@@ -36947,6 +37572,8 @@ def api_generate_docx_async():
     _sector   = sector
     _doc_type = doc_type
     _domain   = domain
+    _selected_fws = (data.get('selected_frameworks')
+                     or data.get('frameworks') or [])
     _task_id  = task_id
 
     def _build():
@@ -36954,7 +37581,9 @@ def api_generate_docx_async():
         try:
             print(f"ASYNC DOCX: starting build for task {_task_id[:8]}", flush=True)
             # Call the extracted build function directly — no Flask routing, no auth needed
-            raw = _build_docx_bytes(_content, _filename, _lang, _org_name, _sector, _doc_type, _domain)
+            raw = _build_docx_bytes(_content, _filename, _lang, _org_name,
+                                    _sector, _doc_type, _domain,
+                                    selected_frameworks=_selected_fws)
             tmp = tempfile.NamedTemporaryFile(
                 suffix='.docx', delete=False,
                 prefix=f'mizan_export_{_task_id}_'
@@ -37050,7 +37679,7 @@ def api_export_download(task_id):
         return jsonify({'error': str(e)}), 500
 
 
-def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type='Strategy Document', domain=''):
+def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type='Strategy Document', domain='', selected_frameworks=None):
     """Build a DOCX and return raw bytes. Called by both the sync route and async thread.
 
     PR-5B.7C.2 — final-mile fragment guard. Every PDF/DOCX route already
@@ -37851,13 +38480,237 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             add_rtl_heading((doc_type or filename.replace('_', ' ').title()), 0)
         except Exception:
             pass
-    
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PR-5B.8R — Build the professional strategy document model and emit
+    # the pre-body composed sections (doc-control table, executive
+    # summary, scope/frameworks, methodology, current-state). Mirrors the
+    # PDF composer's behaviour. Pure rearrangement; no AI calls.
+    # ══════════════════════════════════════════════════════════════════════
+    _docx_doc_model = None
+    _docx_is_strategy = (doc_type or '').strip().lower() in (
+        'strategy document', 'strategy', 'استراتيجية',
+    )
+    if _docx_is_strategy and content:
+        try:
+            _docx_doc_model = _build_strategy_document_model(
+                content,
+                metadata={
+                    'org_name': org_name,
+                    'sector':   sector,
+                    'domain':   domain,
+                    'doc_type': doc_type,
+                },
+                selected_frameworks=selected_frameworks or [],
+                lang='ar' if is_arabic else 'en',
+            )
+            print(
+                f'[STRATEGY-DOC-MODEL] route=docx order_len='
+                f'{len(_docx_doc_model.get("order", []))} '
+                f'frameworks={_docx_doc_model.get("selected_frameworks", [])}',
+                flush=True,
+            )
+        except Exception as _dmdl_e:
+            print(f'[STRATEGY-DOC-MODEL] docx non-fatal: {_dmdl_e}',
+                  flush=True)
+            _docx_doc_model = None
+
+    def _docx_pro_heading(title_txt):
+        """Add a composed pro-section heading paragraph + thin orange rule."""
+        try:
+            h = doc.add_paragraph()
+            if is_arabic:
+                set_rtl_paragraph(h)
+                r = h.add_run(title_txt)
+                set_rtl_run(r)
+            else:
+                r = h.add_run(title_txt)
+            r.bold = True
+            r.font.size = Pt(14)
+            r.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
+            h.paragraph_format.space_before = Pt(8)
+            h.paragraph_format.space_after = Pt(2)
+            # Orange rule below the heading
+            rule = doc.add_paragraph()
+            pPr = rule._p.get_or_add_pPr()
+            pBdr = parse_xml(
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:bottom w:val="single" w:sz="12" w:space="2" w:color="D04A02"/>'
+                f'</w:pBdr>'
+            )
+            pPr.append(pBdr)
+            rule.paragraph_format.space_after = Pt(8)
+        except Exception:
+            pass
+
+    def _docx_pro_paragraph(text):
+        if not text or not text.strip():
+            return
+        try:
+            p = doc.add_paragraph()
+            if is_arabic:
+                set_rtl_paragraph(p)
+                r = p.add_run(text)
+                set_rtl_run(r)
+            else:
+                r = p.add_run(text)
+            r.font.size = Pt(10)
+            p.paragraph_format.space_after = Pt(6)
+        except Exception:
+            pass
+
+    def _docx_pro_label_paragraph(label, body=''):
+        try:
+            p = doc.add_paragraph()
+            if is_arabic:
+                set_rtl_paragraph(p)
+                r = p.add_run(str(label))
+                set_rtl_run(r)
+            else:
+                r = p.add_run(str(label))
+            r.bold = True
+            r.font.size = Pt(10)
+            r.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
+            if body:
+                _docx_pro_paragraph(body)
+        except Exception:
+            pass
+
+    def _docx_pro_two_col_table(rows, accent=True):
+        if not rows:
+            return
+        try:
+            tbl = doc.add_table(rows=len(rows), cols=2)
+            tbl.alignment = (WD_TABLE_ALIGNMENT.RIGHT
+                             if is_arabic else WD_TABLE_ALIGNMENT.LEFT)
+            for ri, (lbl, val) in enumerate(rows):
+                c0 = tbl.cell(ri, 0)
+                c1 = tbl.cell(ri, 1)
+                # Label cell — light gray background
+                shd0 = parse_xml(
+                    f'<w:shd {nsdecls("w")} w:val="clear" '
+                    f'w:color="auto" w:fill="F3F4F6"/>'
+                )
+                c0._tc.get_or_add_tcPr().append(shd0)
+                for cell, txt, bold in ((c0, str(lbl), True),
+                                          (c1, str(val), False)):
+                    p = cell.paragraphs[0]
+                    if is_arabic:
+                        set_rtl_paragraph(p)
+                    r = p.add_run(txt)
+                    if is_arabic:
+                        set_rtl_run(r)
+                    r.bold = bold
+                    r.font.size = Pt(9)
+            doc.add_paragraph()
+        except Exception:
+            pass
+
+    def _docx_pro_grid_table(header, rows):
+        if not header or not rows:
+            return
+        try:
+            tbl = doc.add_table(rows=len(rows) + 1, cols=len(header))
+            tbl.alignment = (WD_TABLE_ALIGNMENT.RIGHT
+                             if is_arabic else WD_TABLE_ALIGNMENT.LEFT)
+            # Header row (navy bg, white bold text)
+            for ci, h in enumerate(header):
+                c = tbl.cell(0, ci)
+                shd = parse_xml(
+                    f'<w:shd {nsdecls("w")} w:val="clear" '
+                    f'w:color="auto" w:fill="1D2B4F"/>'
+                )
+                c._tc.get_or_add_tcPr().append(shd)
+                p = c.paragraphs[0]
+                if is_arabic:
+                    set_rtl_paragraph(p)
+                r = p.add_run(str(h))
+                if is_arabic:
+                    set_rtl_run(r)
+                r.bold = True
+                r.font.size = Pt(9)
+                r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            # Data rows
+            for ri, row in enumerate(rows, start=1):
+                for ci, val in enumerate(row):
+                    if ci >= len(header):
+                        break
+                    c = tbl.cell(ri, ci)
+                    p = c.paragraphs[0]
+                    if is_arabic:
+                        set_rtl_paragraph(p)
+                    r = p.add_run(str(val))
+                    if is_arabic:
+                        set_rtl_run(r)
+                    r.font.size = Pt(8)
+            doc.add_paragraph()
+        except Exception:
+            pass
+
+    if _docx_doc_model is not None:
+        try:
+            _dblocks = _docx_doc_model['blocks']
+            # Document control
+            _dc = _dblocks.get('doc_control', {})
+            _docx_pro_heading(_dc.get('title', ''))
+            _docx_pro_two_col_table(_dc.get('rows') or [])
+            doc.add_page_break()
+            # Executive summary
+            _es = _dblocks.get('executive_summary', {})
+            _docx_pro_heading(_es.get('title', ''))
+            for _p in (_es.get('paragraphs') or []):
+                _docx_pro_paragraph(_p)
+            doc.add_page_break()
+            # Scope and selected frameworks
+            _sf = _dblocks.get('scope_frameworks', {})
+            _docx_pro_heading(_sf.get('title', ''))
+            _fws = _sf.get('frameworks') or []
+            if _fws:
+                for _fw in _fws:
+                    _key  = _fw.get('key', '')
+                    _disp = _fw.get('display', _key)
+                    _desc = _fw.get('description', '')
+                    _docx_pro_label_paragraph(
+                        f'{_disp} ({_key})' if is_arabic
+                        else f'{_key} — {_disp}',
+                        _desc)
+            else:
+                _docx_pro_paragraph(
+                    'لم يتم تحديد أطر مرجعية صريحة لهذه الوثيقة.'
+                    if is_arabic else
+                    'No reference frameworks were explicitly selected for this document.'
+                )
+            doc.add_page_break()
+            # Methodology
+            _mt = _dblocks.get('methodology', {})
+            _docx_pro_heading(_mt.get('title', ''))
+            for _lbl, _body in (_mt.get('rows') or []):
+                _docx_pro_label_paragraph(_lbl, _body)
+            doc.add_page_break()
+            # Current state (only when paragraphs available)
+            _cs = _dblocks.get('current_state', {})
+            if _cs.get('paragraphs'):
+                _docx_pro_heading(_cs.get('title', ''))
+                for _p in _cs['paragraphs']:
+                    _docx_pro_paragraph(_p)
+                doc.add_page_break()
+        except Exception as _dpre_e:
+            print(f'[STRATEGY-DOC-MODEL] docx pre-body non-fatal: '
+                  f'{_dpre_e}', flush=True)
+
     # ---- Process content line by line ----
     # First, ensure proper markdown formatting for reliable parsing
     try:
         content = ensure_markdown_formatting(content)
     except Exception as fmt_err:
         print(f"DOCX WARNING: ensure_markdown_formatting failed: {fmt_err}", flush=True)
+    # PR-5B.8R — apply Arabic heading punctuation normalization to DOCX
+    # input as well (parity with PDF), so ".1 الرؤية" / "الركيزة :1" etc.
+    # render correctly in Word.
+    try:
+        content = _arabic_pdf_heading_normalize(content)
+    except Exception:
+        pass
     
     # Strip AI-generated metadata table (download function adds proper header)
     import re as re_docx
@@ -38192,6 +39045,48 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 pass
             i += 1
     
+    # ══════════════════════════════════════════════════════════════════════
+    # PR-5B.8R — Post-body composed sections: governance/ownership,
+    # framework traceability matrix, appendices.
+    # ══════════════════════════════════════════════════════════════════════
+    if _docx_doc_model is not None:
+        try:
+            _dblocks = _docx_doc_model['blocks']
+            doc.add_page_break()
+            # Governance / ownership
+            _gv = _dblocks.get('governance_ownership', {})
+            _docx_pro_heading(_gv.get('title', ''))
+            _gv_rows = _gv.get('rows') or []
+            if _gv_rows:
+                _hdr = (['الدور', 'النطاق', 'المساءلة'] if is_arabic
+                        else ['Role', 'Scope', 'Accountability'])
+                _docx_pro_grid_table(_hdr,
+                                     [[r[0], r[1], r[2]] for r in _gv_rows])
+            else:
+                _docx_pro_paragraph(
+                    'لم يتم استخراج جدول المسؤوليات من المحتوى.'
+                    if is_arabic else
+                    'No ownership rows could be derived from the content.'
+                )
+            doc.add_page_break()
+            # Framework traceability matrix
+            _tm = _dblocks.get('traceability_matrix', {})
+            _docx_pro_heading(_tm.get('title', ''))
+            _docx_pro_grid_table(_tm.get('header') or [],
+                                 _tm.get('rows') or [])
+            doc.add_page_break()
+            # Appendices
+            _ap = _dblocks.get('appendices', {})
+            _docx_pro_heading(_ap.get('title', ''))
+            for _lbl, _body in (_ap.get('entries') or []):
+                if str(_lbl).startswith('•'):
+                    _docx_pro_paragraph(f'{_lbl}: {_body}')
+                else:
+                    _docx_pro_label_paragraph(_lbl, _body)
+        except Exception as _dpost_e:
+            print(f'[STRATEGY-DOC-MODEL] docx post-body non-fatal: '
+                  f'{_dpost_e}', flush=True)
+
     # Save to BytesIO and return bytes
     buffer = BytesIO()
     doc.save(buffer)
@@ -38358,7 +39253,11 @@ def api_generate_docx():
         return jsonify({'error': 'No content to generate document'}), 400
 
     try:
-        doc_bytes = _build_docx_bytes(content, filename, lang, org_name, sector, doc_type, domain)
+        _selected_fws_sync = (data.get('selected_frameworks')
+                              or data.get('frameworks') or [])
+        doc_bytes = _build_docx_bytes(content, filename, lang, org_name,
+                                       sector, doc_type, domain,
+                                       selected_frameworks=_selected_fws_sync)
 
         from flask import Response, stream_with_context
 
@@ -39177,6 +40076,52 @@ def api_generate_pdf():
         story = []
 
         # ══════════════════════════════════════════════════════════════════
+        # PR-5B.8R — Build the professional strategy document model.
+        # Populated only when the artifact is a strategy; used to render
+        # doc-control, executive summary, scope/frameworks, methodology,
+        # current-state, governance, traceability matrix and appendices.
+        # The composer is pure: it never invents strategy rows, never
+        # calls AI, and leaves preview rendering untouched.
+        # ══════════════════════════════════════════════════════════════════
+        _strategy_doc_model = None
+        try:
+            _is_strategy_pdf_local = (
+                (data.get('artifact_type', 'strategy') or 'strategy') == 'strategy'
+            )
+        except Exception:
+            _is_strategy_pdf_local = True
+        if _is_strategy_pdf_local and content:
+            try:
+                _selected_fws_in = (
+                    data.get('selected_frameworks')
+                    or data.get('frameworks')
+                    or []
+                )
+                _strategy_doc_model = _build_strategy_document_model(
+                    content,
+                    metadata={
+                        'org_name': org_name_pdf,
+                        'sector':   sector_pdf,
+                        'domain':   domain_pdf,
+                        'doc_type': doc_type_pdf,
+                    },
+                    selected_frameworks=_selected_fws_in,
+                    lang='ar' if is_arabic else 'en',
+                )
+                print(
+                    f'[STRATEGY-DOC-MODEL] route=pdf order_len='
+                    f'{len(_strategy_doc_model.get("order", []))} '
+                    f'frameworks='
+                    f'{_strategy_doc_model.get("selected_frameworks", [])} '
+                    f'has_traceability='
+                    f'{bool(_strategy_doc_model["blocks"]["traceability_matrix"]["rows"])}',
+                    flush=True,
+                )
+            except Exception as _mdl_e:
+                print(f'[STRATEGY-DOC-MODEL] non-fatal: {_mdl_e}', flush=True)
+                _strategy_doc_model = None
+
+        # ══════════════════════════════════════════════════════════════════
         # BIG-4 COVER PAGE  (full-page canvas draw — no story elements)
         # ══════════════════════════════════════════════════════════════════
         import datetime
@@ -39425,6 +40370,254 @@ def api_generate_pdf():
         # Story placeholder: blank first page for the canvas cover
         story.append(PageBreak())
 
+        # ══════════════════════════════════════════════════════════════════
+        # PR-5B.8R — Professional section helpers + Document Control table
+        # (page 2 — between cover and TOC). Skipped for non-strategy artifacts.
+        # ══════════════════════════════════════════════════════════════════
+        from reportlab.platypus import HRFlowable as _HRF_PRO
+        from reportlab.lib.colors import HexColor as _HC_PRO
+        _PRO_NAVY = _HC_PRO('#1D2B4F')
+        _PRO_ACC  = _HC_PRO('#D04A02')
+        _PRO_PAGE_W = A4[0] - 3 * cm
+
+        _pro_title_sty = ParagraphStyle(
+            'ProTitle',
+            fontName=arabic_font_bold if is_arabic else 'Helvetica-Bold',
+            fontSize=15,
+            textColor=_PRO_NAVY, leading=20, spaceAfter=6, spaceBefore=4,
+            alignment=TA_RIGHT if is_arabic else TA_LEFT,
+        )
+        _pro_label_sty = ParagraphStyle(
+            'ProLabel',
+            fontName=arabic_font_bold if is_arabic else 'Helvetica-Bold',
+            fontSize=9,
+            textColor=_PRO_NAVY, leading=12,
+            alignment=TA_RIGHT if is_arabic else TA_LEFT,
+        )
+        _pro_value_sty = ParagraphStyle(
+            'ProValue',
+            fontName=arabic_font_name if is_arabic else 'Helvetica',
+            fontSize=9,
+            textColor=colors.HexColor('#111827'), leading=12,
+            alignment=TA_RIGHT if is_arabic else TA_LEFT,
+        )
+        _pro_body_sty = ParagraphStyle(
+            'ProBody',
+            fontName=arabic_font_name if is_arabic else 'Helvetica',
+            fontSize=10,
+            textColor=colors.HexColor('#111827'),
+            leading=14, spaceAfter=8,
+            alignment=TA_RIGHT if is_arabic else TA_LEFT,
+        )
+
+        def _pro_text(t, sty='value'):
+            """Render Arabic text through reshape/bidi when needed; pass
+            English through unchanged. ``sty`` controls font size used for
+            wrap-width estimation."""
+            if not t:
+                return ''
+            if is_arabic:
+                size = 15 if sty == 'title' else (9 if sty == 'label' else 10)
+                font = arabic_font_bold if sty in ('title', 'label') else arabic_font_name
+                try:
+                    return process_arabic(str(t), font, size)
+                except Exception:
+                    return str(t)
+            return str(t)
+
+        def _pro_section_heading(title_txt):
+            """Heading + accent rule + blank space. Used for every
+            composed pro-section."""
+            out = [
+                Paragraph(_pro_text(title_txt, 'title'), _pro_title_sty),
+                _HRF_PRO(width=_PRO_PAGE_W, thickness=2,
+                         color=_PRO_ACC, spaceAfter=10),
+            ]
+            return out
+
+        def _pro_render_doc_control(block):
+            rows = block.get('rows', []) or []
+            flow = list(_pro_section_heading(block.get('title', '')))
+            tbl_rows = []
+            for label, value in rows:
+                tbl_rows.append([
+                    Paragraph(f"<b>{_pro_text(label, 'label')}</b>", _pro_label_sty),
+                    Paragraph(_pro_text(value, 'value'), _pro_value_sty),
+                ])
+            if not tbl_rows:
+                return flow
+            tbl = Table(
+                tbl_rows,
+                colWidths=[_PRO_PAGE_W * 0.32, _PRO_PAGE_W * 0.68],
+            )
+            tbl.setStyle(TableStyle([
+                ('BACKGROUND',    (0, 0), (0, -1), colors.HexColor('#F3F4F6')),
+                ('LINEBELOW',     (0, 0), (-1, -1), 0.4, colors.HexColor('#D1D5DB')),
+                ('TOPPADDING',    (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('LEFTPADDING',   (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
+                ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+                ('LINEBEFORE',    (0, 0), (0, -1), 3, _PRO_ACC),
+            ]))
+            flow.append(tbl)
+            flow.append(Spacer(1, 0.3 * inch))
+            return flow
+
+        def _pro_render_paragraphs(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            for p in (block.get('paragraphs') or []):
+                if not p or not p.strip():
+                    continue
+                flow.append(Paragraph(_pro_text(p, 'body'), _pro_body_sty))
+                flow.append(Spacer(1, 0.05 * inch))
+            return flow
+
+        def _pro_render_scope_frameworks(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            fws = block.get('frameworks') or []
+            if not fws:
+                # Still emit a clear placeholder line so the absence is
+                # explicit (helps debugging) but flag it for the gate.
+                flow.append(Paragraph(
+                    _pro_text(
+                        'لم يتم تحديد أطر مرجعية صريحة لهذه الوثيقة.'
+                        if is_arabic else
+                        'No reference frameworks were explicitly selected for this document.',
+                        'body'),
+                    _pro_body_sty,
+                ))
+                return flow
+            for fw in fws:
+                key  = fw.get('key', '')
+                disp = fw.get('display', key)
+                desc = fw.get('description', '')
+                # Heading line: "ECC — NCA ECC (Essential Cybersecurity Controls)"
+                head_line = f'<b>{key}</b> — {disp}' if not is_arabic else \
+                            f'<b>{disp}</b> ({key})'
+                flow.append(Paragraph(_pro_text(head_line, 'body'), _pro_body_sty))
+                if desc:
+                    flow.append(Paragraph(_pro_text(desc, 'body'), _pro_body_sty))
+                flow.append(Spacer(1, 0.08 * inch))
+            return flow
+
+        def _pro_render_methodology(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            for label, body in (block.get('rows') or []):
+                flow.append(Paragraph(
+                    f"<b>{_pro_text(label, 'label')}</b>", _pro_body_sty))
+                flow.append(Paragraph(_pro_text(body, 'body'), _pro_body_sty))
+                flow.append(Spacer(1, 0.05 * inch))
+            return flow
+
+        def _pro_render_governance(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            rows = block.get('rows') or []
+            if not rows:
+                flow.append(Paragraph(
+                    _pro_text(
+                        'لم يتم استخراج جدول المسؤوليات من المحتوى.'
+                        if is_arabic else
+                        'No ownership rows could be derived from the content.',
+                        'body'),
+                    _pro_body_sty,
+                ))
+                return flow
+            if is_arabic:
+                hdr = ['الدور', 'النطاق', 'المساءلة']
+            else:
+                hdr = ['Role', 'Scope', 'Accountability']
+            tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
+                         for h in hdr]]
+            for role, scope, acc in rows:
+                tbl_rows.append([
+                    Paragraph(_pro_text(role, 'value'),  _pro_value_sty),
+                    Paragraph(_pro_text(scope, 'value'), _pro_value_sty),
+                    Paragraph(_pro_text(acc, 'value'),   _pro_value_sty),
+                ])
+            tbl = Table(
+                tbl_rows,
+                colWidths=[_PRO_PAGE_W * 0.30,
+                           _PRO_PAGE_W * 0.30,
+                           _PRO_PAGE_W * 0.40],
+            )
+            tbl.setStyle(TableStyle([
+                ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                ('GRID',          (0, 0), (-1, -1), 0.4, colors.HexColor('#D1D5DB')),
+                ('TOPPADDING',    (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('LEFTPADDING',   (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+                ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+            ]))
+            flow.append(tbl)
+            return flow
+
+        def _pro_render_traceability(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            header = block.get('header') or []
+            rows   = block.get('rows') or []
+            if not header or not rows:
+                flow.append(Paragraph(
+                    _pro_text(
+                        'لم يتم اشتقاق صفوف لمصفوفة التتبع من المحتوى المتاح.'
+                        if is_arabic else
+                        'No traceability rows could be derived from the available content.',
+                        'body'),
+                    _pro_body_sty,
+                ))
+                return flow
+            tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
+                         for h in header]]
+            for r in rows:
+                cells = []
+                for v in r:
+                    cells.append(Paragraph(_pro_text(v, 'value'), _pro_value_sty))
+                tbl_rows.append(cells)
+            n = len(header)
+            col_w = [_PRO_PAGE_W / n] * n
+            tbl = Table(tbl_rows, colWidths=col_w, repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                ('GRID',          (0, 0), (-1, -1), 0.4, colors.HexColor('#D1D5DB')),
+                ('TOPPADDING',    (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+                ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+                ('FONTSIZE',      (0, 1), (-1, -1), 8),
+            ]))
+            flow.append(tbl)
+            return flow
+
+        def _pro_render_appendices(block):
+            flow = list(_pro_section_heading(block.get('title', '')))
+            for label, body in (block.get('entries') or []):
+                if label.startswith('•'):
+                    flow.append(Paragraph(
+                        _pro_text(f'{label}: {body}', 'body'),
+                        _pro_body_sty))
+                else:
+                    flow.append(Paragraph(
+                        f"<b>{_pro_text(label, 'label')}</b>", _pro_body_sty))
+                    if body:
+                        flow.append(Paragraph(_pro_text(body, 'body'), _pro_body_sty))
+                    flow.append(Spacer(1, 0.05 * inch))
+            return flow
+
+        # Inject document control (only for strategy exports with model)
+        if _strategy_doc_model is not None:
+            try:
+                _dc_block = _strategy_doc_model['blocks'].get('doc_control', {})
+                for _fl in _pro_render_doc_control(_dc_block):
+                    story.append(_fl)
+                story.append(PageBreak())
+            except Exception as _dc_err:
+                print(f'[STRATEGY-DOC-MODEL] doc_control non-fatal: '
+                      f'{_dc_err}', flush=True)
+
         # ── BIG-4 TABLE OF CONTENTS (page 2) ─────────────────────────────
         try:
             from reportlab.platypus import HRFlowable as _HRF2
@@ -39481,6 +40674,20 @@ def api_generate_pdf():
                     ('7', 'Confidence Assessment & Risks'),
                 ]
 
+            # PR-5B.8R — when the strategy document model is available,
+            # use its full ordered TOC (14 entries covering doc-control,
+            # exec summary, scope, methodology, current state, the seven
+            # strategy sections, governance, traceability and appendices).
+            if _strategy_doc_model is not None:
+                try:
+                    _toc_entries_model = (
+                        _strategy_doc_model['blocks']['toc'].get('entries') or []
+                    )
+                    if _toc_entries_model:
+                        _toc_secs = list(_toc_entries_model)
+                except Exception:
+                    pass
+
             story.append(Paragraph(_toc_ttxt, _toc_title_sty))
             story.append(_HRF2(width=_page_w, thickness=2,
                                color=_TACC, spaceAfter=10))
@@ -39527,6 +40734,31 @@ def api_generate_pdf():
 
         except Exception as _toc_err:
             print(f'PDF TOC (non-fatal): {_toc_err}', flush=True)
+
+        # ══════════════════════════════════════════════════════════════════
+        # PR-5B.8R — Pre-body professional sections (between TOC and the
+        # AI-generated strategy body): executive summary, scope/frameworks,
+        # methodology, current-state.
+        # ══════════════════════════════════════════════════════════════════
+        if _strategy_doc_model is not None:
+            try:
+                _blocks = _strategy_doc_model['blocks']
+                for _kind, _renderer in (
+                    ('executive_summary', _pro_render_paragraphs),
+                    ('scope_frameworks',  _pro_render_scope_frameworks),
+                    ('methodology',       _pro_render_methodology),
+                    ('current_state',     _pro_render_paragraphs),
+                ):
+                    _blk = _blocks.get(_kind, {})
+                    # Skip current_state block when no paragraphs exist.
+                    if _kind == 'current_state' and not (_blk.get('paragraphs') or []):
+                        continue
+                    for _fl in _renderer(_blk):
+                        story.append(_fl)
+                    story.append(PageBreak())
+            except Exception as _pre_err:
+                print(f'[STRATEGY-DOC-MODEL] pre-body non-fatal: '
+                      f'{_pre_err}', flush=True)
 
         # Parse markdown content
         # CRITICAL: Run same cleanup as DOCX path
@@ -40747,6 +41979,27 @@ def api_generate_pdf():
                 story.append(Paragraph(text, normal_style))
             
             i += 1
+
+        # ══════════════════════════════════════════════════════════════════
+        # PR-5B.8R — Post-body professional sections (governance/ownership,
+        # framework traceability matrix, appendices).
+        # ══════════════════════════════════════════════════════════════════
+        if _strategy_doc_model is not None:
+            try:
+                _blocks = _strategy_doc_model['blocks']
+                _post_pairs = (
+                    ('governance_ownership', _pro_render_governance),
+                    ('traceability_matrix',  _pro_render_traceability),
+                    ('appendices',           _pro_render_appendices),
+                )
+                for _kind, _renderer in _post_pairs:
+                    _blk = _blocks.get(_kind, {})
+                    story.append(PageBreak())
+                    for _fl in _renderer(_blk):
+                        story.append(_fl)
+            except Exception as _post_err:
+                print(f'[STRATEGY-DOC-MODEL] post-body non-fatal: '
+                      f'{_post_err}', flush=True)
 
         # ── Running header/footer on body pages (page 2+) ──────────────
         import datetime as _dt
