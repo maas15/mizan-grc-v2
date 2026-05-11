@@ -18785,7 +18785,424 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _final_strategy_audit(sections, lang, doc_subtype=None, synth_status=None):
+# ── PR-5B.8Q: Selected-framework coverage enforcement ───────────────────────
+# When the user selects multiple frameworks/controls (e.g. NCA ECC + NCA TCC),
+# the assembled strategy MUST explicitly cover EVERY selected framework
+# across the major sections — not just one of them. The registry below
+# defines, per framework:
+#
+#   * ``aliases``           — case-insensitive substrings that identify
+#                             the framework in a free-form ``frameworks``
+#                             input (label or short code).
+#   * ``capabilities``      — required capability families. Each family
+#                             is a tuple of (family_id, AR keyword list,
+#                             EN keyword list). At least one keyword from
+#                             each family MUST appear in the assembled
+#                             strategy when the framework is selected.
+#   * ``applicable_domains`` — Cyber Security / Data Management / etc.
+#                             A framework selection is only enforced when
+#                             the domain is in this list. Empty means
+#                             "any domain".
+#   * ``required_sections``  — section keys whose combined text must
+#                             contain the family keywords for the
+#                             coverage check to pass.
+#   * ``repair_targets``     — section keys to re-route through
+#                             ``ai_repair_strategy_section`` when the
+#                             coverage check fails.  AI-first; never
+#                             deterministic insertion.
+#
+# This registry is consulted by:
+#   1. ``_compute_missing_selected_framework_coverage`` — used by
+#      ``_final_strategy_audit`` to emit
+#      ``selected_framework_coverage_missing:<FW>:<family>`` defects.
+#   2. ``ai_repair_strategy_section`` — appends a per-framework coverage
+#      clause to the per-section repair prompt when the framework is
+#      selected and the section being repaired is in the framework's
+#      ``repair_targets``.
+#   3. The post-convergence repair pass in ``api_generate_strategy``
+#      — runs ONE AI repair call per affected section per uncovered
+#      family, then re-audits.
+#
+# Adding a new framework only requires extending the registry. No
+# deterministic content is injected anywhere.
+_FRAMEWORK_COVERAGE_REQUIREMENTS = {
+    "ECC": {
+        "display": "NCA ECC (Essential Cybersecurity Controls)",
+        "aliases": ["nca ecc", "ecc", "essential cybersecurity",
+                    "الضوابط الأساسية", "الأساسية للأمن السيبراني"],
+        "applicable_domains": ["Cyber Security"],
+        "capabilities": [
+            ("governance", ["الحوكمة", "السياسات", "الإطار التنظيمي",
+                             "حوكمة الأمن"],
+             ["governance", "policy", "policies", "framework"]),
+            ("identity_access", ["إدارة الهوية", "إدارة الوصول", "IAM",
+                                  "PAM", "وصول مميز"],
+             ["identity", "IAM", "PAM", "privileged access"]),
+            ("monitoring", ["مركز العمليات الأمنية", "SIEM", "SOC",
+                             "مراقبة"],
+             ["SIEM", "SOC", "monitoring", "security operations"]),
+            ("incident_response", ["الاستجابة للحوادث", "الحوادث",
+                                    "CSIRT"],
+             ["incident response", "incident", "CSIRT"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis", "confidence"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis", "confidence"],
+    },
+    "TCC": {
+        "display": "NCA TCC (Telework Cybersecurity Controls)",
+        "aliases": ["nca tcc", "tcc", "telework", "remote work cyber",
+                    "العمل عن بعد", "العمل عن بُعد"],
+        "applicable_domains": ["Cyber Security"],
+        "capabilities": [
+            ("remote_access", ["الوصول عن بُعد", "الوصول عن بعد",
+                                "العمل عن بُعد", "العمل عن بعد",
+                                "الوصول الآمن"],
+             ["remote access", "remote work", "telework", "secure remote"]),
+            ("vpn_ztna", ["VPN", "ZTNA", "الشبكات الافتراضية الخاصة",
+                           "بنية الثقة الصفرية"],
+             ["VPN", "ZTNA", "zero trust", "zero-trust"]),
+            ("mfa", ["المصادقة متعددة العوامل", "MFA",
+                      "المصادقة الثنائية"],
+             ["MFA", "multi-factor", "multifactor"]),
+            ("endpoint", ["حماية الأجهزة الطرفية", "EDR",
+                           "إدارة الأجهزة المحمولة", "MDM",
+                           "الأجهزة الشخصية", "BYOD"],
+             ["endpoint protection", "EDR", "MDM", "mobile device "
+              "management", "BYOD"]),
+            ("data_protection_remote", ["منع تسرب البيانات", "DLP",
+                                          "التشفير"],
+             ["DLP", "data loss prevention", "encryption"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis", "confidence"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis", "confidence"],
+    },
+    "CCC": {
+        "display": "NCA CCC (Cloud Cybersecurity Controls)",
+        "aliases": ["nca ccc", "ccc", "cloud cybersecurity",
+                    "ضوابط الأمن السيبراني السحابية", "السحابة"],
+        "applicable_domains": ["Cyber Security"],
+        "capabilities": [
+            ("cloud_governance", ["حوكمة السحابة", "السحابة",
+                                    "الحوسبة السحابية"],
+             ["cloud", "cloud governance", "cloud security"]),
+            ("data_residency", ["إقامة البيانات", "توطين البيانات",
+                                  "تخزين البيانات"],
+             ["data residency", "data localization", "sovereign cloud"]),
+            ("cloud_iam", ["IAM السحابي", "هوية السحابة", "MFA"],
+             ["cloud IAM", "cloud identity", "MFA"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "DCC": {
+        "display": "NCA DCC (Data Cybersecurity Controls)",
+        "aliases": ["nca dcc", "dcc", "data cybersecurity",
+                    "ضوابط الأمن السيبراني للبيانات"],
+        "applicable_domains": ["Cyber Security", "Data Management"],
+        "capabilities": [
+            ("data_classification", ["تصنيف البيانات", "تصنيف",
+                                       "حماية البيانات"],
+             ["data classification", "classification",
+              "data protection"]),
+            ("dlp", ["DLP", "منع تسرب البيانات", "منع فقدان البيانات"],
+             ["DLP", "data loss prevention"]),
+            ("encryption", ["التشفير", "تشفير البيانات"],
+             ["encryption", "cryptography"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "CSCC": {
+        "display": "NCA CSCC (Critical Systems Cybersecurity Controls)",
+        "aliases": ["nca cscc", "cscc", "critical systems",
+                    "الأنظمة الحساسة"],
+        "applicable_domains": ["Cyber Security"],
+        "capabilities": [
+            ("critical_assets", ["الأنظمة الحساسة", "الأصول الحرجة",
+                                   "البنية التحتية الحرجة"],
+             ["critical systems", "critical assets",
+              "critical infrastructure"]),
+            ("privileged_access", ["إدارة الوصول المميز", "PAM", "MFA"],
+             ["PAM", "privileged access management", "MFA"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "ISO27001": {
+        "display": "ISO/IEC 27001",
+        "aliases": ["iso 27001", "iso/iec 27001", "iso27001",
+                    "isms", "أيزو 27001"],
+        "applicable_domains": ["Cyber Security", "Global Standards"],
+        "capabilities": [
+            ("isms", ["نظام إدارة أمن المعلومات", "ISMS"],
+             ["ISMS", "information security management system"]),
+            ("annex_a_controls", ["الملحق أ", "ضوابط 27001",
+                                    "بيان قابلية التطبيق"],
+             ["Annex A", "statement of applicability", "SoA"]),
+            ("risk_assessment", ["تقييم المخاطر", "معالجة المخاطر"],
+             ["risk assessment", "risk treatment"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis", "confidence"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis", "confidence"],
+    },
+    "NIST_CSF": {
+        "display": "NIST Cybersecurity Framework",
+        "aliases": ["nist csf", "nist cybersecurity framework",
+                    "nist-csf", "إطار نيست"],
+        "applicable_domains": ["Cyber Security", "Global Standards"],
+        "capabilities": [
+            ("identify", ["تحديد", "جرد الأصول"],
+             ["identify", "asset inventory"]),
+            ("protect", ["الحماية", "ضوابط حماية"],
+             ["protect", "protection controls"]),
+            ("detect", ["الكشف", "الاكتشاف", "المراقبة"],
+             ["detect", "detection", "monitoring"]),
+            ("respond_recover", ["الاستجابة", "التعافي"],
+             ["respond", "recover", "recovery"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "SAMA": {
+        "display": "SAMA Cybersecurity Framework",
+        "aliases": ["sama", "sama csf", "sama cybersecurity",
+                    "ساما", "إطار ساما"],
+        "applicable_domains": ["Cyber Security"],
+        "capabilities": [
+            ("financial_sector", ["القطاع المالي", "البنوك",
+                                    "المؤسسات المالية"],
+             ["financial sector", "banking", "financial institutions"]),
+            ("third_party_risk", ["مخاطر الأطراف الثالثة",
+                                    "مخاطر الموردين"],
+             ["third-party risk", "vendor risk", "third party"]),
+            ("fraud_prevention", ["مكافحة الاحتيال", "الاحتيال"],
+             ["fraud prevention", "fraud", "anti-fraud"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "NDMO": {
+        "display": "NDMO Data Management Framework",
+        "aliases": ["ndmo", "ndmo data", "إدارة البيانات الوطنية",
+                    "المكتب الوطني لإدارة البيانات"],
+        "applicable_domains": ["Data Management"],
+        "capabilities": [
+            ("data_governance", ["حوكمة البيانات", "إدارة البيانات"],
+             ["data governance", "data management"]),
+            ("data_quality", ["جودة البيانات"],
+             ["data quality"]),
+            ("data_catalog", ["كتالوج البيانات", "بيانات وصفية",
+                                "ميتاداتا"],
+             ["data catalog", "metadata"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "DGA": {
+        "display": "DGA Digital Government Framework",
+        "aliases": ["dga", "dga digital", "هيئة الحكومة الرقمية",
+                    "الحكومة الرقمية"],
+        "applicable_domains": ["Digital Transformation"],
+        "capabilities": [
+            ("digital_services", ["الخدمات الرقمية", "التحول الرقمي"],
+             ["digital services", "digital transformation"]),
+            ("interoperability", ["التشغيل البيني", "التكامل الحكومي"],
+             ["interoperability", "government integration"]),
+            ("citizen_experience", ["تجربة المستفيد",
+                                      "تجربة المواطن"],
+             ["citizen experience", "user experience"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis"],
+    },
+    "ISO22301": {
+        "display": "ISO 22301 Business Continuity",
+        "aliases": ["iso 22301", "iso22301", "business continuity",
+                    "استمرارية الأعمال", "أيزو 22301"],
+        "applicable_domains": ["Enterprise Risk Management",
+                                "Global Standards", "Cyber Security"],
+        "capabilities": [
+            ("bcm", ["إدارة استمرارية الأعمال", "استمرارية الأعمال",
+                      "BCM"],
+             ["business continuity management", "BCM",
+              "business continuity"]),
+            ("disaster_recovery", ["التعافي من الكوارث", "DR",
+                                     "خطط التعافي"],
+             ["disaster recovery", "DR", "recovery plan"]),
+            ("bia", ["تحليل الأثر على الأعمال", "BIA"],
+             ["business impact analysis", "BIA"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis", "confidence"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis", "confidence"],
+    },
+    "NIST_AI_RMF": {
+        "display": "NIST AI Risk Management Framework",
+        "aliases": ["nist ai rmf", "nist ai", "ai rmf",
+                    "إطار إدارة مخاطر الذكاء الاصطناعي"],
+        "applicable_domains": ["Artificial Intelligence"],
+        "capabilities": [
+            ("ai_governance", ["حوكمة الذكاء الاصطناعي",
+                                 "حوكمة AI"],
+             ["AI governance", "AI risk management"]),
+            ("model_risk", ["مخاطر النماذج", "تقييم النماذج"],
+             ["model risk", "model evaluation"]),
+            ("trustworthy_ai", ["الذكاء الاصطناعي الموثوق",
+                                  "أخلاقيات الذكاء الاصطناعي"],
+             ["trustworthy AI", "AI ethics", "responsible AI"]),
+        ],
+        "required_sections": ["pillars", "environment", "gaps", "roadmap",
+                               "kpis", "confidence"],
+        "repair_targets": ["pillars", "environment", "gaps", "roadmap",
+                            "kpis", "confidence"],
+    },
+}
+
+
+def _resolve_selected_frameworks(selected, domain=None):
+    """Map a free-form ``selected`` (list[str] or str) onto registry keys.
+
+    Returns a list of registry keys (e.g. ``['ECC', 'TCC']``) for each
+    framework found in the input. Case-insensitive alias / substring
+    match. When ``domain`` is given, frameworks whose
+    ``applicable_domains`` does not include the domain are filtered out
+    so non-cyber strategies are not penalised for cyber-only
+    frameworks accidentally listed.
+    """
+    if not selected:
+        return []
+    if isinstance(selected, str):
+        items = [selected]
+    else:
+        try:
+            items = [str(x) for x in selected if str(x).strip()]
+        except TypeError:
+            return []
+    if not items:
+        return []
+    blob = ' '.join(items).lower()
+    resolved = []
+    seen = set()
+    for fw_key, spec in _FRAMEWORK_COVERAGE_REQUIREMENTS.items():
+        if fw_key in seen:
+            continue
+        for alias in spec.get("aliases", []):
+            if alias.lower() in blob:
+                if (domain
+                        and spec.get("applicable_domains")
+                        and domain not in spec["applicable_domains"]):
+                    break
+                resolved.append(fw_key)
+                seen.add(fw_key)
+                break
+    return resolved
+
+
+def _compute_missing_selected_framework_coverage(
+        text, selected_frameworks, domain=None, lang='en'):
+    """Return a list of ``(fw_key, family_id, section_key)`` triples for
+    every (framework, capability family, required section) combination
+    whose accepted keyword set is absent from the corresponding section
+    text.
+
+    Parameters
+    ----------
+    text : str | dict
+        Either a flat assembled string OR the request-scoped
+        ``sections`` dict mapping section_key -> section text. When a
+        string is provided it is treated as the union of all sections
+        and only one (fw_key, family_id, '*') triple is emitted per
+        missing family.
+    selected_frameworks : list[str] | str
+        Free-form framework labels as supplied by the user.
+    domain : str | None
+        Display domain (e.g. ``'Cyber Security'``). Used to filter the
+        registry to applicable frameworks only.
+    lang : str
+        ``'ar'`` to use Arabic keywords, anything else uses English
+        keywords. Both lists are checked in either case to be tolerant
+        of mixed-language sections.
+
+    The function is pure; it never mutates ``text``.
+    """
+    fws = _resolve_selected_frameworks(selected_frameworks, domain)
+    if not fws:
+        return []
+
+    is_dict = isinstance(text, dict)
+
+    def _family_present(text_blob, ar_kws, en_kws):
+        if not text_blob:
+            return False
+        # Both lists are checked regardless of lang so that AR sections
+        # citing "VPN" / "MFA" still satisfy the family. Substring,
+        # case-insensitive.
+        s = str(text_blob)
+        s_lower = s.lower()
+        for kw in ar_kws or []:
+            if kw and kw in s:
+                return True
+        for kw in en_kws or []:
+            if kw and kw.lower() in s_lower:
+                return True
+        return False
+
+    missing = []
+    for fw_key in fws:
+        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key, {})
+        capabilities = spec.get("capabilities", [])
+        required_sections = spec.get("required_sections", [])
+        if is_dict:
+            # Per-section check: only report a family as missing for a
+            # section if the section exists in ``required_sections`` AND
+            # the family is absent in that section's text.
+            for fam_id, ar_kws, en_kws in capabilities:
+                # First: is the family present anywhere across the
+                # required sections? If so, the framework's family is
+                # considered globally satisfied (we don't require every
+                # section to repeat every family — just at least one).
+                global_present = False
+                for sk in required_sections:
+                    if _family_present(text.get(sk, ''), ar_kws, en_kws):
+                        global_present = True
+                        break
+                if not global_present:
+                    # Report the family as missing on every repair_target
+                    # so the repair pass knows where to inject content.
+                    for sk in (spec.get("repair_targets")
+                                or required_sections):
+                        missing.append((fw_key, fam_id, sk))
+        else:
+            for fam_id, ar_kws, en_kws in capabilities:
+                if not _family_present(text, ar_kws, en_kws):
+                    missing.append((fw_key, fam_id, '*'))
+    return missing
+
+
+def _final_strategy_audit(sections, lang, doc_subtype=None,
+                          synth_status=None,
+                          selected_frameworks=None, domain=None):
     """Audit sections against the SAME thresholds the save gates use.
     Returns a list of (section_key, defect_tag, count_observed,
     threshold) tuples. Empty list = sections meet all thresholds.
@@ -18886,6 +19303,31 @@ def _final_strategy_audit(sections, lang, doc_subtype=None, synth_status=None):
         for _sec, _st in synth_status.items():
             if _st == 'failed':
                 defects.append((_sec, f'synth_failed:{_sec}', 0, 1))
+    # PR-5B.8Q: selected-framework coverage enforcement.  For every
+    # framework the user explicitly selected, every required capability
+    # family must appear in at least one of the framework's required
+    # sections. Emits ONE defect per (framework, family, section) so the
+    # post-convergence repair pass can route each to the right section
+    # via ``ai_repair_strategy_section``. AI-first only — no
+    # deterministic content is inserted anywhere.  When no frameworks
+    # are selected, or none of them resolve against the registry for the
+    # given domain, this is a no-op (preserves ECC-only and non-cyber
+    # behaviour).
+    try:
+        if selected_frameworks:
+            _fw_missing = _compute_missing_selected_framework_coverage(
+                sections, selected_frameworks, domain=domain, lang=lang,
+            )
+            for _fw_key, _fam_id, _sk in _fw_missing:
+                defects.append((
+                    _sk,
+                    f'selected_framework_coverage_missing:{_fw_key}:{_fam_id}',
+                    0,
+                    1,
+                ))
+    except Exception as _fwe:
+        # Audit must never abort generation. Log and continue.
+        print(f'[FW-COVERAGE-AUDIT] non-fatal: {_fwe}', flush=True)
     return defects
 
 
@@ -23148,6 +23590,58 @@ def ai_repair_strategy_section(
                 "- Security Awareness & Training (awareness, phishing, "
                 "training)\n"
                 "- Data Protection (data protection, encryption, DLP)"
+            )
+
+    # ── PR-5B.8Q: Per-framework coverage clauses ─────────────────────────────
+    # When the user explicitly selected one or more frameworks via
+    # ``domain_context['selected_frameworks']`` and the section being
+    # repaired is in that framework's ``repair_targets``, append a
+    # framework-specific coverage clause naming the required capability
+    # families. AI-first only — the clause instructs the model to embed
+    # the required vocabulary inside the existing schema; no
+    # deterministic content is inserted by code.
+    try:
+        _resolved_fws = _resolve_selected_frameworks(
+            fws, domain=domain_context.get("display")
+                       or domain_context.get("display_en"),
+        )
+    except Exception:
+        _resolved_fws = []
+    for _fw_key in _resolved_fws:
+        _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fw_key, {})
+        if section_key not in (_spec.get("repair_targets") or []):
+            continue
+        # Build a compact human-readable family list in the target lang.
+        _fam_lines_ar = []
+        _fam_lines_en = []
+        for _fam_id, _ar_kws, _en_kws in _spec.get("capabilities", []):
+            _ar_show = '، '.join((_ar_kws or [])[:4]) or _fam_id
+            _en_show = ', '.join((_en_kws or [])[:4]) or _fam_id
+            _fam_lines_ar.append(f"- {_fam_id}: {_ar_show}")
+            _fam_lines_en.append(f"- {_fam_id}: {_en_show}")
+        if is_ar:
+            prompt += (
+                f"\n\nقاعدة تغطية الإطار المختار ({_spec.get('display', _fw_key)}) "
+                f"— إلزامية:\n"
+                "بما أن المستخدم اختار هذا الإطار صراحةً ضمن الأطر المختارة، "
+                "يجب أن يعالج هذا القسم تغطية كل عائلة من العائلات التالية "
+                "بشكل صريح ومتكامل (دون حشو أو قائمة معزولة):\n"
+                + '\n'.join(_fam_lines_ar) +
+                "\nادمج هذه المفاهيم داخل صفوف الجدول وأوصاف المبادرات "
+                "والمؤشرات والمخاطر بحسب طبيعة هذا القسم. لا تُغيّر بنية "
+                "الجدول المطلوبة أعلاه."
+            )
+        else:
+            prompt += (
+                f"\n\nSelected-framework coverage rule "
+                f"({_spec.get('display', _fw_key)}) — MANDATORY:\n"
+                "Because the user explicitly selected this framework, this "
+                "section MUST cover EACH of the following capability "
+                "families explicitly (do NOT emit them as a stand-alone "
+                "bullet list — integrate them into the existing schema "
+                "rows):\n"
+                + '\n'.join(_fam_lines_en) +
+                "\nDo NOT alter the required column structure above."
             )
 
     # ── Single AI call (content_type='strategy' makes generate_ai_content
@@ -31659,6 +32153,110 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 flush=True,
                             )
 
+                    # ── PR-5B.8Q: Selected-framework coverage repair pass ──
+                    # If the user selected one or more frameworks (e.g.
+                    # ECC + TCC), every framework's required capability
+                    # families must appear in the assembled strategy.
+                    # Compute the missing-by-(framework, family, section)
+                    # set, then run ONE AI repair call per affected
+                    # section. AI-first only — on RepairError the
+                    # affected section is marked ``failed`` in
+                    # ``_synth_status`` so the post-normalization audit
+                    # blocks the save with a 422.  No deterministic rows
+                    # / fixed phrases are inserted here.
+                    if doc_subtype != 'board' and _frameworks_raw:
+                        try:
+                            _fw_missing = (
+                                _compute_missing_selected_framework_coverage(
+                                    sections, _frameworks_raw,
+                                    domain=domain, lang=lang,
+                                )
+                            )
+                            if _fw_missing:
+                                # Group missing families per section so
+                                # we make ONE repair call per section
+                                # carrying ALL missing families as the
+                                # validation_error context.
+                                _by_section = {}
+                                for _fw_key, _fam_id, _sk in _fw_missing:
+                                    _by_section.setdefault(_sk, []).append(
+                                        (_fw_key, _fam_id))
+                                print(
+                                    '[FW-COVERAGE-REPAIR] missing '
+                                    f'sections={list(_by_section.keys())} '
+                                    f'count={len(_fw_missing)}',
+                                    flush=True,
+                                )
+                                try:
+                                    _fw_dctx = (
+                                        get_strategy_domain_context(domain)
+                                    )
+                                except Exception as _dctxe:
+                                    print(
+                                        '[FW-COVERAGE-REPAIR] '
+                                        f'domain_context_failed: {_dctxe}',
+                                        flush=True,
+                                    )
+                                    _fw_dctx = None
+                                if _fw_dctx is not None:
+                                    try:
+                                        _fw_dctx = dict(_fw_dctx)
+                                        _fw_dctx['selected_frameworks'] = (
+                                            list(_frameworks_raw)
+                                            if isinstance(
+                                                _frameworks_raw,
+                                                (list, tuple))
+                                            else [str(_frameworks_raw)]
+                                        )
+                                    except Exception:
+                                        pass
+                                    for _sk, _missing_list in (
+                                            _by_section.items()):
+                                        _ve_summary = ', '.join(
+                                            f'{fw}:{fam}' for fw, fam
+                                            in _missing_list[:8]
+                                        )
+                                        try:
+                                            _new = ai_repair_strategy_section(
+                                                section_key=_sk,
+                                                sections=sections,
+                                                lang=lang,
+                                                domain_context=_fw_dctx,
+                                                org_name=org_name,
+                                                sector=_model_sector,
+                                                maturity=maturity,
+                                                generation_mode=(
+                                                    _generation_mode),
+                                                validation_error=(
+                                                    'selected_framework_'
+                                                    'coverage_missing: '
+                                                    + _ve_summary
+                                                ),
+                                            )
+                                            if _new and _new.strip():
+                                                sections[_sk] = _new
+                                        except RepairError as _fre:
+                                            _mark_synth_failed(
+                                                _synth_status, _sk, _fre)
+                                            print(
+                                                '[FW-COVERAGE-REPAIR] '
+                                                f'repair_failed section={_sk}'
+                                                f' err={_fre}',
+                                                flush=True,
+                                            )
+                                        except Exception as _fre2:
+                                            print(
+                                                '[FW-COVERAGE-REPAIR] '
+                                                f'repair_unexpected '
+                                                f'section={_sk} err={_fre2}',
+                                                flush=True,
+                                            )
+                        except Exception as _fwxe:
+                            print(
+                                f'[FW-COVERAGE-REPAIR] non-fatal: {_fwxe}',
+                                flush=True,
+                            )
+
                     # ── POST-NORMALIZATION RE-AUDIT (prompt clause F) ───
                     # The convergence loop ran BEFORE final AR
                     # normalization. If normalization happened to mutate
@@ -31676,7 +32274,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _bump_stage('final_audit')
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
-                                synth_status=_synth_status)
+                                synth_status=_synth_status,
+                                selected_frameworks=_frameworks_raw,
+                                domain=domain)
                             print(
                                 '[STRATEGY-DIAG] post_normalization_audit '
                                 f'defects={_post_norm_defects}',
