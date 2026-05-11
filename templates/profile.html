@@ -721,16 +721,52 @@ function saveInlineEdit() {
 }
 
 function profileDownloadDoc(type, id, lang) {
+    /* PR-5B.7C.2: forward artifact_id/artifact_type/generation_mode so the
+       backend can resolve DB-canonical content and apply the strategy
+       fragment guard correctly. Use the async export path (matches
+       history.html) — sync /api/generate-docx silently turned 422
+       JSON responses into a downloadable ".docx" via .blob(). */
     fetch('/api/document/'+type+'/'+id).then(function(r){return r.json()}).then(function(d){
         if(!d.success){alert('Error');return;}
         var headers={'Content-Type':'application/json'};
         var csrf=document.querySelector('meta[name="csrf-token"]');
         if(!csrf){csrf=document.querySelector('input[name="csrf_token"]');if(csrf)headers['X-CSRFToken']=csrf.value;}
         else{headers['X-CSRFToken']=csrf.getAttribute('content');}
-        fetch('/api/generate-docx',{method:'POST',headers:headers,body:JSON.stringify({content:d.content,filename:type+'_'+id,language:lang||'en'})})
-        .then(function(r2){return r2.blob()}).then(function(b){
-            var url=URL.createObjectURL(b);var a=document.createElement('a');a.href=url;a.download=type+'_'+id+'.docx';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-        });
+        var payload={
+            content: d.content,
+            filename: type+'_'+id,
+            language: lang||d.language||'en',
+            artifact_type: type,
+            artifact_id: id,
+            generation_mode: 'consulting',
+            domain: d.domain || ''
+        };
+        fetch('/api/generate-docx-async',{method:'POST',headers:headers,body:JSON.stringify(payload)})
+        .then(function(r){
+            if(!r.ok){
+                return r.json().then(function(e){
+                    var msg=(e && (e.error||e.reason))||('Export failed (HTTP '+r.status+')');
+                    throw new Error(msg);
+                });
+            }
+            return r.json();
+        })
+        .then(function(d2){
+            if(d2.error)throw new Error(d2.error);
+            if(!d2.task_id)throw new Error('No task started');
+            var tries=0;
+            function poll(){
+                tries++;
+                if(tries>120){alert('Export timed out');return;}
+                fetch('/api/export-status/'+d2.task_id).then(function(r){return r.json()}).then(function(s){
+                    if(s.status==='done'){window.location.href='/api/export-download/'+d2.task_id;}
+                    else if(s.status==='error'){alert('Export failed: '+(s.error||'unknown'));}
+                    else{setTimeout(poll,3000);}
+                }).catch(function(){setTimeout(poll,3000);});
+            }
+            setTimeout(poll,3000);
+        })
+        .catch(function(e){alert('Export blocked: '+e.message);});
     });
 }
 
