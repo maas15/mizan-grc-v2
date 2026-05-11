@@ -39956,8 +39956,6 @@ def api_generate_pdf():
                 if (type(_story_snapshot[_si]).__name__ == 'Paragraph' and
                         type(_story_snapshot[_si + 1]).__name__ == 'HRFlowable'):
                     _h2_render_count += 1
-            if (_is_strategy_pdf if '_is_strategy_pdf' in dir() else False):
-                pass  # placeholder — _is_strategy_pdf computed below
             # Soft warning only — never raise from production code path.
             if (data.get('artifact_type', 'strategy') or 'strategy') == 'strategy' \
                     and len(_detected_secs) >= 7 and _h2_render_count < 7:
