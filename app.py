@@ -39719,7 +39719,7 @@ def api_generate_pdf():
                 story.append(Paragraph(text, normal_style))
             
             i += 1
-        
+
         # ── Running header/footer on body pages (page 2+) ──────────────
         import datetime as _dt
         _today_footer = _dt.date.today().strftime('%d %B %Y')
@@ -39940,11 +39940,15 @@ def api_generate_pdf():
                 topMargin=2.8*cm,
                 bottomMargin=2.4*cm,
             )
-            doc.build(
-                _sanitised_story,
-                onFirstPage=_on_page_combined,
-                onLaterPages=_on_page_combined,
-            )
+            try:
+                doc.build(
+                    _sanitised_story,
+                    onFirstPage=_on_page_combined,
+                    onLaterPages=_on_page_combined,
+                )
+            except Exception as _re2:
+                print(f'[PDF-BUILD] retry build also failed: {type(_re2).__name__}: {_re2}', flush=True)
+                raise
         buffer.seek(0)
         
         from flask import send_file
