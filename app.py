@@ -9415,6 +9415,70 @@ def _sections_to_json(sections, domain='', lang='en', title=''):
     }
 
 
+# ── PR-5B.8O: Arabic PDF heading normalizer ────────────────────────────────
+# When Arabic markdown is authored or stored in RTL editors, the punctuation
+# adjacent to leading ordinal digits is frequently mis-glued (period before
+# digit, colon before digit). After bidi shaping for PDF this yields visible
+# defects such as ".1 الرؤية" or "الركيزة :1". This pure-string normalizer
+# rewrites these patterns to their logical canonical form BEFORE any reshape
+# / get_display happens, so the PDF renders "1. الرؤية" and "الركيزة 1:".
+#
+# Strict scope:
+#   - text-only transformation (no AI calls, no semantic changes)
+#   - operates per-line on heading-style strings; safe for non-heading text
+#   - idempotent (running twice yields same result)
+def _arabic_pdf_heading_normalize(text):
+    """Normalize Arabic heading punctuation for PDF rendering.
+
+    Rewrites the three documented mis-glued patterns:
+      ``.1 العنوان``                   → ``1. العنوان``
+      ``الركيزة :N`` / ``ركيزة :N``    → ``الركيزة N:``
+      ``دليل تقييم المؤشر رقم :N``     → ``دليل تقييم المؤشر رقم N:``
+
+    Also handles ``Pillar :N`` (English equivalent) for parity. Returns the
+    input unchanged on falsy input or unexpected error.
+    """
+    if not text:
+        return text
+    try:
+        import re as _re_h
+        out = str(text)
+        # Pattern 1: leading ".N <Arabic>" (period-then-digit, possibly after
+        # markdown heading prefix #/##/###/####). Convert to "N. <Arabic>".
+        # We restrict to lines whose remainder contains an Arabic letter so
+        # English numbered prose like ".1 ..." is left untouched.
+        out = _re_h.sub(
+            r'(^|\n)([ \t]*#{0,4}[ \t]*)\.(\d+)([ \t]+)(?=[^\n]*[\u0600-\u06FF])',
+            lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}.{m.group(4)}",
+            out,
+        )
+        # Pattern 2: KPI assessment guide title with colon mis-glued before
+        # the index. Mirror of the existing rule in ensure_markdown_formatting.
+        out = _re_h.sub(
+            r'(دليل\s+تقييم\s+المؤشر\s+رقم)\s*:\s*(\d+)',
+            r'\1 \2:',
+            out,
+        )
+        # Pattern 3: pillar heading with colon mis-glued before the index.
+        # Covers both "الركيزة :N" and "ركيزة :N" (with or without ال).
+        out = _re_h.sub(
+            r'((?:ال)?ركيزة)\s*:\s*(\d+)',
+            r'\1 \2:',
+            out,
+        )
+        # Pattern 4: English parity — "Pillar :N" → "Pillar N:" (rare but
+        # harmless to normalize).
+        out = _re_h.sub(
+            r'\b(Pillar)\s*:\s*(\d+)',
+            r'\1 \2:',
+            out,
+        )
+        return out
+    except Exception as _e:
+        print(f'[ARABIC-HEADING-NORM] non-fatal: {_e}', flush=True)
+        return text
+
+
 def ensure_markdown_formatting(text):
     """Post-process AI output to ensure proper Markdown structure.
     
@@ -9444,6 +9508,10 @@ def ensure_markdown_formatting(text):
             print(f'[FORMAT] repair step "{label or fn.__name__}" failed (non-fatal): {_e}', flush=True)
             return t
 
+    # PR-5B.8O: Apply Arabic PDF heading normalizer first so subsequent
+    # passes see the canonical "1. <Arabic>" / "الركيزة 1:" form.
+    text = _safe(_arabic_pdf_heading_normalize, text, '_arabic_pdf_heading_normalize')
+
     # PRE-ARABIC-KPI-TITLE. Normalize Arabic KPI Assessment Guide titles
     # where the colon was misplaced BEFORE the index ("رقم :1") instead of
     # AFTER ("رقم 1:"). The misplaced colon comes from RTL editors / AI
@@ -9469,6 +9537,49 @@ def ensure_markdown_formatting(text):
     text = re.sub(r'\*\*\s*(الصيغة)\s*\*\*\s*:\s*', r'**\1:** ', text)
     # Bare label variant (no bold markers) — keep a single trailing space.
     text = re.sub(r'(?<!\*)\b(الصيغة)\s+:\s*', r'\1: ', text)
+
+    # PR-5B.8O: Reverse-glued formula label produced by RTL editors —
+    # the formula expression appears BEFORE the label on the same line:
+    #   " (...)الصيغة:"   /   "\((...)\)الصيغة:"   →   "الصيغة: (...)"
+    # Detect a parenthesised math expression immediately followed by the
+    # label and swap them. Bounded length to avoid polynomial backtracking.
+    def _unswap_arabic_formula_label(t):
+        # "\(...\) الصيغة:" → "الصيغة: (...)"
+        t = re.sub(
+            r'\\\(([^()\n]{1,400})\\\)\s*(الصيغة)\s*:\s*',
+            r'\2: (\1) ',
+            t,
+        )
+        # "(...) الصيغة:" → "الصيغة: (...)" (only when label is at end-of-fragment)
+        t = re.sub(
+            r'\(([^()\n]{1,400})\)\s*(الصيغة)\s*:\s*(?=$|\n|\s*\*\*)',
+            r'\2: (\1) ',
+            t,
+        )
+        return t
+    text = _safe(_unswap_arabic_formula_label, text, '_unswap_arabic_formula_label')
+
+    # PR-5B.8O: In Arabic formula lines (lines containing the label
+    # "الصيغة:"), convert the ASCII multiplication asterisk "*" to the
+    # proper "×" glyph. Restricted to formula lines so prose bold markers
+    # (**bold**) elsewhere are not affected. Idempotent.
+    def _arabic_formula_times_glyph(t):
+        out_lines = []
+        for ln in t.split('\n'):
+            if 'الصيغة' in ln and ':' in ln:
+                # Replace " * " (with surrounding spaces) and "N*M" digit×digit
+                # with the proper glyph; preserve "**bold**" markers untouched.
+                # First, protect double-asterisk markdown by tokenisation.
+                token = '\x00BOLD\x00'
+                tmp = ln.replace('**', token)
+                tmp = re.sub(r'\s\*\s', ' × ', tmp)
+                tmp = re.sub(r'(\d)\s*\*\s*(\d)', r'\1 × \2', tmp)
+                tmp = tmp.replace(token, '**')
+                out_lines.append(tmp)
+            else:
+                out_lines.append(ln)
+        return '\n'.join(out_lines)
+    text = _safe(_arabic_formula_times_glyph, text, '_arabic_formula_times_glyph')
 
     # PRE-FORMULA-LATEX. AI sometimes emits formula cells / lines wrapped in
     # LaTeX (e.g. ``\text{Numerator}\div \text{Denominator}\times 100``) or
@@ -37941,6 +38052,57 @@ def api_generate_pdf():
                     return text
             return text
         
+        # PR-5B.8O: PDF-only display map for common English role/title labels.
+        # When an Arabic strategy table cell contains one of these short English
+        # role names verbatim, the bidi engine + narrow column wrapping cause
+        # the word to fragment ("Cybers ecurity Govern ance Lead"). Mapping
+        # them to their Arabic equivalents at render-time keeps the saved
+        # strategy content unchanged but produces a clean RTL display.
+        # This is display-only — it does NOT modify saved AI output.
+        _ARABIC_ROLE_LABEL_MAP = {
+            'ciso': 'رئيس الأمن السيبراني',
+            'cio': 'رئيس تقنية المعلومات',
+            'cto': 'الرئيس التنفيذي للتقنية',
+            'cdo': 'رئيس البيانات',
+            'cro': 'رئيس المخاطر',
+            'cco': 'رئيس الامتثال',
+            'caio': 'رئيس الذكاء الاصطناعي',
+            'cfo': 'الرئيس التنفيذي المالي',
+            'soc manager': 'مدير مركز العمليات الأمنية',
+            'soc lead': 'قائد مركز العمليات الأمنية',
+            'soc analyst': 'محلل مركز العمليات الأمنية',
+            'cybersecurity governance lead': 'قائد حوكمة الأمن السيبراني',
+            'cyber security governance lead': 'قائد حوكمة الأمن السيبراني',
+            'cybersecurity governance manager': 'مدير حوكمة الأمن السيبراني',
+            'cybersecurity manager': 'مدير الأمن السيبراني',
+            'csirt lead': 'قائد فريق الاستجابة للحوادث',
+            'csirt manager': 'مدير فريق الاستجابة للحوادث',
+            'incident response lead': 'قائد فريق الاستجابة للحوادث',
+            'risk manager': 'مدير المخاطر',
+            'compliance manager': 'مدير الامتثال',
+            'compliance team': 'فريق الامتثال',
+            'data steward': 'أمين البيانات',
+            'data stewards': 'أمناء البيانات',
+            'audit committee': 'لجنة التدقيق',
+            'board': 'مجلس الإدارة',
+            'executive management': 'الإدارة التنفيذية',
+            'it director': 'مدير تقنية المعلومات',
+        }
+
+        def _maybe_arabic_role_label(s):
+            """If `s` is exactly one of the known English role labels (case
+            and surrounding-whitespace insensitive), return its Arabic
+            equivalent; otherwise return `s` unchanged. Empty / non-string
+            input is returned as-is.
+            """
+            if not s:
+                return s
+            try:
+                key = str(s).strip().rstrip('.').lower()
+                return _ARABIC_ROLE_LABEL_MAP.get(key, s)
+            except Exception:
+                return s
+
         def process_arabic_table(text, col_width, font_size=9):
             """Process Arabic text for table cells with specific column width."""
             if text is None:
@@ -37950,7 +38112,10 @@ def api_generate_pdf():
                     text = str(text).strip()
                     if not text:
                         return text
-                    
+                    # PR-5B.8O: substitute display-only Arabic for the common
+                    # English role labels so they wrap as whole words.
+                    text = _maybe_arabic_role_label(text)
+
                     from reportlab.pdfbase.pdfmetrics import stringWidth
                     reshaped = arabic_reshaper.reshape(text)
 
@@ -39276,10 +39441,23 @@ def api_generate_pdf():
                         # gets proper content-width (weight 2.0) not narrow '#' (weight 0.5).
                         # The '#' default was causing any unrecognised table's first column
                         # to be rendered at ~20pt, breaking long text character-by-character.
-                        (3,'default')   : ['Item','Description','Details'],
-                        (4,'default')   : ['Item','Description','Details','Notes'],
-                        (5,'default')   : ['Item','Description','Details','Notes','Status'],
-                        (6,'default')   : ['#','Item','Detail 1','Detail 2','Detail 3','Status'],
+                        # PR-5B.8O: Arabic exports must use Arabic default headers — the
+                        # English "Item Description Details Notes" was leaking into the
+                        # Arabic environment section's narrative-style table.
+                        (3,'default')   : (['البند','الوصف','التفاصيل'] if is_arabic
+                                           else ['Item','Description','Details']),
+                        (4,'default')   : (['البند','الوصف','التفاصيل','ملاحظات'] if is_arabic
+                                           else ['Item','Description','Details','Notes']),
+                        (5,'default')   : (['البند','الوصف','التفاصيل','ملاحظات','الحالة'] if is_arabic
+                                           else ['Item','Description','Details','Notes','Status']),
+                        (6,'default')   : (['#','البند','تفصيل 1','تفصيل 2','تفصيل 3','الحالة'] if is_arabic
+                                           else ['#','Item','Detail 1','Detail 2','Detail 3','Status']),
+                        # PR-5B.8O: Environment / threat table for Arabic strategy
+                        # (4 cols: dimension, source, impact, initiative).
+                        (4,'environment'): (['البُعد','المصدر','الأثر','المبادرة'] if is_arabic
+                                            else ['Dimension','Source','Impact','Initiative']),
+                        (4,'البيئة')    : ['البُعد','المصدر','الأثر','المبادرة'],
+                        (4,'التهديدات') : ['البُعد','المصدر','الأثر','المبادرة'],
                         # Workstream RACI — inject proper column headers when AI omits the header row
                         (7,'workstream'): ['Activity','Responsible','Accountable','Consulted','Informed','Timeline','Key Deliverable'],
                         (6,'workstream'): ['Activity','Responsible','Accountable','Consulted','Timeline','Key Deliverable'],
@@ -39301,7 +39479,9 @@ def api_generate_pdf():
                                'maturity','assessment','workstream','ورشة',
                                'phase','pillar','foundation','build','optimize',
                                'assessment guide','kpi guide','implementation guide',
-                               'دليل التنفيذ','دليل التقييم']
+                               'دليل التنفيذ','دليل التقييم',
+                               # PR-5B.8O: environment / threat-context tables
+                               'environment','البيئة','التهديدات']
 
                     def _pdf_is_col_label(t):
                         return t.lower().strip().strip('*# ') in _PDF_COL_LABELS or len(t.strip()) <= 3
@@ -39604,9 +39784,15 @@ def api_generate_pdf():
                     return heading_part, table_part
                 return raw_text, None
 
+            # PR-5B.8O: defence-in-depth — even if upstream missed it,
+            # normalise Arabic heading punctuation right before bidi shaping.
+            def _norm_h(t):
+                return _arabic_pdf_heading_normalize(t) if is_arabic else t
+
             if line.startswith('#### '):
                 raw_text = line[5:]
                 heading_txt, tbl_inject = _split_heading_table(raw_text)
+                heading_txt = _norm_h(heading_txt)
                 last_pdf_heading = heading_txt  # track for missing-header context
                 text = process_arabic(heading_txt, arabic_font_bold, 14) if is_arabic else heading_txt
                 story.append(Paragraph(text, heading2_style))
@@ -39615,6 +39801,7 @@ def api_generate_pdf():
             elif line.startswith('### '):
                 raw_text = line[4:]
                 heading_txt, tbl_inject = _split_heading_table(raw_text)
+                heading_txt = _norm_h(heading_txt)
                 last_pdf_heading = heading_txt
                 text = process_arabic(heading_txt, arabic_font_bold, 14) if is_arabic else heading_txt
                 story.append(Paragraph(text, heading2_style))
@@ -39623,6 +39810,7 @@ def api_generate_pdf():
             elif line.startswith('## '):
                 raw_text = line[3:]
                 heading_txt, tbl_inject = _split_heading_table(raw_text)
+                heading_txt = _norm_h(heading_txt)
                 last_pdf_heading = heading_txt
                 last_pdf_section_heading = heading_txt  # ## = section level; used as parent ctx for sub-tables
                 text = process_arabic(heading_txt, arabic_font_bold, 18) if is_arabic else heading_txt
@@ -39641,6 +39829,7 @@ def api_generate_pdf():
             elif line.startswith('# '):
                 raw_text = line[2:]
                 heading_txt, tbl_inject = _split_heading_table(raw_text)
+                heading_txt = _norm_h(heading_txt)
                 last_pdf_heading = heading_txt
                 text = process_arabic(heading_txt, arabic_font_bold, 24) if is_arabic else heading_txt
                 story.append(Paragraph(text, title_style))
