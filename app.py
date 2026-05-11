@@ -18253,12 +18253,22 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
 
     # Strict gate-aligned count: each counted pillar must carry a
     # substantive initiative table row, mirroring the integrity-gate
-    # `pillars_missing_substantive_initiative` check.
+    # `pillars_missing_substantive_initiative` check, AND must carry at
+    # least ``_RICHNESS_MIN_PILLAR_INITIATIVES`` substantive initiative
+    # rows so the post-normalization
+    # ``pillar_initiatives_insufficient`` richness gate also passes
+    # without re-invoking AI repair downstream.
     existing = _extract_existing_pillars(pillars)
     preserved = [(t, b) for (t, b) in existing
                  if _pillar_has_substantive_initiative(b)]
     n_before_strict = len(preserved)
     summary['preserved_titles'] = [t for t, _ in preserved]
+    # Per-pillar initiative-row sufficiency (richness floor).
+    _min_init_floor = _RICHNESS_MIN_PILLAR_INITIATIVES
+    _existing_with_enough_init = sum(
+        1 for (_t, _b) in existing
+        if _count_pillar_initiative_rows(_b) >= _min_init_floor
+    )
 
     # Governance-pillar contract: when org_structure_is_none, the FIRST
     # pillar's heading must explicitly carry governance / structure
@@ -18287,8 +18297,10 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
                 _has_gov_first = True
         _gov_contract_ok = _has_gov_first
 
-    # Sufficient pillars + governance-pillar contract satisfied → no-op.
+    # Sufficient pillars + per-pillar initiative-row floor +
+    # governance-pillar contract satisfied → no-op.
     if (n_before_strict >= _RICHNESS_MIN_PILLARS_LOCAL
+            and _existing_with_enough_init >= _RICHNESS_MIN_PILLARS_LOCAL
             and _gov_contract_ok):
         summary['pillars_after'] = n_before
         return summary
@@ -18323,7 +18335,11 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
             generation_mode=generation_mode,
             validation_error=(
                 f'pillars_insufficient:{n_before_strict}/'
+                f'{_RICHNESS_MIN_PILLARS_LOCAL},'
+                f'pillars_with_enough_initiatives:'
+                f'{_existing_with_enough_init}/'
                 f'{_RICHNESS_MIN_PILLARS_LOCAL}'
+                f'(min_initiatives_per_pillar={_min_init_floor})'
                 + ('' if _gov_contract_ok else ',governance_pillar_missing')
             ),
             org_structure_is_none=bool(org_structure_is_none),
@@ -18334,25 +18350,23 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
 
     # Validate the repaired markdown BEFORE assignment. Reject if the
     # AI returned fewer than _RICHNESS_MIN_PILLARS_LOCAL substantive
-    # pillars or any counted pillar lacks a substantive initiative
-    # table row. Heading / domain isolation is already enforced inside
-    # ``ai_repair_strategy_section``.
+    # pillars, any counted pillar lacks a substantive initiative
+    # table row, or any pillar has fewer than
+    # ``_RICHNESS_MIN_PILLAR_INITIATIVES`` initiative rows (so the
+    # downstream ``pillar_initiatives_insufficient`` richness gate
+    # cannot fire on the repaired payload). Heading / domain isolation
+    # is already enforced inside ``ai_repair_strategy_section``.
+    #
+    # NOTE: the heading-sequence and pillar-count checks below run
+    # FIRST so the most fundamental contract violations surface their
+    # own targeted error messages before the per-pillar
+    # initiative-floor check fires.
     n_after = _count_substantive_pillars(repaired)
     repaired_pillars = _extract_existing_pillars(repaired)
     _with_init = sum(
         1 for (_t, _b) in repaired_pillars
         if _pillar_has_substantive_initiative(_b)
     )
-    if (n_after < _RICHNESS_MIN_PILLARS_LOCAL
-            or _with_init < _RICHNESS_MIN_PILLARS_LOCAL):
-        _err = RepairError(
-            f'synthesize_pillars_depth: AI-repaired pillars has '
-            f'{n_after}/{_RICHNESS_MIN_PILLARS_LOCAL} substantive '
-            f'pillars and {_with_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
-            f'with substantive initiative tables'
-        )
-        setattr(_err, 'section', 'pillars')
-        raise _err
 
     # PR-5B.7C: pillar-heading sequence contract. The AI-repaired pillars
     # MUST expose visible H3 headings numbered 1, 2, 3, … starting at 1
@@ -18388,6 +18402,35 @@ def synthesize_pillars_depth(sections, lang, domain='Cyber Security',
         _err = RepairError(
             'synthesize_pillars_depth: AI-repaired pillar headings are '
             f'not sequential (observed={_seen_nums!r}, expected={_expected!r})'
+        )
+        setattr(_err, 'section', 'pillars')
+        raise _err
+
+    if (n_after < _RICHNESS_MIN_PILLARS_LOCAL
+            or _with_init < _RICHNESS_MIN_PILLARS_LOCAL):
+        _err = RepairError(
+            f'synthesize_pillars_depth: AI-repaired pillars has '
+            f'{n_after}/{_RICHNESS_MIN_PILLARS_LOCAL} substantive '
+            f'pillars and {_with_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
+            f'with substantive initiative tables'
+        )
+        setattr(_err, 'section', 'pillars')
+        raise _err
+
+    # Per-pillar initiative-row floor (the
+    # ``pillar_initiatives_insufficient`` richness gate). Runs AFTER
+    # the pillar-count and heading-sequence checks so each contract
+    # surface emits its own targeted error.
+    _with_enough_init = sum(
+        1 for (_t, _b) in repaired_pillars
+        if _count_pillar_initiative_rows(_b) >= _min_init_floor
+    )
+    if _with_enough_init < _RICHNESS_MIN_PILLARS_LOCAL:
+        _err = RepairError(
+            f'synthesize_pillars_depth: AI-repaired pillars has '
+            f'{_with_enough_init}/{_RICHNESS_MIN_PILLARS_LOCAL} '
+            f'pillars with >= {_min_init_floor} initiative rows '
+            f'(pillar_initiatives_insufficient floor)'
         )
         setattr(_err, 'section', 'pillars')
         raise _err
@@ -22692,40 +22735,52 @@ _AI_REPAIR_SECTION_SCHEMA = {
     "pillars": {
         "ar": (
             "أرجع فقط القسم المسمى \"## 2. الركائز الاستراتيجية\".\n"
-            "لكل ركيزة استخدم تنسيق العنوان التالي: "
-            "\"### الركيزة N: عنوان الركيزة\".\n"
+            "لكل ركيزة استخدم تنسيق العنوان التالي بالضبط: "
+            "\"### الركيزة N: عنوان الركيزة\" حيث N رقم متسلسل يبدأ من 1.\n"
+            "قبل جدول المبادرات لكل ركيزة، أدرج فقرة سرديّة قصيرة تشرح "
+            "المنطق الاستراتيجي للركيزة.\n"
             "يجب أن تتضمن كل ركيزة جدول Markdown أنبوبي بأربعة أعمدة بالضبط:\n"
             "| # | المبادرة | الوصف | المخرج المتوقع |\n"
-            "ويجب أن يحتوي كل جدول على صف فاصل:\n"
+            "ويجب أن يحتوي كل جدول على صف فاصل واحد فقط بعد رأس الجدول:\n"
             "|---|---------|-------|----------------|\n"
+            "لا تكرر صف الفاصل داخل جسم الجدول.\n"
             "أنشئ على الأقل {min_rows} ركائز.\n"
-            "يجب أن تتضمن كل ركيزة صف مبادرة جوهري واحد على الأقل.\n"
+            "يجب أن تتضمن كل ركيزة على الأقل {min_initiatives_per_pillar} "
+            "صفوف مبادرات جوهرية (وليس صفًا واحدًا).\n"
             "يجب أن يتضمن كل صف مبادرة:\n"
-            "- قيمة رقمية في عمود #\n"
+            "- قيمة رقمية متسلسلة في عمود #\n"
             "- اسم مبادرة محدد\n"
             "- وصفًا جوهريًا\n"
             "- مخرجًا متوقعًا قابلًا للقياس\n"
             "لا تُدرج عناوين أقسام أخرى. "
-            "لا تُدرج خلايا نائبة أو خلايا فارغة أو حشوًا عامًا."
+            "لا تُدرج خلايا نائبة أو خلايا فارغة أو حشوًا عامًا أو "
+            "صفوفًا بديلة (مثل: TBD، N/A، —، غير محدد)."
         ),
         "en": (
             "Return ONLY the section named \"## 2. Strategic Pillars\".\n"
-            "For each pillar, use this heading format: "
-            "\"### Pillar N: pillar title\".\n"
+            "For each pillar, use this heading format EXACTLY: "
+            "\"### Pillar N: pillar title\" where N is a sequential integer "
+            "starting at 1.\n"
+            "Before each pillar's initiative table, include a short "
+            "narrative paragraph explaining the pillar's strategic rationale.\n"
             "Each pillar must include a Markdown pipe table with EXACTLY "
             "4 columns:\n"
             "| # | Initiative | Description | Expected Deliverable |\n"
-            "Each table must have a separator row:\n"
+            "Each table must have EXACTLY ONE separator row directly after "
+            "the header:\n"
             "|---|------------|-------------|----------------------|\n"
+            "Do not repeat the separator row inside the table body.\n"
             "Generate at least {min_rows} pillars.\n"
-            "Each pillar must have at least one substantive initiative row.\n"
+            "Each pillar must contain at least {min_initiatives_per_pillar} "
+            "substantive initiative rows (not just one).\n"
             "Each initiative row must include:\n"
-            "- numeric # value\n"
+            "- sequential numeric # value\n"
             "- specific initiative name\n"
             "- substantive description\n"
             "- measurable expected deliverable\n"
             "Do not include other section headings. "
-            "Do not include placeholder cells, empty cells, or generic filler."
+            "Do not include placeholder cells, empty cells, generic filler, "
+            "or placeholder rows (e.g. TBD, N/A, —, Not specified)."
         ),
     },
     "environment": {
@@ -22931,6 +22986,26 @@ def ai_repair_strategy_section(
         schema_block = schema_block.format(
             min_rows=_min_rows_eff,
             min_steps_per_guide=_min_steps_per_guide,
+        )
+    elif section_key == "pillars" and schema_block:
+        # Pillars schema requires both a pillar-count floor AND a per-pillar
+        # initiative-row floor. Compute the pillar floor from the validator
+        # constant / domain rules and never let ``min_rows`` reduce it below
+        # the validator threshold. ``min_initiatives_per_pillar`` mirrors the
+        # _RICHNESS_MIN_PILLAR_INITIATIVES floor enforced by
+        # validate_arabic_strategy_semantic_richness (the source of the
+        # ``pillar_initiatives_insufficient`` defect).
+        _pillar_floor = max(rules.get("min_pillars", 0) or 0,
+                            _RICHNESS_MIN_PILLARS_LOCAL)
+        try:
+            _min_rows_int = int(min_rows)
+        except (TypeError, ValueError):
+            _min_rows_int = _pillar_floor
+        _min_rows_eff = max(_pillar_floor, _min_rows_int)
+        _min_init_per_pillar = _RICHNESS_MIN_PILLAR_INITIATIVES
+        schema_block = schema_block.format(
+            min_rows=_min_rows_eff,
+            min_initiatives_per_pillar=_min_init_per_pillar,
         )
     else:
         schema_block = schema_block.format(min_rows=min_rows) if schema_block else ""
@@ -30884,10 +30959,27 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # operators can see whether the top-up fired.
                     try:
                         _topup_log = {}
-                        # Pillars: re-invoke if below floor
+                        # Pillars: re-invoke if below floor OR if any
+                        # pillar has fewer than
+                        # ``_RICHNESS_MIN_PILLAR_INITIATIVES`` initiative
+                        # rows (so the
+                        # ``pillar_initiatives_insufficient`` richness
+                        # defect cannot survive to the save gate).
                         _p_before = _count_substantive_pillars(
                             sections.get('pillars', '') or '')
-                        if _p_before < _RICHNESS_MIN_PILLARS_LOCAL:
+                        _pillars_text_topup = sections.get('pillars', '') or ''
+                        _topup_thin_init = False
+                        if _pillars_text_topup.strip():
+                            _existing_pillars_topup = _extract_existing_pillars(
+                                _pillars_text_topup)
+                            if _existing_pillars_topup and any(
+                                _count_pillar_initiative_rows(_b)
+                                < _RICHNESS_MIN_PILLAR_INITIATIVES
+                                for (_t, _b) in _existing_pillars_topup
+                            ):
+                                _topup_thin_init = True
+                        if (_p_before < _RICHNESS_MIN_PILLARS_LOCAL
+                                or _topup_thin_init):
                             try:
                                 synthesize_pillars_depth(
                                     sections, lang,
@@ -30927,7 +31019,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                         _topup_log['pillars'] = {
                             'before': _p_before, 'after': _p_after,
                             'floor': _RICHNESS_MIN_PILLARS_LOCAL,
-                            'triggered': _p_before < _RICHNESS_MIN_PILLARS_LOCAL,
+                            'triggered': (
+                                _p_before < _RICHNESS_MIN_PILLARS_LOCAL
+                                or _topup_thin_init),
+                            'thin_initiatives': _topup_thin_init,
                         }
                         # Environment: re-invoke if paragraphs below floor
                         _e_before = _count_substantive_paragraphs(
@@ -32605,6 +32700,93 @@ The confidence score is based on a comprehensive assessment of the organization'
                             except Exception as _rde3:
                                 print('[STRATEGY-DIAG] env_richness_revalidate_failed: '
                                       f'{_rde3}', flush=True)
+                    # ── PR-5B.8P: targeted AI repair for
+                    # ``pillar_initiatives_insufficient`` ─────────────────
+                    # When the richness validator emits the per-pillar
+                    # initiative-floor defect at the final save gate, the
+                    # previous fail-closed path would 422 with no
+                    # corrective AI attempt. Per the AI-first contract,
+                    # delegate to ``synthesize_pillars_depth`` (which
+                    # itself calls ``ai_repair_strategy_section`` with
+                    # ``section_key="pillars"`` and validates that every
+                    # repaired pillar carries at least
+                    # ``_RICHNESS_MIN_PILLAR_INITIATIVES`` initiative
+                    # rows before assigning ``sections['pillars']``).
+                    # The synthesizer also re-checks the
+                    # ``org_structure_is_none`` governance-pillar
+                    # contract so a governance-first pillar requirement
+                    # is preserved across the repair. No deterministic
+                    # initiative rows are injected; on failure the
+                    # original section is left unchanged and the
+                    # existing 422 path below fires.
+                    try:
+                        _pi_tag_present = any(
+                            t == 'pillar_initiatives_insufficient'
+                            for t, _ in (_richness_defects or [])
+                        )
+                    except Exception:
+                        _pi_tag_present = False
+                    if _pi_tag_present:
+                        _pi_status = 'attempted'
+                        try:
+                            _pi_result = synthesize_pillars_depth(
+                                sections, lang,
+                                domain=domain, fw_short=fw_short,
+                                sector=_final_ctx.get('sector', 'General'),
+                                org_name=_final_ctx.get(
+                                    'org_name', 'The Organization'),
+                                maturity=_final_ctx.get(
+                                    'maturity', 'initial'),
+                                generation_mode=_final_ctx.get(
+                                    'generation_mode', 'consulting'),
+                                diagnostic_gaps=_final_ctx.get(
+                                    'diagnostic_gaps', []),
+                                risks=_final_ctx.get('risks', []),
+                                objectives=_final_ctx.get('objectives', []),
+                                org_structure_is_none=_final_ctx.get(
+                                    'org_structure_is_none', False),
+                                challenge_flags=_final_ctx.get(
+                                    'challenge_flags', {}),
+                                technologies=_final_ctx.get(
+                                    'technologies', []),
+                            )
+                            _pi_status = (
+                                'rebuilt' if (_pi_result or {}).get('rebuilt')
+                                else 'noop')
+                        except RepairError as _pirpe:
+                            _mark_synth_failed(
+                                _synth_status, 'pillars', _pirpe)
+                            _pi_status = f'repair_error:{_pirpe}'
+                        except Exception as _pigen:  # noqa: BLE001
+                            _pi_status = f'unexpected_error:{_pigen}'
+                        # Re-apply canonical headings (the AI may have
+                        # emitted a near-variant) — heading-only, no
+                        # content rows.
+                        try:
+                            _reapply_canonical_section_headings(
+                                sections, lang)
+                        except Exception as _rch_e4:
+                            print('[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                                  f'{_rch_e4}', flush=True)
+                        # Re-run the richness validator so the gate
+                        # decision below sees the post-repair defect set.
+                        try:
+                            _richness_defects = (
+                                validate_arabic_strategy_semantic_richness(
+                                    sections, lang,
+                                    doc_subtype=doc_subtype,
+                                    generation_mode=_final_ctx.get(
+                                        'generation_mode',
+                                        'consulting'),
+                                    domain=domain))
+                        except Exception as _rde4:
+                            print('[STRATEGY-DIAG] pillar_init_revalidate_failed: '
+                                  f'{_rde4}', flush=True)
+                        print(
+                            '[STRATEGY-DIAG] pillar_initiatives_repair '
+                            f'status={_pi_status}',
+                            flush=True,
+                        )
                     # Diagnostic logging before final save (prompt H/I):
                     try:
                         _diag_so       = count_valid_objective_rows(
