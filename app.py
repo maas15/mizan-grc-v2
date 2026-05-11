@@ -38834,6 +38834,63 @@ def api_generate_pdf():
             ]
             for _pat in _PHANTOM_PATTERNS:
                 text = re_pdf.sub(_pat, '', text, flags=re_pdf.MULTILINE)
+
+            # 5. PR-5B.8N — Arabic formula normalisation for the PDF builder.
+            # Render-time fixes for the Arabic formula label so the PDF shows
+            # ``الصيغة: (...) × 100`` instead of the visually-reversed
+            # ``(...) * 100الصيغة:`` produced when the line is fragmented at
+            # the bold markers and each Arabic fragment is bidi-reversed in
+            # isolation. We:
+            #   • strip stray LaTeX wrappers (\text{...}, \times, \%, \(, \))
+            #   • normalise reverse-glued ``formulaالصيغة:`` to canonical
+            #     ``الصيغة: formula``
+            #   • normalise ``**الصيغة:** formula`` to bare label form so the
+            #     PDF body parser renders the entire line as a single Arabic
+            #     paragraph (one bidi unit) — see the formula-line handler
+            #     below.
+            #   • optional: convert ``* 100`` to ``× 100`` for Arabic display.
+            def _normalise_pdf_formula_lines(text_in: str) -> str:
+                out_lines = []
+                for ln in text_in.split('\n'):
+                    s = ln
+                    # Skip lines that don't look like a formula
+                    _has_formula_marker = (
+                        'الصيغة' in s or '\\text' in s or '\\times' in s
+                        or '\\div' in s or '\\frac' in s or '\\cdot' in s
+                    )
+                    if not _has_formula_marker:
+                        out_lines.append(s)
+                        continue
+                    # Strip LaTeX text-wrappers: \text{Word} → Word
+                    s = re_pdf.sub(r'\\text\{([^{}]*)\}', r'\1', s)
+                    # \times → × ;  \% → %  ;  \( and \) → ( )
+                    s = s.replace('\\times', '×')
+                    s = s.replace('\\div', '÷')
+                    s = s.replace('\\%', '%')
+                    s = s.replace('\\(', '(').replace('\\)', ')')
+                    # Reverse-glued: "...formulaالصيغة:" → "الصيغة: ...formula"
+                    m_rev = re_pdf.search(r'^(.*?)(الصيغة)\s*:?\s*$', s)
+                    if m_rev and m_rev.group(1).strip():
+                        # Only treat as reverse-glued if the prefix is non-trivial
+                        # (i.e. contains at least one of: ÷, ×, *, /, (, digits)
+                        prefix = m_rev.group(1).strip()
+                        if re_pdf.search(r'[÷×*/()0-9]', prefix):
+                            s = 'الصيغة: ' + prefix
+                    # Bold-wrapped label: "**الصيغة:** rest" → "الصيغة: rest"
+                    s = re_pdf.sub(r'\*\*\s*الصيغة\s*:?\s*\*\*\s*', 'الصيغة: ', s)
+                    # Bare label without colon: "الصيغة rest" → "الصيغة: rest"
+                    s = re_pdf.sub(
+                        r'(^|\s)الصيغة\s+(?=[(\\\d÷×*/])', r'\1الصيغة: ',
+                        s,
+                    )
+                    # Collapse double spaces and tidy spacing around × ÷
+                    s = re_pdf.sub(r'\s{2,}', ' ', s)
+                    # Normalise spacing around × so we get "(...) × 100"
+                    s = re_pdf.sub(r'\)\s*[*×]\s*(\d)', r') × \1', s)
+                    out_lines.append(s)
+                return '\n'.join(out_lines)
+            text = _normalise_pdf_formula_lines(text)
+
             return text
 
         content = _preprocess_pdf_content(content)
@@ -39719,7 +39776,7 @@ def api_generate_pdf():
                 story.append(Paragraph(text, normal_style))
             
             i += 1
-        
+
         # ── Running header/footer on body pages (page 2+) ──────────────
         import datetime as _dt
         _today_footer = _dt.date.today().strftime('%d %B %Y')
@@ -39856,6 +39913,62 @@ def api_generate_pdf():
         # → only that single table becomes a visible diagnostic placeholder
         # (see _sanitize_table_for_reportlab); we never replace ALL tables
         # with `[Table]`.
+        # ── PR-5B.8N: snapshot story BEFORE the first doc.build() ─────────
+        # ReportLab's BaseDocTemplate.build() pops flowables off the list as
+        # it processes them (`del flowables[0]`). When the first build crashes
+        # mid-document, ``story`` is left holding only the unprocessed tail,
+        # so the retry path that iterates ``story`` to rebuild a sanitised
+        # copy ends up rebuilding only the trailing fragment of the document.
+        # In production this manifested as Arabic strategy PDFs whose body
+        # started with section 6's "أدلة تقييم مؤشرات الأداء" (the first
+        # section that survived the early crash) and dropped sections 1-5
+        # entirely. Snapshot the full story now so the retry path always sees
+        # every flowable from the cover/TOC down to section 7.
+        _story_snapshot = list(story)
+        # PR-5B.8N: structured one-line builder diagnostic (no full content).
+        try:
+            _h2_lines = [
+                ln.strip() for ln in (content or '').split('\n')
+                if ln.lstrip().startswith('## ')
+            ]
+            _story_kinds = [type(_x).__name__ for _x in _story_snapshot]
+            print(
+                f'[EXPORT-DIAG] route=pdf-story story_len={len(_story_snapshot)} '
+                f'h2_count={len(_h2_lines)} '
+                f'first_h2={_h2_lines[:7]} '
+                f'first_story_kinds={_story_kinds[:6]} '
+                f'tables_in_story={_story_kinds.count("Table")}',
+                flush=True,
+            )
+            # Builder integrity check: when the input markdown has all 7
+            # canonical sections, the story MUST contain at least 7 H2-level
+            # rendered headings (Paragraph elements that immediately follow
+            # the body parser's ``## `` branch). We approximate this by
+            # counting Paragraph flowables that are followed by an HRFlowable
+            # — the body parser always emits ``Paragraph(heading1_style)``
+            # then an HRFlowable accent rule for every ``## `` section.
+            try:
+                _detected_secs = _detect_canonical_sections_in_text(content or '')
+            except Exception:
+                _detected_secs = set()
+            _h2_render_count = 0
+            for _si in range(len(_story_snapshot) - 1):
+                if (type(_story_snapshot[_si]).__name__ == 'Paragraph' and
+                        type(_story_snapshot[_si + 1]).__name__ == 'HRFlowable'):
+                    _h2_render_count += 1
+            # Soft warning only — never raise from production code path.
+            if (data.get('artifact_type', 'strategy') or 'strategy') == 'strategy' \
+                    and len(_detected_secs) >= 7 and _h2_render_count < 7:
+                print(
+                    f'[EXPORT-DIAG] WARNING pdf builder: full content has '
+                    f'{len(_detected_secs)} canonical sections but only '
+                    f'{_h2_render_count} H2 headings rendered into story. '
+                    f'detected_sections={sorted(_detected_secs)}',
+                    flush=True,
+                )
+        except Exception:
+            pass
+
         try:
             doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
         except (TypeError, ValueError, AttributeError) as _te:
@@ -39864,11 +39977,14 @@ def api_generate_pdf():
             print(f'[PDF-BUILD] {type(_te).__name__} during doc.build — '
                   f'rebuilding with sanitised story: {_te}', flush=True)
             print(_tb_str, flush=True)
+            # PR-5B.8N: rebuild from the SNAPSHOT, not from the (now-mutated)
+            # ``story`` list — see snapshot rationale above.
+            _retry_source = _story_snapshot
             # Sanitise each Table flowable in-place before retry. We log per-
             # table diagnostics (index, col count, row count, header row) so
             # rendering issues can be debugged without dropping all tables.
             _sanitised_story = []
-            for _idx, _fl in enumerate(story or []):
+            for _idx, _fl in enumerate(_retry_source or []):
                 if _fl is None:
                     continue
                 if isinstance(_fl, Table):
@@ -39889,9 +40005,7 @@ def api_generate_pdf():
                         print(
                             f"[PDF-BUILD] retry sanitised table_index={_idx} "
                             f"col_count={len(_new_data[0]) if _new_data else 0} "
-                            f"row_count={len(_new_data)} "
-                            f"col_widths={_new_cw} "
-                            f"header={_hdr_row[:9]}",
+                            f"row_count={len(_new_data)}",
                             flush=True,
                         )
                         _new_table = Table(_new_data, colWidths=_new_cw, repeatRows=1)
@@ -39940,11 +40054,15 @@ def api_generate_pdf():
                 topMargin=2.8*cm,
                 bottomMargin=2.4*cm,
             )
-            doc.build(
-                _sanitised_story,
-                onFirstPage=_on_page_combined,
-                onLaterPages=_on_page_combined,
-            )
+            try:
+                doc.build(
+                    _sanitised_story,
+                    onFirstPage=_on_page_combined,
+                    onLaterPages=_on_page_combined,
+                )
+            except Exception as _re2:
+                print(f'[PDF-BUILD] retry build also failed: {type(_re2).__name__}: {_re2}', flush=True)
+                raise
         buffer.seek(0)
         
         from flask import send_file
