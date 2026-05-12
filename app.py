@@ -9856,8 +9856,10 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
       * top gaps (parsed from the gaps table)
       * implementation horizon (parsed from the roadmap table)
       * top risks (parsed from the confidence/risks table)
-      * confidence score (parsed from the confidence section)
-      * remote-work / TCC mention when TCC is selected
+      * confidence score (parsed from the confidence section) and a
+        rationale tying the score to organizational implementation gaps
+      * balanced framework coverage paragraph (ECC baseline + TCC as a
+        specialized telework extension when both are selected)
 
     No content is invented. Each helper returns an empty list when the
     underlying section is absent.
@@ -9880,6 +9882,7 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
     ) or ('—')
     fw_short = ' + '.join(selected_fws_keys or []) or ('—')
     has_tcc = 'TCC' in (selected_fws_keys or [])
+    has_ecc = 'ECC' in (selected_fws_keys or [])
     if lang == 'ar':
         if fw_count:
             lead = (
@@ -9965,27 +9968,94 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
         else:
             paras.append('Top risks: ' + '; '.join(risks) + '.')
 
-    # Confidence score.
+    # Confidence score — surface the score and immediately explain what it
+    # means in terms of implementation dependency / organizational gaps,
+    # rather than jumping straight to a single framework.
     conf = _confidence_score_from_content(content_sections)
     if conf is not None:
         if lang == 'ar':
             paras.append(f'درجة الثقة الإجمالية في الاستراتيجية: {conf}%.')
+            if has_ecc and has_tcc:
+                paras.append(
+                    f'تعكس درجة الثقة البالغة {conf}% أن الاستراتيجية قابلة '
+                    'للتنفيذ مبدئياً، إلا أن نجاحها يعتمد على استكمال '
+                    'المتطلبات التنظيمية الجوهرية، وفي مقدمتها إنشاء إدارة '
+                    'متخصصة للأمن السيبراني، وتعيين رئيس للأمن السيبراني، '
+                    'وتطبيق خطة واضحة لتحقيق الالتزام بضوابط NCA ECC '
+                    'وNCA TCC.'
+                )
+            else:
+                paras.append(
+                    f'تعكس درجة الثقة البالغة {conf}% أن الاستراتيجية قابلة '
+                    'للتنفيذ مبدئياً، إلا أن نجاحها يعتمد على استكمال '
+                    'المتطلبات التنظيمية الجوهرية ومعالجة الفجوات '
+                    'المؤسسية، بما في ذلك تعزيز الحوكمة والأدوار '
+                    'والمسؤوليات وتطبيق خطة واضحة للالتزام بالأطر '
+                    'المرجعية المختارة.'
+                )
         else:
             paras.append(f'Overall strategy confidence score: {conf}%.')
+            if has_ecc and has_tcc:
+                paras.append(
+                    f'The {conf}% confidence score reflects that the '
+                    'strategy is initially executable, but its success '
+                    'depends on closing core organizational gaps — '
+                    'establishing a dedicated cybersecurity function, '
+                    'appointing a CISO, and applying a clear compliance '
+                    'plan against NCA ECC and NCA TCC.'
+                )
+            else:
+                paras.append(
+                    f'The {conf}% confidence score reflects that the '
+                    'strategy is initially executable, but its success '
+                    'depends on closing core organizational gaps and '
+                    'delivering on a clear implementation plan against '
+                    'the selected reference frameworks.'
+                )
 
-    # Remote-work / TCC mention when TCC is in scope.
-    if has_tcc:
+    # Framework coverage paragraph — present ECC and TCC in balanced form
+    # when both are selected, so the executive summary does not over-focus
+    # on TCC / remote work. TCC coverage remains explicit but framed as a
+    # specialized extension of the ECC baseline.
+    if has_ecc and has_tcc:
         if lang == 'ar':
             paras.append(
-                'تُولي هذه الاستراتيجية اهتمامًا خاصًا بضوابط الأمن السيبراني '
-                'للعمل عن بُعد (TCC) شاملةً الوصول الآمن، المصادقة متعددة '
-                'العوامل، وحماية الأجهزة الطرفية للموظفين العاملين عن بُعد.'
+                'تعالج هذه الاستراتيجية متطلبات ضوابط الأمن السيبراني '
+                'الأساسية NCA ECC بوصفها الإطار المرجعي الرئيسي لحوكمة '
+                'الأمن السيبراني وإدارة الهوية والمخاطر والمراقبة '
+                'والاستجابة للحوادث، كما تغطي متطلبات NCA TCC لضمان حماية '
+                'بيئات العمل عن بُعد، بما يشمل الوصول الآمن، والمصادقة '
+                'متعددة العوامل، وحماية الأجهزة الطرفية، ومنع تسرب '
+                'البيانات، ومراقبة جلسات الوصول.'
             )
         else:
             paras.append(
-                'The strategy gives explicit attention to Telework '
-                'Cybersecurity Controls (TCC), covering secure remote '
-                'access, MFA, and endpoint protection for remote workers.'
+                'The strategy addresses NCA ECC as the primary baseline '
+                'for cybersecurity governance, identity and access '
+                'management, risk management, monitoring and incident '
+                'response, and additionally covers NCA TCC as a '
+                'specialized extension securing telework environments — '
+                'including secure access, multi-factor authentication, '
+                'endpoint protection, data-leakage prevention, and '
+                'remote-session monitoring.'
+            )
+    elif has_tcc:
+        # TCC selected without ECC — keep a factual coverage mention,
+        # framed as a specialized telework control set rather than the
+        # over-emphasized "special attention" wording.
+        if lang == 'ar':
+            paras.append(
+                'تغطي هذه الاستراتيجية متطلبات ضوابط الأمن السيبراني '
+                'للعمل عن بُعد (NCA TCC) بوصفها مجموعة ضوابط متخصصة '
+                'لحماية بيئات العمل عن بُعد، بما يشمل الوصول الآمن، '
+                'والمصادقة متعددة العوامل، وحماية الأجهزة الطرفية.'
+            )
+        else:
+            paras.append(
+                'The strategy covers NCA Telework Cybersecurity Controls '
+                '(TCC) as a specialized control set for securing remote '
+                'work environments — including secure access, multi-factor '
+                'authentication, and endpoint protection.'
             )
 
     return paras
