@@ -9868,7 +9868,8 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
             lead = (
                 f"تُقدّم هذه الوثيقة استراتيجية {domain} المُعدّة لـ{org} "
                 f"(القطاع: {sector})، مبنيةً على تحليل تشخيصي كامل ومُواءَمة "
-                f"مع {fw_count} من الأطر المرجعية المختارة ({fw_disp})."
+                f"مع {fw_count} من الأطر المرجعية المختارة [{fw_short}] "
+                f"({fw_disp})."
             )
         else:
             lead = (
@@ -9881,7 +9882,7 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
                 f"This document presents the {domain} strategy prepared for "
                 f"{org} (sector: {sector}), built on a full diagnostic "
                 f"baseline and aligned to {fw_count} selected reference "
-                f"framework(s): {fw_disp}."
+                f"framework(s) [{fw_short}]: {fw_disp}."
             )
         else:
             lead = (
@@ -10027,52 +10028,52 @@ def _build_methodology_block(metadata, selected_fws_keys, lang):
     ) or ('—')
     if lang == 'ar':
         return [
-            ('1. مراجعة التشخيص',
+            ('المرحلة 1 — تحليل المدخلات التشخيصية',
              'مراجعة منهجية للبيانات التشخيصية المُدخلة من المنظمة (القطاع، '
              'الحجم، النضج الحالي، الأنظمة، التحديات) وتأكيد جودة المُدخلات '
              'قبل بدء أي تحليل.'),
-            ('2. تحديد نطاق الأطر المرجعية',
+            ('المرحلة 2 — تحديد نطاق الأطر المرجعية',
              f'اعتماد الأطر التالية كنطاق رسمي للتحليل والمواءمة: '
              f'{fw_disp} ({fw_long}).'),
-            ('3. تحليل تغطية القدرات',
+            ('المرحلة 3 — تحليل تغطية القدرات',
              'مطابقة المُدخلات والضوابط القائمة مع عائلات القدرات التي تتطلبها '
              'الأطر المختارة (الحوكمة، إدارة الهوية، المراقبة، الاستجابة، '
              'الوصول عن بُعد، حماية البيانات…).'),
-            ('4. تحليل الفجوات وترتيب الأولويات',
+            ('المرحلة 4 — تحليل الفجوات وترتيب الأولويات',
              'استخراج الفجوات بين الوضع الحالي ومتطلبات الأطر، وترتيبها وفق '
              'الأثر والأولوية والقابلية للمعالجة.'),
-            ('5. تصميم خارطة الطريق ومؤشرات الأداء',
+            ('المرحلة 5 — تصميم خارطة الطريق والمؤشرات',
              'بناء خارطة طريق متعددة الموجات (قصيرة/متوسطة/طويلة المدى) '
              'مرتبطة بمؤشرات أداء (KPI) ومؤشرات مخاطر (KRI) قابلة للقياس.'),
-            ('6. تقييم المخاطر والثقة',
+            ('المرحلة 6 — تقييم المخاطر والثقة',
              'تقدير المخاطر التنفيذية ومخاطر التغيير، وحساب درجة ثقة شاملة '
              'في قابلية تنفيذ الاستراتيجية.'),
-            ('7. التحقق وبوابات الجودة',
+            ('المرحلة 7 — التحقق وبوابات الجودة',
              'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة المحتوى، '
              'تغطية الأطر، التدقيق الدلالي، ثم التدقيق النهائي قبل النشر.'),
         ]
     return [
-        ('1. Input Diagnosis Review',
+        ('Phase 1 — Input Diagnosis Review',
          'Structured review of the diagnostic data supplied by the '
          'organisation (sector, size, current maturity, existing controls, '
          'challenges) and validation of input quality before analysis.'),
-        ('2. Framework Scoping',
+        ('Phase 2 — Framework Scoping',
          f'Adoption of the following frameworks as the formal analysis and '
          f'alignment scope: {fw_disp} ({fw_long}).'),
-        ('3. Capability Coverage Analysis',
+        ('Phase 3 — Capability Coverage Analysis',
          'Mapping of the inputs and existing controls against the capability '
          'families required by the selected frameworks (governance, IAM, '
          'monitoring, incident response, remote access, data protection…).'),
-        ('4. Gap Analysis and Prioritisation',
+        ('Phase 4 — Gap Analysis and Prioritisation',
          'Extraction of gaps between the current state and framework '
          'requirements, prioritised by impact, urgency, and remediability.'),
-        ('5. Roadmap and KPI Design',
+        ('Phase 5 — Roadmap and KPI Design',
          'Construction of a multi-wave (short/medium/long term) roadmap '
          'linked to measurable KPIs and KRIs.'),
-        ('6. Risk and Confidence Assessment',
+        ('Phase 6 — Risk and Confidence Assessment',
          'Assessment of execution and change risks plus an overall '
          'confidence score on the strategy\'s deliverability.'),
-        ('7. Validation and Quality Gates',
+        ('Phase 7 — Validation and Quality Gates',
          'Passage through the platform\'s validation chain: domain check, '
          'content density, framework coverage, semantic audit, then final '
          'audit before publication.'),
@@ -10286,7 +10287,9 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
             out.append(('• ' + k, spec.get('display', k)))
 
     # Appendix B — glossary of terms actually used (with a minimum of
-    # the framework acronyms themselves).
+    # the framework acronyms themselves and a baseline of common
+    # cybersecurity acronyms so the executive document always carries
+    # a usable glossary table — PR-5B.8T).
     glossary_blob = ''
     if isinstance(content_sections, dict):
         glossary_blob = '\n'.join(
@@ -10295,9 +10298,9 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
     elif isinstance(content_sections, str):
         glossary_blob = content_sections
     used = _glossary_terms_used_in_content(glossary_blob)
+    used_set = {ac for ac, _, _ in used}
     # Always include the framework acronyms (ECC, TCC, …) even if the
     # glossary helper missed them in pure-acronym form.
-    used_set = {ac for ac, _, _ in used}
     for fw in (selected_fws_keys or []):
         if fw in used_set:
             continue
@@ -10305,6 +10308,21 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
             if ac == fw:
                 used.append((ac, ar, en))
                 used_set.add(ac)
+                break
+    # PR-5B.8T — baseline glossary terms always present in the Arabic /
+    # English appendix so MFA/VPN/ZTNA/IAM/PAM/SOC/SIEM/CSIRT/DLP are
+    # never silently missing from a strategy document.
+    _BASELINE_GLOSSARY = (
+        'MFA', 'VPN', 'ZTNA', 'IAM', 'PAM',
+        'SOC', 'SIEM', 'CSIRT', 'DLP',
+    )
+    for ac in _BASELINE_GLOSSARY:
+        if ac in used_set:
+            continue
+        for _ac, _ar, _en in _GLOSSARY_TERMS:
+            if _ac == ac:
+                used.append((_ac, _ar, _en))
+                used_set.add(_ac)
                 break
     if lang == 'ar':
         out.append((
@@ -40980,8 +40998,12 @@ def api_generate_pdf():
             tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
                          for h in hdr]]
             for role, scope, acc in rows:
+                # PR-5B.8T — translate common English role names to their
+                # Arabic equivalents in Arabic mode so they don't get
+                # awkwardly word-split inside the narrow governance cell.
+                _role = (_maybe_arabic_role_label(role) if is_arabic else role)
                 tbl_rows.append([
-                    Paragraph(_pro_text(role, 'value'),  _pro_value_sty),
+                    Paragraph(_pro_text(_role, 'value'), _pro_value_sty),
                     Paragraph(_pro_text(scope, 'value'), _pro_value_sty),
                     Paragraph(_pro_text(acc, 'value'),   _pro_value_sty),
                 ])
