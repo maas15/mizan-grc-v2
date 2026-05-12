@@ -3642,6 +3642,387 @@ _DOMAIN_ROLE_VOCAB: dict = {
 }
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Domain-agnostic Professional Strategy Synthesis Layer — profiles.
+#
+# A "profile" is a structured, declarative description of how a single
+# strategy domain should be expressed in the professional strategy
+# document. It is consumed by ``compose_professional_strategy_narrative_ai``
+# and exists so that the SAME professional document structure (cover, doc
+# control, TOC, executive summary, scope/methodology, current-state,
+# vision/objectives, pillars, environment, gaps, roadmap, KPI/KRI,
+# confidence/risk register, governance/ownership, traceability matrix,
+# appendices) can be produced for every supported domain WITHOUT reusing
+# Cyber Security vocabulary in non-cyber strategies.
+#
+# Each profile MUST define the following keys:
+#   * code                     - canonical domain code (cyber/data/ai/dt/erm/global)
+#   * display_en / display_ar  - canonical display names
+#   * strategy_structure       - canonical, ordered list of professional
+#                                 document blocks for this domain (kept
+#                                 common across all domains)
+#   * mandatory_themes         - the 4-6 strategic themes any strategy in
+#                                 this domain MUST reflect
+#   * framework_coverage_keys  - which registry keys are *applicable* to
+#                                 this domain for selected-framework coverage
+#   * gap_categories           - expected gap categories
+#   * roadmap_categories       - expected roadmap waves / categories
+#   * kpi_kri_expectations     - expected KPI / KRI families
+#   * risk_categories          - expected risk register categories
+#   * governance_roles         - expected ownership / accountability roles
+#   * traceability_columns     - column model for the framework
+#                                 traceability matrix
+#   * quality_gates            - keyword groups whose presence the
+#                                 generator/reviewer should verify
+# All vocabulary is intentionally domain-pure — Cyber terms (SOC, CSIRT,
+# NCA ECC/TCC) appear ONLY in the cyber profile, and never leak into the
+# data/ai/dt/erm/global profiles.
+# ──────────────────────────────────────────────────────────────────────────
+_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE: list = [
+    "cover",
+    "doc_control",
+    "toc",
+    "executive_summary",
+    "scope_frameworks",
+    "methodology",
+    "current_state",
+    "vision_objectives",
+    "strategic_pillars",
+    "environment_context",
+    "gap_analysis",
+    "roadmap",
+    "kpi_kri_framework",
+    "confidence_risk_register",
+    "governance_ownership",
+    "traceability_matrix",
+    "appendices",
+]
+
+_DOMAIN_STRATEGY_PROFILES: dict = {
+    "cyber": {
+        "code": "cyber",
+        "display_en": "Cyber Security",
+        "display_ar": "الأمن السيبراني",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "cybersecurity governance",
+            "identity & access management",
+            "threat & vulnerability management",
+            "security operations / monitoring",
+            "incident response",
+            "third-party / supply-chain cyber risk",
+        ],
+        "framework_coverage_keys": [
+            "ECC", "TCC", "CCC", "DCC", "CSCC",
+            "ISO27001", "NIST_CSF", "SAMA", "ISO22301",
+        ],
+        "gap_categories": [
+            "governance & policy", "identity & access", "monitoring & SOC",
+            "incident response & CSIRT", "vulnerability management",
+            "third-party risk", "data protection",
+        ],
+        "roadmap_categories": [
+            "short-term (0-6 months) — foundational controls",
+            "medium-term (6-18 months) — capability build-out",
+            "long-term (18-36 months) — maturity & optimisation",
+        ],
+        "kpi_kri_expectations": [
+            "MTTD / MTTR", "patch SLA compliance", "phishing failure rate",
+            "privileged-access reviews", "control coverage", "training completion",
+        ],
+        "risk_categories": [
+            "external threat", "insider threat", "third-party risk",
+            "operational/SOC capacity", "regulatory non-compliance",
+            "talent shortage",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("cyber", [])),
+        "traceability_columns": [
+            "Framework", "Capability / Control", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "governance", "incident", "monitoring", "identity",
+                "vulnerability",
+            ],
+            "domain_label_en": "Cyber Security",
+            "domain_label_ar": "الأمن السيبراني",
+        },
+    },
+    "data": {
+        "code": "data",
+        "display_en": "Data Management",
+        "display_ar": "إدارة البيانات",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "data governance",
+            "data ownership & stewardship",
+            "data quality",
+            "metadata & data catalog",
+            "data lifecycle (retention/archival/disposal)",
+            "data privacy & protection",
+        ],
+        "framework_coverage_keys": ["NDMO", "DCC"],
+        "gap_categories": [
+            "data governance", "ownership & stewardship", "data quality",
+            "metadata management", "data lifecycle", "privacy & consent",
+            "data sharing & integration",
+        ],
+        "roadmap_categories": [
+            "short-term — data governance foundations",
+            "medium-term — quality, catalog, stewardship",
+            "long-term — analytics enablement & data products",
+        ],
+        "kpi_kri_expectations": [
+            "data quality score", "metadata completeness",
+            "data steward coverage", "issues resolution SLA",
+            "privacy/consent compliance", "data retention conformance",
+        ],
+        "risk_categories": [
+            "data quality risk", "privacy/regulatory risk",
+            "stewardship gap", "data sprawl / shadow data",
+            "lineage opacity", "vendor data risk",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("data", [])),
+        "traceability_columns": [
+            "Framework", "Data Capability", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "data governance", "ownership", "stewardship",
+                "data quality", "metadata", "lifecycle", "privacy",
+            ],
+            "domain_label_en": "Data Management",
+            "domain_label_ar": "إدارة البيانات",
+        },
+    },
+    "ai": {
+        "code": "ai",
+        "display_en": "Artificial Intelligence",
+        "display_ar": "الذكاء الاصطناعي",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "AI governance",
+            "model risk management",
+            "explainability & transparency",
+            "bias & fairness",
+            "model monitoring & performance",
+            "human oversight & accountability",
+        ],
+        "framework_coverage_keys": ["NIST_AI_RMF"],
+        "gap_categories": [
+            "AI governance", "model inventory", "model risk & validation",
+            "bias & fairness testing", "explainability",
+            "monitoring & drift", "human oversight",
+        ],
+        "roadmap_categories": [
+            "short-term — AI governance & inventory",
+            "medium-term — model risk, fairness, explainability controls",
+            "long-term — continuous monitoring & responsible-AI maturity",
+        ],
+        "kpi_kri_expectations": [
+            "model inventory completeness", "models with bias tests",
+            "models with explainability artefacts",
+            "models with monitoring", "human-oversight coverage",
+            "AI incident MTTR",
+        ],
+        "risk_categories": [
+            "model performance risk", "bias / fairness risk",
+            "explainability risk", "data-quality risk for AI",
+            "regulatory / ethical risk", "human-oversight failure",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("ai", [])),
+        "traceability_columns": [
+            "Framework", "AI Capability", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "AI governance", "model risk", "explainability",
+                "bias", "fairness", "monitoring", "human oversight",
+            ],
+            "domain_label_en": "Artificial Intelligence",
+            "domain_label_ar": "الذكاء الاصطناعي",
+        },
+    },
+    "dt": {
+        "code": "dt",
+        "display_en": "Digital Transformation",
+        "display_ar": "التحول الرقمي",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "service digitisation",
+            "operating model & ways of working",
+            "user/citizen adoption",
+            "integration & APIs",
+            "automation",
+            "change management & capability uplift",
+        ],
+        "framework_coverage_keys": ["DGA"],
+        "gap_categories": [
+            "service digitisation", "operating model",
+            "adoption & user experience", "integration & APIs",
+            "automation", "change management",
+            "digital talent / capability",
+        ],
+        "roadmap_categories": [
+            "short-term — quick-win digital services",
+            "medium-term — operating-model & integration build-out",
+            "long-term — automation & adoption maturity",
+        ],
+        "kpi_kri_expectations": [
+            "digital service adoption rate",
+            "service availability / uptime", "automation coverage",
+            "integration coverage (APIs)", "user satisfaction (CSAT/NPS)",
+            "digital project on-time delivery",
+        ],
+        "risk_categories": [
+            "adoption risk", "integration risk",
+            "vendor / platform risk", "change-management risk",
+            "talent / capability risk", "service-availability risk",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("dt", [])),
+        "traceability_columns": [
+            "Framework", "Digital Capability", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "service digitisation", "operating model", "adoption",
+                "integration", "automation", "change management",
+            ],
+            "domain_label_en": "Digital Transformation",
+            "domain_label_ar": "التحول الرقمي",
+        },
+    },
+    "erm": {
+        "code": "erm",
+        "display_en": "Enterprise Risk Management",
+        "display_ar": "إدارة المخاطر المؤسسية",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "risk taxonomy",
+            "risk appetite & tolerance",
+            "risk assessment methodology",
+            "key risk indicators (KRIs)",
+            "risk treatment & mitigation",
+            "reporting & escalation",
+        ],
+        "framework_coverage_keys": ["ISO22301"],
+        "gap_categories": [
+            "risk taxonomy", "risk appetite",
+            "risk assessment methodology", "KRI framework",
+            "treatment & mitigation", "reporting & escalation",
+            "risk culture",
+        ],
+        "roadmap_categories": [
+            "short-term — taxonomy, appetite, governance",
+            "medium-term — assessment, KRIs, treatment plans",
+            "long-term — integrated reporting & risk-aware culture",
+        ],
+        "kpi_kri_expectations": [
+            "risk register completeness",
+            "risk appetite breaches", "KRI reporting cadence",
+            "mitigation plan closure rate",
+            "risk assessments completed",
+            "board / committee reporting frequency",
+        ],
+        "risk_categories": [
+            "strategic risk", "operational risk",
+            "financial risk", "compliance / regulatory risk",
+            "reputational risk", "third-party risk",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("erm", [])),
+        "traceability_columns": [
+            "Framework", "Risk Capability", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "risk taxonomy", "appetite", "assessment", "KRI",
+                "treatment", "reporting", "escalation",
+            ],
+            "domain_label_en": "Enterprise Risk Management",
+            "domain_label_ar": "إدارة المخاطر المؤسسية",
+        },
+    },
+    "global": {
+        "code": "global",
+        "display_en": "Global Standards",
+        "display_ar": "المعايير العالمية",
+        "strategy_structure": list(_PROFESSIONAL_STRATEGY_DOCUMENT_STRUCTURE),
+        "mandatory_themes": [
+            "standards conformance",
+            "certification readiness",
+            "control coverage",
+            "audit findings closure",
+            "documentation completeness",
+            "training & competence",
+        ],
+        "framework_coverage_keys": [
+            "ISO27001", "NIST_CSF", "ISO22301",
+        ],
+        "gap_categories": [
+            "standards conformance", "control coverage",
+            "documentation gaps", "audit findings",
+            "training & competence", "internal audit programme",
+        ],
+        "roadmap_categories": [
+            "short-term — readiness assessment & gap closure",
+            "medium-term — control implementation & documentation",
+            "long-term — certification & continuous improvement",
+        ],
+        "kpi_kri_expectations": [
+            "standards conformance rate",
+            "control coverage", "audit findings closure rate",
+            "documentation completeness",
+            "training completion", "certification milestones",
+        ],
+        "risk_categories": [
+            "non-conformance risk", "certification delay risk",
+            "audit-finding recurrence", "documentation risk",
+            "competence / training risk", "scope-change risk",
+        ],
+        "governance_roles": list(_DOMAIN_ROLE_VOCAB.get("global", [])),
+        "traceability_columns": [
+            "Standard / Framework", "Clause / Control", "Related Gap",
+            "Initiative / Activity", "KPI / KRI", "Related Risk",
+        ],
+        "quality_gates": {
+            "selected_frameworks_covered": True,
+            "must_mention": [
+                "standards", "conformance", "certification",
+                "control coverage", "audit", "documentation",
+            ],
+            "domain_label_en": "Global Standards",
+            "domain_label_ar": "المعايير العالمية",
+        },
+    },
+}
+
+
+def get_domain_strategy_profile(domain) -> dict:
+    """Return the canonical professional-strategy profile for ``domain``.
+
+    Resolves the input via :func:`normalize_domain` (lenient — UI helpers
+    can call this with any spelling) and returns the matching entry from
+    :data:`_DOMAIN_STRATEGY_PROFILES`. Returns the cyber profile as a
+    last-resort default so callers that don't specify a domain still get
+    a usable structure (mirrors ``normalize_domain`` semantics). Strict
+    callers should validate the domain themselves before calling this.
+    """
+    code = normalize_domain(domain or "")
+    return _DOMAIN_STRATEGY_PROFILES.get(
+        code, _DOMAIN_STRATEGY_PROFILES["cyber"]
+    )
+
+
 def get_strategy_domain_context(domain, lang: str = "en",
                                 selected_frameworks=None) -> dict:
     """Return the canonical context bundle for a strategy domain.
@@ -10586,6 +10967,274 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
     return {'lang': lang_n, 'order': order, 'blocks': blocks,
             'selected_frameworks': list(fws_keys),
             'frameworks_inferred': _frameworks_inferred}
+
+
+def compose_professional_strategy_narrative_ai(
+    domain,
+    sections=None,
+    metadata=None,
+    selected_frameworks=None,
+    diagnostic_context=None,
+    obligations=None,
+    language='en',
+):
+    """Domain-agnostic Professional Strategy Synthesis composer.
+
+    This is the single entry point that produces a professional strategy
+    document model for ANY supported domain (Cyber Security, Data
+    Management, Artificial Intelligence, Digital Transformation,
+    Enterprise Risk Management, Global Standards). It applies the same
+    professional document structure to every domain — only the
+    domain-specific content (mandatory themes, gap categories, roadmap
+    waves, KPIs/KRIs, risk categories, governance roles, traceability
+    columns, quality gates) varies, sourced from
+    :data:`_DOMAIN_STRATEGY_PROFILES`.
+
+    Parameters
+    ----------
+    domain : str
+        Free-form domain input (English / Arabic display names, codes,
+        slugs). Resolved through :func:`normalize_domain`.
+    sections : dict | None
+        Pre-split ``{section_key: text}`` map. When ``None`` and
+        ``metadata`` contains a ``content`` key the composer parses the
+        markdown itself.
+    metadata : dict | None
+        Cover/document-control metadata. Recognised keys:
+        ``org_name``, ``sector``, ``doc_type``, ``classification``,
+        ``version``, ``status``, ``prepared_by`` and the convenience
+        ``content`` (full strategy markdown).
+    selected_frameworks : list[str] | None
+        Frameworks the user chose for this strategy. Filtered through
+        the domain profile so cross-domain frameworks (e.g. NCA TCC for
+        a Data Management strategy) are not silently included.
+    diagnostic_context : str | dict | None
+        Optional diagnostic findings used to enrich the executive
+        summary lead paragraph. Never invents content if absent.
+    obligations : list | dict | None
+        Optional regulatory / contractual obligations relevant to the
+        strategy. Stored on the model under ``obligations`` for the
+        renderer / reviewer; never invented when absent.
+    language : str
+        ``'ar'`` or ``'en'``. Defaults to English.
+
+    Returns
+    -------
+    dict
+        ::
+
+            {
+              'lang': 'ar'|'en',
+              'domain': '<canonical-code>',
+              'profile': {... full _DOMAIN_STRATEGY_PROFILES entry ...},
+              'order': [block_kind, ...],     # canonical professional order
+              'blocks': {kind: payload, ...}, # one entry per ``order``
+              'selected_frameworks': [...],   # filtered to this domain
+              'rejected_frameworks': [...],   # frameworks dropped because
+                                              # they are not applicable
+                                              # to this domain
+              'selected_framework_coverage':  # per-framework cross-section
+                  {fw_key: {scope, objectives, pillars, gaps, roadmap,
+                            kpis, risks, traceability_matrix}},
+              'quality_gates': {... profile['quality_gates'] ...},
+              'diagnostic_context': <as supplied>,
+              'obligations':        <as supplied>,
+            }
+
+    The function is pure — it never mutates the inputs and never invents
+    strategy rows. Sections that are absent simply produce empty payloads
+    in their corresponding block.
+    """
+    lang_n = 'ar' if language == 'ar' else 'en'
+    metadata = dict(metadata or {})
+
+    # 1) Resolve domain → canonical profile.
+    domain_code = normalize_domain(domain or metadata.get('domain') or '')
+    profile = _DOMAIN_STRATEGY_PROFILES.get(
+        domain_code, _DOMAIN_STRATEGY_PROFILES['cyber']
+    )
+
+    # Stamp the canonical English display into metadata so downstream
+    # block builders use the right domain label.
+    metadata.setdefault('domain', profile['display_en'])
+
+    # 2) Resolve frameworks. Apply the profile's framework_coverage_keys
+    #    allow-list so a Data strategy with stray ``['ECC', 'NDMO']`` only
+    #    keeps NDMO. Track rejected ones so callers can warn the user.
+    explicit_input = list(selected_frameworks
+                          or metadata.get('selected_frameworks')
+                          or [])
+    resolved = _resolve_selected_frameworks(
+        explicit_input, profile['display_en']
+    )
+    allow = set(profile.get('framework_coverage_keys') or [])
+    if allow:
+        kept = [k for k in resolved if k in allow]
+        rejected = [k for k in resolved if k not in allow]
+    else:
+        kept = list(resolved)
+        rejected = []
+
+    # 3) Build the underlying professional document model. We delegate to
+    #    ``_build_strategy_document_model`` so the cover / doc-control /
+    #    TOC / executive-summary / scope / methodology / current-state /
+    #    governance / traceability / appendices blocks stay identical
+    #    across domains. We pass the FILTERED framework list so the
+    #    composer never reports cross-domain coverage.
+    content = metadata.get('content') or ''
+    if not content and isinstance(sections, dict):
+        # Reassemble a content string only for downstream helpers that
+        # might fall back to it; never used to invent anything.
+        content = '\n\n'.join(
+            v for v in sections.values() if isinstance(v, str)
+        )
+    base_model = _build_strategy_document_model(
+        content=content,
+        metadata=metadata,
+        sections=sections,
+        selected_frameworks=kept,
+        lang=lang_n,
+    )
+
+    # 4) Expand the document order into the canonical 17-block
+    #    professional structure required by the synthesis layer. The
+    #    underlying model already builds 11 of those blocks; we add the
+    #    six per-section blocks (vision_objectives, strategic_pillars,
+    #    environment_context, gap_analysis, roadmap, kpi_kri_framework,
+    #    confidence_risk_register) as standalone entries that point at
+    #    the corresponding parsed section text. ``strategy_body`` (the
+    #    legacy single-blob block) stays in ``blocks`` for renderers
+    #    that still consume it.
+    parsed_sections = sections if isinstance(sections, dict) else \
+        _split_strategy_sections_by_h2(content or '')
+    L = lambda key: _strategy_doc_label(key, lang_n)  # noqa: E731
+    section_block_map = [
+        ('vision_objectives',         'vision',     'vision'),
+        ('strategic_pillars',         'pillars',    'pillars'),
+        ('environment_context',       'environment','environment'),
+        ('gap_analysis',              'gaps',       'gaps'),
+        ('roadmap',                   'roadmap',    'roadmap'),
+        ('kpi_kri_framework',         'kpis',       'kpis'),
+        ('confidence_risk_register',  'confidence', 'confidence'),
+    ]
+    section_blocks = {}
+    for block_key, section_key, label_key in section_block_map:
+        section_blocks[block_key] = {
+            'title':   L(label_key),
+            'content': (parsed_sections or {}).get(section_key, '') or '',
+            'present': bool((parsed_sections or {}).get(section_key)),
+        }
+
+    # Build the canonical professional order.
+    order = [
+        'cover', 'doc_control', 'toc', 'executive_summary',
+        'scope_frameworks', 'methodology', 'current_state',
+        'vision_objectives', 'strategic_pillars', 'environment_context',
+        'gap_analysis', 'roadmap', 'kpi_kri_framework',
+        'confidence_risk_register', 'governance_ownership',
+        'traceability_matrix', 'appendices',
+    ]
+
+    # Merge per-section blocks into the underlying block map. We keep
+    # ``strategy_body`` for backwards compatibility with renderers that
+    # still consume the single-blob block (it is not in ``order`` so
+    # new renderers iterate per-section instead).
+    blocks = dict(base_model.get('blocks') or {})
+    blocks.update(section_blocks)
+
+    # 5) Compute selected-framework coverage per domain across the
+    #    professional structure. For each kept framework we record
+    #    whether each cross-section anchor is satisfied.
+    fw_coverage = {}
+    scope_block_kw = blocks.get('scope_frameworks', {}) or {}
+    scope_keys = set(scope_block_kw.get('frameworks_keys') or kept)
+    trace_rows = (blocks.get('traceability_matrix', {}) or {}).get('rows') or []
+    for fw_key in kept:
+        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key, {}) or {}
+        fams = spec.get('capabilities', []) or []
+
+        def _families_seen(text_blob):
+            if not text_blob:
+                return False
+            tb = str(text_blob)
+            tb_l = tb.lower()
+            for fam in fams:
+                ar = fam[1] if len(fam) > 1 else []
+                en = fam[2] if len(fam) > 2 else []
+                for kw in ar or []:
+                    if kw and kw in tb:
+                        return True
+                for kw in en or []:
+                    if kw and kw.lower() in tb_l:
+                        return True
+            return False
+
+        traced = any(
+            (row and len(row) > 0 and (
+                fw_key in str(row[0])
+                or spec.get('display', '').lower() in str(row[0]).lower()
+            ))
+            for row in trace_rows
+        )
+        fw_coverage[fw_key] = {
+            'scope':                fw_key in scope_keys,
+            'objectives':           _families_seen(
+                section_blocks['vision_objectives']['content']),
+            'pillars':              _families_seen(
+                section_blocks['strategic_pillars']['content']),
+            'gaps':                 _families_seen(
+                section_blocks['gap_analysis']['content']),
+            'roadmap':              _families_seen(
+                section_blocks['roadmap']['content']),
+            'kpis':                 _families_seen(
+                section_blocks['kpi_kri_framework']['content']),
+            'risks':                _families_seen(
+                section_blocks['confidence_risk_register']['content']),
+            'traceability_matrix':  traced,
+        }
+
+    # 6) Strengthen the executive summary so it is non-generic for every
+    #    domain — ALWAYS mention the canonical domain display name and
+    #    the 4-6 mandatory strategic themes for this domain. The
+    #    underlying ``_build_executive_summary_block`` already writes a
+    #    domain-aware lead paragraph; we append a themes paragraph that
+    #    is unique per domain so the executive summary is never the
+    #    same across domains.
+    exec_block = blocks.get('executive_summary') or {}
+    paras = list(exec_block.get('paragraphs') or [])
+    themes = profile.get('mandatory_themes') or []
+    if themes:
+        if lang_n == 'ar':
+            paras.append(
+                'تتمحور هذه الاستراتيجية حول المحاور المهنية التالية '
+                f'الخاصة بمجال {profile["display_ar"]}: '
+                + '؛ '.join(themes[:6]) + '.'
+            )
+        else:
+            paras.append(
+                f'This strategy is organised around the following '
+                f'professional themes specific to the '
+                f'{profile["display_en"]} domain: '
+                + '; '.join(themes[:6]) + '.'
+            )
+    blocks['executive_summary'] = {
+        **exec_block,
+        'paragraphs': paras,
+    }
+
+    return {
+        'lang':                          lang_n,
+        'domain':                        domain_code,
+        'profile':                       profile,
+        'order':                         order,
+        'blocks':                        blocks,
+        'selected_frameworks':           list(kept),
+        'rejected_frameworks':           list(rejected),
+        'selected_framework_coverage':   fw_coverage,
+        'quality_gates':                 dict(profile.get('quality_gates') or {}),
+        'diagnostic_context':            diagnostic_context,
+        'obligations':                   obligations,
+    }
 
 
 def ensure_markdown_formatting(text):
@@ -20298,7 +20947,14 @@ def _resolve_selected_frameworks(selected, domain=None):
     for fw_key, spec in _FRAMEWORK_COVERAGE_REQUIREMENTS.items():
         if fw_key in seen:
             continue
-        for alias in spec.get("aliases", []):
+        # The registry key itself is always an acceptable identifier so
+        # callers that already hold canonical keys (e.g. the
+        # professional-strategy synthesis composer) can pass them through
+        # without having to re-emit a free-form alias.
+        candidates = list(spec.get("aliases", [])) + [fw_key]
+        for alias in candidates:
+            if not alias:
+                continue
             if alias.lower() in blob:
                 if (domain
                         and spec.get("applicable_domains")
