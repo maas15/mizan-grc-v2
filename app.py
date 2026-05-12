@@ -10245,7 +10245,7 @@ def _build_document_control_rows(metadata, lang):
             ('الإصدار',         version),
             ('الحالة',          status),
             ('تاريخ الإعداد',   today),
-            ('أُعدّ بواسطة',     prepared_by),
+            ('أعد بواسطة',     prepared_by),
         ]
     return [
         ('Organization',   org),
@@ -17829,9 +17829,72 @@ def _compute_missing_cyber_capabilities(sections):
     return missing
 
 
+# ── PR-5B.8U: cybersecurity-department establishment requirement ────────────
+# When the diagnostic input flags ``org_structure_is_none=True`` (i.e. the
+# organisation lacks a defined cybersecurity organisational structure / no
+# dedicated cybersecurity department), the assembled strategy MUST surface
+# the requirement to ESTABLISH a dedicated Cybersecurity Department / appoint
+# a CISO / define operating-model + reporting lines + authority matrix.
+#
+# This helper returns the list of REQUIRED concept families NOT covered
+# anywhere in the assembled strategy text. Callers convert a non-empty list
+# into the ``cybersecurity_department_establishment_missing`` defect tag
+# emitted by ``validate_arabic_strategy_semantic_richness`` (only when the
+# caller passes ``org_structure_is_none=True``).
+#
+# AI-first: this helper is detection-only. It never injects text. The
+# repair pathway is ``ai_repair_strategy_section`` with a validation_error
+# that names the missing concept families, exactly mirroring the
+# capabilities-missing repair flow.
+_CYBER_DEPT_ESTAB_CONCEPTS = {
+    # Concept family → accepted Arabic + English tokens (case-insensitive).
+    'establish_dept': (
+        'إنشاء إدارة', 'تأسيس إدارة', 'إدارة متخصصة',
+        'إدارة الأمن السيبراني', 'إدارة مختصة',
+        'establish a dedicated cybersecurity', 'cybersecurity department',
+        'dedicated cybersecurity department',
+    ),
+    'ciso': (
+        'ciso', 'رئيس الأمن السيبراني', 'مدير الأمن السيبراني',
+        'تعيين رئيس', 'appoint a ciso', 'chief information security',
+    ),
+    'roles_responsibilities': (
+        'الأدوار والمسؤوليات', 'تحديد الأدوار', 'roles and responsibilities',
+        'raci', 'authority matrix', 'الصلاحيات',
+    ),
+    'operating_model': (
+        'نموذج التشغيل', 'operating model', 'خطوط الرفع', 'reporting lines',
+        'لجنة حوكمة الأمن السيبراني', 'cybersecurity governance committee',
+        'حوكمة الأمن السيبراني',
+    ),
+}
+
+
+def _compute_missing_cyber_dept_establishment_concepts(sections):
+    """Return list of cybersecurity-department-establishment concept
+    families NOT covered anywhere in the assembled strategy text.
+
+    Concept families: dedicated department establishment, CISO appointment,
+    roles/responsibilities, and operating-model/reporting-lines/governance
+    committee.
+    """
+    text = ' '.join(
+        (sections.get(k) or '') for k in
+        ('vision', 'pillars', 'environment', 'gaps', 'roadmap',
+         'kpis', 'confidence')
+    )
+    text_lc = text.lower()
+    missing = []
+    for fam, tokens in _CYBER_DEPT_ESTAB_CONCEPTS.items():
+        if not any((t.lower() in text_lc) or (t in text) for t in tokens):
+            missing.append(fam)
+    return missing
+
+
 def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                                                generation_mode='consulting',
-                                               domain=None):
+                                               domain=None,
+                                               org_structure_is_none=False):
     """Orchestrator for semantic richness of the final Technical Strategy
     payload. Runs per-section richness validators and aggregates defects.
 
@@ -17943,6 +18006,25 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
             defects.append((
                 'cybersecurity_capabilities_missing',
                 f'Missing technical capabilities: {", ".join(_missing_caps)}',
+            ))
+
+    # ── PR-5B.8U: cybersecurity-department establishment requirement ──
+    # Only fires when the diagnostic input flagged
+    # ``org_structure_is_none=True`` AND the resolved domain is cyber
+    # (or domain is unspecified — preserves legacy behaviour). Emits
+    # ``cybersecurity_department_establishment_missing`` with the list of
+    # uncovered concept families so AI repair can name them in the
+    # validation_error.
+    if org_structure_is_none and _check_cyber_caps:
+        _missing_dept = _compute_missing_cyber_dept_establishment_concepts(
+            sections)
+        if _missing_dept:
+            defects.append((
+                'cybersecurity_department_establishment_missing',
+                'Missing explicit recommendation to establish a dedicated '
+                'Cybersecurity Department when organizational structure is '
+                'absent. Uncovered concept families: '
+                + ', '.join(_missing_dept),
             ))
 
     # ── Gap guides must be unique (not identical repeated templates) ──────────
@@ -24523,6 +24605,46 @@ def ai_repair_strategy_section(
             prompt += f"\n\nDiagnostic context:\n{diagnostic_context.strip()[:2000]}"
         if validation_error:
             prompt += f"\n\nRepair reason: {validation_error.strip()[:500]}"
+
+    # ── PR-5B.8U: cybersecurity-department establishment requirement ─────────
+    # When ``org_structure_is_none`` is True AND the section being repaired is
+    # one that naturally hosts the requirement (gaps / roadmap / confidence —
+    # pillars is handled separately below by the governance-first contract),
+    # append an explicit clause naming the required Arabic + English concepts
+    # so the AI cannot silently omit the recommendation to ESTABLISH a
+    # dedicated Cybersecurity Department / appoint a CISO / define
+    # roles+responsibilities + operating model + governance committee.
+    if org_structure_is_none and section_key in (
+            "gaps", "roadmap", "confidence", "environment"):
+        if is_ar:
+            prompt += (
+                "\n\nقاعدة إنشاء إدارة الأمن السيبراني (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                "للأمن السيبراني، يجب أن يتضمن هذا القسم صراحةً ما يلي: "
+                "(1) إنشاء/تأسيس إدارة متخصصة للأمن السيبراني، "
+                "(2) تعيين رئيس الأمن السيبراني (CISO)، "
+                "(3) تحديد الأدوار والمسؤوليات والصلاحيات (مصفوفة RACI)، "
+                "(4) نموذج التشغيل وخطوط الرفع، "
+                "(5) لجنة حوكمة الأمن السيبراني وفصل مهام الحوكمة عن "
+                "العمليات والاستجابة للحوادث وإدارة الهوية وإدارة الثغرات "
+                "والامتثال. يجب أن تظهر هذه المفاهيم داخل الصفوف/الفجوات/"
+                "المبادرات/المخاطر بشكل صريح وليس كذكر عابر."
+            )
+        else:
+            prompt += (
+                "\n\nCybersecurity department establishment rule (MANDATORY):\n"
+                "Because the organisation reported no dedicated cybersecurity "
+                "department / organisational unit, this section MUST "
+                "explicitly include: (1) establishing a dedicated "
+                "Cybersecurity Department, (2) appointing a CISO, (3) "
+                "defining roles and responsibilities and authority matrix "
+                "(RACI), (4) the operating model and reporting lines, and "
+                "(5) a cybersecurity governance committee with segregation "
+                "between governance, operations, incident response, IAM, "
+                "vulnerability management, and compliance. These concepts "
+                "must appear inside the section's rows/gaps/initiatives/"
+                "risks — not as a passing mention."
+            )
 
     # ── org_structure_is_none governance-first pillar contract ───────────────
     # When the user reported no defined organisational structure, the FIRST
@@ -34038,7 +34160,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                             sections, lang, doc_subtype=doc_subtype,
                             generation_mode=_final_ctx.get(
                                 'generation_mode', 'consulting'),
-                            domain=domain)
+                            domain=domain,
+                            org_structure_is_none=bool(_final_ctx.get(
+                                'org_structure_is_none', False)))
                     except Exception as _rde:
                         print(f'[STRATEGY-DIAG] richness_validator_failed: '
                               f'{_rde}', flush=True)
@@ -34167,7 +34291,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             generation_mode=_final_ctx.get(
                                                 'generation_mode',
                                                 'consulting'),
-                                            domain=domain))
+                                            domain=domain,
+                                            org_structure_is_none=bool(
+                                                _final_ctx.get(
+                                                    'org_structure_is_none',
+                                                    False))))
                                 except Exception as _rde2:
                                     print(
                                         '[STRATEGY-DIAG] richness_revalidate_failed: '
@@ -34178,6 +34306,152 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     '[STRATEGY-DIAG] cybersecurity_capabilities_'
                                     'repair_result '
                                     f'missing_after={_missing_after}',
+                                    flush=True,
+                                )
+                    # ── PR-5B.8U: targeted AI repair for missing
+                    # cybersecurity-department establishment recommendation
+                    # ─────────────────────────────────────────────────────
+                    # When the diagnostic input flagged
+                    # ``org_structure_is_none=True`` AND the validator emits
+                    # ``cybersecurity_department_establishment_missing`` at
+                    # the final save gate, invoke ai_repair_strategy_section
+                    # on the sections that naturally host the requirement
+                    # (pillars + gaps + roadmap + confidence), pass a
+                    # validation_error that NAMES the missing concept
+                    # families, then re-run the same validator. If the
+                    # defect persists, the existing 422 fail-closed path
+                    # below fires. No deterministic department rows are
+                    # injected. AI-first; fail-closed on RepairError.
+                    try:
+                        _dept_tag_present = any(
+                            t == 'cybersecurity_department_establishment_missing'
+                            for t, _ in (_richness_defects or [])
+                        )
+                    except Exception:
+                        _dept_tag_present = False
+                    _dept_org_none = bool(
+                        _final_ctx.get('org_structure_is_none', False))
+                    if _dept_tag_present and _dept_org_none:
+                        try:
+                            _dept_dctx = get_strategy_domain_context(
+                                domain, lang=lang,
+                                selected_frameworks=fw_short)
+                        except Exception as _ddctx_e:
+                            print('[STRATEGY-DIAG] dept_repair_skip_domain_context_failed: '
+                                  f'{_ddctx_e}', flush=True)
+                            _dept_dctx = None
+                        if _dept_dctx and _dept_dctx.get('code') == 'cyber':
+                            _missing_dept_now = (
+                                _compute_missing_cyber_dept_establishment_concepts(
+                                    sections))
+                            if _missing_dept_now:
+                                _ve_dept_en = (
+                                    'Missing explicit recommendation to '
+                                    'establish a dedicated Cybersecurity '
+                                    'Department when organizational '
+                                    'structure is absent. The strategy MUST '
+                                    'explicitly include: establishing a '
+                                    'dedicated cybersecurity department, '
+                                    'appointing a CISO, defining roles and '
+                                    'responsibilities (RACI / authority '
+                                    'matrix), the operating model with '
+                                    'reporting lines, and a cybersecurity '
+                                    'governance committee. Uncovered concept '
+                                    'families: ' + ', '.join(_missing_dept_now)
+                                    + '. Surface these in narrative AND in '
+                                    'the section table rows where applicable. '
+                                    'No placeholder cells.'
+                                )
+                                _ve_dept_ar = (
+                                    'يفتقر النص إلى التوصية الصريحة بإنشاء '
+                                    'إدارة متخصصة للأمن السيبراني عند غياب '
+                                    'الهيكل التنظيمي. يجب أن تتضمن '
+                                    'الاستراتيجية صراحةً: إنشاء/تأسيس إدارة '
+                                    'الأمن السيبراني، تعيين رئيس الأمن '
+                                    'السيبراني (CISO)، تحديد الأدوار '
+                                    'والمسؤوليات والصلاحيات (مصفوفة RACI)، '
+                                    'نموذج التشغيل وخطوط الرفع، ولجنة حوكمة '
+                                    'الأمن السيبراني. عائلات المفاهيم '
+                                    'غير المغطاة: '
+                                    + ', '.join(_missing_dept_now)
+                                    + '. يجب أن تظهر في النص السردي وفي صفوف '
+                                    'الجداول حيث ينطبق. لا خلايا فارغة.'
+                                )
+                                _dept_ve = (_ve_dept_ar if lang == 'ar'
+                                            else _ve_dept_en)
+                                _dept_repair_log = {}
+                                for _dsec in (
+                                        'pillars', 'gaps', 'roadmap',
+                                        'confidence'):
+                                    try:
+                                        _new_text = ai_repair_strategy_section(
+                                            section_key=_dsec,
+                                            sections=sections,
+                                            lang=lang,
+                                            domain_context=_dept_dctx,
+                                            org_name=_final_ctx.get(
+                                                'org_name',
+                                                'The Organization'),
+                                            sector=_final_ctx.get(
+                                                'sector', 'Government'),
+                                            maturity=_final_ctx.get(
+                                                'maturity', '') or '',
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            validation_error=_dept_ve,
+                                            org_structure_is_none=True,
+                                        )
+                                        if _new_text and _new_text.strip():
+                                            sections[_dsec] = _new_text
+                                            _dept_repair_log[_dsec] = 'ok'
+                                        else:
+                                            _dept_repair_log[_dsec] = 'empty'
+                                    except RepairError as _rpe:
+                                        _dept_repair_log[_dsec] = (
+                                            f'repair_error:{_rpe}')
+                                    except Exception as _rgen:  # noqa: BLE001
+                                        _dept_repair_log[_dsec] = (
+                                            f'unexpected_error:{_rgen}')
+                                print(
+                                    '[STRATEGY-DIAG] cybersecurity_department_'
+                                    'establishment_repair_attempted '
+                                    f'missing_before={_missing_dept_now} '
+                                    f'per_section={_dept_repair_log}',
+                                    flush=True,
+                                )
+                                # Re-normalize canonical headings — AI may
+                                # have emitted near-variant titles.
+                                try:
+                                    _reapply_canonical_section_headings(
+                                        sections, lang)
+                                except Exception as _rch_eD:
+                                    print(
+                                        '[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                                        f'{_rch_eD}', flush=True)
+                                # Re-run the same validator so the gate
+                                # below sees the post-repair defect set.
+                                try:
+                                    _richness_defects = (
+                                        validate_arabic_strategy_semantic_richness(
+                                            sections, lang,
+                                            doc_subtype=doc_subtype,
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            domain=domain,
+                                            org_structure_is_none=True))
+                                except Exception as _rdeD:
+                                    print(
+                                        '[STRATEGY-DIAG] dept_richness_revalidate_failed: '
+                                        f'{_rdeD}', flush=True)
+                                _missing_dept_after = (
+                                    _compute_missing_cyber_dept_establishment_concepts(
+                                        sections))
+                                print(
+                                    '[STRATEGY-DIAG] cybersecurity_department_'
+                                    'establishment_repair_result '
+                                    f'missing_after={_missing_dept_after}',
                                     flush=True,
                                 )
                     # ── PR-5B.8L: targeted AI repair for environment-section
@@ -34318,7 +34592,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         generation_mode=_final_ctx.get(
                                             'generation_mode',
                                             'consulting'),
-                                        domain=domain))
+                                        domain=domain,
+                                        org_structure_is_none=bool(
+                                            _final_ctx.get(
+                                                'org_structure_is_none',
+                                                False))))
                             except Exception as _rde3:
                                 print('[STRATEGY-DIAG] env_richness_revalidate_failed: '
                                       f'{_rde3}', flush=True)
@@ -34400,7 +34678,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     generation_mode=_final_ctx.get(
                                         'generation_mode',
                                         'consulting'),
-                                    domain=domain))
+                                    domain=domain,
+                                    org_structure_is_none=bool(
+                                        _final_ctx.get(
+                                            'org_structure_is_none',
+                                            False))))
                         except Exception as _rde4:
                             print('[STRATEGY-DIAG] pillar_init_revalidate_failed: '
                                   f'{_rde4}', flush=True)
@@ -38709,7 +38991,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 ['الإصدار',      '1.0'],
                 ['الحالة',       'مسودة'],
                 ['تاريخ الإعداد', _today_docx],
-                ['أُعدّ بواسطة', 'منصة ميزان GRC'],
+                ['أعد بواسطة', 'منصة ميزان GRC'],
             ]
         else:
             _meta_rows = [
@@ -40846,27 +41128,30 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             tbl_rows = []
             if is_arabic:
-                # Arabic header — value column on the LEFT, label column on
-                # the RIGHT (so labels visually appear on the right side as
-                # required by RTL conventions). Each row is rendered as
-                # (value, label) so columns line up under the headers.
+                # PR-5B.8U — render as a logical Arabic table with the
+                # FIELD label on the LEFT and the VALUE on the RIGHT (the
+                # markdown-spec column order ``| الحقل | القيمة |``). This
+                # prevents the pdftotext / fitz extractors from emitting
+                # ``"Mizan GRC Platform بواسطة أعد"`` — when a Latin value
+                # cell sits to the LEFT of a bidi-shaped Arabic label, the
+                # extractor reads it left-to-right and splices the visual
+                # (bidi-reversed) Arabic glyphs onto the end of the Latin
+                # value, producing the reversed pair that the user reported.
                 tbl_rows.append([
-                    Paragraph(f"<b>{_pro_text('القيمة', 'label')}</b>",
+                    Paragraph(f"<b>{_pro_text('الحقل', 'label')}</b>",
                               _pro_label_sty),
-                    Paragraph(f"<b>{_pro_text('الحقل',  'label')}</b>",
+                    Paragraph(f"<b>{_pro_text('القيمة', 'label')}</b>",
                               _pro_label_sty),
                 ])
                 for label, value in rows:
                     tbl_rows.append([
-                        Paragraph(_pro_text(value, 'value'), _pro_value_sty),
                         Paragraph(f"<b>{_pro_text(label, 'label')}</b>",
                                   _pro_label_sty),
+                        Paragraph(_pro_text(value, 'value'), _pro_value_sty),
                     ])
-                # Wider column on the RIGHT (label area? no — value area).
-                # Keep label column compact (right side) and value column
-                # wider (left side).
-                col_widths = [_PRO_PAGE_W * 0.68, _PRO_PAGE_W * 0.32]
-                _label_col_idx = 1
+                # Label column compact (LEFT), value column wider (RIGHT).
+                col_widths = [_PRO_PAGE_W * 0.32, _PRO_PAGE_W * 0.68]
+                _label_col_idx = 0
             else:
                 tbl_rows.append([
                     Paragraph(f"<b>{_pro_text('Field', 'label')}</b>",
@@ -40991,28 +41276,59 @@ def api_generate_pdf():
                     _pro_body_sty,
                 ))
                 return flow
+            # PR-5B.8U — detect 4-column ownership rows (RACI-like layout).
+            # Existing rows are 3-tuples ``(role, scope, accountability)``;
+            # newer callers may pass 4-tuples ``(role, responsibilities,
+            # ownership_scope, governance_relation)`` for a richer
+            # consulting-grade ownership model.
+            _max_cols = max((len(r) for r in rows), default=3)
+            _four_cols = (_max_cols >= 4)
             if is_arabic:
-                hdr = ['الدور', 'النطاق', 'المساءلة']
+                hdr = (['الوظيفة / الجهة', 'المسؤوليات',
+                        'نطاق الملكية', 'العلاقة بالحوكمة']
+                       if _four_cols
+                       else ['الدور', 'النطاق', 'المساءلة'])
             else:
-                hdr = ['Role', 'Scope', 'Accountability']
+                hdr = (['Role / Function', 'Responsibilities',
+                        'Ownership Scope', 'Relation to Governance']
+                       if _four_cols
+                       else ['Role', 'Scope', 'Accountability'])
             tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
                          for h in hdr]]
-            for role, scope, acc in rows:
-                # PR-5B.8T — translate common English role names to their
+            for r in rows:
+                # PR-5B.8O — translate common English role names to their
                 # Arabic equivalents in Arabic mode so they don't get
                 # awkwardly word-split inside the narrow governance cell.
+                role = r[0] if len(r) > 0 else ''
                 _role = (_maybe_arabic_role_label(role) if is_arabic else role)
-                tbl_rows.append([
-                    Paragraph(_pro_text(_role, 'value'), _pro_value_sty),
-                    Paragraph(_pro_text(scope, 'value'), _pro_value_sty),
-                    Paragraph(_pro_text(acc, 'value'),   _pro_value_sty),
-                ])
-            tbl = Table(
-                tbl_rows,
-                colWidths=[_PRO_PAGE_W * 0.30,
-                           _PRO_PAGE_W * 0.30,
-                           _PRO_PAGE_W * 0.40],
-            )
+                if _four_cols:
+                    c2 = r[1] if len(r) > 1 else ''
+                    c3 = r[2] if len(r) > 2 else ''
+                    c4 = r[3] if len(r) > 3 else ''
+                    tbl_rows.append([
+                        Paragraph(_pro_text(_role, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c2, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c3, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c4, 'value'), _pro_value_sty),
+                    ])
+                else:
+                    scope = r[1] if len(r) > 1 else ''
+                    acc = r[2] if len(r) > 2 else ''
+                    tbl_rows.append([
+                        Paragraph(_pro_text(_role, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(scope, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(acc, 'value'),   _pro_value_sty),
+                    ])
+            if _four_cols:
+                col_widths = [_PRO_PAGE_W * 0.22,
+                              _PRO_PAGE_W * 0.30,
+                              _PRO_PAGE_W * 0.24,
+                              _PRO_PAGE_W * 0.24]
+            else:
+                col_widths = [_PRO_PAGE_W * 0.30,
+                              _PRO_PAGE_W * 0.30,
+                              _PRO_PAGE_W * 0.40]
+            tbl = Table(tbl_rows, colWidths=col_widths)
             tbl.setStyle(TableStyle([
                 ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
                 ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
@@ -41040,28 +41356,82 @@ def api_generate_pdf():
                     _pro_body_sty,
                 ))
                 return flow
-            tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
-                         for h in header]]
-            for r in rows:
-                cells = []
-                for v in r:
-                    cells.append(Paragraph(_pro_text(v, 'value'), _pro_value_sty))
-                tbl_rows.append(cells)
-            n = len(header)
-            col_w = [_PRO_PAGE_W / n] * n
-            tbl = Table(tbl_rows, colWidths=col_w, repeatRows=1)
-            tbl.setStyle(TableStyle([
-                ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
-                ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
-                ('GRID',          (0, 0), (-1, -1), 0.4, colors.HexColor('#D1D5DB')),
-                ('TOPPADDING',    (0, 0), (-1, -1), 5),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-                ('LEFTPADDING',   (0, 0), (-1, -1), 4),
-                ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
-                ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
-                ('FONTSIZE',      (0, 1), (-1, -1), 8),
-            ]))
-            flow.append(tbl)
+
+            def _build_tbl(_hdr, _data_rows, _font_size=8):
+                _tbl_rows = [[Paragraph(
+                    f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
+                              for h in _hdr]]
+                for _r in _data_rows:
+                    _cells = []
+                    for _v in _r:
+                        _cells.append(Paragraph(
+                            _pro_text(_v, 'value'), _pro_value_sty))
+                    _tbl_rows.append(_cells)
+                _n = len(_hdr)
+                _col_w = [_PRO_PAGE_W / _n] * _n
+                _tbl = Table(_tbl_rows, colWidths=_col_w, repeatRows=1)
+                _tbl.setStyle(TableStyle([
+                    ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                    ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                    ('GRID',          (0, 0), (-1, -1), 0.4,
+                                      colors.HexColor('#D1D5DB')),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+                    ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+                    ('FONTSIZE',      (0, 1), (-1, -1), _font_size),
+                ]))
+                return _tbl
+
+            # PR-5B.8U — split a 6-column traceability matrix into two
+            # readable 3- and 4-column tables so dense stacked text is no
+            # longer produced. Layout A: Framework → Capability → Gap.
+            # Layout B: (Framework + ) Initiative → KPI → Risk. The first
+            # column repeats so each table is self-contained.
+            if len(header) >= 6:
+                idx_fw   = 0
+                idx_cap  = 1
+                idx_gap  = 2
+                idx_init = 3
+                idx_kpi  = 4
+                idx_risk = 5
+
+                hdr_a = [header[idx_fw], header[idx_cap], header[idx_gap]]
+                rows_a = []
+                for r in rows:
+                    if len(r) <= max(idx_fw, idx_cap, idx_gap):
+                        continue
+                    rows_a.append([r[idx_fw], r[idx_cap], r[idx_gap]])
+
+                hdr_b = [header[idx_fw], header[idx_init],
+                         header[idx_kpi], header[idx_risk]]
+                rows_b = []
+                for r in rows:
+                    if len(r) <= max(idx_fw, idx_init, idx_kpi, idx_risk):
+                        continue
+                    rows_b.append([r[idx_fw], r[idx_init],
+                                   r[idx_kpi], r[idx_risk]])
+
+                # Sub-heading captions so the reader sees each split has a
+                # clear logical purpose (not two anonymous tables).
+                _cap_a_ar = 'أ. الإطار → القدرة → الفجوة'
+                _cap_b_ar = 'ب. الإطار → المبادرة → المؤشر → الخطر'
+                _cap_a_en = 'A. Framework → Capability → Gap'
+                _cap_b_en = 'B. Framework → Initiative → KPI → Risk'
+                flow.append(Paragraph(
+                    f"<b>{_pro_text(_cap_a_ar if is_arabic else _cap_a_en, 'label')}</b>",
+                    _pro_body_sty))
+                flow.append(_build_tbl(hdr_a, rows_a, _font_size=9))
+                flow.append(Spacer(1, 0.2 * inch))
+                flow.append(Paragraph(
+                    f"<b>{_pro_text(_cap_b_ar if is_arabic else _cap_b_en, 'label')}</b>",
+                    _pro_body_sty))
+                flow.append(_build_tbl(hdr_b, rows_b, _font_size=9))
+                return flow
+
+            # Fallback: single compact table for ≤5-column matrices.
+            flow.append(_build_tbl(header, rows, _font_size=8))
             return flow
 
         def _pro_render_appendices(block):
