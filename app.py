@@ -9473,6 +9473,23 @@ def _arabic_pdf_heading_normalize(text):
             r'\1 \2:',
             out,
         )
+        # PR-5B.8V — Pattern 5: parenthesis bidi glitch. The bidi
+        # algorithm sometimes mirrors a closing ')' into an opening '('
+        # when an Arabic run sits next to a Latin abbreviation, producing
+        # ``(SOC (`` instead of ``(SOC)`` in extracted text. Normalize
+        # any ``(<token>\s*(`` where token is an upper-case Latin
+        # abbreviation (SOC, MFA, CISO, IAM, PAM, …) to ``(<token>)``.
+        out = _re_h.sub(
+            r'\(([A-Z][A-Z0-9/]{1,9})\s*\(',
+            r'(\1)',
+            out,
+        )
+        # Symmetric: ``)<token>)`` mirror — opening parens swallowed.
+        out = _re_h.sub(
+            r'\)\s*([A-Z][A-Z0-9/]{1,9})\s*\)',
+            r'(\1)',
+            out,
+        )
         return out
     except Exception as _e:
         print(f'[ARABIC-HEADING-NORM] non-fatal: {_e}', flush=True)
@@ -20304,6 +20321,148 @@ def _compute_missing_selected_framework_coverage(
     return missing
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.8V — Selected-framework compliance OBJECTIVE coverage
+#
+# The selected-framework *capability* coverage helper above ensures the
+# assembled strategy mentions each framework's required capability families
+# somewhere in the document. It does NOT, however, require the
+# Vision/Strategic-Objectives section to include an explicit objective row
+# whose subject is ACHIEVING COMPLIANCE with the selected frameworks.
+#
+# This helper inspects the Vision section ONLY and detects whether at
+# least one Strategic-Objective row mentions both:
+#   1. a compliance / alignment / امتثال / التزام / مواءمة keyword, and
+#   2. one of the selected framework's display tokens (e.g. ECC, TCC,
+#      ISO 27001 …) OR a generic "selected frameworks / الأطر المختارة"
+#      phrase that subsumes them.
+#
+# When ``selected_frameworks`` is empty the function returns an empty list
+# (the requirement is not enforced for unselected frameworks). Otherwise
+# it returns the list of registry keys that are NOT covered by an
+# explicit compliance objective.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Compliance-verb / outcome vocabulary accepted as evidence that an
+# objective row's subject is "achieve compliance with the framework".
+_COMPLIANCE_OBJECTIVE_KEYWORDS_AR = (
+    'الالتزام', 'التزام', 'الامتثال', 'امتثال',
+    'مواءمة', 'موائمة', 'محاذاة',
+    'الأطر المختارة', 'الضوابط المختارة', 'الأطر المرجعية المختارة',
+)
+_COMPLIANCE_OBJECTIVE_KEYWORDS_EN = (
+    'compliance', 'comply', 'compliant',
+    'align', 'alignment', 'aligned',
+    'selected framework', 'selected controls', 'selected frameworks',
+    'close framework compliance gaps',
+)
+
+
+def _compute_missing_compliance_objective(
+        sections, selected_frameworks, domain=None, lang='en'):
+    """Detect selected frameworks for which the Vision/Objectives section
+    lacks an explicit "achieve compliance" objective row.
+
+    Returns a list of registry keys (e.g. ``['ECC', 'TCC']``) whose
+    compliance objective is missing. An empty list means either no
+    frameworks were selected (no enforcement) OR at least one Strategic
+    Objective row covers the compliance requirement for every selected
+    framework.
+
+    A row "covers" a framework when its objective text mentions both:
+      * a compliance / alignment / امتثال / التزام keyword, AND
+      * the framework's short alias (e.g. "ECC", "TCC") OR a generic
+        "selected frameworks / الأطر المختارة" phrase (which counts for
+        every selected framework).
+
+    The vision narrative paragraph(s) BEFORE the objectives table are
+    intentionally ignored — the requirement is for an explicit OBJECTIVE
+    ROW so the compliance commitment lands in the table that downstream
+    governance / KPI tracking is built from.
+    """
+    fws = _resolve_selected_frameworks(selected_frameworks, domain)
+    if not fws:
+        return []
+    if not isinstance(sections, dict):
+        return []
+    vision_text = sections.get('vision', '') or ''
+    if not vision_text:
+        return list(fws)
+
+    # Iterate the Strategic Objectives table rows. Reuse the same header
+    # regex as count_valid_objective_rows so we only inspect rows from
+    # the canonical objectives table.
+    hdr = _ts_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+        r'|الأهداف)\s*\|',
+        _ts_re.IGNORECASE,
+    )
+    rows = list(_ts_table_rows(vision_text, hdr))
+
+    # Generic "selected frameworks" phrase counts for every selected fw.
+    def _row_blob(cells):
+        # Concatenate columns 1..3 (Objective, Target, Justification) which
+        # carry the substantive objective content. Column 0 is the index
+        # and column 4 is the timeframe.
+        parts = []
+        for i in (1, 2, 3):
+            if i < len(cells):
+                parts.append(str(cells[i] or ''))
+        return ' '.join(parts)
+
+    def _has_compliance_kw(blob):
+        if not blob:
+            return False
+        s_lower = blob.lower()
+        for kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_AR:
+            if kw and kw in blob:
+                return True
+        for kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_EN:
+            if kw and kw in s_lower:
+                return True
+        return False
+
+    def _has_generic_selected_frameworks_phrase(blob):
+        if not blob:
+            return False
+        s_lower = blob.lower()
+        for kw in ('الأطر المختارة', 'الضوابط المختارة',
+                   'الأطر المرجعية المختارة'):
+            if kw in blob:
+                return True
+        for kw in ('selected framework', 'selected controls',
+                   'selected frameworks'):
+            if kw in s_lower:
+                return True
+        return False
+
+    # Pre-scan rows to find which frameworks each row covers explicitly.
+    covered_fws = set()
+    for cells in rows:
+        if len(cells) < 4:
+            continue
+        blob = _row_blob(cells)
+        if not _has_compliance_kw(blob):
+            continue
+        # Generic phrase covers everything selected.
+        if _has_generic_selected_frameworks_phrase(blob):
+            covered_fws.update(fws)
+            continue
+        # Otherwise look for each framework's aliases by substring.
+        blob_lower = blob.lower()
+        for fw_key in fws:
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key, {})
+            for alias in spec.get('aliases', []):
+                a = (alias or '').strip()
+                if not a:
+                    continue
+                if a.lower() in blob_lower:
+                    covered_fws.add(fw_key)
+                    break
+
+    return [fw for fw in fws if fw not in covered_fws]
+
+
 def _final_strategy_audit(sections, lang, doc_subtype=None,
                           synth_status=None,
                           selected_frameworks=None, domain=None):
@@ -20426,6 +20585,19 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                 defects.append((
                     _sk,
                     f'selected_framework_coverage_missing:{_fw_key}:{_fam_id}',
+                    0,
+                    1,
+                ))
+            # PR-5B.8V — Vision/Objectives must include an explicit
+            # compliance objective for the selected frameworks.
+            _fw_obj_missing = _compute_missing_compliance_objective(
+                sections, selected_frameworks, domain=domain, lang=lang,
+            )
+            if _fw_obj_missing:
+                defects.append((
+                    'vision',
+                    'selected_framework_compliance_objective_missing:'
+                    + ','.join(_fw_obj_missing),
                     0,
                     1,
                 ))
@@ -24786,6 +24958,72 @@ def ai_repair_strategy_section(
                 "rows):\n"
                 + '\n'.join(_fam_lines_en) +
                 "\nDo NOT alter the required column structure above."
+            )
+
+    # ── PR-5B.8V: Vision compliance-objective clause ─────────────────────────
+    # When repairing the ``vision`` section AND the user explicitly selected
+    # one or more frameworks, instruct the AI to include at least one
+    # Strategic-Objective row whose subject is achieving compliance with
+    # the selected frameworks. AI-first only — no deterministic objective
+    # row is inserted; the repair is rejected later if the AI still omits
+    # the compliance objective.
+    if section_key == "vision" and _resolved_fws:
+        _fw_displays_ar = []
+        _fw_displays_en = []
+        for _fw_key in _resolved_fws:
+            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fw_key, {})
+            _fw_displays_ar.append(_spec.get('display', _fw_key))
+            _fw_displays_en.append(_spec.get('display', _fw_key))
+        if is_ar:
+            prompt += (
+                "\n\nقاعدة هدف الالتزام بالأطر المختارة (إلزامية):\n"
+                "بما أن المستخدم اختار الأطر المرجعية التالية صراحةً: "
+                + '، '.join(_fw_displays_ar) + ".\n"
+                "يجب أن يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على "
+                "الأقل يعالج صراحةً تحقيق الالتزام/الامتثال بهذه الأطر "
+                "المختارة. مثال على الصياغة (دون نسخ حرفي):\n"
+                "- الهدف: تحقيق الالتزام بضوابط "
+                + ' و'.join(_fw_displays_ar) + "\n"
+                "- المقياس المستهدف: نسبة امتثال لا تقل عن 90% للضوابط "
+                "المختارة خلال الإطار الزمني المحدد.\n"
+                "- المبرر: ضمان مواءمة برنامج الأمن السيبراني مع "
+                "المتطلبات التنظيمية المختارة وتقليل فجوات الامتثال.\n"
+                "- الإطار الزمني: 12 شهراً (أو ما يتناسب مع نضج المنظمة).\n"
+                "يجب أن يتضمن نص الهدف كلمات مثل: الالتزام أو الامتثال "
+                "أو المواءمة، إلى جانب الاسم المختصر للإطار (مثل ECC أو "
+                "TCC) أو عبارة \"الأطر المختارة\". لا تكتفِ بذكر الإطار "
+                "في فقرة الرؤية فقط؛ يجب أن يظهر في صف داخل جدول "
+                "الأهداف الاستراتيجية. لا تُغيّر بنية الأعمدة الخمسة "
+                "المطلوبة."
+            )
+        else:
+            prompt += (
+                "\n\nSelected-framework compliance objective rule "
+                "(MANDATORY):\n"
+                "Because the user explicitly selected the following "
+                "reference frameworks: "
+                + ', '.join(_fw_displays_en) + ".\n"
+                "The Strategic Objectives table MUST contain at least "
+                "one row whose subject is explicitly achieving compliance "
+                "with these selected frameworks. Example phrasing (do "
+                "not copy verbatim):\n"
+                "- Objective: Achieve compliance with the selected "
+                + ' and '.join(_fw_displays_en) + " controls.\n"
+                "- Target Metric: ≥ 90% compliance rate against selected "
+                "controls within the timeframe.\n"
+                "- Justification: Align the cybersecurity programme with "
+                "the selected regulatory requirements and close framework "
+                "compliance gaps.\n"
+                "- Timeframe: 12 months (or as appropriate for the "
+                "organisation's maturity).\n"
+                "The objective text MUST include a compliance / "
+                "alignment keyword (compliance, comply, align, "
+                "alignment) AND the framework's short alias (e.g. ECC, "
+                "TCC) OR the phrase \"selected frameworks\". A passing "
+                "mention in the vision narrative paragraph is NOT "
+                "sufficient — the requirement is for an explicit row in "
+                "the Strategic Objectives table. Do NOT alter the "
+                "required 5-column structure."
             )
 
     # ── Single AI call (content_type='strategy' makes generate_ai_content
@@ -33401,6 +33639,148 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 flush=True,
                             )
 
+                    # ── PR-5B.8V: Vision compliance-objective repair ─────
+                    # Even when the framework's capability families are
+                    # globally covered, the Vision/Strategic-Objectives
+                    # section MUST contain at least one EXPLICIT objective
+                    # row whose subject is achieving compliance with the
+                    # selected frameworks (e.g.
+                    # ``تحقيق الالتزام بضوابط NCA ECC وNCA TCC``). When
+                    # missing, route ONE AI repair call to the vision
+                    # section with a clear validation_error naming the
+                    # selected frameworks. AI-first only — no
+                    # deterministic objective row is inserted. On
+                    # RepairError or still-missing after repair, the
+                    # vision section is marked ``synth_failed`` so the
+                    # post-normalization audit blocks the save (422).
+                    if doc_subtype != 'board' and _frameworks_raw:
+                        try:
+                            _fw_obj_missing = (
+                                _compute_missing_compliance_objective(
+                                    sections, _frameworks_raw,
+                                    domain=domain, lang=lang,
+                                )
+                            )
+                            if _fw_obj_missing:
+                                _fw_display_names = []
+                                for _fwk in _fw_obj_missing:
+                                    _spec = (
+                                        _FRAMEWORK_COVERAGE_REQUIREMENTS
+                                        .get(_fwk, {}))
+                                    _fw_display_names.append(
+                                        _spec.get('display', _fwk))
+                                _ve_msg = (
+                                    'Vision/Objectives must include an '
+                                    'explicit objective to achieve '
+                                    'compliance with the selected '
+                                    'frameworks: '
+                                    + ', '.join(_fw_display_names)
+                                    + '.'
+                                )
+                                print(
+                                    '[FW-COMPLIANCE-OBJECTIVE-REPAIR] '
+                                    f'missing={_fw_obj_missing} '
+                                    f'frameworks={_fw_display_names}',
+                                    flush=True,
+                                )
+                                try:
+                                    _vis_dctx = (
+                                        get_strategy_domain_context(domain))
+                                except Exception as _vdce:
+                                    print(
+                                        '[FW-COMPLIANCE-OBJECTIVE-REPAIR] '
+                                        f'domain_context_failed: {_vdce}',
+                                        flush=True,
+                                    )
+                                    _vis_dctx = None
+                                if _vis_dctx is not None:
+                                    try:
+                                        _vis_dctx = dict(_vis_dctx)
+                                        _vis_dctx['selected_frameworks'] = (
+                                            list(_frameworks_raw)
+                                            if isinstance(
+                                                _frameworks_raw,
+                                                (list, tuple))
+                                            else [str(_frameworks_raw)]
+                                        )
+                                    except Exception:
+                                        pass
+                                    _vis_before = sections.get(
+                                        'vision', '') or ''
+                                    try:
+                                        _new_vis = ai_repair_strategy_section(
+                                            section_key='vision',
+                                            sections=sections,
+                                            lang=lang,
+                                            domain_context=_vis_dctx,
+                                            org_name=org_name,
+                                            sector=_model_sector,
+                                            maturity=maturity,
+                                            generation_mode=(
+                                                _generation_mode),
+                                            validation_error=_ve_msg,
+                                        )
+                                        if _new_vis and _new_vis.strip():
+                                            sections['vision'] = _new_vis
+                                        # Revalidate after repair — fail
+                                        # closed if still missing.
+                                        _still_missing = (
+                                            _compute_missing_compliance_objective(
+                                                sections, _frameworks_raw,
+                                                domain=domain, lang=lang,
+                                            )
+                                        )
+                                        if _still_missing:
+                                            # Restore original vision so
+                                            # we never persist a worse
+                                            # state than we started with,
+                                            # then mark synth_failed.
+                                            sections['vision'] = _vis_before
+                                            _err = RepairError(
+                                                'compliance objective '
+                                                'still missing after '
+                                                'repair for: '
+                                                + ','.join(_still_missing)
+                                            )
+                                            setattr(_err, 'section',
+                                                    'vision')
+                                            _mark_synth_failed(
+                                                _synth_status, 'vision',
+                                                _err)
+                                            print(
+                                                '[FW-COMPLIANCE-OBJECTIVE'
+                                                '-REPAIR] '
+                                                f'still_missing='
+                                                f'{_still_missing}',
+                                                flush=True,
+                                            )
+                                    except RepairError as _vre:
+                                        # Restore original vision content
+                                        # — never leave the section in a
+                                        # partially-repaired state.
+                                        sections['vision'] = _vis_before
+                                        _mark_synth_failed(
+                                            _synth_status, 'vision', _vre)
+                                        print(
+                                            '[FW-COMPLIANCE-OBJECTIVE-'
+                                            f'REPAIR] repair_failed '
+                                            f'err={_vre}',
+                                            flush=True,
+                                        )
+                                    except Exception as _vre2:
+                                        print(
+                                            '[FW-COMPLIANCE-OBJECTIVE-'
+                                            f'REPAIR] repair_unexpected '
+                                            f'err={_vre2}',
+                                            flush=True,
+                                        )
+                        except Exception as _vfwxe:
+                            print(
+                                '[FW-COMPLIANCE-OBJECTIVE-REPAIR] '
+                                f'non-fatal: {_vfwxe}',
+                                flush=True,
+                            )
+
                     # ── POST-NORMALIZATION RE-AUDIT (prompt clause F) ───
                     # The convergence loop ran BEFORE final AR
                     # normalization. If normalization happened to mutate
@@ -41346,6 +41726,35 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             header = block.get('header') or []
             rows   = block.get('rows') or []
+            # PR-5B.8V — Drop rows whose informative cells (everything
+            # except the leading framework column) are mostly the
+            # placeholder "—". A row that has more than half of its
+            # informative cells set to "—" is not useful to a reader and
+            # produces dense stacked text in the PDF. Threshold:
+            # ``placeholder_count >= ceil(informative_count / 2)``.
+            def _is_dash(v):
+                if v is None:
+                    return True
+                s = str(v).strip()
+                return (not s) or s in ('—', '-', '--', '–')
+
+            if rows and header:
+                _filtered = []
+                _info_start = 1 if len(header) >= 2 else 0
+                for _r in rows:
+                    _info_cells = list(_r[_info_start:])
+                    if not _info_cells:
+                        continue
+                    _dash_n = sum(1 for _v in _info_cells if _is_dash(_v))
+                    # Keep only rows where strictly less than half of
+                    # informative cells are "—". Strictly less ensures
+                    # a 3-of-5 row is kept while a 3-of-5 dash row is
+                    # dropped, matching the user's "rows made mostly of
+                    # —" criterion.
+                    if _dash_n * 2 < len(_info_cells):
+                        _filtered.append(_r)
+                rows = _filtered
+
             if not header or not rows:
                 flow.append(Paragraph(
                     _pro_text(
