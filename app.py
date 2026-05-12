@@ -9670,40 +9670,306 @@ def _parse_markdown_tables(section_text):
     return [t for t in tables if len(t) >= 2]
 
 
-def _build_executive_summary_block(content_sections, metadata, selected_fws_keys, lang):
-    """Compose executive-summary paragraphs from already-validated content.
+def _infer_frameworks_from_content(content_text, domain=None):
+    """Infer framework keys by scanning the strategy markdown for strong
+    explicit mentions (``ECC NCA``, ``NCA ECC``, ``TCC NCA``, Arabic
+    aliases, etc.). Returns a list of registry keys preserving the order
+    they first appear.
 
-    Pulls the leading paragraphs of the vision/objectives section. Adds a
-    short factual lead (org / sector / framework count) — these are not
-    invented strategy claims; they restate metadata the user supplied.
+    Pure text scan; never invents content. Used only when the export
+    pipeline does not receive an explicit ``selected_frameworks`` value
+    and we must avoid the misleading "0 frameworks" line for a strategy
+    that clearly mentions ECC / TCC.
+    """
+    if not content_text:
+        return []
+    blob = content_text.lower()
+    # Strong markers per framework — anchored on alias tokens that almost
+    # never appear by accident in unrelated prose. Plain ``ECC`` / ``TCC``
+    # alone is too noisy (matches random acronyms), so we require either
+    # the NCA prefix/suffix OR a parenthesised expansion.
+    strong_patterns = {
+        'ECC':  ['ecc nca', 'nca ecc', 'essential cybersecurity controls',
+                 'ضوابط الأساسية', 'الأساسية للأمن السيبراني'],
+        'TCC':  ['tcc nca', 'nca tcc', 'telework cybersecurity controls',
+                 'ضوابط الأمن السيبراني للعمل عن بُعد',
+                 'ضوابط الأمن السيبراني للعمل عن بعد'],
+        'CCC':  ['ccc nca', 'nca ccc', 'cloud cybersecurity controls'],
+        'DCC':  ['dcc nca', 'nca dcc', 'data cybersecurity controls'],
+        'CSCC': ['cscc nca', 'nca cscc', 'critical systems cybersecurity'],
+        'ISO27001':   ['iso 27001', 'iso/iec 27001', 'iso27001'],
+        'ISO22301':   ['iso 22301', 'iso22301'],
+        'NIST_CSF':   ['nist csf', 'nist cybersecurity framework'],
+        'NIST_AI_RMF':['nist ai rmf'],
+        'SAMA':       ['sama csf', 'sama cybersecurity'],
+        'NDMO':       ['ndmo'],
+        'DGA':        ['dga digital'],
+    }
+    found = []
+    for key, pats in strong_patterns.items():
+        if any(p in blob for p in pats):
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(key)
+            if not spec:
+                continue
+            if (domain
+                    and spec.get('applicable_domains')
+                    and domain not in spec['applicable_domains']):
+                continue
+            found.append(key)
+    return found
+
+
+_GLOSSARY_TERMS = [
+    ('ECC',  'الضوابط الأساسية للأمن السيبراني (NCA)',
+             'Essential Cybersecurity Controls (NCA)'),
+    ('TCC',  'ضوابط الأمن السيبراني للعمل عن بُعد (NCA)',
+             'Telework Cybersecurity Controls (NCA)'),
+    ('MFA',  'المصادقة متعددة العوامل',
+             'Multi-Factor Authentication'),
+    ('VPN',  'الشبكة الافتراضية الخاصة',
+             'Virtual Private Network'),
+    ('ZTNA', 'بنية الثقة الصفرية للوصول',
+             'Zero-Trust Network Access'),
+    ('IAM',  'إدارة الهوية والوصول',
+             'Identity and Access Management'),
+    ('PAM',  'إدارة الوصول المميز',
+             'Privileged Access Management'),
+    ('SOC',  'مركز العمليات الأمنية',
+             'Security Operations Centre'),
+    ('SIEM', 'إدارة المعلومات والأحداث الأمنية',
+             'Security Information and Event Management'),
+    ('CSIRT','فريق الاستجابة لحوادث الأمن السيبراني',
+             'Cybersecurity Incident Response Team'),
+    ('DLP',  'منع تسرب البيانات',
+             'Data Loss Prevention'),
+    ('EDR',  'كشف التهديدات والاستجابة في النقاط الطرفية',
+             'Endpoint Detection and Response'),
+    ('MDM',  'إدارة الأجهزة المحمولة',
+             'Mobile Device Management'),
+    ('KPI',  'مؤشر الأداء الرئيسي',
+             'Key Performance Indicator'),
+    ('KRI',  'مؤشر المخاطر الرئيسي',
+             'Key Risk Indicator'),
+]
+
+
+def _glossary_terms_used_in_content(content_text):
+    """Return the subset of ``_GLOSSARY_TERMS`` whose acronym (or its
+    Arabic / English expansion's first salient token) appears in the
+    strategy markdown. Pure text inspection; never invents terms. Always
+    includes any framework acronyms (ECC, TCC, …) that have already been
+    selected — they are guaranteed-relevant glossary items.
+    """
+    if not content_text:
+        return []
+    blob = content_text.lower()
+    out = []
+    for ac, ar, en in _GLOSSARY_TERMS:
+        if (ac.lower() in blob
+                or ar in (content_text or '')
+                or any(tok and tok.lower() in blob
+                       for tok in en.split() if len(tok) > 4)):
+            out.append((ac, ar, en))
+    return out
+
+
+def _confidence_score_from_content(content_sections):
+    """Extract a numeric confidence score (0–100) from the confidence
+    section if present; ``None`` otherwise. Pure text parse — never
+    invents a score.
+    """
+    if not content_sections:
+        return None
+    txt = (content_sections or {}).get('confidence', '') or ''
+    if not txt:
+        return None
+    import re as _re_c
+    # Common forms: "Score: 78%", "**درجة الثقة:** 82%", "78/100"
+    m = _re_c.search(r'(?:score|درجة\s*الثقة)\s*[:：]?\s*\**\s*(\d{1,3})\s*%?',
+                     txt, _re_c.IGNORECASE)
+    if not m:
+        m = _re_c.search(r'\b(\d{1,3})\s*/\s*100\b', txt)
+    if not m:
+        return None
+    try:
+        v = int(m.group(1))
+        if 0 <= v <= 100:
+            return v
+    except Exception:
+        pass
+    return None
+
+
+def _top_table_labels(section_text, max_items=5):
+    """Return up to ``max_items`` short labels picked from the first
+    column of the first markdown table in ``section_text``. Pure text
+    parse; never invents rows.
+    """
+    if not section_text:
+        return []
+    out = []
+    for tbl in _parse_markdown_tables(section_text):
+        for r in tbl[1:]:
+            if not r:
+                continue
+            # If first column is a numeric index, prefer column 1.
+            label = (r[1] if (len(r) > 1 and r[0].strip().isdigit())
+                     else r[0]) or ''
+            label = label.strip().strip('*').strip()
+            if not label:
+                continue
+            if label in out:
+                continue
+            out.append(label)
+            if len(out) >= max_items:
+                return out
+        if out:
+            return out
+    return out
+
+
+def _build_executive_summary_block(content_sections, metadata, selected_fws_keys, lang):
+    """Compose a consulting-grade executive summary derived strictly from
+    the validated strategy content + metadata.
+
+    Components (each emitted only when the underlying data exists):
+
+      * lead paragraph (org / sector / domain / selected frameworks)
+      * top strategic priorities (parsed from the vision/objectives table)
+      * top gaps (parsed from the gaps table)
+      * implementation horizon (parsed from the roadmap table)
+      * top risks (parsed from the confidence/risks table)
+      * confidence score (parsed from the confidence section)
+      * remote-work / TCC mention when TCC is selected
+
+    No content is invented. Each helper returns an empty list when the
+    underlying section is absent.
     """
     paras = []
     org    = (metadata or {}).get('org_name') or ('المنظمة' if lang == 'ar' else 'the organization')
     sector = (metadata or {}).get('sector') or ('—')
-    domain = (metadata or {}).get('domain') or ('—')
+    domain_raw = (metadata or {}).get('domain') or ''
+    if lang == 'ar' and domain_raw:
+        try:
+            domain = domain_display_name(domain_raw, 'ar')
+        except Exception:
+            domain = domain_raw
+    else:
+        domain = domain_raw or '—'
     fw_count = len(selected_fws_keys or [])
     fw_disp = ', '.join(
         _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {}).get('display', k)
         for k in (selected_fws_keys or [])
     ) or ('—')
+    fw_short = ' + '.join(selected_fws_keys or []) or ('—')
+    has_tcc = 'TCC' in (selected_fws_keys or [])
     if lang == 'ar':
-        lead = (
-            f"تُلخّص هذه الوثيقة الاستراتيجية المُعدّة لـ{org} في قطاع {sector} "
-            f"للمجال {domain}، وتغطي {fw_count} من الأطر المرجعية المختارة "
-            f"({fw_disp}). تستند الوثيقة إلى تحليل التشخيص المُدخل وتمر "
-            f"بسلسلة من بوابات التحقق قبل النشر."
-        )
+        if fw_count:
+            lead = (
+                f"تُقدّم هذه الوثيقة استراتيجية {domain} المُعدّة لـ{org} "
+                f"(القطاع: {sector})، مبنيةً على تحليل تشخيصي كامل ومُواءَمة "
+                f"مع {fw_count} من الأطر المرجعية المختارة ({fw_disp})."
+            )
+        else:
+            lead = (
+                f"تُقدّم هذه الوثيقة استراتيجية {domain} المُعدّة لـ{org} "
+                f"(القطاع: {sector})، مبنيةً على تحليل تشخيصي كامل."
+            )
     else:
-        lead = (
-            f"This document summarises the strategy prepared for {org} "
-            f"(sector: {sector}; domain: {domain}). It covers {fw_count} "
-            f"selected reference framework(s) — {fw_disp} — derived from "
-            f"the diagnostic input and validated through the platform's "
-            f"validation gates before publication."
-        )
+        if fw_count:
+            lead = (
+                f"This document presents the {domain} strategy prepared for "
+                f"{org} (sector: {sector}), built on a full diagnostic "
+                f"baseline and aligned to {fw_count} selected reference "
+                f"framework(s): {fw_disp}."
+            )
+        else:
+            lead = (
+                f"This document presents the {domain} strategy prepared for "
+                f"{org} (sector: {sector}), built on a full diagnostic "
+                f"baseline."
+            )
     paras.append(lead)
+    # Lead paragraph from the vision section (existing behaviour).
     vision_text = (content_sections or {}).get('vision', '')
-    paras.extend(_extract_first_paragraphs(vision_text, max_paras=2, max_chars=900))
+    paras.extend(_extract_first_paragraphs(vision_text, max_paras=1, max_chars=600))
+
+    # Top strategic priorities — derived from the vision/objectives table.
+    priorities = _top_table_labels(vision_text, max_items=5)
+    if not priorities:
+        priorities = _top_table_labels(
+            (content_sections or {}).get('pillars', ''), max_items=5)
+    if priorities:
+        if lang == 'ar':
+            paras.append(
+                'أبرز الأولويات الاستراتيجية: '
+                + '؛ '.join(priorities) + '.'
+            )
+        else:
+            paras.append(
+                'Top strategic priorities: ' + '; '.join(priorities) + '.'
+            )
+
+    # Top gaps.
+    gaps = _top_table_labels((content_sections or {}).get('gaps', ''),
+                             max_items=4)
+    if gaps:
+        if lang == 'ar':
+            paras.append('أبرز الفجوات: ' + '؛ '.join(gaps) + '.')
+        else:
+            paras.append('Top gaps: ' + '; '.join(gaps) + '.')
+
+    # Implementation horizon — pull the longest "timeframe" label from
+    # the roadmap table column. Heuristic only; never invents a horizon.
+    roadmap_text = (content_sections or {}).get('roadmap', '') or ''
+    horizon = ''
+    if roadmap_text:
+        import re as _re_h
+        # Look for tokens like "12 شهر", "18 months", "Q4 2026", "2027".
+        cands = _re_h.findall(
+            r'(\d{1,2}\s*(?:شهر|أشهر|months?|month)|Q[1-4]\s*\d{4}|20\d{2})',
+            roadmap_text, _re_h.IGNORECASE)
+        if cands:
+            horizon = cands[-1] if 'شهر' not in cands[-1] and 'month' not in cands[-1].lower() \
+                else cands[-1]
+    if horizon:
+        if lang == 'ar':
+            paras.append(f'الأفق الزمني للتنفيذ: حتى {horizon}.')
+        else:
+            paras.append(f'Implementation horizon: through {horizon}.')
+
+    # Top risks.
+    risks = _top_table_labels((content_sections or {}).get('confidence', ''),
+                              max_items=4)
+    if risks:
+        if lang == 'ar':
+            paras.append('أبرز المخاطر: ' + '؛ '.join(risks) + '.')
+        else:
+            paras.append('Top risks: ' + '; '.join(risks) + '.')
+
+    # Confidence score.
+    conf = _confidence_score_from_content(content_sections)
+    if conf is not None:
+        if lang == 'ar':
+            paras.append(f'درجة الثقة الإجمالية في الاستراتيجية: {conf}%.')
+        else:
+            paras.append(f'Overall strategy confidence score: {conf}%.')
+
+    # Remote-work / TCC mention when TCC is in scope.
+    if has_tcc:
+        if lang == 'ar':
+            paras.append(
+                'تُولي هذه الاستراتيجية اهتمامًا خاصًا بضوابط الأمن السيبراني '
+                'للعمل عن بُعد (TCC) شاملةً الوصول الآمن، المصادقة متعددة '
+                'العوامل، وحماية الأجهزة الطرفية للموظفين العاملين عن بُعد.'
+            )
+        else:
+            paras.append(
+                'The strategy gives explicit attention to Telework '
+                'Cybersecurity Controls (TCC), covering secure remote '
+                'access, MFA, and endpoint protection for remote workers.'
+            )
+
     return paras
 
 
@@ -9750,41 +10016,66 @@ def _build_scope_frameworks_block(metadata, selected_fws_keys, lang):
 
 
 def _build_methodology_block(metadata, selected_fws_keys, lang):
-    """Return a list of (label, body) tuples describing the *process* used
-    to produce the strategy. This is procedural metadata, not strategy
-    content — the same four phases run for every export.
+    """Return a list of (label, body) tuples describing the consulting
+    methodology used to produce the strategy. Procedural metadata only —
+    not strategy content. Always 7 phases, in canonical order.
     """
-    fw_disp = ', '.join(
+    fw_disp = ' + '.join(selected_fws_keys or []) or ('—')
+    fw_long = ', '.join(
         _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {}).get('display', k)
         for k in (selected_fws_keys or [])
     ) or ('—')
     if lang == 'ar':
         return [
-            ('1. تشخيص المُدخلات',
-             'تحليل البيانات التشخيصية المُقدَّمة من المنظمة بما في ذلك القطاع والحجم '
-             'ومستوى النضج الحالي والأنظمة القائمة.'),
-            ('2. الأطر المرجعية المختارة',
-             f'اعتماد الأطر التالية كأساس للتحليل والمواءمة: {fw_disp}.'),
-            ('3. التحليل بدعم الذكاء الاصطناعي',
-             'توليد محتوى الاستراتيجية عبر منصة الذكاء الاصطناعي مع قواعد '
-             'تحقق صارمة وعمق مطلوب لكل قسم.'),
-            ('4. بوابات التحقق',
-             'تخضع المخرجات لسلسلة من بوابات التحقق: التحقق من المجال، '
-             'كثافة المحتوى، تغطية الأطر، ثم التدقيق النهائي قبل النشر.'),
+            ('1. مراجعة التشخيص',
+             'مراجعة منهجية للبيانات التشخيصية المُدخلة من المنظمة (القطاع، '
+             'الحجم، النضج الحالي، الأنظمة، التحديات) وتأكيد جودة المُدخلات '
+             'قبل بدء أي تحليل.'),
+            ('2. تحديد نطاق الأطر المرجعية',
+             f'اعتماد الأطر التالية كنطاق رسمي للتحليل والمواءمة: '
+             f'{fw_disp} ({fw_long}).'),
+            ('3. تحليل تغطية القدرات',
+             'مطابقة المُدخلات والضوابط القائمة مع عائلات القدرات التي تتطلبها '
+             'الأطر المختارة (الحوكمة، إدارة الهوية، المراقبة، الاستجابة، '
+             'الوصول عن بُعد، حماية البيانات…).'),
+            ('4. تحليل الفجوات وترتيب الأولويات',
+             'استخراج الفجوات بين الوضع الحالي ومتطلبات الأطر، وترتيبها وفق '
+             'الأثر والأولوية والقابلية للمعالجة.'),
+            ('5. تصميم خارطة الطريق ومؤشرات الأداء',
+             'بناء خارطة طريق متعددة الموجات (قصيرة/متوسطة/طويلة المدى) '
+             'مرتبطة بمؤشرات أداء (KPI) ومؤشرات مخاطر (KRI) قابلة للقياس.'),
+            ('6. تقييم المخاطر والثقة',
+             'تقدير المخاطر التنفيذية ومخاطر التغيير، وحساب درجة ثقة شاملة '
+             'في قابلية تنفيذ الاستراتيجية.'),
+            ('7. التحقق وبوابات الجودة',
+             'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة المحتوى، '
+             'تغطية الأطر، التدقيق الدلالي، ثم التدقيق النهائي قبل النشر.'),
         ]
     return [
-        ('1. Input diagnosis',
-         'Analysis of the diagnostic data supplied by the organisation, '
-         'including sector, size, current maturity level, and existing controls.'),
-        ('2. Selected frameworks',
-         f'The following reference frameworks were adopted as the basis '
-         f'for analysis and alignment: {fw_disp}.'),
-        ('3. AI-assisted analysis',
-         'Strategy content is generated by the AI engine under strict '
-         'validation rules and per-section depth requirements.'),
-        ('4. Validation gates',
-         'Outputs pass through a chain of validation gates: domain check, '
-         'content density, framework coverage, then final audit before publication.'),
+        ('1. Input Diagnosis Review',
+         'Structured review of the diagnostic data supplied by the '
+         'organisation (sector, size, current maturity, existing controls, '
+         'challenges) and validation of input quality before analysis.'),
+        ('2. Framework Scoping',
+         f'Adoption of the following frameworks as the formal analysis and '
+         f'alignment scope: {fw_disp} ({fw_long}).'),
+        ('3. Capability Coverage Analysis',
+         'Mapping of the inputs and existing controls against the capability '
+         'families required by the selected frameworks (governance, IAM, '
+         'monitoring, incident response, remote access, data protection…).'),
+        ('4. Gap Analysis and Prioritisation',
+         'Extraction of gaps between the current state and framework '
+         'requirements, prioritised by impact, urgency, and remediability.'),
+        ('5. Roadmap and KPI Design',
+         'Construction of a multi-wave (short/medium/long term) roadmap '
+         'linked to measurable KPIs and KRIs.'),
+        ('6. Risk and Confidence Assessment',
+         'Assessment of execution and change risks plus an overall '
+         'confidence score on the strategy\'s deliverability.'),
+        ('7. Validation and Quality Gates',
+         'Passage through the platform\'s validation chain: domain check, '
+         'content density, framework coverage, semantic audit, then final '
+         'audit before publication.'),
     ]
 
 
@@ -9878,13 +10169,14 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
         return None
 
     if lang == 'ar':
-        header = ['الإطار', 'مجال القدرة', 'الفجوة المرتبطة',
-                  'المبادرة المرتبطة', 'المؤشر / المؤشر الرئيسي',
-                  'الخطر المرتبط']
+        header = ['الإطار المرجعي', 'مجال القدرة / الضابط',
+                  'الفجوة المرتبطة', 'المبادرة / النشاط',
+                  'المؤشر', 'الخطر المرتبط']
         dash = '—'
     else:
-        header = ['Framework', 'Capability', 'Related Gap',
-                  'Related Initiative', 'KPI / KRI', 'Related Risk']
+        header = ['Reference Framework', 'Capability / Control',
+                  'Related Gap', 'Initiative / Activity',
+                  'Metric', 'Related Risk']
         dash = '—'
 
     rows = []
@@ -9915,8 +10207,27 @@ def _build_document_control_rows(metadata, lang):
     today = _dt.date.today().strftime('%d %B %Y')
     org      = (metadata or {}).get('org_name')   or '—'
     sector   = (metadata or {}).get('sector')     or '—'
-    domain   = (metadata or {}).get('domain')     or '—'
-    doc_type = (metadata or {}).get('doc_type')   or '—'
+    domain_raw = (metadata or {}).get('domain')   or ''
+    if lang == 'ar' and domain_raw:
+        try:
+            domain = domain_display_name(domain_raw, 'ar')
+        except Exception:
+            domain = domain_raw
+    else:
+        domain = domain_raw or '—'
+    doc_type_raw = (metadata or {}).get('doc_type') or ''
+    if lang == 'ar' and doc_type_raw:
+        # Translate common English doc-type values to Arabic so the
+        # Arabic doc-control table is fully Arabic.
+        _dt_low = doc_type_raw.strip().lower()
+        if _dt_low in ('strategy document', 'strategy'):
+            doc_type = 'وثيقة استراتيجية'
+        elif _dt_low in ('board executive summary', 'board summary'):
+            doc_type = 'ملخص مجلس الإدارة التنفيذي'
+        else:
+            doc_type = doc_type_raw
+    else:
+        doc_type = doc_type_raw or '—'
     classification = (metadata or {}).get('classification') or (
         'سري' if lang == 'ar' else 'Confidential')
     version  = (metadata or {}).get('version')    or '1.0'
@@ -9948,9 +10259,14 @@ def _build_document_control_rows(metadata, lang):
     ]
 
 
-def _build_appendices_block(selected_fws_keys, lang):
-    """Return a list of (label, body) appendices entries — purely
-    references to the frameworks already used; no strategy content.
+def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
+    """Return a list of (label, body) appendices entries.
+
+    Appendix A — selected reference frameworks (display name + full
+    expansion). Appendix B — glossary of acronyms actually used in the
+    strategy markdown (filtered against ``_GLOSSARY_TERMS``). When no
+    content is provided the glossary still includes the acronyms of the
+    selected frameworks themselves so the appendix is never empty.
     """
     if lang == 'ar':
         out = [(
@@ -9960,24 +10276,56 @@ def _build_appendices_block(selected_fws_keys, lang):
         for k in (selected_fws_keys or []):
             spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
             out.append(('• ' + k, spec.get('display', k)))
+    else:
+        out = [(
+            'Appendix A — Reference Frameworks',
+            'Reference frameworks used to prepare this document:',
+        )]
+        for k in (selected_fws_keys or []):
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
+            out.append(('• ' + k, spec.get('display', k)))
+
+    # Appendix B — glossary of terms actually used (with a minimum of
+    # the framework acronyms themselves).
+    glossary_blob = ''
+    if isinstance(content_sections, dict):
+        glossary_blob = '\n'.join(
+            v for v in (content_sections or {}).values() if isinstance(v, str)
+        )
+    elif isinstance(content_sections, str):
+        glossary_blob = content_sections
+    used = _glossary_terms_used_in_content(glossary_blob)
+    # Always include the framework acronyms (ECC, TCC, …) even if the
+    # glossary helper missed them in pure-acronym form.
+    used_set = {ac for ac, _, _ in used}
+    for fw in (selected_fws_keys or []):
+        if fw in used_set:
+            continue
+        for ac, ar, en in _GLOSSARY_TERMS:
+            if ac == fw:
+                used.append((ac, ar, en))
+                used_set.add(ac)
+                break
+    if lang == 'ar':
         out.append((
             'الملحق ب — قاموس المصطلحات',
-            'يُرجى الرجوع إلى المسرد الداخلي للمنصة للاطلاع على تعريفات '
-            'المصطلحات المستخدمة (KPI، KRI، RTO، RPO، MFA، ZTNA…).'
+            'تعريفات المصطلحات والاختصارات المستخدمة في هذه الوثيقة:',
         ))
-        return out
-    out = [(
-        'Appendix A — Reference Frameworks',
-        'Reference frameworks used to prepare this document:',
-    )]
-    for k in (selected_fws_keys or []):
-        spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
-        out.append(('• ' + k, spec.get('display', k)))
-    out.append((
-        'Appendix B — Glossary',
-        'Refer to the platform internal glossary for definitions of the '
-        'terms used (KPI, KRI, RTO, RPO, MFA, ZTNA, …).'
-    ))
+        if used:
+            for ac, ar, _en in used:
+                out.append(('• ' + ac, ar))
+        else:
+            out.append(('• —', 'لا توجد مصطلحات إضافية للعرض.'))
+    else:
+        out.append((
+            'Appendix B — Glossary',
+            'Definitions of the acronyms and terms used in this document:',
+        ))
+        if used:
+            for ac, _ar, en in used:
+                out.append(('• ' + ac, en))
+        else:
+            out.append(('• —', 'No additional terms to display.'))
     return out
 
 
@@ -10016,12 +10364,38 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
     lang_n = 'ar' if lang == 'ar' else 'en'
     metadata = metadata or {}
     domain = metadata.get('domain') or ''
-    fws_keys = _resolve_selected_frameworks(
-        selected_frameworks or metadata.get('selected_frameworks') or [],
-        domain or None,
+    _explicit_input = (
+        selected_frameworks or metadata.get('selected_frameworks') or []
     )
+    fws_keys = _resolve_selected_frameworks(_explicit_input, domain or None)
     content_sections = sections if isinstance(sections, dict) else \
         _split_strategy_sections_by_h2(content or '')
+    # PR-5B.8S — inference fallback. When no explicit frameworks were
+    # passed (or the explicit list resolved to nothing), and the strategy
+    # body clearly mentions specific frameworks (ECC NCA / TCC NCA / …),
+    # infer them so the composer never reports "0 frameworks" for a
+    # strategy that obviously covers them. Explicit input always wins.
+    _frameworks_inferred = False
+    if not fws_keys:
+        try:
+            _scan_blob = (content or '') + '\n' + '\n'.join(
+                v for v in (content_sections or {}).values()
+                if isinstance(v, str)
+            )
+            inferred = _infer_frameworks_from_content(_scan_blob, domain or None)
+            if inferred:
+                fws_keys = inferred
+                _frameworks_inferred = True
+                print(
+                    f'[EXPORT-DIAG] framework_inferred '
+                    f'lang={lang_n} domain={domain!r} '
+                    f'inferred={inferred} '
+                    f'reason="no_explicit_selected_frameworks"',
+                    flush=True,
+                )
+        except Exception as _inf_e:
+            print(f'[EXPORT-DIAG] framework_inference_failed: {_inf_e}',
+                  flush=True)
 
     L = lambda key: _strategy_doc_label(key, lang_n)  # noqa: E731
 
@@ -10043,7 +10417,8 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
     governance_rows  = _extract_owners_from_content(content_sections, lang_n)
     traceability     = _build_traceability_matrix(
         content_sections, fws_keys, lang_n)
-    appendices       = _build_appendices_block(fws_keys, lang_n)
+    appendices       = _build_appendices_block(
+        fws_keys, lang_n, content_sections=content_sections)
 
     # Canonical ordered block list. ``strategy_body`` is the original
     # AI-generated markdown rendered as the "main strategy sections".
@@ -10085,7 +10460,10 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
                                  'paragraphs': exec_paras},
         'scope_frameworks':     {'title': L('scope_frameworks'),
                                  'frameworks': scope_items,
-                                 'frameworks_keys': list(fws_keys)},
+                                 'frameworks_keys': list(fws_keys),
+                                 'frameworks_inferred': _frameworks_inferred,
+                                 'frameworks_explicit_input':
+                                     list(_explicit_input or [])},
         'methodology':          {'title': L('methodology'),
                                  'rows': methodology_rows},
         'current_state':        {'title': L('current_state'),
@@ -10101,7 +10479,8 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
                                  'entries': appendices},
     }
     return {'lang': lang_n, 'order': order, 'blocks': blocks,
-            'selected_frameworks': list(fws_keys)}
+            'selected_frameworks': list(fws_keys),
+            'frameworks_inferred': _frameworks_inferred}
 
 
 def ensure_markdown_formatting(text):
@@ -37322,6 +37701,11 @@ def api_generate_pdf_async():
     _art_id_inner    = _art_id_a
     _art_type_inner  = _art_type_a
     _gen_mode_inner  = _gen_mode_a
+    # PR-5B.8S: forward selected_frameworks so the professional document
+    # composer in the inner api_generate_pdf() receives the user's
+    # framework selection and never falls back to "0 frameworks".
+    _selected_fws_inner = (data.get('selected_frameworks')
+                           or data.get('frameworks') or [])
 
     def _build_pdf():
         import tempfile
@@ -37347,7 +37731,11 @@ def api_generate_pdf_async():
                       # client-payload path with artifact_id=None).
                       'artifact_id': _art_id_inner,
                       'artifact_type': _art_type_inner,
-                      'generation_mode': _gen_mode_inner},
+                      'generation_mode': _gen_mode_inner,
+                      # PR-5B.8S — forward selected frameworks so the
+                      # composer's scope/methodology/traceability blocks
+                      # are populated correctly.
+                      'selected_frameworks': _selected_fws_inner},
                 headers={'Content-Type': 'application/json'}
             ):
                 # Manually patch session for auth
@@ -40439,26 +40827,61 @@ def api_generate_pdf():
             rows = block.get('rows', []) or []
             flow = list(_pro_section_heading(block.get('title', '')))
             tbl_rows = []
-            for label, value in rows:
+            if is_arabic:
+                # Arabic header — value column on the LEFT, label column on
+                # the RIGHT (so labels visually appear on the right side as
+                # required by RTL conventions). Each row is rendered as
+                # (value, label) so columns line up under the headers.
                 tbl_rows.append([
-                    Paragraph(f"<b>{_pro_text(label, 'label')}</b>", _pro_label_sty),
-                    Paragraph(_pro_text(value, 'value'), _pro_value_sty),
+                    Paragraph(f"<b>{_pro_text('القيمة', 'label')}</b>",
+                              _pro_label_sty),
+                    Paragraph(f"<b>{_pro_text('الحقل',  'label')}</b>",
+                              _pro_label_sty),
                 ])
-            if not tbl_rows:
+                for label, value in rows:
+                    tbl_rows.append([
+                        Paragraph(_pro_text(value, 'value'), _pro_value_sty),
+                        Paragraph(f"<b>{_pro_text(label, 'label')}</b>",
+                                  _pro_label_sty),
+                    ])
+                # Wider column on the RIGHT (label area? no — value area).
+                # Keep label column compact (right side) and value column
+                # wider (left side).
+                col_widths = [_PRO_PAGE_W * 0.68, _PRO_PAGE_W * 0.32]
+                _label_col_idx = 1
+            else:
+                tbl_rows.append([
+                    Paragraph(f"<b>{_pro_text('Field', 'label')}</b>",
+                              _pro_label_sty),
+                    Paragraph(f"<b>{_pro_text('Value', 'label')}</b>",
+                              _pro_label_sty),
+                ])
+                for label, value in rows:
+                    tbl_rows.append([
+                        Paragraph(f"<b>{_pro_text(label, 'label')}</b>",
+                                  _pro_label_sty),
+                        Paragraph(_pro_text(value, 'value'), _pro_value_sty),
+                    ])
+                col_widths = [_PRO_PAGE_W * 0.32, _PRO_PAGE_W * 0.68]
+                _label_col_idx = 0
+            if len(tbl_rows) <= 1:
                 return flow
-            tbl = Table(
-                tbl_rows,
-                colWidths=[_PRO_PAGE_W * 0.32, _PRO_PAGE_W * 0.68],
-            )
+            tbl = Table(tbl_rows, colWidths=col_widths, repeatRows=1)
             tbl.setStyle(TableStyle([
-                ('BACKGROUND',    (0, 0), (0, -1), colors.HexColor('#F3F4F6')),
-                ('LINEBELOW',     (0, 0), (-1, -1), 0.4, colors.HexColor('#D1D5DB')),
+                # Header row
+                ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                # Body label-column shading
+                ('BACKGROUND',    (_label_col_idx, 1),
+                                  (_label_col_idx, -1),
+                                  colors.HexColor('#F3F4F6')),
+                ('LINEBELOW',     (0, 0), (-1, -1), 0.4,
+                                  colors.HexColor('#D1D5DB')),
                 ('TOPPADDING',    (0, 0), (-1, -1), 6),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
                 ('LEFTPADDING',   (0, 0), (-1, -1), 8),
                 ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
                 ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-                ('LINEBEFORE',    (0, 0), (0, -1), 3, _PRO_ACC),
             ]))
             flow.append(tbl)
             flow.append(Spacer(1, 0.3 * inch))
@@ -40477,17 +40900,44 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             fws = block.get('frameworks') or []
             if not fws:
-                # Still emit a clear placeholder line so the absence is
-                # explicit (helps debugging) but flag it for the gate.
+                # PR-5B.8S — Distinguish between "no frameworks at all"
+                # (clean message) vs "frameworks were not forwarded to the
+                # export pipeline even though the strategy clearly mentions
+                # them" (warning that points the user to the data flow).
+                _explicit = block.get('frameworks_explicit_input') or []
+                if not _explicit:
+                    msg_ar = (
+                        'لم يتم تمرير الأطر المرجعية إلى مسار التصدير. '
+                        'يرجى إعادة تشغيل التصدير من شاشة الاستراتيجية مع '
+                        'اختيار الأطر المرجعية.'
+                    )
+                    msg_en = (
+                        'Reference frameworks were not forwarded to the '
+                        'export pipeline. Please re-run the export from the '
+                        'strategy screen with frameworks selected.'
+                    )
+                else:
+                    msg_ar = 'لم يتم تحديد أطر مرجعية صريحة لهذه الوثيقة.'
+                    msg_en = ('No reference frameworks were explicitly '
+                              'selected for this document.')
                 flow.append(Paragraph(
-                    _pro_text(
-                        'لم يتم تحديد أطر مرجعية صريحة لهذه الوثيقة.'
-                        if is_arabic else
-                        'No reference frameworks were explicitly selected for this document.',
-                        'body'),
+                    _pro_text(msg_ar if is_arabic else msg_en, 'body'),
                     _pro_body_sty,
                 ))
                 return flow
+            # When frameworks were inferred from content (not passed
+            # explicitly) emit a small note so the reader knows the
+            # provenance — no spurious "0 frameworks" line.
+            if block.get('frameworks_inferred'):
+                note_ar = ('ملاحظة: تم استنتاج الأطر المرجعية أدناه من محتوى '
+                           'الاستراتيجية لعدم تمريرها صراحةً إلى مسار التصدير.')
+                note_en = ('Note: the reference frameworks below were '
+                           'inferred from the strategy content — they were '
+                           'not explicitly forwarded to the export pipeline.')
+                flow.append(Paragraph(
+                    _pro_text(note_ar if is_arabic else note_en, 'body'),
+                    _pro_body_sty,
+                ))
             for fw in fws:
                 key  = fw.get('key', '')
                 disp = fw.get('display', key)
