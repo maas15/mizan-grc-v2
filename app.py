@@ -34433,6 +34433,55 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         pass
                                     _vis_before = sections.get(
                                         'vision', '') or ''
+                                    # PR-5B.8X — Compute the effective
+                                    # minimum SO row count BEFORE invoking
+                                    # AI repair so the repair prompt is
+                                    # told to produce at least as many
+                                    # valid Strategic Objective rows as
+                                    # the post-normalization save gate
+                                    # requires (consulting/assurance: 6;
+                                    # drafting: _RICHNESS_MIN_SO_ROWS).
+                                    # Never weaken below the row count we
+                                    # already have — the repair must
+                                    # PRESERVE existing valid objectives
+                                    # and add/adjust only what is needed
+                                    # for the compliance objective.
+                                    _v_before_rows = (
+                                        count_valid_objective_rows(
+                                            _vis_before))
+                                    _gm_lc = (_generation_mode
+                                              or '').strip().lower()
+                                    if _gm_lc in ('consulting',
+                                                  'assurance'):
+                                        _vis_min_rows = 6
+                                    else:
+                                        _vis_min_rows = (
+                                            _RICHNESS_MIN_SO_ROWS)
+                                    _vis_min_rows = max(
+                                        _vis_min_rows, _v_before_rows)
+                                    _ve_msg_full = (
+                                        _ve_msg
+                                        + ' Mandatory output requirements:'
+                                        + f' (1) at least {_vis_min_rows}'
+                                        + ' valid Strategic Objective rows'
+                                        + ' in the canonical objectives'
+                                        + ' table; (2) one explicit'
+                                        + ' compliance objective for the'
+                                        + ' selected frameworks above;'
+                                        + ' (3) no placeholder rows or'
+                                        + ' bracketed tokens; (4) every'
+                                        + ' row must include a valid'
+                                        + ' Timeframe value (e.g.'
+                                        + ' "12 شهراً" / "12 months");'
+                                        + ' (5) preserve the canonical'
+                                        + ' Arabic / English table'
+                                        + ' headers used by the section;'
+                                        + ' (6) preserve all existing'
+                                        + ' valid Strategic Objective'
+                                        + ' rows — do NOT remove any'
+                                        + ' valid objective in order to'
+                                        + ' add the compliance one.'
+                                    )
                                     try:
                                         _new_vis = ai_repair_strategy_section(
                                             section_key='vision',
@@ -34444,12 +34493,66 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             maturity=maturity,
                                             generation_mode=(
                                                 _generation_mode),
-                                            validation_error=_ve_msg,
+                                            validation_error=_ve_msg_full,
+                                            min_rows=_vis_min_rows,
                                         )
-                                        if _new_vis and _new_vis.strip():
+                                        # PR-5B.8X — Re-run
+                                        # count_valid_objective_rows on the
+                                        # AI-repaired vision BEFORE we
+                                        # accept it. The framework-
+                                        # compliance repair path must not
+                                        # be allowed to overwrite a
+                                        # ≥6-row vision with a 4-row
+                                        # vision (which would surface
+                                        # downstream as
+                                        # ``vision_so_rows=4 (need ≥ 6)``
+                                        # at the post-normalization audit
+                                        # gate). If the repaired output
+                                        # falls below the effective
+                                        # minimum, leave
+                                        # ``sections['vision']`` UNCHANGED
+                                        # and mark synth_failed.
+                                        _new_rows = (
+                                            count_valid_objective_rows(
+                                                _new_vis or ''))
+                                        if (_new_vis
+                                                and _new_vis.strip()
+                                                and _new_rows
+                                                >= _vis_min_rows):
                                             sections['vision'] = _new_vis
-                                        # Revalidate after repair — fail
-                                        # closed if still missing.
+                                        elif _new_vis and _new_vis.strip():
+                                            # Repaired output is too thin
+                                            # — keep the original vision
+                                            # and fail closed.
+                                            sections['vision'] = (
+                                                _vis_before)
+                                            _err = RepairError(
+                                                'framework-compliance '
+                                                'repair produced '
+                                                f'{_new_rows} valid '
+                                                'Strategic Objective '
+                                                'rows; required '
+                                                f'>= {_vis_min_rows} '
+                                                '(generation_mode='
+                                                f'{_generation_mode!r})'
+                                            )
+                                            setattr(_err, 'section',
+                                                    'vision')
+                                            _mark_synth_failed(
+                                                _synth_status, 'vision',
+                                                _err)
+                                            print(
+                                                '[FW-COMPLIANCE-OBJECTIVE'
+                                                '-REPAIR] '
+                                                f'rows_after_repair='
+                                                f'{_new_rows} '
+                                                f'required={_vis_min_rows}'
+                                                ' — restored original '
+                                                'vision',
+                                                flush=True,
+                                            )
+                                        # Revalidate compliance objective
+                                        # — fail closed if still missing.
                                         _still_missing = (
                                             _compute_missing_compliance_objective(
                                                 sections, _frameworks_raw,
