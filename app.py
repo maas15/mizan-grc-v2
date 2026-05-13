@@ -20301,6 +20301,23 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
         setattr(_err, 'section', 'vision')
         raise _err
 
+    # PR-5B.9G — template-marker hard-fail: even when the row count
+    # passes, an AI repair that leaks scaffolding tokens (EN_TEMPLATE,
+    # placeholder markers, unreplaced ``{...}`` / ``[framework]`` /
+    # ``[organization]`` slots, etc.) must NOT be assigned. Restoring
+    # the original vision and raising RepairError(section='vision')
+    # routes the failure through _mark_synth_failed and the post-
+    # normalization audit gate fails closed.
+    _marker_hits = _vision_template_marker_hits(repaired)
+    if _marker_hits:
+        _err = RepairError(
+            f'synthesize_objectives_depth: AI-repaired vision contains '
+            f'template/placeholder markers: '
+            + ','.join(_marker_hits[:6])
+        )
+        setattr(_err, 'section', 'vision')
+        raise _err
+
     sections['vision'] = repaired
     summary['rebuilt'] = True
     summary['total_after'] = n_after
@@ -22622,6 +22639,358 @@ def _compute_applicable_strategy_obligations(
         'lang': lang,
         'diagnostic_context': diagnostic_context or {},
     }
+
+
+# ── PR-5B.9G: Vision repair contract — single safe assignment guard ────────
+# After PR-5B.9F (VISION-OBLIGATIONS-REPAIR) the unified composite repair
+# pass became the canonical Vision writer. Runtime evidence shows the AI
+# can still emit a candidate vision that:
+#   * has fewer rows than ``min_objective_rows`` (vision_so_rows=4/0
+#     defects),
+#   * contains English/Arabic prompt scaffolding markers
+#     (``vision_contains_en_template_marker``),
+#   * leaks unselected frameworks into the body (e.g. SAMA CSF when the
+#     scope is ECC + TCC only),
+#   * loses an existing-valid Strategic Objective row, or
+#   * misses a mandatory specialized-function / compliance objective.
+#
+# Every AI-repair Vision write must now pass through
+# ``_assign_vision_if_valid_or_restore``. Direct assignments that come
+# from AI repair / synthesis are forbidden — the helper validates the
+# candidate against the FULL contract and either accepts it or restores
+# the original Vision and marks ``synth_failed:vision`` so the post-
+# normalization audit fails closed.
+#
+# AI-first only: no validators are weakened, no minimum row count is
+# reduced, no deterministic objective rows are inserted, no AI provider
+# logic is changed.
+
+# Markers that, if present in candidate Vision text, indicate the AI
+# leaked prompt scaffolding / placeholder tokens / unreplaced template
+# slots. Any hit causes the safe-assign guard to reject the candidate.
+_VISION_TEMPLATE_MARKERS = (
+    'EN_TEMPLATE',
+    'AR_TEMPLATE',
+    '<<TEMPLATE>>',
+    '<<PLACEHOLDER>>',
+    '<<EN_TEMPLATE>>',
+    '<<AR_TEMPLATE>>',
+    'PLACEHOLDER_MARKER',
+    '<INSERT',
+    'INSERT_HERE',
+    'TODO:',
+    'TODO ',
+    'TBD',
+    '[framework]',
+    '[Framework]',
+    '[FRAMEWORK]',
+    '[organization]',
+    '[Organization]',
+    '[ORGANIZATION]',
+    '[org_name]',
+    '[domain]',
+    '[Domain]',
+    '[sector]',
+    '[Sector]',
+    '[maturity]',
+    '{framework}',
+    '{organization}',
+    '{org_name}',
+    '{domain}',
+    '{sector}',
+    '{lang}',
+    '{maturity}',
+)
+
+# Generic placeholder regex — catches ``{placeholder}``,
+# ``[bracket_token]``, ``<<MARKER>>`` shapes the scaffolding might emit
+# even when the literal token is not in the curated list above.
+_VISION_PLACEHOLDER_RE = _ts_re.compile(
+    r'\{[A-Za-z_][A-Za-z0-9_]*\}'
+    r'|\[(?:framework|organization|org_name|domain|sector|maturity|'
+    r'lang|fw_short)\]'
+    r'|<<[A-Z_][A-Z0-9_]*>>',
+    _ts_re.IGNORECASE,
+)
+
+
+def _vision_template_marker_hits(vision_text):
+    """Return list of template-marker tokens detected in ``vision_text``.
+
+    Includes both the curated literal markers (``_VISION_TEMPLATE_MARKERS``)
+    and the generic placeholder regex matches. An empty list means the
+    candidate is free of scaffolding tokens.
+    """
+    if not vision_text:
+        return []
+    text = str(vision_text)
+    hits = []
+    seen = set()
+    for marker in _VISION_TEMPLATE_MARKERS:
+        if marker and marker in text and marker not in seen:
+            hits.append(marker)
+            seen.add(marker)
+    for m in _VISION_PLACEHOLDER_RE.finditer(text):
+        token = m.group(0)
+        if token and token not in seen:
+            hits.append(token)
+            seen.add(token)
+    # Reject the literal scaffolding label "Objective 1:" / "Objective 2:"
+    # in an Arabic strategy — the AI sometimes leaves the English
+    # placeholder header in place when row content is missing.
+    if _ts_re.search(r'\bObjective\s+\d+\s*:\s*<', text):
+        if 'Objective N: <' not in seen:
+            hits.append('Objective N: <')
+    return hits
+
+
+# Per-framework "leakage tokens" — the unambiguous strings that, when
+# present in Vision content while the framework is NOT selected, signal
+# scope leakage (e.g. SAMA CSF appearing in an ECC + TCC strategy).
+# We deliberately use the registry key word-bounded plus a small set of
+# explicit Arabic/English aliases per framework to avoid false positives
+# on capability vocabulary that happens to appear in alias lists.
+_VISION_LEAKAGE_EXTRA_TOKENS = {
+    'SAMA': ('ساما', 'إطار ساما', 'ضوابط ساما', 'SAMA CSF',
+             'SAMA Cybersecurity'),
+    'NDMO': ('NDMO',),
+    'CITC': ('CITC',),
+    'SDAIA': ('SDAIA', 'سدايا'),
+}
+
+
+def _vision_leaked_frameworks(vision_text, selected_frameworks,
+                              domain=None):
+    """Return registry framework keys mentioned in ``vision_text`` that
+    are NOT in the resolved ``selected_frameworks`` set.
+
+    The check is intentionally conservative: it word-bounds the registry
+    key (case-insensitive) and additionally checks a curated set of
+    explicit Arabic/English tokens per framework. Capability aliases
+    (e.g. ``data classification``, ``MFA``, ``endpoint``) are NOT used
+    because they would false-positive on benign domain vocabulary.
+    """
+    if not vision_text:
+        return []
+    text = str(vision_text)
+    try:
+        selected = set(_resolve_selected_frameworks(
+            selected_frameworks, domain) or [])
+    except Exception:  # noqa: BLE001 — defensive
+        selected = set(selected_frameworks or [])
+    leaked = []
+    for fwk in _FRAMEWORK_COVERAGE_REQUIREMENTS:
+        if fwk in selected:
+            continue
+        # Word-bounded ASCII match for the registry key.
+        if _ts_re.search(
+                r'\b' + _ts_re.escape(fwk) + r'\b',
+                text, _ts_re.IGNORECASE):
+            leaked.append(fwk)
+            continue
+        for tok in _VISION_LEAKAGE_EXTRA_TOKENS.get(fwk, ()):
+            if tok and tok in text:
+                leaked.append(fwk)
+                break
+    return leaked
+
+
+def _validate_vision_contract(
+        vision_text,
+        domain,
+        selected_frameworks,
+        org_structure_is_none,
+        generation_mode,
+        lang,
+        original_valid_rows=0):
+    """Validate a candidate Vision section against the full PR-5B.9G
+    contract.
+
+    Returns a dict::
+
+        {
+            'ok': bool,
+            'errors': [str, ...],
+            'rows': int,
+            'required_min_rows': int,
+            'has_compliance': bool,
+            'has_specialized': bool,
+            'has_template_marker': bool,
+            'leaked_frameworks': [str, ...],
+        }
+
+    The function is read-only — it never mutates ``sections``, never
+    weakens any threshold, and never inserts deterministic content.
+    Callers MUST use ``_assign_vision_if_valid_or_restore`` to commit
+    a candidate Vision; this helper only reports.
+    """
+    errors = []
+    text = vision_text or ''
+
+    # 1-4. Template / placeholder / unreplaced bracket markers.
+    marker_hits = _vision_template_marker_hits(text)
+    has_template_marker = bool(marker_hits)
+    if has_template_marker:
+        errors.append(
+            'vision_contains_en_template_marker:'
+            + ','.join(marker_hits[:6])
+        )
+
+    # 5. Language sanity — Arabic strategy must contain Arabic letters.
+    if (lang or '').lower() == 'ar' and text.strip():
+        if not _ts_re.search(r'[\u0600-\u06FF]', text):
+            errors.append('vision_language_mismatch:expected_ar')
+
+    # 6/7/8. Row-count obligations — derived from
+    # ``_compute_applicable_strategy_obligations`` so we share the same
+    # min_objective_rows the audit / converge loop already enforce.
+    obligations = _compute_applicable_strategy_obligations(
+        domain=domain,
+        selected_frameworks=selected_frameworks,
+        org_structure_is_none=bool(org_structure_is_none),
+        generation_mode=generation_mode,
+        lang=lang,
+    )
+    required_min = int(
+        obligations.get('min_objective_rows', _RICHNESS_MIN_SO_ROWS)
+        or _RICHNESS_MIN_SO_ROWS)
+    # Never below original_valid_rows — preserve every existing valid
+    # row (the candidate must NOT shrink a previously-valid table).
+    try:
+        original_valid_rows = int(original_valid_rows or 0)
+    except (TypeError, ValueError):
+        original_valid_rows = 0
+    required_min = max(required_min, original_valid_rows)
+    rows = count_valid_objective_rows(text)
+    if rows < required_min:
+        errors.append(
+            f'vision_so_rows={rows} (need >= {required_min})'
+        )
+
+    # 9. Selected-framework compliance objective.
+    staged = {'vision': text}
+    fws_for_check = selected_frameworks or []
+    has_compliance = True
+    if fws_for_check:
+        missing_compliance = (
+            _compute_missing_compliance_objective(
+                staged, fws_for_check, domain=domain, lang=lang)
+            or [])
+        if missing_compliance:
+            has_compliance = False
+            errors.append(
+                'selected_framework_compliance_objective_missing:'
+                + ','.join(missing_compliance)
+            )
+
+    # 10. Specialized-function objective when the org has none.
+    has_specialized = True
+    if org_structure_is_none:
+        sf_missing = _compute_missing_specialized_function_objective(
+            staged, domain, lang=lang,
+            org_structure_is_none=True,
+        )
+        if sf_missing:
+            has_specialized = False
+            try:
+                _dcode = normalize_domain(domain or '')
+            except Exception:  # noqa: BLE001 — defensive
+                _dcode = ''
+            errors.append(
+                'specialized_function_objective_missing:'
+                + (_dcode or 'domain')
+            )
+
+    # 11. Framework leakage — non-selected frameworks must not appear.
+    leaked = _vision_leaked_frameworks(
+        text, fws_for_check, domain=domain)
+    if leaked:
+        errors.append(
+            'vision_mentions_unselected_framework:'
+            + ','.join(leaked)
+        )
+
+    return {
+        'ok': not errors,
+        'errors': errors,
+        'rows': rows,
+        'required_min_rows': required_min,
+        'has_compliance': has_compliance,
+        'has_specialized': has_specialized,
+        'has_template_marker': has_template_marker,
+        'leaked_frameworks': list(leaked),
+    }
+
+
+def _assign_vision_if_valid_or_restore(
+        sections, candidate_vision, original_vision,
+        *, domain, selected_frameworks,
+        org_structure_is_none, generation_mode, lang,
+        synth_status=None, original_valid_rows=None,
+        repair_label='vision'):
+    """Validate ``candidate_vision`` against the PR-5B.9G contract and
+    either assign it to ``sections['vision']`` or restore
+    ``original_vision`` and mark ``synth_failed:vision`` so the post-
+    normalization audit fails closed.
+
+    Returns the validation report (see ``_validate_vision_contract``)
+    augmented with ``report['assign_allowed']``. Always emits a
+    ``[VISION-CONTRACT]`` diagnostic log line.
+    """
+    if original_valid_rows is None:
+        try:
+            original_valid_rows = count_valid_objective_rows(
+                original_vision or '')
+        except Exception:  # noqa: BLE001 — defensive
+            original_valid_rows = 0
+    report = _validate_vision_contract(
+        candidate_vision or '',
+        domain=domain,
+        selected_frameworks=selected_frameworks,
+        org_structure_is_none=org_structure_is_none,
+        generation_mode=generation_mode,
+        lang=lang,
+        original_valid_rows=original_valid_rows,
+    )
+    assign_allowed = bool(
+        report['ok']
+        and candidate_vision
+        and str(candidate_vision).strip())
+    report['assign_allowed'] = assign_allowed
+    if assign_allowed:
+        sections['vision'] = candidate_vision
+    else:
+        # Restore original Vision so the section is never left in a
+        # partially-repaired state. Then mark synth_failed so the
+        # post-normalization audit gate blocks the save.
+        if original_vision is not None:
+            sections['vision'] = original_vision
+        else:
+            sections['vision'] = sections.get('vision', '') or ''
+        if synth_status is not None:
+            try:
+                _err = RepairError(
+                    f'{repair_label}: vision contract rejected — '
+                    + '; '.join(report['errors'][:6])
+                )
+                setattr(_err, 'section', 'vision')
+                _mark_synth_failed(synth_status, 'vision', _err)
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+
+    print(
+        '[VISION-CONTRACT] '
+        f'assign_allowed={assign_allowed} '
+        f'rows={report["rows"]} '
+        f'required={report["required_min_rows"]} '
+        f'has_compliance={report["has_compliance"]} '
+        f'has_specialized={report["has_specialized"]} '
+        f'has_template_marker={report["has_template_marker"]} '
+        f'leaked_frameworks={report["leaked_frameworks"]} '
+        f'label={repair_label}',
+        flush=True,
+    )
+    return report
 
 
 def _final_strategy_audit(sections, lang, doc_subtype=None,
@@ -36241,53 +36610,42 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 if (_sk == 'vision'
                                                         and _vis_min_rows
                                                         is not None):
-                                                    _new_rows = (
-                                                        count_valid_objective_rows(
-                                                            _new))
-                                                    if (_new_rows
-                                                            >= _vis_min_rows):
-                                                        sections[_sk] = (
-                                                            _new)
-                                                    else:
-                                                        # Repaired
-                                                        # vision is too
-                                                        # thin — restore
-                                                        # original and
-                                                        # fail closed.
-                                                        sections['vision'] = (
-                                                            _vis_before_text)
-                                                        _err = RepairError(
-                                                            'framework-'
-                                                            'coverage repair'
-                                                            ' produced '
-                                                            f'{_new_rows} '
-                                                            'valid '
-                                                            'Strategic '
-                                                            'Objective rows;'
-                                                            ' required '
-                                                            f'>= '
-                                                            f'{_vis_min_rows}'
-                                                            ' (generation_'
-                                                            f'mode='
-                                                            f'{_generation_mode!r})'
-                                                        )
-                                                        setattr(_err,
-                                                                'section',
-                                                                'vision')
-                                                        _mark_synth_failed(
-                                                            _synth_status,
-                                                            'vision', _err)
-                                                        print(
-                                                            '[FW-COVERAGE-'
-                                                            'REPAIR] vision '
-                                                            f'rows_after='
-                                                            f'{_new_rows} '
-                                                            f'required='
-                                                            f'{_vis_min_rows}'
-                                                            ' — restored '
-                                                            'original',
-                                                            flush=True,
-                                                        )
+                                                    # PR-5B.9G — route the
+                                                    # AI-repair Vision
+                                                    # candidate through the
+                                                    # safe-assign guard so
+                                                    # template markers,
+                                                    # row-count regressions
+                                                    # and framework leakage
+                                                    # are rejected
+                                                    # atomically before the
+                                                    # write commits.
+                                                    _assign_vision_if_valid_or_restore(
+                                                        sections,
+                                                        _new,
+                                                        _vis_before_text,
+                                                        domain=domain,
+                                                        selected_frameworks=(
+                                                            _frameworks_raw),
+                                                        org_structure_is_none=(
+                                                            bool(
+                                                                _final_ctx.get(
+                                                                    'org_structure_is_none',
+                                                                    False)
+                                                                if isinstance(
+                                                                    _final_ctx,
+                                                                    dict)
+                                                                else False)),
+                                                        generation_mode=(
+                                                            _generation_mode),
+                                                        lang=lang,
+                                                        synth_status=(
+                                                            _synth_status),
+                                                        original_valid_rows=(
+                                                            _v_before_rows),
+                                                        repair_label=(
+                                                            'fw-coverage-repair'),
+                                                    )
                                                 else:
                                                     sections[_sk] = _new
                                         except RepairError as _fre:
@@ -36464,45 +36822,38 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         # minimum, leave
                                         # ``sections['vision']`` UNCHANGED
                                         # and mark synth_failed.
-                                        _new_rows = (
-                                            count_valid_objective_rows(
-                                                _new_vis or ''))
-                                        if (_new_vis
-                                                and _new_vis.strip()
-                                                and _new_rows
-                                                >= _vis_min_rows):
-                                            sections['vision'] = _new_vis
-                                        elif _new_vis and _new_vis.strip():
-                                            # Repaired output is too thin
-                                            # — keep the original vision
-                                            # and fail closed.
-                                            sections['vision'] = (
-                                                _vis_before)
-                                            _err = RepairError(
-                                                'framework-compliance '
-                                                'repair produced '
-                                                f'{_new_rows} valid '
-                                                'Strategic Objective '
-                                                'rows; required '
-                                                f'>= {_vis_min_rows} '
-                                                '(generation_mode='
-                                                f'{_generation_mode!r})'
-                                            )
-                                            setattr(_err, 'section',
-                                                    'vision')
-                                            _mark_synth_failed(
-                                                _synth_status, 'vision',
-                                                _err)
-                                            print(
-                                                '[FW-COMPLIANCE-OBJECTIVE'
-                                                '-REPAIR] '
-                                                f'rows_after_repair='
-                                                f'{_new_rows} '
-                                                f'required={_vis_min_rows}'
-                                                ' — restored original '
-                                                'vision',
-                                                flush=True,
-                                            )
+                                        # PR-5B.9G — route the AI-repair
+                                        # Vision candidate through the
+                                        # safe-assign guard so template
+                                        # markers, row-count regressions,
+                                        # and framework leakage are all
+                                        # rejected atomically before the
+                                        # write commits.
+                                        _vo_org_none_ctx = bool(
+                                            _final_ctx.get(
+                                                'org_structure_is_none',
+                                                False)
+                                            if isinstance(
+                                                _final_ctx, dict)
+                                            else False)
+                                        _assign_vision_if_valid_or_restore(
+                                            sections,
+                                            _new_vis,
+                                            _vis_before,
+                                            domain=domain,
+                                            selected_frameworks=(
+                                                _frameworks_raw),
+                                            org_structure_is_none=(
+                                                _vo_org_none_ctx),
+                                            generation_mode=(
+                                                _generation_mode),
+                                            lang=lang,
+                                            synth_status=_synth_status,
+                                            original_valid_rows=(
+                                                _v_before_rows),
+                                            repair_label=(
+                                                'fw-compliance-objective-repair'),
+                                        )
                                         # Revalidate compliance objective
                                         # — fail closed if still missing.
                                         _still_missing = (
@@ -36755,84 +37106,62 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             org_structure_is_none=(
                                                 _vo_org_none),
                                         )
-                                        # Atomically validate ALL
-                                        # obligations on the AI-repaired
-                                        # vision before accepting.
-                                        _vo_accept = False
-                                        _vo_after_rows = -1
-                                        _vo_after_compliance = []
-                                        _vo_after_sf = False
-                                        if _vo_new and _vo_new.strip():
-                                            _vo_after_rows = (
-                                                count_valid_objective_rows(
-                                                    _vo_new))
-                                            _vo_staged = dict(sections)
-                                            _vo_staged['vision'] = _vo_new
-                                            _vo_after_compliance = (
-                                                _compute_missing_compliance_objective(
-                                                    _vo_staged,
-                                                    _frameworks_raw,
-                                                    domain=domain,
-                                                    lang=lang,
-                                                )
-                                                if _frameworks_raw
-                                                else [])
-                                            _vo_after_sf = (
-                                                _compute_missing_specialized_function_objective(
-                                                    _vo_staged, domain,
-                                                    lang=lang,
-                                                    org_structure_is_none=(
-                                                        _vo_org_none),
-                                                )
-                                                if _vo_org_none
-                                                else False)
-                                            if (_vo_after_rows
-                                                    >= _vo_min_rows_req
-                                                    and not
-                                                    _vo_after_compliance
-                                                    and not _vo_after_sf):
-                                                _vo_accept = True
-                                        if _vo_accept:
-                                            sections['vision'] = _vo_new
+                                        # PR-5B.9G — route the AI-repair
+                                        # Vision candidate through the
+                                        # safe-assign guard. The contract
+                                        # validator atomically enforces
+                                        # all PR-5B.9F composite
+                                        # obligations (row count,
+                                        # compliance objective,
+                                        # specialized-function objective)
+                                        # PLUS template-marker rejection
+                                        # and framework-leakage rejection.
+                                        # On failure the original Vision
+                                        # is restored and synth_failed is
+                                        # marked so the post-normalization
+                                        # audit fails closed.
+                                        _vo_before_rows = (
+                                            count_valid_objective_rows(
+                                                _vo_before_text))
+                                        _vo_report = (
+                                            _assign_vision_if_valid_or_restore(
+                                                sections,
+                                                _vo_new,
+                                                _vo_before_text,
+                                                domain=domain,
+                                                selected_frameworks=(
+                                                    _frameworks_raw),
+                                                org_structure_is_none=(
+                                                    _vo_org_none),
+                                                generation_mode=(
+                                                    _generation_mode),
+                                                lang=lang,
+                                                synth_status=(
+                                                    _synth_status),
+                                                original_valid_rows=(
+                                                    _vo_before_rows),
+                                                repair_label=(
+                                                    'vision-obligations-repair'),
+                                            ))
+                                        if _vo_report.get('assign_allowed'):
                                             print(
                                                 '[VISION-OBLIGATIONS-'
                                                 'REPAIR] accepted '
-                                                f'rows={_vo_after_rows}'
+                                                f'rows={_vo_report["rows"]}'
                                                 f'/{_vo_min_rows_req} '
                                                 'compliance_ok='
-                                                f'{not _vo_after_compliance}'
+                                                f'{_vo_report["has_compliance"]}'
                                                 ' specialized_function_ok='
-                                                f'{not _vo_after_sf}',
+                                                f'{_vo_report["has_specialized"]}',
                                                 flush=True,
                                             )
                                         else:
-                                            sections['vision'] = (
-                                                _vo_before_text)
-                                            _vo_err = RepairError(
-                                                'vision composite-'
-                                                'obligation repair '
-                                                'failed: '
-                                                f'rows={_vo_after_rows}'
-                                                f'/{_vo_min_rows_req} '
-                                                'compliance_missing='
-                                                f'{_vo_after_compliance}'
-                                                ' specialized_function_'
-                                                f'missing={_vo_after_sf}'
-                                            )
-                                            setattr(_vo_err, 'section',
-                                                    'vision')
-                                            _mark_synth_failed(
-                                                _synth_status, 'vision',
-                                                _vo_err)
                                             print(
                                                 '[VISION-OBLIGATIONS-'
                                                 'REPAIR] rejected '
-                                                f'rows={_vo_after_rows}'
-                                                f'/{_vo_min_rows_req} '
-                                                'compliance_missing='
-                                                f'{_vo_after_compliance}'
-                                                ' specialized_function_'
-                                                f'missing={_vo_after_sf}'
+                                                f'rows={_vo_report["rows"]}'
+                                                f'/{_vo_report["required_min_rows"]} '
+                                                f'errors={_vo_report["errors"][:4]}'
                                                 ' — restored original '
                                                 'vision',
                                                 flush=True,

@@ -286,28 +286,30 @@ class FrameworkComplianceRepairMinRowsTest(unittest.TestCase):
         self.assertEqual(missing, [])
 
     # ── 7. Framework-compliance repair must not reduce existing valid
-    #       objective count.  We grep for the new repair block ensuring
-    #       it (a) computes _v_before_rows, (b) clamps min_rows to that,
-    #       and (c) restores _vis_before when the repaired count drops.
+    #       objective count.  PR-5B.9G replaced the inline row-floor
+    #       gate with the unified ``_assign_vision_if_valid_or_restore``
+    #       safe-assign helper (which still enforces the row floor PLUS
+    #       the rest of the contract — template markers, framework
+    #       leakage, compliance objective).
     @_skip_if_no_app
     def test_07_repair_block_preserves_existing_row_count(self):
         src_path = os.path.join(
             os.path.dirname(__file__), '..', 'app.py')
         with open(src_path, 'r', encoding='utf-8') as fh:
             src = fh.read()
-        # The repair block (PR-5B.8X) must compute the prior valid row
-        # count, clamp the effective minimum to it, pass it as
-        # ``min_rows`` to ai_repair_strategy_section, and restore the
-        # original vision when the repair returns fewer rows.
+        # The repair block must compute the prior valid row count, clamp
+        # the effective minimum to it, pass it as ``min_rows`` to
+        # ai_repair_strategy_section, and route the AI-repaired vision
+        # through the safe-assign helper so a thinner repair cannot
+        # overwrite a richer existing vision.
         self.assertIn('_v_before_rows', src)
         self.assertIn('count_valid_objective_rows(', src)
         self.assertIn('_vis_min_rows = max(', src)
         self.assertIn('min_rows=_vis_min_rows', src)
-        # The "framework-compliance repair produced ..." message is
-        # emitted (split across source lines) when the AI returns fewer
-        # rows than the floor — verify both fragments are present.
-        self.assertIn("'framework-compliance '", src)
-        self.assertIn("'repair produced '", src)
+        # PR-5B.9G — safe-assign helper integration.
+        self.assertIn('_assign_vision_if_valid_or_restore', src)
+        self.assertIn("repair_label=(\n", src)
+        self.assertIn("'fw-compliance-objective-repair'", src)
 
     # ── 8. Drafting mode preserves its intended lower threshold. ────────
     @_skip_if_no_app
