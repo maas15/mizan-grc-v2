@@ -10329,51 +10329,118 @@ _GLOSSARY_DISPLAY_ACRONYM = {
     'ISO22301': 'ISO 22301',
 }
 
-# PR-5B.9B — cross-domain forbidden glossary acronyms. Acronyms in this
-# set MUST NOT be auto-injected into the appendix of the listed domain
-# (they may still appear if the actual content uses them — the
-# appendix is then derived from content, not from a baseline).
+# PR-5B.9B / PR-5B.9C — cross-domain forbidden glossary acronyms.
+# Acronyms in this set MUST NOT be auto-injected into the appendix of
+# the listed domain (they may still appear if the actual content uses
+# them — the appendix is then derived from content, not from a
+# baseline). PR-5B.9C widens the forbidden sets so that *every*
+# cross-domain leak documented in the runtime evidence is blocked:
+# Cyber appendix must not auto-inject Data/AI/ERM/ISO terms; Data must
+# not auto-inject Cyber/AI/ERM/ISO terms; AI must not auto-inject
+# Cyber/Data/ERM/ISO terms; DT and ERM follow the same rule.
+_GLOSSARY_CYBER_TERMS = {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN',
+                         'ZTNA', 'DLP', 'EDR', 'MDM_MOBILE'}
+_GLOSSARY_DATA_TERMS = {'NDMO', 'PDPL', 'DATA_GOV', 'DATA_STEWARD',
+                        'METADATA', 'DATA_CATALOG', 'DATA_QUALITY',
+                        'MDM_MASTER', 'DATA_CLASSIFICATION',
+                        'DATA_LINEAGE'}
+_GLOSSARY_AI_TERMS = {'SDAIA', 'NIST_AI_RMF', 'AI_GOV', 'AI_ETHICS',
+                      'MODEL_RISK', 'BIAS', 'FAIRNESS',
+                      'EXPLAINABILITY', 'TRANSPARENCY',
+                      'HUMAN_OVERSIGHT', 'MODEL_MONITORING',
+                      'TRAINING_DATA'}
+_GLOSSARY_DT_TERMS = {'DGA', 'DIGITAL_SERVICE', 'INTEROPERABILITY',
+                      'API', 'USER_EXPERIENCE', 'ADOPTION',
+                      'AUTOMATION', 'CLOUD_SERVICE',
+                      'SERVICE_MATURITY'}
+_GLOSSARY_ERM_TERMS = {'ISO31000', 'COSO_ERM', 'RISK_APPETITE',
+                       'RISK_TOLERANCE', 'RISK_REGISTER',
+                       'RISK_TREATMENT', 'INHERENT_RISK',
+                       'RESIDUAL_RISK'}
+_GLOSSARY_STANDARDS_TERMS = {'ISO27001', 'ISO22301'}
+
 _DOMAIN_GLOSSARY_FORBIDDEN = {
-    'data':   {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
-               'DLP', 'EDR', 'MDM_MOBILE'},
-    'ai':     {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
-               'DLP', 'EDR', 'MDM_MOBILE'},
-    'dt':     {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
-               'DLP', 'EDR', 'MDM_MOBILE'},
-    'erm':    {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
-               'DLP', 'EDR', 'MDM_MOBILE'},
-    'global': {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
-               'DLP', 'EDR', 'MDM_MOBILE'},
-    'cyber':  set(),
+    'cyber':  (_GLOSSARY_DATA_TERMS | _GLOSSARY_AI_TERMS
+               | _GLOSSARY_DT_TERMS | _GLOSSARY_ERM_TERMS
+               | _GLOSSARY_STANDARDS_TERMS),
+    'data':   (_GLOSSARY_CYBER_TERMS | _GLOSSARY_AI_TERMS
+               | _GLOSSARY_DT_TERMS | _GLOSSARY_ERM_TERMS
+               | _GLOSSARY_STANDARDS_TERMS),
+    'ai':     (_GLOSSARY_CYBER_TERMS | _GLOSSARY_DATA_TERMS
+               | _GLOSSARY_DT_TERMS | _GLOSSARY_ERM_TERMS
+               | _GLOSSARY_STANDARDS_TERMS),
+    'dt':     (_GLOSSARY_CYBER_TERMS | _GLOSSARY_DATA_TERMS
+               | _GLOSSARY_AI_TERMS | _GLOSSARY_ERM_TERMS
+               | _GLOSSARY_STANDARDS_TERMS),
+    'erm':    (_GLOSSARY_CYBER_TERMS | _GLOSSARY_DATA_TERMS
+               | _GLOSSARY_AI_TERMS | _GLOSSARY_DT_TERMS),
+    'global': (_GLOSSARY_CYBER_TERMS | _GLOSSARY_DATA_TERMS
+               | _GLOSSARY_AI_TERMS | _GLOSSARY_DT_TERMS
+               | _GLOSSARY_ERM_TERMS),
 }
 
 
 def _glossary_terms_used_in_content(content_text):
     """Return the subset of ``_GLOSSARY_TERMS`` whose acronym (or its
-    Arabic / English expansion's first salient token) appears in the
-    strategy markdown. Pure text inspection; never invents terms. Always
-    includes any framework acronyms (ECC, TCC, …) that have already been
-    selected — they are guaranteed-relevant glossary items.
+    Arabic / English expansion) appears in the strategy markdown.
+    Pure text inspection; never invents terms.
+
+    PR-5B.9C — matching tightened to drop cross-domain false positives:
+      * The display acronym (e.g. ``MDM``, ``Data Governance``) is
+        matched with case-insensitive **word boundaries** so a body
+        mentioning "data management" no longer surfaces every
+        ``Data*`` glossary entry.
+      * The full English expansion (the ``en`` field with any trailing
+        ``(ACR)`` stripped) is matched with case-insensitive word
+        boundaries — so the appendix only lists ``Information Security
+        Management`` when the strategy literally cites
+        "Information Security Management", not when an unrelated body
+        merely uses the word "Information" or "Management".
+      * The full Arabic expansion is matched as a substring (Arabic
+        rarely produces incidental sub-phrase collisions because the
+        registered Arabic strings are multi-token domain phrases).
+    The previous "any English token > 4 chars" match has been removed
+    — it was the root cause of the cross-domain glossary contamination
+    documented in the PR-5B.9C runtime evidence.
     """
     if not content_text:
         return []
-    blob = content_text.lower()
+    import re as _re_g
+    blob = content_text or ''
+    blob_lower = blob.lower()
     out = []
     for ac, ar, en in _GLOSSARY_TERMS:
-        # PR-5B.9B — match against the user-visible display acronym when
-        # the registry key is disambiguated (e.g. ``MDM_MOBILE`` is shown
-        # as ``MDM``; ``DATA_GOV`` as ``Data Governance``).
+        # PR-5B.9B / PR-5B.9C — match against the user-visible display
+        # acronym when the registry key is disambiguated (e.g.
+        # ``MDM_MOBILE`` is shown as ``MDM``; ``DATA_GOV`` as
+        # ``Data Governance``). The raw key is used only when no
+        # display alias exists — otherwise the disambiguated key
+        # would never appear in human-authored content.
         display_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
-        # Accept the raw key only when it has no display alias — otherwise
-        # the disambiguated key (``MDM_MOBILE``) would never appear in
-        # human-authored content and we must rely on the display form.
-        match_keys = ([display_ac.lower()] if display_ac != ac
-                      else [ac.lower()])
-        if (any(k in blob for k in match_keys)
-                or ar in (content_text or '')
-                or any(tok and tok.lower() in blob
-                       for tok in en.split() if len(tok) > 4)):
+        # Strip a trailing parenthetical acronym from the English
+        # expansion (e.g. "Master Data Management (MDM)" → "Master
+        # Data Management"); the bare acronym is already covered by
+        # ``display_ac``.
+        en_clean = _re_g.sub(r'\s*\([^)]+\)\s*$', '', (en or '')).strip()
+        # Word-boundary acronym/display match — case-insensitive.
+        if display_ac:
+            if _re_g.search(rf'(?<![\w]){_re_g.escape(display_ac)}(?![\w])',
+                            blob, flags=_re_g.IGNORECASE):
+                out.append((ac, ar, en))
+                continue
+        # Exact full English expansion match — case-insensitive,
+        # word-bounded (must surface only when the body uses the
+        # specific concept, not just one of its constituent words).
+        if en_clean and len(en_clean) > 3:
+            if _re_g.search(rf'(?<![\w]){_re_g.escape(en_clean)}(?![\w])',
+                            blob, flags=_re_g.IGNORECASE):
+                out.append((ac, ar, en))
+                continue
+        # Full Arabic expansion match (registered AR names are
+        # multi-token phrases; substring match is acceptable here).
+        if ar and ar in blob:
             out.append((ac, ar, en))
+            continue
     return out
 
 
@@ -11178,7 +11245,36 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                 cap_label  = cat.title() if lang != 'ar' else cat
                 rows.append([fw_label, cap_label, gap, initiative, kpi, risk])
 
-    return {'header': header, 'rows': rows}
+    # PR-5B.9C — quality classification at the MODEL layer.
+    # Each row is annotated with a ``_quality`` flag so downstream
+    # quality gates can warn / drop dashy rows without invalidating
+    # existing consumers that only look at ``rows`` and rely on the
+    # historical row count (one row per (framework, capability)).
+    # A row is "informative" when its Gap and Initiative are real and
+    # at least one of (KPI, Risk) is real; otherwise it is "thin".
+    def _is_dash(v):
+        if v is None:
+            return True
+        s = str(v).strip()
+        return (not s) or s in ('—', '-', '--', '–')
+
+    def _row_is_informative(r):
+        # r = [framework, capability, gap, initiative, kpi, risk]
+        if not r or len(r) < 6:
+            return False
+        gap, init, kpi, risk = r[2], r[3], r[4], r[5]
+        if _is_dash(gap):
+            return False
+        if _is_dash(init):
+            return False
+        if _is_dash(kpi) and _is_dash(risk):
+            return False
+        return True
+
+    informative_rows = [r for r in rows if _row_is_informative(r)]
+
+    return {'header': header, 'rows': rows,
+            'informative_rows': informative_rows}
 
 
 def _build_document_control_rows(metadata, lang):
@@ -21636,19 +21732,38 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
                     "أيزو 31000", "إدارة المخاطر"],
         "applicable_domains": ["Enterprise Risk Management",
                                 "Global Standards"],
+        # PR-5B.9C — accepted AR/EN tokens widened so common ERM
+        # strategy phrasing (risk register, risk reporting, monitoring,
+        # treatment follow-up …) satisfies each capability family
+        # without the ERM generator having to mirror NCA-style
+        # control-coverage prose.
         "capabilities": [
-            ("risk_governance", ["حوكمة المخاطر", "إطار المخاطر"],
-             ["risk governance", "risk framework"]),
-            ("risk_appetite", ["تقبّل المخاطر", "شهية المخاطر",
-                                 "تحمّل المخاطر"],
-             ["risk appetite", "risk tolerance"]),
-            ("risk_assessment_iso", ["تقييم المخاطر", "تحديد المخاطر",
-                                       "تحليل المخاطر"],
-             ["risk identification", "risk assessment", "risk analysis"]),
-            ("risk_treatment", ["معالجة المخاطر", "خطة المعالجة"],
-             ["risk treatment", "treatment plan"]),
-            ("risk_reporting", ["تقارير المخاطر", "رفع التقارير"],
-             ["risk reporting", "escalation"]),
+            ("risk_governance",
+             ["حوكمة المخاطر", "إطار المخاطر", "إطار إدارة المخاطر",
+              "ثقافة المخاطر", "حوكمة"],
+             ["risk governance", "risk framework", "risk management framework",
+              "risk culture", "governance"]),
+            ("risk_appetite",
+             ["تقبّل المخاطر", "شهية المخاطر", "تحمّل المخاطر",
+              "قبول المخاطر", "حدود المخاطر"],
+             ["risk appetite", "risk tolerance", "risk thresholds",
+              "appetite statement"]),
+            ("risk_assessment_iso",
+             ["تقييم المخاطر", "تحديد المخاطر", "تحليل المخاطر",
+              "سجل المخاطر", "تصنيف المخاطر", "تقدير المخاطر"],
+             ["risk identification", "risk assessment", "risk analysis",
+              "risk evaluation", "risk register", "risk taxonomy"]),
+            ("risk_treatment",
+             ["معالجة المخاطر", "خطة المعالجة", "خطط المعالجة",
+              "متابعة خطط المعالجة", "ضوابط المخاطر"],
+             ["risk treatment", "treatment plan", "treatment follow-up",
+              "risk controls", "mitigation"]),
+            ("risk_reporting",
+             ["تقارير المخاطر", "رفع التقارير", "تقارير مجلس الإدارة",
+              "مؤشرات المخاطر", "مؤشر المخاطر",
+              "مراقبة المخاطر", "متابعة المخاطر"],
+             ["risk reporting", "escalation", "kri", "key risk indicator",
+              "risk monitoring", "board reporting"]),
         ],
         "required_sections": ["pillars", "gaps", "roadmap", "kpis",
                                "confidence"],
@@ -21660,19 +21775,49 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
         "aliases": ["coso erm", "coso", "coso enterprise risk",
                     "إطار coso", "كوزو"],
         "applicable_domains": ["Enterprise Risk Management"],
+        # PR-5B.9C — capability families realigned to ERM strategy
+        # language. Each accepted-token list now covers the natural
+        # ERM phrasings (risk governance / risk appetite / risk
+        # taxonomy / risk identification / risk assessment / risk
+        # treatment / KRI reporting / monitoring / board escalation)
+        # so a well-formed ERM strategy is no longer rejected for
+        # ``selected_framework_coverage_missing:COSO_ERM:review_revision``
+        # when review / monitoring / treatment-follow-up concepts are
+        # already present in the body.
         "capabilities": [
-            ("governance_culture", ["حوكمة المخاطر", "ثقافة المخاطر"],
-             ["risk governance", "risk culture", "board oversight"]),
-            ("strategy_objective_setting", ["الأهداف الاستراتيجية",
-                                              "وضع الأهداف"],
-             ["strategy", "objective setting"]),
-            ("performance_risk", ["أداء المخاطر", "تقييم المخاطر"],
-             ["performance", "risk identification", "severity"]),
-            ("review_revision", ["مراجعة المخاطر", "تحسين المخاطر"],
-             ["review", "revision", "monitoring"]),
-            ("information_communication", ["التواصل والإبلاغ",
-                                             "تقارير المخاطر"],
-             ["information", "communication", "reporting"]),
+            ("governance_culture",
+             ["حوكمة المخاطر", "ثقافة المخاطر", "إطار حوكمة المخاطر",
+              "إشراف مجلس الإدارة", "ميثاق إدارة المخاطر"],
+             ["risk governance", "risk culture", "board oversight",
+              "risk charter", "ERM governance"]),
+            ("strategy_objective_setting",
+             ["الأهداف الاستراتيجية", "وضع الأهداف", "ربط المخاطر بالأهداف",
+              "تقبّل المخاطر", "شهية المخاطر"],
+             ["strategy", "objective setting", "risk appetite",
+              "strategic objectives"]),
+            ("performance_risk",
+             ["أداء المخاطر", "تقييم المخاطر", "تحديد المخاطر",
+              "سجل المخاطر", "معالجة المخاطر", "تصنيف المخاطر"],
+             ["performance", "risk identification", "risk assessment",
+              "risk register", "risk treatment", "risk taxonomy",
+              "severity"]),
+            # Keep the historical ``review_revision`` family ID for
+            # backward-compatibility with any persisted defect tags,
+            # but accept the broad ERM review/monitoring vocabulary
+            # documented in the PR-5B.9C runtime evidence.
+            ("review_revision",
+             ["مراجعة المخاطر", "مراجعة دورية", "تحديث سجل المخاطر",
+              "مراقبة المخاطر", "متابعة خطط المعالجة",
+              "تقارير مجلس الإدارة", "تحسين المخاطر",
+              "متابعة المخاطر", "تحسين مستمر"],
+             ["review", "revision", "monitoring", "risk review",
+              "periodic review", "risk reporting", "treatment follow-up",
+              "continuous improvement", "board reporting"]),
+            ("information_communication",
+             ["التواصل والإبلاغ", "تقارير المخاطر", "مؤشرات المخاطر",
+              "مؤشر المخاطر", "إبلاغ المخاطر"],
+             ["information", "communication", "reporting",
+              "risk reporting", "KRI", "key risk indicator"]),
         ],
         "required_sections": ["pillars", "gaps", "roadmap", "kpis",
                                "confidence"],
@@ -35134,7 +35279,47 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             f'{fw}:{fam}' for fw, fam
                                             in _missing_list[:8]
                                         )
+                                        # PR-5B.9C — when this repair
+                                        # pass targets the vision
+                                        # section, capture the existing
+                                        # SO-row count and pass an
+                                        # effective ``min_rows`` to the
+                                        # AI prompt so the framework-
+                                        # coverage repair cannot
+                                        # silently overwrite a ≥6-row
+                                        # vision with a 4-row vision
+                                        # (the runtime regression
+                                        # documented as
+                                        # ``vision_so_rows=4 (need ≥ 6)``).
+                                        # On regression we restore the
+                                        # original vision and mark
+                                        # ``synth_failed`` so the audit
+                                        # gate blocks the save.
+                                        _vis_min_rows = None
+                                        _vis_before_text = None
+                                        if _sk == 'vision':
+                                            _vis_before_text = (
+                                                sections.get('vision', '')
+                                                or '')
+                                            _v_before_rows = (
+                                                count_valid_objective_rows(
+                                                    _vis_before_text))
+                                            _gm_lc = (_generation_mode
+                                                      or '').strip().lower()
+                                            if _gm_lc in ('consulting',
+                                                          'assurance'):
+                                                _vis_min_rows = 6
+                                            else:
+                                                _vis_min_rows = (
+                                                    _RICHNESS_MIN_SO_ROWS)
+                                            _vis_min_rows = max(
+                                                _vis_min_rows,
+                                                _v_before_rows)
                                         try:
+                                            _ar_kwargs = {}
+                                            if _vis_min_rows is not None:
+                                                _ar_kwargs['min_rows'] = (
+                                                    _vis_min_rows)
                                             _new = ai_repair_strategy_section(
                                                 section_key=_sk,
                                                 sections=sections,
@@ -35150,10 +35335,67 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     'coverage_missing: '
                                                     + _ve_summary
                                                 ),
+                                                **_ar_kwargs,
                                             )
                                             if _new and _new.strip():
-                                                sections[_sk] = _new
+                                                if (_sk == 'vision'
+                                                        and _vis_min_rows
+                                                        is not None):
+                                                    _new_rows = (
+                                                        count_valid_objective_rows(
+                                                            _new))
+                                                    if (_new_rows
+                                                            >= _vis_min_rows):
+                                                        sections[_sk] = (
+                                                            _new)
+                                                    else:
+                                                        # Repaired
+                                                        # vision is too
+                                                        # thin — restore
+                                                        # original and
+                                                        # fail closed.
+                                                        sections['vision'] = (
+                                                            _vis_before_text)
+                                                        _err = RepairError(
+                                                            'framework-'
+                                                            'coverage repair'
+                                                            ' produced '
+                                                            f'{_new_rows} '
+                                                            'valid '
+                                                            'Strategic '
+                                                            'Objective rows;'
+                                                            ' required '
+                                                            f'>= '
+                                                            f'{_vis_min_rows}'
+                                                            ' (generation_'
+                                                            f'mode='
+                                                            f'{_generation_mode!r})'
+                                                        )
+                                                        setattr(_err,
+                                                                'section',
+                                                                'vision')
+                                                        _mark_synth_failed(
+                                                            _synth_status,
+                                                            'vision', _err)
+                                                        print(
+                                                            '[FW-COVERAGE-'
+                                                            'REPAIR] vision '
+                                                            f'rows_after='
+                                                            f'{_new_rows} '
+                                                            f'required='
+                                                            f'{_vis_min_rows}'
+                                                            ' — restored '
+                                                            'original',
+                                                            flush=True,
+                                                        )
+                                                else:
+                                                    sections[_sk] = _new
                                         except RepairError as _fre:
+                                            if (_sk == 'vision'
+                                                    and _vis_before_text
+                                                    is not None):
+                                                sections['vision'] = (
+                                                    _vis_before_text)
                                             _mark_synth_failed(
                                                 _synth_status, _sk, _fre)
                                             print(
@@ -43147,29 +43389,42 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             tbl_rows = []
             if is_arabic:
-                # PR-5B.8U — render as a logical Arabic table with the
-                # FIELD label on the LEFT and the VALUE on the RIGHT (the
-                # markdown-spec column order ``| الحقل | القيمة |``). This
-                # prevents the pdftotext / fitz extractors from emitting
-                # ``"Mizan GRC Platform بواسطة أعد"`` — when a Latin value
-                # cell sits to the LEFT of a bidi-shaped Arabic label, the
-                # extractor reads it left-to-right and splices the visual
-                # (bidi-reversed) Arabic glyphs onto the end of the Latin
-                # value, producing the reversed pair that the user reported.
+                # PR-5B.8U / PR-5B.9C — render as a logical Arabic
+                # two-column table BUT also stack each entry vertically
+                # so label and value never share a horizontal text run
+                # in the PDF stream. Layout per entry:
+                #
+                #   ┌──────────────────────────────┐
+                #   │  «label»  (full-width row)   │
+                #   ├──────────────────────────────┤
+                #   │  «value»  (full-width row)   │
+                #   └──────────────────────────────┘
+                #
+                # This prevents pdftotext / fitz / Reader extractors
+                # from emitting either of the two bidi-glitch artefacts
+                # documented in the PR-5B.9C runtime evidence —
+                # ``"بواسطة أعد Mizan GRC Platform"`` (label-cell-on-left
+                # +  value-cell-on-right reading order) and
+                # ``"Mizan GRC Platform بواسطة أعد"`` (the mirror form
+                # produced by value-on-left layouts). With each cell on
+                # its own row the extractor returns
+                # ``label_text\n value_text\n`` so the forbidden
+                # adjacent pair is structurally impossible.
                 tbl_rows.append([
-                    Paragraph(f"<b>{_pro_text('الحقل', 'label')}</b>",
-                              _pro_label_sty),
-                    Paragraph(f"<b>{_pro_text('القيمة', 'label')}</b>",
+                    Paragraph(f"<b>{_pro_text('بطاقة ضبط الوثيقة',
+                                              'label')}</b>",
                               _pro_label_sty),
                 ])
                 for label, value in rows:
                     tbl_rows.append([
                         Paragraph(f"<b>{_pro_text(label, 'label')}</b>",
                                   _pro_label_sty),
-                        Paragraph(_pro_text(value, 'value'), _pro_value_sty),
                     ])
-                # Label column compact (LEFT), value column wider (RIGHT).
-                col_widths = [_PRO_PAGE_W * 0.32, _PRO_PAGE_W * 0.68]
+                    tbl_rows.append([
+                        Paragraph(_pro_text(value, 'value'),
+                                  _pro_value_sty),
+                    ])
+                col_widths = [_PRO_PAGE_W * 1.0]
                 _label_col_idx = 0
             else:
                 tbl_rows.append([
@@ -43189,22 +43444,47 @@ def api_generate_pdf():
             if len(tbl_rows) <= 1:
                 return flow
             tbl = Table(tbl_rows, colWidths=col_widths, repeatRows=1)
-            tbl.setStyle(TableStyle([
-                # Header row
-                ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
-                ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
-                # Body label-column shading
-                ('BACKGROUND',    (_label_col_idx, 1),
-                                  (_label_col_idx, -1),
-                                  colors.HexColor('#F3F4F6')),
-                ('LINEBELOW',     (0, 0), (-1, -1), 0.4,
-                                  colors.HexColor('#D1D5DB')),
-                ('TOPPADDING',    (0, 0), (-1, -1), 6),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('LEFTPADDING',   (0, 0), (-1, -1), 8),
-                ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
-                ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-            ]))
+            if is_arabic:
+                # Arabic stacked layout: header row + alternating
+                # label / value rows. Shade the label rows so the
+                # reader can still scan field/value boundaries.
+                _label_row_idxs = [
+                    i for i in range(1, len(tbl_rows)) if (i % 2) == 1
+                ]
+                _ts_cmds = [
+                    ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                    ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                    ('LINEBELOW',     (0, 0), (-1, -1), 0.4,
+                                      colors.HexColor('#D1D5DB')),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
+                    ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+                ]
+                for _ri in _label_row_idxs:
+                    _ts_cmds.append((
+                        'BACKGROUND', (0, _ri), (-1, _ri),
+                        colors.HexColor('#F3F4F6'),
+                    ))
+                tbl.setStyle(TableStyle(_ts_cmds))
+            else:
+                tbl.setStyle(TableStyle([
+                    # Header row
+                    ('BACKGROUND',    (0, 0), (-1, 0), _PRO_NAVY),
+                    ('TEXTCOLOR',     (0, 0), (-1, 0), colors.white),
+                    # Body label-column shading
+                    ('BACKGROUND',    (_label_col_idx, 1),
+                                      (_label_col_idx, -1),
+                                      colors.HexColor('#F3F4F6')),
+                    ('LINEBELOW',     (0, 0), (-1, -1), 0.4,
+                                      colors.HexColor('#D1D5DB')),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING',  (0, 0), (-1, -1), 8),
+                    ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
             flow.append(tbl)
             flow.append(Spacer(1, 0.3 * inch))
             return flow
@@ -43365,19 +43645,38 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             header = block.get('header') or []
             rows   = block.get('rows') or []
-            # PR-5B.8V — Drop rows whose informative cells (everything
-            # except the leading framework column) are mostly the
-            # placeholder "—". A row that has more than half of its
-            # informative cells set to "—" is not useful to a reader and
-            # produces dense stacked text in the PDF. Threshold:
-            # ``placeholder_count >= ceil(informative_count / 2)``.
+            # PR-5B.8V / PR-5B.9C — Drop rows whose informative cells
+            # (gap / initiative / kpi / risk) are too thin to be useful
+            # to a reader. A row is kept only when its Gap AND
+            # Initiative are real and at least one of (KPI, Risk) is
+            # real. Pure ``—``-stuffed rows produce dense stacked text
+            # in the PDF; the prior threshold (more than half dashes)
+            # still let "gap + 4×—" rows through.
             def _is_dash(v):
                 if v is None:
                     return True
                 s = str(v).strip()
                 return (not s) or s in ('—', '-', '--', '–')
 
-            if rows and header:
+            if rows and header and len(header) >= 6:
+                _filtered = []
+                for _r in rows:
+                    if len(_r) < 6:
+                        continue
+                    _gap, _init = _r[2], _r[3]
+                    _kpi, _risk = _r[4], _r[5]
+                    if _is_dash(_gap):
+                        continue
+                    if _is_dash(_init):
+                        continue
+                    if _is_dash(_kpi) and _is_dash(_risk):
+                        continue
+                    _filtered.append(_r)
+                rows = _filtered
+            elif rows and header:
+                # Legacy path for non-6-column matrices: keep the
+                # majority-non-dash heuristic so older callers still
+                # behave the same.
                 _filtered = []
                 _info_start = 1 if len(header) >= 2 else 0
                 for _r in rows:
@@ -43385,11 +43684,6 @@ def api_generate_pdf():
                     if not _info_cells:
                         continue
                     _dash_n = sum(1 for _v in _info_cells if _is_dash(_v))
-                    # Keep only rows where strictly less than half of
-                    # informative cells are "—". Strictly less ensures
-                    # a 3-of-5 row is kept while a 3-of-5 dash row is
-                    # dropped, matching the user's "rows made mostly of
-                    # —" criterion.
                     if _dash_n * 2 < len(_info_cells):
                         _filtered.append(_r)
                 rows = _filtered
