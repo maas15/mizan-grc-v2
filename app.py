@@ -3749,6 +3749,14 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Cyber Security",
             "domain_label_ar": "الأمن السيبراني",
         },
+        # Domain-specific glossary baseline (acronym keys looked up against
+        # ``_GLOSSARY_TERMS``). PR-5B.9B — these acronyms are always
+        # safe to surface in this domain's appendix; cross-domain terms
+        # never leak in unless they appear in the actual content.
+        "glossary_baseline": [
+            "ECC", "TCC", "IAM", "PAM", "SOC", "SIEM", "CSIRT",
+            "DLP", "EDR", "MDM_MOBILE", "MFA", "VPN", "ZTNA",
+        ],
     },
     "data": {
         "code": "data",
@@ -3763,7 +3771,7 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "data lifecycle (retention/archival/disposal)",
             "data privacy & protection",
         ],
-        "framework_coverage_keys": ["NDMO", "DCC"],
+        "framework_coverage_keys": ["NDMO", "DCC", "PDPL"],
         "gap_categories": [
             "data governance", "ownership & stewardship", "data quality",
             "metadata management", "data lifecycle", "privacy & consent",
@@ -3798,6 +3806,11 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Data Management",
             "domain_label_ar": "إدارة البيانات",
         },
+        "glossary_baseline": [
+            "NDMO", "PDPL", "DATA_GOV", "DATA_STEWARD", "METADATA",
+            "DATA_CATALOG", "DATA_QUALITY", "MDM_MASTER",
+            "DATA_CLASSIFICATION", "DATA_LINEAGE",
+        ],
     },
     "ai": {
         "code": "ai",
@@ -3812,7 +3825,7 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "model monitoring & performance",
             "human oversight & accountability",
         ],
-        "framework_coverage_keys": ["NIST_AI_RMF"],
+        "framework_coverage_keys": ["NIST_AI_RMF", "SDAIA"],
         "gap_categories": [
             "AI governance", "model inventory", "model risk & validation",
             "bias & fairness testing", "explainability",
@@ -3848,6 +3861,12 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Artificial Intelligence",
             "domain_label_ar": "الذكاء الاصطناعي",
         },
+        "glossary_baseline": [
+            "AI_GOV", "SDAIA", "AI_ETHICS", "MODEL_RISK", "BIAS",
+            "FAIRNESS", "EXPLAINABILITY", "TRANSPARENCY",
+            "HUMAN_OVERSIGHT", "MODEL_MONITORING", "TRAINING_DATA",
+            "NIST_AI_RMF",
+        ],
     },
     "dt": {
         "code": "dt",
@@ -3899,6 +3918,11 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Digital Transformation",
             "domain_label_ar": "التحول الرقمي",
         },
+        "glossary_baseline": [
+            "DGA", "DIGITAL_SERVICE", "INTEROPERABILITY", "API",
+            "USER_EXPERIENCE", "ADOPTION", "AUTOMATION",
+            "CLOUD_SERVICE", "SERVICE_MATURITY",
+        ],
     },
     "erm": {
         "code": "erm",
@@ -3913,7 +3937,7 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "risk treatment & mitigation",
             "reporting & escalation",
         ],
-        "framework_coverage_keys": ["ISO22301"],
+        "framework_coverage_keys": ["ISO22301", "ISO31000", "COSO_ERM"],
         "gap_categories": [
             "risk taxonomy", "risk appetite",
             "risk assessment methodology", "KRI framework",
@@ -3951,6 +3975,11 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Enterprise Risk Management",
             "domain_label_ar": "إدارة المخاطر المؤسسية",
         },
+        "glossary_baseline": [
+            "ISO31000", "COSO_ERM", "RISK_APPETITE", "RISK_TOLERANCE",
+            "KRI", "RISK_REGISTER", "RISK_TREATMENT",
+            "INHERENT_RISK", "RESIDUAL_RISK", "KPI",
+        ],
     },
     "global": {
         "code": "global",
@@ -4003,6 +4032,9 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "domain_label_en": "Global Standards",
             "domain_label_ar": "المعايير العالمية",
         },
+        "glossary_baseline": [
+            "ISO27001", "ISO22301", "ISO31000", "KPI", "KRI",
+        ],
     },
 }
 
@@ -10101,7 +10133,18 @@ def _infer_frameworks_from_content(content_text, domain=None):
         'NIST_AI_RMF':['nist ai rmf'],
         'SAMA':       ['sama csf', 'sama cybersecurity'],
         'NDMO':       ['ndmo'],
-        'DGA':        ['dga digital'],
+        'DGA':        ['dga digital', 'هيئة الحكومة الرقمية'],
+        # PR-5B.9B — non-cyber framework inference so ERM / AI / Data
+        # strategies whose body mentions ISO 31000 / COSO ERM / SDAIA /
+        # PDPL never report a misleading "0 frameworks" line.
+        'ISO31000':   ['iso 31000', 'iso31000', 'أيزو 31000'],
+        'COSO_ERM':   ['coso erm', 'coso framework', 'إطار coso',
+                       'كوزو'],
+        'SDAIA':      ['sdaia', 'سدايا',
+                       'sdaia ai ethics',
+                       'هيئة البيانات والذكاء الاصطناعي'],
+        'PDPL':       ['pdpl', 'personal data protection law',
+                       'نظام حماية البيانات الشخصية'],
     }
     found = []
     for key, pats in strong_patterns.items():
@@ -10118,6 +10161,7 @@ def _infer_frameworks_from_content(content_text, domain=None):
 
 
 _GLOSSARY_TERMS = [
+    # ── Cyber-domain acronyms ────────────────────────────────────────────
     ('ECC',  'الضوابط الأساسية للأمن السيبراني (NCA)',
              'Essential Cybersecurity Controls (NCA)'),
     ('TCC',  'ضوابط الأمن السيبراني للعمل عن بُعد (NCA)',
@@ -10142,13 +10186,166 @@ _GLOSSARY_TERMS = [
              'Data Loss Prevention'),
     ('EDR',  'كشف التهديدات والاستجابة في النقاط الطرفية',
              'Endpoint Detection and Response'),
-    ('MDM',  'إدارة الأجهزة المحمولة',
-             'Mobile Device Management'),
+    # MDM (cyber sense) — Mobile Device Management. Stored under a
+    # distinct key so the data-domain MDM (Master Data Management) can
+    # coexist without collision.
+    ('MDM_MOBILE', 'إدارة الأجهزة المحمولة',
+                   'Mobile Device Management (MDM)'),
+    # ── Cross-domain shared acronyms ─────────────────────────────────────
     ('KPI',  'مؤشر الأداء الرئيسي',
              'Key Performance Indicator'),
     ('KRI',  'مؤشر المخاطر الرئيسي',
              'Key Risk Indicator'),
+    # ── Data Management glossary (PR-5B.9B) ──────────────────────────────
+    ('NDMO', 'مكتب إدارة البيانات الوطنية',
+             'National Data Management Office (NDMO)'),
+    ('PDPL', 'نظام حماية البيانات الشخصية',
+             'Personal Data Protection Law (PDPL)'),
+    ('DATA_GOV',          'حوكمة البيانات',
+                          'Data Governance'),
+    ('DATA_STEWARD',      'مشرف البيانات',
+                          'Data Steward'),
+    ('METADATA',          'البيانات الوصفية (الميتاداتا)',
+                          'Metadata'),
+    ('DATA_CATALOG',      'كتالوج البيانات',
+                          'Data Catalog'),
+    ('DATA_QUALITY',      'جودة البيانات',
+                          'Data Quality'),
+    ('MDM_MASTER',        'إدارة البيانات الرئيسية',
+                          'Master Data Management (MDM)'),
+    ('DATA_CLASSIFICATION','تصنيف البيانات',
+                           'Data Classification'),
+    ('DATA_LINEAGE',      'سلسلة نسب البيانات',
+                          'Data Lineage'),
+    # ── AI glossary (PR-5B.9B) ───────────────────────────────────────────
+    ('SDAIA',             'هيئة البيانات والذكاء الاصطناعي (سدايا)',
+                          'Saudi Data & AI Authority (SDAIA)'),
+    ('NIST_AI_RMF',       'إطار إدارة مخاطر الذكاء الاصطناعي (NIST)',
+                          'NIST AI Risk Management Framework'),
+    ('AI_GOV',            'حوكمة الذكاء الاصطناعي',
+                          'AI Governance'),
+    ('AI_ETHICS',         'أخلاقيات الذكاء الاصطناعي',
+                          'AI Ethics'),
+    ('MODEL_RISK',        'مخاطر النماذج',
+                          'Model Risk'),
+    ('BIAS',              'التحيز في النماذج',
+                          'Bias'),
+    ('FAIRNESS',          'العدالة في النماذج',
+                          'Fairness'),
+    ('EXPLAINABILITY',    'قابلية التفسير',
+                          'Explainability'),
+    ('TRANSPARENCY',      'الشفافية',
+                          'Transparency'),
+    ('HUMAN_OVERSIGHT',   'الإشراف البشري',
+                          'Human Oversight'),
+    ('MODEL_MONITORING',  'مراقبة النماذج',
+                          'Model Monitoring'),
+    ('TRAINING_DATA',     'بيانات التدريب',
+                          'Training Data'),
+    # ── Digital Transformation glossary (PR-5B.9B) ───────────────────────
+    ('DGA',               'هيئة الحكومة الرقمية',
+                          'Digital Government Authority (DGA)'),
+    ('DIGITAL_SERVICE',   'الخدمة الرقمية',
+                          'Digital Service'),
+    ('INTEROPERABILITY',  'التشغيل البيني',
+                          'Interoperability'),
+    ('API',               'واجهة برمجة التطبيقات',
+                          'Application Programming Interface (API)'),
+    ('USER_EXPERIENCE',   'تجربة المستخدم',
+                          'User Experience'),
+    ('ADOPTION',          'التبني والاستخدام',
+                          'Adoption'),
+    ('AUTOMATION',        'الأتمتة',
+                          'Automation'),
+    ('CLOUD_SERVICE',     'الخدمة السحابية',
+                          'Cloud Service'),
+    ('SERVICE_MATURITY',  'نضج الخدمة',
+                          'Service Maturity'),
+    # ── Enterprise Risk Management glossary (PR-5B.9B) ───────────────────
+    ('ISO31000',          'أيزو 31000 — إدارة المخاطر',
+                          'ISO 31000 — Risk Management'),
+    ('COSO_ERM',          'إطار COSO لإدارة مخاطر المؤسسة',
+                          'COSO Enterprise Risk Management Framework'),
+    ('RISK_APPETITE',     'تقبّل المخاطر',
+                          'Risk Appetite'),
+    ('RISK_TOLERANCE',    'تحمّل المخاطر',
+                          'Risk Tolerance'),
+    ('RISK_REGISTER',     'سجل المخاطر',
+                          'Risk Register'),
+    ('RISK_TREATMENT',    'معالجة المخاطر',
+                          'Risk Treatment'),
+    ('INHERENT_RISK',     'المخاطر الكامنة',
+                          'Inherent Risk'),
+    ('RESIDUAL_RISK',     'المخاطر المتبقية',
+                          'Residual Risk'),
+    # ── Global Standards glossary (PR-5B.9B) ─────────────────────────────
+    ('ISO27001',          'أيزو/IEC 27001 — نظام إدارة أمن المعلومات',
+                          'ISO/IEC 27001 — Information Security Management'),
+    ('ISO22301',          'أيزو 22301 — استمرارية الأعمال',
+                          'ISO 22301 — Business Continuity'),
 ]
+
+# PR-5B.9B — display-acronym mapping for glossary entries whose registry
+# key has been disambiguated (e.g. ``MDM_MOBILE`` → user-visible "MDM",
+# ``DATA_GOV`` → "Data Governance"). The first column rendered in the
+# appendix uses this mapping when present, otherwise the key itself.
+_GLOSSARY_DISPLAY_ACRONYM = {
+    'MDM_MOBILE': 'MDM',
+    'MDM_MASTER': 'MDM',
+    'DATA_GOV': 'Data Governance',
+    'DATA_STEWARD': 'Data Steward',
+    'METADATA': 'Metadata',
+    'DATA_CATALOG': 'Data Catalog',
+    'DATA_QUALITY': 'Data Quality',
+    'DATA_CLASSIFICATION': 'Data Classification',
+    'DATA_LINEAGE': 'Data Lineage',
+    'AI_GOV': 'AI Governance',
+    'AI_ETHICS': 'AI Ethics',
+    'MODEL_RISK': 'Model Risk',
+    'BIAS': 'Bias',
+    'FAIRNESS': 'Fairness',
+    'EXPLAINABILITY': 'Explainability',
+    'TRANSPARENCY': 'Transparency',
+    'HUMAN_OVERSIGHT': 'Human Oversight',
+    'MODEL_MONITORING': 'Model Monitoring',
+    'TRAINING_DATA': 'Training Data',
+    'DIGITAL_SERVICE': 'Digital Service',
+    'INTEROPERABILITY': 'Interoperability',
+    'USER_EXPERIENCE': 'User Experience',
+    'ADOPTION': 'Adoption',
+    'AUTOMATION': 'Automation',
+    'CLOUD_SERVICE': 'Cloud Service',
+    'SERVICE_MATURITY': 'Service Maturity',
+    'NIST_AI_RMF': 'NIST AI RMF',
+    'COSO_ERM': 'COSO ERM',
+    'ISO31000': 'ISO 31000',
+    'RISK_APPETITE': 'Risk Appetite',
+    'RISK_TOLERANCE': 'Risk Tolerance',
+    'RISK_REGISTER': 'Risk Register',
+    'RISK_TREATMENT': 'Risk Treatment',
+    'INHERENT_RISK': 'Inherent Risk',
+    'RESIDUAL_RISK': 'Residual Risk',
+    'ISO27001': 'ISO 27001',
+    'ISO22301': 'ISO 22301',
+}
+
+# PR-5B.9B — cross-domain forbidden glossary acronyms. Acronyms in this
+# set MUST NOT be auto-injected into the appendix of the listed domain
+# (they may still appear if the actual content uses them — the
+# appendix is then derived from content, not from a baseline).
+_DOMAIN_GLOSSARY_FORBIDDEN = {
+    'data':   {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
+               'DLP', 'EDR', 'MDM_MOBILE'},
+    'ai':     {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
+               'DLP', 'EDR', 'MDM_MOBILE'},
+    'dt':     {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
+               'DLP', 'EDR', 'MDM_MOBILE'},
+    'erm':    {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
+               'DLP', 'EDR', 'MDM_MOBILE'},
+    'global': {'IAM', 'PAM', 'SOC', 'SIEM', 'CSIRT', 'VPN', 'ZTNA',
+               'DLP', 'EDR', 'MDM_MOBILE'},
+    'cyber':  set(),
+}
 
 
 def _glossary_terms_used_in_content(content_text):
@@ -10163,7 +10360,16 @@ def _glossary_terms_used_in_content(content_text):
     blob = content_text.lower()
     out = []
     for ac, ar, en in _GLOSSARY_TERMS:
-        if (ac.lower() in blob
+        # PR-5B.9B — match against the user-visible display acronym when
+        # the registry key is disambiguated (e.g. ``MDM_MOBILE`` is shown
+        # as ``MDM``; ``DATA_GOV`` as ``Data Governance``).
+        display_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+        # Accept the raw key only when it has no display alias — otherwise
+        # the disambiguated key (``MDM_MOBILE``) would never appear in
+        # human-authored content and we must rely on the display form.
+        match_keys = ([display_ac.lower()] if display_ac != ac
+                      else [ac.lower()])
+        if (any(k in blob for k in match_keys)
                 or ar in (content_text or '')
                 or any(tok and tok.lower() in blob
                        for tok in en.split() if len(tok) > 4)):
@@ -10484,16 +10690,277 @@ def _build_scope_frameworks_block(metadata, selected_fws_keys, lang):
     return out
 
 
-def _build_methodology_block(metadata, selected_fws_keys, lang):
+def _build_methodology_block(metadata, selected_fws_keys, lang,
+                             domain_code='cyber'):
     """Return a list of (label, body) tuples describing the consulting
     methodology used to produce the strategy. Procedural metadata only —
     not strategy content. Always 7 phases, in canonical order.
+
+    PR-5B.9B — Methodology phases are now domain-specific. The cyber
+    profile keeps SOC / IAM / vulnerability language; data, AI, digital
+    transformation and ERM each get a methodology that matches their
+    discipline. ``domain_code`` is the canonical code returned by
+    ``normalize_domain`` ('cyber' / 'data' / 'ai' / 'dt' / 'erm' /
+    'global'). Unknown values fall through to the cyber methodology to
+    preserve historical behaviour.
     """
     fw_disp = ' + '.join(selected_fws_keys or []) or ('—')
     fw_long = ', '.join(
         _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {}).get('display', k)
         for k in (selected_fws_keys or [])
     ) or ('—')
+    code = (domain_code or 'cyber').strip().lower()
+
+    # ── Data Management methodology ──────────────────────────────────
+    if code == 'data':
+        if lang == 'ar':
+            return [
+                ('المرحلة 1 — تحليل المدخلات التشخيصية',
+                 'مراجعة منهجية للبيانات التشخيصية المُدخلة من المنظمة '
+                 '(القطاع، الحجم، نضج إدارة البيانات الحالي، الأنظمة '
+                 'المصدرية، التحديات) وتأكيد جودة المُدخلات قبل البدء.'),
+                ('المرحلة 2 — تحديد نطاق الأطر المرجعية',
+                 f'اعتماد الأطر التالية كنطاق رسمي لمواءمة إدارة '
+                 f'البيانات: {fw_disp} ({fw_long}).'),
+                ('المرحلة 3 — تقييم حوكمة البيانات والملكية',
+                 'تقييم نموذج حوكمة البيانات الحالي، ومسؤوليات الملكية '
+                 'والإشراف، ولجان حوكمة البيانات، وأدوار مشرفي البيانات '
+                 '(Data Stewards) عبر القطاعات الوظيفية.'),
+                ('المرحلة 4 — تحليل جودة البيانات والميتاداتا',
+                 'تحليل أبعاد جودة البيانات (الاكتمال، الاتساق، الدقة، '
+                 'التوقيت، التكامل) وتقييم اكتمال الميتاداتا وكتالوج '
+                 'البيانات وسلسلة النسب (Data Lineage).'),
+                ('المرحلة 5 — مواءمة الخصوصية والتصنيف ودورة الحياة',
+                 'مواءمة استراتيجية البيانات مع متطلبات حماية البيانات '
+                 'الشخصية (PDPL) وتصنيف البيانات وضوابط الاحتفاظ '
+                 'والأرشفة والإتلاف.'),
+                ('المرحلة 6 — خارطة طريق قيمة البيانات والمؤشرات',
+                 'بناء خارطة طريق متعددة الموجات لرفع نضج إدارة '
+                 'البيانات، مرتبطة بمؤشرات أداء (KPI) ومؤشرات مخاطر '
+                 '(KRI) لجودة البيانات والامتثال.'),
+                ('المرحلة 7 — التحقق وبوابات الجودة',
+                 'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة '
+                 'المحتوى، تغطية الأطر، التدقيق الدلالي، ثم التدقيق '
+                 'النهائي قبل النشر — مع التحقق من ربط الأطر بالقدرات '
+                 'والفجوات والمبادرات والمؤشرات والمخاطر.'),
+            ]
+        return [
+            ('Phase 1 — Diagnostic Input Review',
+             'Structured review of the diagnostic data supplied by the '
+             'organisation (sector, size, current data-management '
+             'maturity, source systems, challenges) and validation of '
+             'input quality before analysis.'),
+            ('Phase 2 — Framework Scoping',
+             f'Adoption of the following frameworks as the formal data '
+             f'management alignment scope: {fw_disp} ({fw_long}).'),
+            ('Phase 3 — Data Governance and Ownership Assessment',
+             'Assessment of the current data-governance model, '
+             'ownership and stewardship responsibilities, data '
+             'governance committees, and Data Steward roles across '
+             'business functions.'),
+            ('Phase 4 — Data Quality, Metadata and Catalog Profiling',
+             'Profiling of data-quality dimensions (completeness, '
+             'consistency, accuracy, timeliness, integrity) and '
+             'assessment of metadata, data catalog and data lineage '
+             'completeness.'),
+            ('Phase 5 — Privacy, Classification and Lifecycle Alignment',
+             'Alignment with personal data protection requirements '
+             '(PDPL), data classification, and retention / archival / '
+             'disposal controls across the data lifecycle.'),
+            ('Phase 6 — Data Value Roadmap and KPI/KRI Design',
+             'Construction of a multi-wave roadmap to raise data '
+             'management maturity, linked to data-quality and '
+             'compliance KPIs / KRIs.'),
+            ('Phase 7 — Validation and Quality Gates',
+             'Passage through the platform\'s validation chain: domain '
+             'check, content density, framework coverage, semantic '
+             'audit, and final audit before publication — including '
+             'framework→capability→gap→initiative→KPI→risk traceability.'),
+        ]
+
+    # ── Artificial Intelligence methodology ──────────────────────────
+    if code == 'ai':
+        if lang == 'ar':
+            return [
+                ('المرحلة 1 — تحليل المدخلات التشخيصية',
+                 'مراجعة منهجية للسياق المؤسسي ونضج حوكمة الذكاء '
+                 'الاصطناعي ومخزون النماذج الحالي وحالات الاستخدام.'),
+                ('المرحلة 2 — تحديد نطاق الأطر المرجعية',
+                 f'اعتماد الأطر التالية كنطاق رسمي لحوكمة الذكاء '
+                 f'الاصطناعي: {fw_disp} ({fw_long}).'),
+                ('المرحلة 3 — تقييم حوكمة الذكاء الاصطناعي ومخزون النماذج',
+                 'تقييم نموذج حوكمة الذكاء الاصطناعي، ومجلس أخلاقيات '
+                 'الذكاء الاصطناعي، وتصنيف النماذج وفق المخاطر، '
+                 'ومخزون النماذج (Model Inventory).'),
+                ('المرحلة 4 — تقييم جاهزية البيانات وفحص التحيّز',
+                 'تقييم جودة بيانات التدريب وممثّلية مجموعات البيانات، '
+                 'وإجراء اختبارات التحيز والعدالة (Bias / Fairness) '
+                 'على النماذج عالية المخاطر.'),
+                ('المرحلة 5 — قابلية التفسير والشفافية والإشراف البشري',
+                 'تقييم متطلبات قابلية التفسير (Explainability) '
+                 'والشفافية (Transparency) ومستوى الإشراف البشري '
+                 '(Human-in-the-Loop) لكل فئة نموذج.'),
+                ('المرحلة 6 — مراقبة النماذج وخارطة الطريق',
+                 'بناء خارطة طريق لإدارة مخاطر النماذج، ومراقبة الأداء '
+                 'والانحراف (Drift) والمؤشرات (KPI/KRI) ذات الصلة '
+                 'بحوكمة الذكاء الاصطناعي.'),
+                ('المرحلة 7 — التحقق وبوابات الجودة',
+                 'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة '
+                 'المحتوى، تغطية الأطر، التدقيق الدلالي، ثم التدقيق '
+                 'النهائي قبل النشر.'),
+            ]
+        return [
+            ('Phase 1 — Diagnostic Input Review',
+             'Structured review of the organisational context, AI '
+             'governance maturity, current model inventory and use '
+             'cases supplied by the organisation.'),
+            ('Phase 2 — Framework Scoping',
+             f'Adoption of the following frameworks as the formal AI '
+             f'governance scope: {fw_disp} ({fw_long}).'),
+            ('Phase 3 — AI Governance and Model Inventory Assessment',
+             'Assessment of the AI governance model, AI ethics board, '
+             'model risk classification, and the AI Model Inventory.'),
+            ('Phase 4 — Data Readiness and Bias / Fairness Testing',
+             'Assessment of training-data quality and dataset '
+             'representativeness, plus bias and fairness testing for '
+             'high-risk models.'),
+            ('Phase 5 — Explainability, Transparency and Human Oversight',
+             'Assessment of explainability and transparency '
+             'requirements and the appropriate level of human-in-the-'
+             'loop oversight per model risk class.'),
+            ('Phase 6 — Model Monitoring and Roadmap',
+             'Construction of a roadmap for model risk management, '
+             'performance and drift monitoring, and AI-governance '
+             'KPIs / KRIs.'),
+            ('Phase 7 — Validation and Quality Gates',
+             'Passage through the platform\'s validation chain: domain '
+             'check, content density, framework coverage, semantic '
+             'audit, and final audit before publication.'),
+        ]
+
+    # ── Digital Transformation methodology ──────────────────────────
+    if code == 'dt':
+        if lang == 'ar':
+            return [
+                ('المرحلة 1 — تحليل المدخلات التشخيصية',
+                 'مراجعة منهجية لمستوى النضج الرقمي الحالي، الخدمات '
+                 'الرقمية، النموذج التشغيلي، وقنوات التقديم.'),
+                ('المرحلة 2 — تحديد نطاق الأطر المرجعية',
+                 f'اعتماد الأطر التالية كنطاق رسمي للتحول الرقمي: '
+                 f'{fw_disp} ({fw_long}).'),
+                ('المرحلة 3 — تقييم النضج الرقمي ورقمنة الخدمات',
+                 'تقييم نضج رقمنة الخدمات الحالية مقابل متطلبات هيئة '
+                 'الحكومة الرقمية (DGA) وتحديد الفجوات في تجربة '
+                 'المستفيد.'),
+                ('المرحلة 4 — تقييم النموذج التشغيلي والتكامل',
+                 'تحليل النموذج التشغيلي للتحول الرقمي، وقدرات التكامل '
+                 'وواجهات البرمجة (APIs)، والتشغيل البيني '
+                 '(Interoperability) بين الأنظمة.'),
+                ('المرحلة 5 — تحليل تجربة المستفيد ورحلته',
+                 'تحليل رحلة المستفيد عبر القنوات الرقمية ومؤشرات '
+                 'الرضا (CSAT/NPS) ومستويات التبني.'),
+                ('المرحلة 6 — جاهزية المنصة والسحابة وخارطة الطريق',
+                 'بناء خارطة طريق متعددة الموجات لرقمنة الخدمات '
+                 'والأتمتة وجاهزية السحابة وإدارة التغيير، مرتبطة '
+                 'بمؤشرات (KPI/KRI) للتبني والإتاحة.'),
+                ('المرحلة 7 — التحقق وبوابات الجودة',
+                 'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة '
+                 'المحتوى، تغطية الأطر، التدقيق الدلالي، ثم التدقيق '
+                 'النهائي قبل النشر.'),
+            ]
+        return [
+            ('Phase 1 — Diagnostic Input Review',
+             'Structured review of current digital maturity, existing '
+             'digital services, the operating model and delivery '
+             'channels.'),
+            ('Phase 2 — Framework Scoping',
+             f'Adoption of the following frameworks as the formal '
+             f'digital-transformation alignment scope: {fw_disp} '
+             f'({fw_long}).'),
+            ('Phase 3 — Digital Maturity and Service Digitisation '
+             'Assessment',
+             'Assessment of current service-digitisation maturity '
+             'against Digital Government Authority (DGA) requirements '
+             'and identification of beneficiary-experience gaps.'),
+            ('Phase 4 — Operating Model and Integration Assessment',
+             'Analysis of the digital operating model, integration '
+             'capabilities and APIs, and interoperability across '
+             'systems.'),
+            ('Phase 5 — User Journey and Beneficiary Experience',
+             'Analysis of the beneficiary journey across digital '
+             'channels, satisfaction metrics (CSAT / NPS) and '
+             'adoption levels.'),
+            ('Phase 6 — Platform / Cloud Readiness and Roadmap',
+             'Construction of a multi-wave roadmap for service '
+             'digitisation, automation, cloud readiness and change '
+             'management, linked to adoption / availability KPIs and '
+             'KRIs.'),
+            ('Phase 7 — Validation and Quality Gates',
+             'Passage through the platform\'s validation chain: domain '
+             'check, content density, framework coverage, semantic '
+             'audit, and final audit before publication.'),
+        ]
+
+    # ── Enterprise Risk Management methodology ───────────────────────
+    if code == 'erm':
+        if lang == 'ar':
+            return [
+                ('المرحلة 1 — تحليل المدخلات التشخيصية',
+                 'مراجعة منهجية لنموذج إدارة المخاطر الحالي ومستوى '
+                 'النضج، وسجل المخاطر القائم، والثقافة المؤسسية.'),
+                ('المرحلة 2 — تحديد نطاق الأطر المرجعية',
+                 f'اعتماد الأطر التالية كنطاق رسمي لإدارة المخاطر '
+                 f'المؤسسية: {fw_disp} ({fw_long}).'),
+                ('المرحلة 3 — تقييم حوكمة المخاطر وتصنيفها وشهيتها',
+                 'تقييم نموذج حوكمة المخاطر، ولجنة المخاطر، وتصنيف '
+                 'المخاطر (Risk Taxonomy)، وبيان شهية وتحمّل المخاطر '
+                 '(Risk Appetite / Tolerance).'),
+                ('المرحلة 4 — تحديد المخاطر وتقييمها',
+                 'تحديد المخاطر الاستراتيجية والتشغيلية والمالية '
+                 'والامتثالية والسمعية، وتقييمها وفق الاحتمال والأثر '
+                 '(Inherent vs. Residual).'),
+                ('المرحلة 5 — تصميم مؤشرات المخاطر الرئيسية (KRIs)',
+                 'تصميم مكتبة مؤشرات المخاطر الرئيسية لكل فئة، وربطها '
+                 'بحدود شهية المخاطر، وتحديد عتبات الإنذار '
+                 'والتصعيد.'),
+                ('المرحلة 6 — معالجة المخاطر وخارطة الطريق والإبلاغ',
+                 'بناء خطط معالجة المخاطر، وخارطة طريق رفع نضج إدارة '
+                 'المخاطر، ونموذج الإبلاغ والتصعيد إلى اللجان والمجلس.'),
+                ('المرحلة 7 — التحقق وبوابات الجودة',
+                 'اجتياز سلسلة بوابات التحقق: التحقق من المجال، كثافة '
+                 'المحتوى، تغطية الأطر، التدقيق الدلالي، ثم التدقيق '
+                 'النهائي قبل النشر.'),
+            ]
+        return [
+            ('Phase 1 — Diagnostic Input Review',
+             'Structured review of the current risk-management model, '
+             'maturity level, existing risk register, and risk culture.'),
+            ('Phase 2 — Framework Scoping',
+             f'Adoption of the following frameworks as the formal '
+             f'enterprise-risk alignment scope: {fw_disp} ({fw_long}).'),
+            ('Phase 3 — Risk Governance, Taxonomy and Appetite Assessment',
+             'Assessment of the risk-governance model, risk committee, '
+             'risk taxonomy, and the risk appetite / tolerance '
+             'statement.'),
+            ('Phase 4 — Risk Identification and Assessment',
+             'Identification of strategic, operational, financial, '
+             'compliance and reputational risks, and their assessment '
+             'on likelihood / impact (inherent vs. residual).'),
+            ('Phase 5 — Key Risk Indicator (KRI) Design',
+             'Design of a KRI library per risk category, alignment to '
+             'risk-appetite limits, and definition of alert and '
+             'escalation thresholds.'),
+            ('Phase 6 — Risk Treatment, Roadmap and Reporting',
+             'Construction of risk-treatment plans, a maturity-uplift '
+             'roadmap, and the board / committee reporting and '
+             'escalation model.'),
+            ('Phase 7 — Validation and Quality Gates',
+             'Passage through the platform\'s validation chain: domain '
+             'check, content density, framework coverage, semantic '
+             'audit, and final audit before publication.'),
+        ]
+
+    # ── Cyber Security methodology (default; preserves PR-5B.8R wording)
     if lang == 'ar':
         return [
             ('المرحلة 1 — تحليل المدخلات التشخيصية',
@@ -10601,7 +11068,8 @@ def _extract_owners_from_content(content_sections, lang):
     return rows
 
 
-def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
+def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
+                               domain_code='cyber'):
     """Build the framework traceability matrix.
 
     Columns: Framework | Capability | Gap | Initiative | KPI / KRI | Risk.
@@ -10609,15 +11077,19 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
     the AI-generated content by simple keyword matching against the
     relevant section's table rows. Cells with no match render as ``—``.
     No content is invented; this is a pure cross-reference helper.
-    """
-    if not selected_fws_keys:
-        return {'header': [], 'rows': []}
 
+    PR-5B.9B — when ``selected_fws_keys`` resolves to no entries with
+    framework-registry capabilities (typical for AI / ERM strategies
+    whose body mentions SDAIA / ISO 31000 etc. but no framework was
+    explicitly selected), the helper falls back to a profile-driven
+    matrix: rows are derived from the domain profile's
+    ``gap_categories`` so the matrix is never empty when the strategy
+    has gaps / roadmap / KPIs / risks.
+    """
     def _row_label(row, fallback_idx=1):
         """Pick the most descriptive cell text from a parsed table row."""
         if not row:
             return ''
-        # Prefer column 1 (commonly "name/title") if column 0 is a number.
         try:
             return (row[fallback_idx] if (len(row) > fallback_idx
                     and row[0].strip().isdigit()) else row[0]).strip()
@@ -10625,9 +11097,6 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
             return (row[0] if row else '').strip()
 
     def _find_match(section_key, ar_kws, en_kws):
-        """Return the first row (as label) in section_key whose any cell
-        matches one of the keyword lists. None if no match.
-        """
         sec_text = (content_sections or {}).get(section_key) or ''
         for tbl in _parse_markdown_tables(sec_text):
             for r in tbl[1:]:
@@ -10649,10 +11118,14 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
         dash = '—'
 
     rows = []
-    for fw_key in selected_fws_keys:
+    fws_with_caps = []
+    for fw_key in (selected_fws_keys or []):
         spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key)
         if not spec:
             continue
+        if not (spec.get('capabilities') or []):
+            continue
+        fws_with_caps.append(fw_key)
         fw_display = spec.get('display', fw_key)
         for fam in spec.get('capabilities', []) or []:
             family_id = fam[0]
@@ -10667,6 +11140,44 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang):
             kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
             risk       = _find_match('confidence', ar_kws, en_kws) or dash
             rows.append([fw_display, cap_label, gap, initiative, kpi, risk])
+
+    # PR-5B.9B — profile-driven fallback. When no framework-registry
+    # capabilities produced rows, use the domain profile's gap_categories
+    # to derive a meaningful matrix from the AI-generated content. This
+    # never invents strategy rows: each cell is filled by content
+    # lookup, dash otherwise.
+    if not rows:
+        try:
+            profile = _DOMAIN_STRATEGY_PROFILES.get(
+                (domain_code or 'cyber').strip().lower(),
+                _DOMAIN_STRATEGY_PROFILES.get('cyber', {}),
+            )
+        except Exception:
+            profile = {}
+        cats = list(profile.get('gap_categories') or [])
+        if cats:
+            # Synthesize a soft framework label from the profile's
+            # display name (so the matrix Framework column is never
+            # empty even with no explicit framework selected).
+            fw_label = (profile.get('display_ar' if lang == 'ar'
+                                    else 'display_en')
+                        or '—')
+            for cat in cats:
+                # Build a short keyword list from the category text.
+                cat_tokens = [t for t in cat.replace('/', ' ')
+                              .replace('-', ' ').split()
+                              if len(t) > 2]
+                # Keep both AR and EN search keys equal — tokens may be
+                # English (data quality) or Arabic depending on profile.
+                kws = [cat] + cat_tokens
+                gap        = _find_match('gaps',       kws, kws) or dash
+                initiative = (_find_match('pillars',   kws, kws)
+                              or _find_match('roadmap', kws, kws) or dash)
+                kpi        = _find_match('kpis',       kws, kws) or dash
+                risk       = _find_match('confidence', kws, kws) or dash
+                cap_label  = cat.title() if lang != 'ar' else cat
+                rows.append([fw_label, cap_label, gap, initiative, kpi, risk])
+
     return {'header': header, 'rows': rows}
 
 
@@ -10728,7 +11239,8 @@ def _build_document_control_rows(metadata, lang):
     ]
 
 
-def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
+def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
+                            domain_code='cyber'):
     """Return a list of (label, body) appendices entries.
 
     Appendix A — selected reference frameworks (display name + full
@@ -10736,7 +11248,17 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
     strategy markdown (filtered against ``_GLOSSARY_TERMS``). When no
     content is provided the glossary still includes the acronyms of the
     selected frameworks themselves so the appendix is never empty.
+
+    PR-5B.9B — domain-aware glossary baseline. The baseline that is
+    *guaranteed* to appear in the appendix comes from the domain
+    profile's ``glossary_baseline`` (cyber acronyms only on cyber, data
+    acronyms only on data, etc.). Cross-domain forbidden acronyms (e.g.
+    SOC / SIEM / VPN on a Data Management strategy) never auto-inject;
+    if the actual content uses them, ``_glossary_terms_used_in_content``
+    surfaces them, but those auto-injected entries are then stripped
+    unless the literal acronym appears (word-boundary) in the strategy.
     """
+    code = (domain_code or 'cyber').strip().lower()
     if lang == 'ar':
         out = [(
             'الملحق أ — الأطر المرجعية',
@@ -10754,10 +11276,6 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
             spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(k, {})
             out.append(('• ' + k, spec.get('display', k)))
 
-    # Appendix B — glossary of terms actually used (with a minimum of
-    # the framework acronyms themselves and a baseline of common
-    # cybersecurity acronyms so the executive document always carries
-    # a usable glossary table — PR-5B.8T).
     glossary_blob = ''
     if isinstance(content_sections, dict):
         glossary_blob = '\n'.join(
@@ -10777,21 +11295,53 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
                 used.append((ac, ar, en))
                 used_set.add(ac)
                 break
-    # PR-5B.8T — baseline glossary terms always present in the Arabic /
-    # English appendix so MFA/VPN/ZTNA/IAM/PAM/SOC/SIEM/CSIRT/DLP are
-    # never silently missing from a strategy document.
-    _BASELINE_GLOSSARY = (
-        'MFA', 'VPN', 'ZTNA', 'IAM', 'PAM',
-        'SOC', 'SIEM', 'CSIRT', 'DLP',
-    )
-    for ac in _BASELINE_GLOSSARY:
+
+    # PR-5B.9B — domain-aware baseline (replaces the previous
+    # cyber-only ``_BASELINE_GLOSSARY``).
+    try:
+        profile = _DOMAIN_STRATEGY_PROFILES.get(
+            code, _DOMAIN_STRATEGY_PROFILES.get('cyber', {}),
+        )
+    except Exception:
+        profile = {}
+    forbidden = _DOMAIN_GLOSSARY_FORBIDDEN.get(code, set())
+    domain_baseline = list(profile.get('glossary_baseline')
+                           or _DOMAIN_STRATEGY_PROFILES.get('cyber', {})
+                                  .get('glossary_baseline')
+                           or [])
+
+    for ac in domain_baseline:
         if ac in used_set:
+            continue
+        if ac in forbidden:
             continue
         for _ac, _ar, _en in _GLOSSARY_TERMS:
             if _ac == ac:
                 used.append((_ac, _ar, _en))
-                used_set.add(_ac)
+                used_set.add(ac)
                 break
+
+    # Strip auto-detected cross-domain terms unless the literal acronym
+    # appears in the actual content (word-boundary). Prevents IAM
+    # leaking from "data management" via the phrase
+    # "data management".
+    if forbidden and used:
+        import re as _re_g
+        kept = []
+        blob_raw = (glossary_blob or '')
+        for ac, ar, en in used:
+            if ac in forbidden:
+                disp_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+                _kept = False
+                if _re_g.search(rf'\b{_re_g.escape(disp_ac)}\b', blob_raw):
+                    _kept = True
+                elif ar and ar in blob_raw:
+                    _kept = True
+                if not _kept:
+                    continue
+            kept.append((ac, ar, en))
+        used = kept
+
     if lang == 'ar':
         out.append((
             'الملحق ب — قاموس المصطلحات',
@@ -10799,7 +11349,8 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
         ))
         if used:
             for ac, ar, _en in used:
-                out.append(('• ' + ac, ar))
+                disp_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+                out.append(('• ' + disp_ac, ar))
         else:
             out.append(('• —', 'لا توجد مصطلحات إضافية للعرض.'))
     else:
@@ -10809,10 +11360,137 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None):
         ))
         if used:
             for ac, _ar, en in used:
-                out.append(('• ' + ac, en))
+                disp_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+                out.append(('• ' + disp_ac, en))
         else:
             out.append(('• —', 'No additional terms to display.'))
     return out
+
+
+def _export_quality_gate_check(domain_code, lang, content,
+                                doc_control_rows, methodology_rows,
+                                scope_items, traceability, appendices,
+                                fws_keys, frameworks_inferred):
+    """Inspect the composed strategy document model and log warnings for
+    the defects documented in PR-5B.9B (cross-domain contamination,
+    doc-control RTL artefact, '.N' headings, no-framework scope vs.
+    framework-citing body, empty / dash-heavy traceability, cyber
+    methodology phrasing in non-cyber documents). Pure inspection —
+    never blocks the export, never edits the model.
+    """
+    try:
+        code = (domain_code or 'cyber').strip().lower()
+        warnings = []
+
+        # 1) Document control RTL artefact: detect the visible
+        #    bidi-glitch substring "بواسطة أعد" (the user-reported
+        #    reversed pair). The composed table uses the correct
+        #    "أعد بواسطة" label — this guard catches regressions.
+        for label, value in (doc_control_rows or []):
+            joined = f'{label} {value}'
+            if 'بواسطة أعد' in joined:
+                warnings.append('doc_control_rtl_artifact')
+                break
+
+        # 2) Heading punctuation defect ".1 الرؤية" present in the raw
+        #    strategy markdown — the renderer should have called
+        #    ``_arabic_pdf_heading_normalize`` first, but if it didn't,
+        #    surface the warning so the QA log highlights it.
+        if lang == 'ar' and content:
+            import re as _re_qg
+            if _re_qg.search(r'(^|\n)[ \t]*#{0,4}[ \t]*\.\d+[ \t]+[\u0600-\u06FF]',
+                              content):
+                warnings.append('heading_dot_prefix')
+
+        # 3) Cross-domain glossary leakage. For non-cyber domains, no
+        #    forbidden acronym should appear as an auto-baseline entry
+        #    in the appendix (it may appear if literally cited in
+        #    content — the appendix builder strips otherwise).
+        forbidden = _DOMAIN_GLOSSARY_FORBIDDEN.get(code, set())
+        if forbidden:
+            blob_lower = (content or '')
+            import re as _re_qg2
+            for label, _body in (appendices or []):
+                if not label.startswith('•'):
+                    continue
+                acronym = label.lstrip('• ').strip()
+                if not acronym:
+                    continue
+                if acronym in forbidden:
+                    if not _re_qg2.search(rf'\b{_re_qg2.escape(acronym)}\b',
+                                           blob_lower):
+                        warnings.append(
+                            f'glossary_cross_domain_leak:{acronym}')
+
+        # 4) Scope says "no frameworks" while the body clearly cites
+        #    framework names. We have already inferred frameworks above,
+        #    so this guard fires only when even inference returned
+        #    nothing despite an obvious mention.
+        if not fws_keys and content:
+            _hits = []
+            for token in ('ISO 31000', 'ISO31000', 'COSO ERM',
+                           'SDAIA', 'سدايا', 'NDMO', 'PDPL',
+                           'NCA ECC', 'NCA TCC', 'NIST AI RMF',
+                           'NIST CSF'):
+                if token in content:
+                    _hits.append(token)
+            if _hits:
+                warnings.append('scope_no_frameworks_but_body_cites:'
+                                + ','.join(_hits[:3]))
+
+        # 5) Empty or dash-heavy traceability matrix.
+        rows = (traceability or {}).get('rows') or []
+        if not rows:
+            warnings.append('traceability_empty')
+        else:
+            def _is_dash(v):
+                if v is None:
+                    return True
+                s = str(v).strip()
+                return (not s) or s in ('—', '-', '--', '–')
+            n_dash_heavy = 0
+            for r in rows:
+                _info = list(r[1:]) if len(r) >= 2 else list(r)
+                if not _info:
+                    continue
+                _dash = sum(1 for v in _info if _is_dash(v))
+                if _dash * 2 >= len(_info):
+                    n_dash_heavy += 1
+            if n_dash_heavy and n_dash_heavy >= max(1, len(rows) // 2):
+                warnings.append(
+                    f'traceability_dash_heavy:{n_dash_heavy}/{len(rows)}')
+
+        # 6) Cyber methodology phrasing in a non-cyber document.
+        if code != 'cyber':
+            joined = ' '.join(
+                f'{lbl} {bdy}' for (lbl, bdy) in (methodology_rows or [])
+            )
+            for cyber_marker in ('SOC', 'CSIRT', 'IAM', 'PAM', 'ZTNA',
+                                  'remote work', 'incident response',
+                                  'الاستجابة للحوادث', 'الوصول عن بُعد',
+                                  'إدارة الهوية'):
+                if cyber_marker in joined:
+                    warnings.append(
+                        f'methodology_cyber_phrasing_in_non_cyber:'
+                        f'{cyber_marker}')
+                    break
+
+        if warnings:
+            print(
+                f'[EXPORT-QUALITY] domain={code} lang={lang} '
+                f'fws={fws_keys} inferred={frameworks_inferred} '
+                f'warnings={warnings}',
+                flush=True,
+            )
+        else:
+            print(
+                f'[EXPORT-QUALITY] domain={code} lang={lang} '
+                f'fws={fws_keys} ok',
+                flush=True,
+            )
+    except Exception as _gate_e:
+        print(f'[EXPORT-QUALITY] gate_internal_error: {_gate_e}',
+              flush=True)
 
 
 def _build_strategy_document_model(content, metadata=None, sections=None,
@@ -10886,11 +11564,18 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
     L = lambda key: _strategy_doc_label(key, lang_n)  # noqa: E731
 
     # Block payloads
+    # PR-5B.9B — resolve canonical domain code so methodology / glossary
+    # / traceability builders can produce domain-specific output.
+    try:
+        _domain_code = normalize_domain(domain or '')
+    except Exception:
+        _domain_code = 'cyber'
     doc_control_rows = _build_document_control_rows(metadata, lang_n)
     exec_paras       = _build_executive_summary_block(
         content_sections, metadata, fws_keys, lang_n)
     scope_items      = _build_scope_frameworks_block(metadata, fws_keys, lang_n)
-    methodology_rows = _build_methodology_block(metadata, fws_keys, lang_n)
+    methodology_rows = _build_methodology_block(
+        metadata, fws_keys, lang_n, domain_code=_domain_code)
     current_state_paras = _extract_first_paragraphs(
         (content_sections or {}).get('environment', ''),
         max_paras=2, max_chars=900,
@@ -10902,9 +11587,10 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
         )
     governance_rows  = _extract_owners_from_content(content_sections, lang_n)
     traceability     = _build_traceability_matrix(
-        content_sections, fws_keys, lang_n)
+        content_sections, fws_keys, lang_n, domain_code=_domain_code)
     appendices       = _build_appendices_block(
-        fws_keys, lang_n, content_sections=content_sections)
+        fws_keys, lang_n, content_sections=content_sections,
+        domain_code=_domain_code)
 
     # Canonical ordered block list. ``strategy_body`` is the original
     # AI-generated markdown rendered as the "main strategy sections".
@@ -10964,6 +11650,30 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
         'appendices':           {'title': L('appendices'),
                                  'entries': appendices},
     }
+    # PR-5B.9B — export quality gate. Emits ``[EXPORT-QUALITY]`` warning
+    # lines when the composed model exhibits any of the documented
+    # defects (cross-domain glossary leakage, doc-control RTL artefact,
+    # ".N" headings in body, no-framework scope while body cites
+    # frameworks, empty / dash-heavy traceability, cyber methodology
+    # phrasing in non-cyber domains). The gate never blocks the export
+    # — it only surfaces warnings so QA can spot regressions.
+    try:
+        _export_quality_gate_check(
+            domain_code=_domain_code,
+            lang=lang_n,
+            content=content or '',
+            doc_control_rows=doc_control_rows,
+            methodology_rows=methodology_rows,
+            scope_items=scope_items,
+            traceability=traceability,
+            appendices=appendices,
+            fws_keys=list(fws_keys),
+            frameworks_inferred=_frameworks_inferred,
+        )
+    except Exception as _qg_e:
+        print(f'[EXPORT-QUALITY] gate_failed_non_fatal: {_qg_e}',
+              flush=True)
+
     return {'lang': lang_n, 'order': order, 'blocks': blocks,
             'selected_frameworks': list(fws_keys),
             'frameworks_inferred': _frameworks_inferred}
@@ -20916,6 +21626,106 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
                                "kpis", "confidence"],
         "repair_targets": ["pillars", "environment", "gaps", "roadmap",
                             "kpis", "confidence"],
+    },
+    # PR-5B.9B — additional registry entries used by domain inference
+    # and scope/glossary surfacing in the export model. These describe
+    # how each non-cyber framework is reflected in its strategy.
+    "ISO31000": {
+        "display": "ISO 31000 — Risk Management",
+        "aliases": ["iso 31000", "iso31000", "iso/iec 31000",
+                    "أيزو 31000", "إدارة المخاطر"],
+        "applicable_domains": ["Enterprise Risk Management",
+                                "Global Standards"],
+        "capabilities": [
+            ("risk_governance", ["حوكمة المخاطر", "إطار المخاطر"],
+             ["risk governance", "risk framework"]),
+            ("risk_appetite", ["تقبّل المخاطر", "شهية المخاطر",
+                                 "تحمّل المخاطر"],
+             ["risk appetite", "risk tolerance"]),
+            ("risk_assessment_iso", ["تقييم المخاطر", "تحديد المخاطر",
+                                       "تحليل المخاطر"],
+             ["risk identification", "risk assessment", "risk analysis"]),
+            ("risk_treatment", ["معالجة المخاطر", "خطة المعالجة"],
+             ["risk treatment", "treatment plan"]),
+            ("risk_reporting", ["تقارير المخاطر", "رفع التقارير"],
+             ["risk reporting", "escalation"]),
+        ],
+        "required_sections": ["pillars", "gaps", "roadmap", "kpis",
+                               "confidence"],
+        "repair_targets": ["pillars", "gaps", "roadmap", "kpis",
+                            "confidence"],
+    },
+    "COSO_ERM": {
+        "display": "COSO Enterprise Risk Management Framework",
+        "aliases": ["coso erm", "coso", "coso enterprise risk",
+                    "إطار coso", "كوزو"],
+        "applicable_domains": ["Enterprise Risk Management"],
+        "capabilities": [
+            ("governance_culture", ["حوكمة المخاطر", "ثقافة المخاطر"],
+             ["risk governance", "risk culture", "board oversight"]),
+            ("strategy_objective_setting", ["الأهداف الاستراتيجية",
+                                              "وضع الأهداف"],
+             ["strategy", "objective setting"]),
+            ("performance_risk", ["أداء المخاطر", "تقييم المخاطر"],
+             ["performance", "risk identification", "severity"]),
+            ("review_revision", ["مراجعة المخاطر", "تحسين المخاطر"],
+             ["review", "revision", "monitoring"]),
+            ("information_communication", ["التواصل والإبلاغ",
+                                             "تقارير المخاطر"],
+             ["information", "communication", "reporting"]),
+        ],
+        "required_sections": ["pillars", "gaps", "roadmap", "kpis",
+                               "confidence"],
+        "repair_targets": ["pillars", "gaps", "roadmap", "kpis",
+                            "confidence"],
+    },
+    "SDAIA": {
+        "display": "SDAIA AI Ethics & Governance Principles",
+        "aliases": ["sdaia", "سدايا", "ai ethics sdaia",
+                    "هيئة البيانات والذكاء الاصطناعي"],
+        "applicable_domains": ["Artificial Intelligence"],
+        "capabilities": [
+            ("ai_governance", ["حوكمة الذكاء الاصطناعي",
+                                 "أخلاقيات الذكاء الاصطناعي"],
+             ["AI governance", "AI ethics"]),
+            ("fairness_bias", ["التحيز", "العدالة"],
+             ["fairness", "bias"]),
+            ("transparency_explain", ["الشفافية", "قابلية التفسير"],
+             ["transparency", "explainability"]),
+            ("human_oversight", ["الإشراف البشري", "الرقابة البشرية"],
+             ["human oversight", "accountability"]),
+            ("model_monitoring", ["مراقبة النماذج", "متابعة الأداء"],
+             ["model monitoring", "model performance"]),
+        ],
+        "required_sections": ["pillars", "gaps", "roadmap", "kpis",
+                               "confidence"],
+        "repair_targets": ["pillars", "gaps", "roadmap", "kpis",
+                            "confidence"],
+    },
+    "PDPL": {
+        "display": "Personal Data Protection Law (PDPL)",
+        "aliases": ["pdpl", "personal data protection law",
+                    "نظام حماية البيانات الشخصية", "حماية البيانات الشخصية"],
+        "applicable_domains": ["Data Management"],
+        "capabilities": [
+            ("privacy_governance", ["حوكمة الخصوصية", "خصوصية البيانات"],
+             ["privacy governance", "data privacy"]),
+            ("consent_management", ["إدارة الموافقات", "موافقة"],
+             ["consent management", "consent"]),
+            ("data_subject_rights", ["حقوق صاحب البيانات",
+                                       "حقوق الأفراد"],
+             ["data subject rights", "subject rights"]),
+            ("data_classification_pdpl", ["تصنيف البيانات الشخصية",
+                                            "تصنيف البيانات"],
+             ["personal data classification", "data classification"]),
+            ("breach_notification", ["الإبلاغ عن الانتهاكات",
+                                       "إخطار الخروقات"],
+             ["breach notification", "breach reporting"]),
+        ],
+        "required_sections": ["pillars", "gaps", "roadmap", "kpis",
+                               "confidence"],
+        "repair_targets": ["pillars", "gaps", "roadmap", "kpis",
+                            "confidence"],
     },
 }
 
