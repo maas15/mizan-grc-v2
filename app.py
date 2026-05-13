@@ -3865,7 +3865,11 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
             "AI_GOV", "SDAIA", "AI_ETHICS", "MODEL_RISK", "BIAS",
             "FAIRNESS", "EXPLAINABILITY", "TRANSPARENCY",
             "HUMAN_OVERSIGHT", "MODEL_MONITORING", "TRAINING_DATA",
-            "NIST_AI_RMF",
+            # PR-5B.9E — NIST_AI_RMF removed from the AI baseline so
+            # it no longer auto-injects when the only selected
+            # framework is SDAIA. Content that explicitly references
+            # "NIST AI RMF" still surfaces the entry via
+            # ``_glossary_terms_used_in_content``.
         ],
     },
     "dt": {
@@ -11437,6 +11441,49 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
                     continue
             kept.append((ac, ar, en))
         used = kept
+
+    # PR-5B.9E — drop registry-framework acronyms that are NEITHER
+    # selected by the user NOR literally referenced (word-bounded) in
+    # the strategy content NOR part of the current domain's baseline.
+    # This fixes the cross-domain leakage where AI strategies for
+    # ``Artificial Intelligence`` had ``NIST_AI_RMF`` auto-injected into
+    # the appendix (because the AI term lives in
+    # ``_GLOSSARY_AI_TERMS``) even though the only selected framework
+    # was ``SDAIA`` and ``NIST_AI_RMF`` is NOT part of the AI domain's
+    # ``glossary_baseline``. The current-domain baseline ALWAYS takes
+    # precedence — never strip a baseline framework acronym, otherwise
+    # the appendix would lose canonical entries (NDMO/PDPL on data,
+    # SDAIA on ai, DGA on dt, ISO31000 on erm) when the user generated
+    # a strategy without explicitly selecting any framework.
+    try:
+        _selected_set = set(selected_fws_keys or [])
+        _registry_keys = set(_FRAMEWORK_COVERAGE_REQUIREMENTS.keys())
+        _baseline_set = set(domain_baseline or [])
+        if used:
+            import re as _re_g2
+            blob_raw2 = (glossary_blob or '')
+            kept2 = []
+            for ac, ar, en in used:
+                if (ac in _registry_keys
+                        and ac not in _selected_set
+                        and ac not in _baseline_set):
+                    disp_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+                    if _re_g2.search(
+                            rf'\b{_re_g2.escape(disp_ac)}\b', blob_raw2):
+                        kept2.append((ac, ar, en))
+                        continue
+                    if ar and ar in blob_raw2:
+                        kept2.append((ac, ar, en))
+                        continue
+                    # Drop: registry framework, not selected, not in
+                    # the current-domain baseline, not literally in
+                    # content.
+                    continue
+                kept2.append((ac, ar, en))
+            used = kept2
+    except Exception:  # noqa: BLE001 — defensive
+        # Glossary scoping must never abort export.
+        pass
 
     if lang == 'ar':
         out.append((
@@ -20241,11 +20288,18 @@ def synthesize_objectives_depth(sections, lang, domain='Cyber Security',
 
     n_after = count_valid_objective_rows(repaired)
     if n_after < eff_min:
-        raise RepairError(
+        # PR-5B.9E — annotate with section='vision' so downstream
+        # callers (_targeted_section_repair / _force_inject_mandatory_section
+        # / converge_strategy_sections) route through _mark_synth_failed
+        # and the post-normalization audit gate fails closed instead of
+        # silently treating this as a generic strategy error.
+        _err = RepairError(
             f'synthesize_objectives_depth: AI-repaired vision has '
             f'{n_after}/{eff_min} valid Strategic Objective rows '
             f'(generation_mode={generation_mode!r})'
         )
+        setattr(_err, 'section', 'vision')
+        raise _err
 
     sections['vision'] = repaired
     summary['rebuilt'] = True
@@ -21783,8 +21837,25 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
     },
     "SAMA": {
         "display": "SAMA Cybersecurity Framework",
+        # PR-5B.9E — widened AR/EN aliases so vision/objectives compliance
+        # detection recognises the natural Arabic phrasings used by AI
+        # output ("ضوابط ساما", "إطار ساما للأمن السيبراني",
+        # "الالتزام بمتطلبات ساما") and the canonical English variants
+        # ("SAMA Cybersecurity Framework", "compliance with SAMA
+        # requirements"). Without these aliases the compliance-objective
+        # check at ``_compute_missing_compliance_objective`` would emit
+        # ``selected_framework_compliance_objective_missing:SAMA`` even
+        # when the vision text already names the obligation.
         "aliases": ["sama", "sama csf", "sama cybersecurity",
-                    "ساما", "إطار ساما"],
+                    "sama cybersecurity framework",
+                    "compliance with sama requirements",
+                    "compliance with sama",
+                    "sama requirements",
+                    "ساما", "إطار ساما",
+                    "ضوابط ساما",
+                    "إطار ساما للأمن السيبراني",
+                    "الالتزام بمتطلبات ساما",
+                    "متطلبات ساما"],
         "applicable_domains": ["Cyber Security"],
         "capabilities": [
             ("financial_sector", ["القطاع المالي", "البنوك",
@@ -22328,19 +22399,46 @@ _DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS = {
                'data governance committee', 'data stewards'),
     },
     'ai': {
+        # PR-5B.9E — widened AR tokens so the AI strategy can satisfy the
+        # specialized-function objective with any of: AI governance unit /
+        # office, governance committee, ethics officer, model risk
+        # manager, AI compliance lead, model inventory.
         'ar': ('إنشاء مكتب', 'وحدة حوكمة الذكاء الاصطناعي',
-               'مكتب حوكمة الذكاء الاصطناعي', 'تفعيل لجنة الحوكمة',
-               'لجنة حوكمة الذكاء الاصطناعي', 'مخاطر النماذج'),
+               'مكتب حوكمة الذكاء الاصطناعي',
+               'مكتب أو وحدة حوكمة الذكاء الاصطناعي',
+               'تفعيل لجنة الحوكمة',
+               'لجنة حوكمة الذكاء الاصطناعي',
+               'مسؤول أخلاقيات الذكاء الاصطناعي',
+               'مدير مخاطر النماذج',
+               'مسؤول الامتثال للذكاء الاصطناعي',
+               'مخزون النماذج', 'مخاطر النماذج'),
         'en': ('ai governance office', 'establish an ai governance office',
-               'ai governance committee', 'model risk roles'),
+               'ai governance unit',
+               'ai governance committee', 'model risk roles',
+               'ai ethics officer', 'model risk manager',
+               'ai compliance lead', 'model inventory'),
     },
     'dt': {
-        'ar': ('إنشاء مكتب التحول الرقمي', 'تفعيل Chief Digital Officer',
-               'مكتب التحول الرقمي', 'نموذج تشغيل التحول الرقمي',
-               'لجنة التحول الرقمي'),
-        'en': ('digital transformation office', 'chief digital officer',
+        # PR-5B.9E — widened DT tokens so the Digital Transformation
+        # strategy can satisfy the specialized-function objective with
+        # any of: DT office / department / Chief Digital Officer / DT
+        # operating model / digital steering committee / digital
+        # services governance.
+        'ar': ('إنشاء مكتب التحول الرقمي', 'تأسيس مكتب التحول الرقمي',
+               'إنشاء إدارة التحول الرقمي',
+               'تفعيل Chief Digital Officer',
+               'تعيين رئيس التحول الرقمي',
+               'مكتب التحول الرقمي',
+               'إدارة التحول الرقمي',
+               'نموذج تشغيل التحول الرقمي',
+               'لجنة التحول الرقمي',
+               'حوكمة الخدمات الرقمية'),
+        'en': ('digital transformation office',
+               'digital transformation department',
+               'chief digital officer',
                'digital transformation operating model',
-               'digital steering committee'),
+               'digital steering committee',
+               'digital services governance'),
     },
     'erm': {
         'ar': ('إنشاء إدارة المخاطر المؤسسية', 'تأسيس إدارة المخاطر',
@@ -22406,6 +22504,124 @@ def _compute_missing_specialized_function_objective(
             if t and t.lower() in blob_lc:
                 return False
     return True
+
+
+# ── PR-5B.9E: unified pre-save obligation coordinator ───────────────────────
+# Returns the consolidated set of obligations applicable to a single
+# strategy generation, computed once from the inputs that drive every
+# downstream gate. The intent is *coordination*, not re-implementation —
+# each obligation key references the existing helper that enforces it,
+# and the per-obligation effective thresholds are the ones the audit /
+# repair paths already use. Centralising them here lets:
+#
+#   * the post-normalization audit and the convergence loop share one
+#     consistent view of "what must be true" for this generation,
+#   * tests assert the obligation set directly without reaching into
+#     each per-section helper, and
+#   * future code that needs to know "is X required for this run?"
+#     ask in one place instead of duplicating the (mode, frameworks,
+#     org_structure) branching.
+#
+# The function is read-only and side-effect free — it never mutates
+# ``sections``, never inserts deterministic content, never calls the
+# AI provider, and never weakens any validator threshold.
+def _compute_applicable_strategy_obligations(
+        domain,
+        selected_frameworks,
+        org_structure_is_none,
+        generation_mode,
+        lang='ar',
+        diagnostic_context=None):
+    """Return a dict describing every obligation that applies to this run.
+
+    Keys (always present):
+        ``min_objective_rows``                      → int
+        ``min_gap_rows``                            → int
+        ``selected_framework_compliance_objectives`` → list[str] (resolved
+                                                       framework keys)
+        ``specialized_function_establishment``      → bool
+        ``specialized_function_domain_code``        → str ('cyber'/'data'/
+                                                           'ai'/'dt'/'erm'
+                                                           or '')
+        ``selected_framework_section_coverage``     → list[str] (resolved
+                                                       framework keys)
+        ``domain_capability_coverage``              → bool
+        ``traceability_quality``                    → bool
+        ``glossary_scope``                          → dict with keys
+                                                       ``allowed_acronyms``
+                                                       and ``forbidden_acronyms``
+
+    Parameters mirror the names used across the existing pipeline so call
+    sites can pass them through without translation.
+    """
+    _gm = (generation_mode or '').strip().lower()
+    _is_consulting_grade = _gm in ('consulting', 'assurance')
+
+    # SO row floor — mirrors validate_arabic_strategy_semantic_richness
+    # (4 base; 6 for consulting/assurance).
+    _min_so = 6 if _is_consulting_grade else _RICHNESS_MIN_SO_ROWS
+
+    # Gap row floor — mirrors validate_arabic_strategy_semantic_richness
+    # AND synthesize_gaps_depth (2 base; 5 for consulting/assurance OR
+    # when the organisation reported no specialized function — that
+    # absence becomes its own mandatory gap row).
+    _min_gap = _RICHNESS_MIN_GAP_ROWS
+    if _is_consulting_grade or org_structure_is_none:
+        _min_gap = max(_min_gap, 5)
+
+    # Resolve frameworks via the same helper the audit uses so domain
+    # filtering and alias resolution behave identically.
+    try:
+        _resolved_fws = list(
+            _resolve_selected_frameworks(selected_frameworks, domain) or [])
+    except Exception:  # noqa: BLE001 — defensive
+        _resolved_fws = []
+
+    try:
+        _domain_code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        _domain_code = ''
+
+    # Glossary scope — allowed = current-domain baseline + selected
+    # framework acronyms; forbidden = the cross-domain set already
+    # enforced by ``_DOMAIN_GLOSSARY_FORBIDDEN``. We also include the
+    # registry-framework acronyms that are NOT in selected_frameworks
+    # so the appendix can drop them when content does not mention them.
+    _glossary_forbidden = set(
+        _DOMAIN_GLOSSARY_FORBIDDEN.get(_domain_code, set()) or set())
+    _registry_keys = set(_FRAMEWORK_COVERAGE_REQUIREMENTS.keys())
+    _selected_set = set(_resolved_fws)
+    _non_selected_registry = _registry_keys - _selected_set
+    _glossary_scope = {
+        'allowed_acronyms': sorted(_selected_set),
+        # Frameworks that are in the registry but not selected — the
+        # appendix builder may keep them ONLY if literally referenced in
+        # the content (word-bounded). This list is informational; the
+        # actual filtering happens in ``_build_appendices_block``.
+        'non_selected_registry_acronyms': sorted(_non_selected_registry),
+        'forbidden_acronyms': sorted(_glossary_forbidden),
+    }
+
+    return {
+        'min_objective_rows': _min_so,
+        'min_gap_rows': _min_gap,
+        'selected_framework_compliance_objectives': list(_resolved_fws),
+        'specialized_function_establishment': bool(org_structure_is_none),
+        'specialized_function_domain_code': _domain_code,
+        'selected_framework_section_coverage': list(_resolved_fws),
+        # Domain-capability coverage applies whenever the strategy is
+        # produced for one of the recognised domain codes.
+        'domain_capability_coverage': bool(_domain_code),
+        # Traceability quality — informative-rows-only enforcement —
+        # applies whenever any framework is selected OR the domain has
+        # a profile-driven gap_categories matrix.
+        'traceability_quality': bool(_resolved_fws or _domain_code),
+        'glossary_scope': _glossary_scope,
+        # Pass-throughs for downstream consumers / tests.
+        'generation_mode': _gm or 'consulting',
+        'lang': lang,
+        'diagnostic_context': diagnostic_context or {},
+    }
 
 
 def _final_strategy_audit(sections, lang, doc_subtype=None,
@@ -26969,6 +27185,18 @@ def ai_repair_strategy_section(
                 "- الأتمتة والقدرات الرقمية\n"
                 "- الالتزام بإطار DGA"
             ),
+            "cyber": (
+                "\n\nالفئات المتوقعة لتحليل الفجوات في الأمن السيبراني "
+                "(إلزامية):\n"
+                "يجب أن تغطي صفوف جدول الفجوات الفئات التالية بحد أدنى "
+                "خمسة صفوف جوهرية موزعة عبرها:\n"
+                "- غياب إدارة الأمن السيبراني / CISO\n"
+                "- مركز العمليات الأمنية SOC / SIEM\n"
+                "- إدارة الهوية والوصول IAM / PAM / MFA\n"
+                "- الاستجابة للحوادث / CSIRT\n"
+                "- إدارة الثغرات / منع تسرب البيانات DLP / "
+                "الوصول عن بُعد TCC"
+            ),
         }
         _GAP_CATEGORIES_EN = {
             "data": (
@@ -27021,6 +27249,18 @@ def ai_repair_strategy_section(
                 "- User/citizen experience and adoption rates\n"
                 "- Automation and digital capabilities\n"
                 "- Compliance with the DGA framework"
+            ),
+            "cyber": (
+                "\n\nExpected gap-analysis categories for Cybersecurity "
+                "(MANDATORY):\n"
+                "The gap-analysis table rows MUST cover the following "
+                "categories with at least five substantive rows distributed "
+                "across them:\n"
+                "- Absence of a Cybersecurity Department / CISO\n"
+                "- Security Operations Center (SOC) / SIEM\n"
+                "- Identity and Access Management (IAM / PAM / MFA)\n"
+                "- Incident response / CSIRT\n"
+                "- Vulnerability management / DLP / TCC remote access"
             ),
         }
         if _dom_code_inj in _GAP_CATEGORIES_AR:
@@ -42688,8 +42928,46 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             # Framework traceability matrix
             _tm = _dblocks.get('traceability_matrix', {})
             _docx_pro_heading(_tm.get('title', ''))
-            _docx_pro_grid_table(_tm.get('header') or [],
-                                 _tm.get('rows') or [])
+            # PR-5B.9E — drop dashy rows and emit narrative note when
+            # no informative rows survive.  Mirrors the PDF renderer's
+            # filtering so the DOCX export never carries
+            # "—"-stuffed traceability rows that the PDF would have
+            # suppressed.
+            _tm_header = _tm.get('header') or []
+            _tm_rows = list(_tm.get('rows') or [])
+
+            def _tm_is_dash(_v):
+                if _v is None:
+                    return True
+                _s = str(_v).strip()
+                return (not _s) or _s in ('—', '-', '--', '–')
+
+            if _tm_rows and _tm_header and len(_tm_header) >= 6:
+                _tm_filtered = []
+                for _row in _tm_rows:
+                    if len(_row) < 6:
+                        continue
+                    _gap_c, _init_c = _row[2], _row[3]
+                    _kpi_c, _risk_c = _row[4], _row[5]
+                    if _tm_is_dash(_gap_c):
+                        continue
+                    if _tm_is_dash(_init_c):
+                        continue
+                    if _tm_is_dash(_kpi_c) and _tm_is_dash(_risk_c):
+                        continue
+                    _tm_filtered.append(_row)
+                _tm_rows = _tm_filtered
+
+            if _tm_header and _tm_rows:
+                _docx_pro_grid_table(_tm_header, _tm_rows)
+            else:
+                _docx_pro_paragraph(
+                    'لم يتم اشتقاق ربط كامل لهذا المجال من المحتوى '
+                    'المتاح.'
+                    if is_arabic else
+                    'No traceability rows could be derived from the '
+                    'available content.'
+                )
             doc.add_page_break()
             # Appendices
             _ap = _dblocks.get('appendices', {})
