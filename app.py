@@ -19433,6 +19433,137 @@ def _compute_missing_cyber_dept_establishment_concepts(sections):
     return missing
 
 
+# ── PR-5B.9D: cross-domain specialized-function establishment requirement ──
+# Generalises the cyber-only ``_CYBER_DEPT_ESTAB_CONCEPTS`` to every other
+# domain (Data / AI / DT / ERM). When ``org_structure_is_none=True`` the
+# strategy MUST recommend establishing the domain-specific specialized
+# function (department/office), appointing the head officer, and standing
+# up the governance committee. AI-first detection only — emits the
+# ``specialized_function_missing`` defect tag listing the uncovered
+# concept families so ``ai_repair_strategy_section`` can name them in the
+# validation_error.
+_DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
+    'cyber': _CYBER_DEPT_ESTAB_CONCEPTS,
+    'data': {
+        'establish_dept': (
+            'مكتب إدارة البيانات', 'إدارة البيانات', 'إنشاء مكتب البيانات',
+            'تأسيس مكتب البيانات', 'وحدة حوكمة البيانات',
+            'data management office', 'dmo',
+            'establish a data management office',
+        ),
+        'head_officer': (
+            'cdo', 'chief data officer', 'رئيس البيانات',
+            'مدير البيانات', 'كبير مسؤولي البيانات',
+            'تعيين رئيس البيانات',
+        ),
+        'committee': (
+            'لجنة حوكمة البيانات', 'data governance committee',
+            'مجلس حوكمة البيانات', 'data council',
+            'data stewardship council',
+        ),
+        'roles_responsibilities': (
+            'data steward', 'data owner', 'أمناء البيانات',
+            'مالكي البيانات', 'مسؤول البيانات', 'الأدوار والمسؤوليات',
+            'roles and responsibilities', 'raci',
+        ),
+    },
+    'ai': {
+        'establish_dept': (
+            'مكتب حوكمة الذكاء الاصطناعي', 'وحدة حوكمة الذكاء الاصطناعي',
+            'إنشاء مكتب الذكاء الاصطناعي',
+            'ai governance office', 'establish an ai governance office',
+            'ai office',
+        ),
+        'head_officer': (
+            'caio', 'chief ai officer',
+            'رئيس الذكاء الاصطناعي', 'مدير الذكاء الاصطناعي',
+            'كبير مسؤولي الذكاء الاصطناعي',
+        ),
+        'committee': (
+            'لجنة حوكمة الذكاء الاصطناعي',
+            'ai governance committee', 'ai ethics committee',
+            'لجنة أخلاقيات الذكاء الاصطناعي',
+        ),
+        'roles_responsibilities': (
+            'model risk', 'مخاطر النماذج', 'model owner',
+            'مالك النموذج', 'الأدوار والمسؤوليات',
+            'roles and responsibilities', 'raci',
+        ),
+    },
+    'dt': {
+        'establish_dept': (
+            'مكتب التحول الرقمي', 'إنشاء مكتب التحول الرقمي',
+            'تأسيس مكتب التحول الرقمي', 'وحدة التحول الرقمي',
+            'digital transformation office', 'dto',
+            'establish a digital transformation office',
+        ),
+        'head_officer': (
+            'chief digital officer', 'cdo',
+            'رئيس التحول الرقمي', 'مدير التحول الرقمي',
+            'كبير مسؤولي التحول الرقمي',
+        ),
+        'committee': (
+            'لجنة التحول الرقمي', 'digital transformation committee',
+            'مجلس التحول الرقمي', 'digital steering committee',
+        ),
+        'operating_model': (
+            'نموذج تشغيل التحول الرقمي', 'digital operating model',
+            'نموذج التشغيل', 'operating model',
+        ),
+    },
+    'erm': {
+        'establish_dept': (
+            'إدارة المخاطر المؤسسية', 'إنشاء إدارة المخاطر المؤسسية',
+            'تأسيس إدارة المخاطر', 'وحدة إدارة المخاطر',
+            'enterprise risk management function',
+            'establish an enterprise risk management function',
+            'erm function', 'erm office',
+        ),
+        'head_officer': (
+            'cro', 'chief risk officer',
+            'رئيس إدارة المخاطر', 'مدير المخاطر',
+            'كبير مسؤولي المخاطر',
+        ),
+        'committee': (
+            'لجنة المخاطر', 'risk committee',
+            'لجنة المخاطر المؤسسية', 'enterprise risk committee',
+        ),
+        'risk_owners': (
+            'risk owner', 'مالكي المخاطر', 'مسؤول المخاطر',
+            'الأدوار والمسؤوليات', 'roles and responsibilities',
+            'raci',
+        ),
+    },
+}
+
+
+def _compute_missing_specialized_function_concepts(sections, domain_code):
+    """Return list of domain-specific specialized-function establishment
+    concept families NOT covered anywhere in the assembled strategy text.
+
+    PR-5B.9D — generalises the cyber-only
+    ``_compute_missing_cyber_dept_establishment_concepts`` to Data, AI,
+    DT, and ERM. Returns ``[]`` for unknown domain codes (preserves
+    legacy behaviour — the per-cyber check above is invoked separately
+    when the code is ``'cyber'``).
+    """
+    code = (domain_code or '').strip().lower()
+    concepts = _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS.get(code)
+    if not concepts:
+        return []
+    text = ' '.join(
+        (sections.get(k) or '') for k in
+        ('vision', 'pillars', 'environment', 'gaps', 'roadmap',
+         'kpis', 'confidence')
+    )
+    text_lc = text.lower()
+    missing = []
+    for fam, tokens in concepts.items():
+        if not any((t.lower() in text_lc) or (t in text) for t in tokens):
+            missing.append(fam)
+    return missing
+
+
 def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                                                generation_mode='consulting',
                                                domain=None,
@@ -19568,6 +19699,33 @@ def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                 'absent. Uncovered concept families: '
                 + ', '.join(_missing_dept),
             ))
+
+    # ── PR-5B.9D: cross-domain specialized-function establishment ────────
+    # Generalises the cyber-only check above. Fires for non-cyber domains
+    # (Data / AI / DT / ERM) when ``org_structure_is_none=True`` and the
+    # assembled strategy text fails to surface the domain-specific
+    # specialized function (department/office), head officer, governance
+    # committee, and roles concept families. Detection-only — repair is
+    # AI-first via ``ai_repair_strategy_section`` whose prompt addendum
+    # names the missing families per domain.
+    if org_structure_is_none and domain is not None and str(domain).strip():
+        try:
+            _dcode_sf = normalize_domain(domain)
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode_sf = ''
+        if _dcode_sf and _dcode_sf in ('data', 'ai', 'dt', 'erm'):
+            _missing_sf = _compute_missing_specialized_function_concepts(
+                sections, _dcode_sf,
+            )
+            if _missing_sf:
+                defects.append((
+                    'specialized_function_missing',
+                    f'Missing explicit recommendation to establish the '
+                    f'{_dcode_sf} specialized function (department / head '
+                    f'officer / committee / roles) when organizational '
+                    f'structure is absent. Uncovered concept families: '
+                    + ', '.join(_missing_sf),
+                ))
 
     # ── Gap guides must be unique (not identical repeated templates) ──────────
     gaps_text = sections.get('gaps', '') or ''
@@ -22144,9 +22302,116 @@ def _compute_missing_compliance_objective(
     return [fw for fw in fws if fw not in covered_fws]
 
 
+# ── PR-5B.9D: specialized-function establishment objective check ────────────
+# Per-domain Arabic/English token bags identifying an explicit Strategic
+# Objective row that calls for ESTABLISHING the domain-specific specialized
+# function (department / office / committee). When ``org_structure_is_none``
+# is True the Vision/Objectives table MUST contain at least one such row,
+# *in addition to* (and not replacing) any framework-compliance objective
+# row that ``_compute_missing_compliance_objective`` enforces.
+_DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS = {
+    'cyber': {
+        'ar': ('إنشاء إدارة الأمن السيبراني', 'تأسيس إدارة الأمن السيبراني',
+               'إدارة متخصصة للأمن السيبراني', 'تعيين رئيس الأمن السيبراني',
+               'تعيين CISO'),
+        'en': ('establish a dedicated cybersecurity', 'cybersecurity department',
+               'establish a cybersecurity', 'appoint a ciso',
+               'establish ciso', 'cybersecurity governance committee'),
+    },
+    'data': {
+        'ar': ('إنشاء مكتب إدارة البيانات', 'تأسيس مكتب إدارة البيانات',
+               'إنشاء مكتب البيانات', 'تفعيل أدوار CDO',
+               'تعيين رئيس البيانات', 'لجنة حوكمة البيانات',
+               'أمناء البيانات'),
+        'en': ('data management office', 'establish a data management office',
+               'establish a dmo', 'appoint a chief data officer',
+               'data governance committee', 'data stewards'),
+    },
+    'ai': {
+        'ar': ('إنشاء مكتب', 'وحدة حوكمة الذكاء الاصطناعي',
+               'مكتب حوكمة الذكاء الاصطناعي', 'تفعيل لجنة الحوكمة',
+               'لجنة حوكمة الذكاء الاصطناعي', 'مخاطر النماذج'),
+        'en': ('ai governance office', 'establish an ai governance office',
+               'ai governance committee', 'model risk roles'),
+    },
+    'dt': {
+        'ar': ('إنشاء مكتب التحول الرقمي', 'تفعيل Chief Digital Officer',
+               'مكتب التحول الرقمي', 'نموذج تشغيل التحول الرقمي',
+               'لجنة التحول الرقمي'),
+        'en': ('digital transformation office', 'chief digital officer',
+               'digital transformation operating model',
+               'digital steering committee'),
+    },
+    'erm': {
+        'ar': ('إنشاء إدارة المخاطر المؤسسية', 'تأسيس إدارة المخاطر',
+               'تعيين CRO', 'تعيين رئيس إدارة المخاطر',
+               'تفعيل لجنة المخاطر', 'لجنة المخاطر المؤسسية'),
+        'en': ('enterprise risk management function',
+               'establish an enterprise risk management',
+               'appoint a chief risk officer', 'risk committee'),
+    },
+}
+
+
+def _compute_missing_specialized_function_objective(
+        sections, domain, lang='en', org_structure_is_none=False):
+    """Return ``True`` when the Strategic Objectives table lacks an
+    explicit row calling for ESTABLISHING the domain-specific specialized
+    function, while ``org_structure_is_none=True`` makes such a row
+    mandatory. Returns ``False`` otherwise (no enforcement, or a covering
+    row is already present).
+
+    PR-5B.9D — Vision/Objectives must include a specialized-function
+    establishment objective IN ADDITION TO any framework-compliance
+    objective. The two repairs must coexist; one must not overwrite the
+    other.
+    """
+    if not org_structure_is_none:
+        return False
+    if not isinstance(sections, dict):
+        return False
+    try:
+        code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        code = ''
+    tokens = _DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS.get(code)
+    if not tokens:
+        return False
+    vision_text = sections.get('vision', '') or ''
+    if not vision_text:
+        return True
+
+    hdr = _ts_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+        r'|الأهداف)\s*\|',
+        _ts_re.IGNORECASE,
+    )
+    rows = list(_ts_table_rows(vision_text, hdr))
+    ar_tokens = tokens.get('ar', ())
+    en_tokens = tokens.get('en', ())
+    for cells in rows:
+        if len(cells) < 4:
+            continue
+        # Concatenate Objective + Target + Justification (cols 1..3).
+        parts = []
+        for i in (1, 2, 3):
+            if i < len(cells):
+                parts.append(str(cells[i] or ''))
+        blob = ' '.join(parts)
+        blob_lc = blob.lower()
+        for t in ar_tokens:
+            if t and t in blob:
+                return False
+        for t in en_tokens:
+            if t and t.lower() in blob_lc:
+                return False
+    return True
+
+
 def _final_strategy_audit(sections, lang, doc_subtype=None,
                           synth_status=None,
-                          selected_frameworks=None, domain=None):
+                          selected_frameworks=None, domain=None,
+                          org_structure_is_none=False):
     """Audit sections against the SAME thresholds the save gates use.
     Returns a list of (section_key, defect_tag, count_observed,
     threshold) tuples. Empty list = sections meet all thresholds.
@@ -22282,6 +22547,23 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                     0,
                     1,
                 ))
+        # PR-5B.9D — Vision/Objectives must ALSO include a specialized-
+        # function establishment objective when ``org_structure_is_none``
+        # is True. Independent of compliance-objective enforcement so the
+        # two repairs coexist; one must not overwrite the other.
+        if org_structure_is_none and _compute_missing_specialized_function_objective(
+                sections, domain, lang=lang,
+                org_structure_is_none=True):
+            try:
+                _dcode_obj = normalize_domain(domain or '')
+            except Exception:  # noqa: BLE001 — defensive
+                _dcode_obj = ''
+            defects.append((
+                'vision',
+                f'specialized_function_objective_missing:{_dcode_obj}',
+                0,
+                1,
+            ))
     except Exception as _fwe:
         # Audit must never abort generation. Log and continue.
         print(f'[FW-COVERAGE-AUDIT] non-fatal: {_fwe}', flush=True)
@@ -26459,45 +26741,293 @@ def ai_repair_strategy_section(
         if validation_error:
             prompt += f"\n\nRepair reason: {validation_error.strip()[:500]}"
 
-    # ── PR-5B.8U: cybersecurity-department establishment requirement ─────────
-    # When ``org_structure_is_none`` is True AND the section being repaired is
-    # one that naturally hosts the requirement (gaps / roadmap / confidence —
-    # pillars is handled separately below by the governance-first contract),
-    # append an explicit clause naming the required Arabic + English concepts
-    # so the AI cannot silently omit the recommendation to ESTABLISH a
-    # dedicated Cybersecurity Department / appoint a CISO / define
-    # roles+responsibilities + operating model + governance committee.
+    # ── PR-5B.8U / PR-5B.9D: specialized-function establishment requirement ─
+    # When ``org_structure_is_none`` is True AND the section being repaired
+    # is one that naturally hosts the requirement (gaps / roadmap /
+    # confidence / environment — pillars is handled separately below by the
+    # governance-first contract), append an explicit clause naming the
+    # required Arabic + English concepts so the AI cannot silently omit the
+    # recommendation to ESTABLISH the domain-specific specialized function,
+    # appoint the head officer, define roles+responsibilities, and stand up
+    # the governance committee. Per-domain wording (cyber / data / ai / dt
+    # / erm) preserves the existing cyber prompt verbatim.
+    _dom_code_inj = (domain_context.get("code") or "").strip().lower()
     if org_structure_is_none and section_key in (
             "gaps", "roadmap", "confidence", "environment"):
-        if is_ar:
-            prompt += (
-                "\n\nقاعدة إنشاء إدارة الأمن السيبراني (إلزامية):\n"
-                "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
-                "للأمن السيبراني، يجب أن يتضمن هذا القسم صراحةً ما يلي: "
-                "(1) إنشاء/تأسيس إدارة متخصصة للأمن السيبراني، "
-                "(2) تعيين رئيس الأمن السيبراني (CISO)، "
-                "(3) تحديد الأدوار والمسؤوليات والصلاحيات (مصفوفة RACI)، "
-                "(4) نموذج التشغيل وخطوط الرفع، "
-                "(5) لجنة حوكمة الأمن السيبراني وفصل مهام الحوكمة عن "
-                "العمليات والاستجابة للحوادث وإدارة الهوية وإدارة الثغرات "
-                "والامتثال. يجب أن تظهر هذه المفاهيم داخل الصفوف/الفجوات/"
-                "المبادرات/المخاطر بشكل صريح وليس كذكر عابر."
-            )
-        else:
-            prompt += (
-                "\n\nCybersecurity department establishment rule (MANDATORY):\n"
-                "Because the organisation reported no dedicated cybersecurity "
-                "department / organisational unit, this section MUST "
-                "explicitly include: (1) establishing a dedicated "
-                "Cybersecurity Department, (2) appointing a CISO, (3) "
-                "defining roles and responsibilities and authority matrix "
-                "(RACI), (4) the operating model and reporting lines, and "
-                "(5) a cybersecurity governance committee with segregation "
-                "between governance, operations, incident response, IAM, "
-                "vulnerability management, and compliance. These concepts "
-                "must appear inside the section's rows/gaps/initiatives/"
-                "risks — not as a passing mention."
-            )
+        if _dom_code_inj == "cyber" or _dom_code_inj == "":
+            if is_ar:
+                prompt += (
+                    "\n\nقاعدة إنشاء إدارة الأمن السيبراني (إلزامية):\n"
+                    "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                    "للأمن السيبراني، يجب أن يتضمن هذا القسم صراحةً ما يلي: "
+                    "(1) إنشاء/تأسيس إدارة متخصصة للأمن السيبراني، "
+                    "(2) تعيين رئيس الأمن السيبراني (CISO)، "
+                    "(3) تحديد الأدوار والمسؤوليات والصلاحيات (مصفوفة RACI)، "
+                    "(4) نموذج التشغيل وخطوط الرفع، "
+                    "(5) لجنة حوكمة الأمن السيبراني وفصل مهام الحوكمة عن "
+                    "العمليات والاستجابة للحوادث وإدارة الهوية وإدارة الثغرات "
+                    "والامتثال. يجب أن تظهر هذه المفاهيم داخل الصفوف/الفجوات/"
+                    "المبادرات/المخاطر بشكل صريح وليس كذكر عابر."
+                )
+            else:
+                prompt += (
+                    "\n\nCybersecurity department establishment rule (MANDATORY):\n"
+                    "Because the organisation reported no dedicated cybersecurity "
+                    "department / organisational unit, this section MUST "
+                    "explicitly include: (1) establishing a dedicated "
+                    "Cybersecurity Department, (2) appointing a CISO, (3) "
+                    "defining roles and responsibilities and authority matrix "
+                    "(RACI), (4) the operating model and reporting lines, and "
+                    "(5) a cybersecurity governance committee with segregation "
+                    "between governance, operations, incident response, IAM, "
+                    "vulnerability management, and compliance. These concepts "
+                    "must appear inside the section's rows/gaps/initiatives/"
+                    "risks — not as a passing mention."
+                )
+        elif _dom_code_inj in ("data", "ai", "dt", "erm"):
+            # PR-5B.9D — per-domain wording for the specialized function.
+            _SPEC_FN_PROMPT_AR = {
+                "data": (
+                    "\n\nقاعدة إنشاء وظيفة إدارة البيانات (إلزامية):\n"
+                    "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                    "لإدارة البيانات، يجب أن يتضمن هذا القسم صراحةً ما يلي: "
+                    "(1) إنشاء مكتب إدارة البيانات / وحدة حوكمة البيانات، "
+                    "(2) تعيين رئيس البيانات (CDO)، "
+                    "(3) تشكيل لجنة حوكمة البيانات، "
+                    "(4) تعيين أمناء البيانات ومالكي البيانات وتعريف "
+                    "الأدوار والمسؤوليات (مصفوفة RACI)، "
+                    "(5) نموذج التشغيل وخطوط الرفع. يجب أن تظهر هذه "
+                    "المفاهيم داخل الصفوف/الفجوات/المبادرات/المخاطر بشكل "
+                    "صريح وليس كذكر عابر."
+                ),
+                "ai": (
+                    "\n\nقاعدة إنشاء وظيفة حوكمة الذكاء الاصطناعي "
+                    "(إلزامية):\n"
+                    "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                    "للذكاء الاصطناعي، يجب أن يتضمن هذا القسم صراحةً ما "
+                    "يلي: (1) إنشاء مكتب أو وحدة حوكمة الذكاء الاصطناعي، "
+                    "(2) تعيين رئيس الذكاء الاصطناعي (Chief AI Officer)، "
+                    "(3) تشكيل لجنة حوكمة الذكاء الاصطناعي / لجنة "
+                    "أخلاقيات الذكاء الاصطناعي، "
+                    "(4) تفعيل أدوار مخاطر النماذج (Model Risk) ومالكي "
+                    "النماذج وتعريف الأدوار والمسؤوليات (مصفوفة RACI)، "
+                    "(5) نموذج التشغيل وخطوط الرفع. يجب أن تظهر هذه "
+                    "المفاهيم داخل الصفوف/الفجوات/المبادرات/المخاطر بشكل "
+                    "صريح وليس كذكر عابر."
+                ),
+                "dt": (
+                    "\n\nقاعدة إنشاء وظيفة التحول الرقمي (إلزامية):\n"
+                    "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                    "للتحول الرقمي، يجب أن يتضمن هذا القسم صراحةً ما يلي: "
+                    "(1) إنشاء مكتب التحول الرقمي / وحدة التحول الرقمي، "
+                    "(2) تعيين رئيس التحول الرقمي (Chief Digital Officer)، "
+                    "(3) تشكيل لجنة التحول الرقمي / المجلس التوجيهي، "
+                    "(4) اعتماد نموذج تشغيل التحول الرقمي وخطوط الرفع، "
+                    "(5) تعريف الأدوار والمسؤوليات (مصفوفة RACI). يجب أن "
+                    "تظهر هذه المفاهيم داخل الصفوف/الفجوات/المبادرات/"
+                    "المخاطر بشكل صريح وليس كذكر عابر."
+                ),
+                "erm": (
+                    "\n\nقاعدة إنشاء إدارة المخاطر المؤسسية (إلزامية):\n"
+                    "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص "
+                    "لإدارة المخاطر المؤسسية، يجب أن يتضمن هذا القسم "
+                    "صراحةً ما يلي: (1) إنشاء إدارة المخاطر المؤسسية / "
+                    "وحدة إدارة المخاطر، "
+                    "(2) تعيين رئيس إدارة المخاطر (CRO)، "
+                    "(3) تشكيل لجنة المخاطر، "
+                    "(4) تعيين مالكي المخاطر وتعريف الأدوار والمسؤوليات "
+                    "(مصفوفة RACI)، "
+                    "(5) نموذج التشغيل وخطوط الرفع. يجب أن تظهر هذه "
+                    "المفاهيم داخل الصفوف/الفجوات/المبادرات/المخاطر بشكل "
+                    "صريح وليس كذكر عابر."
+                ),
+            }
+            _SPEC_FN_PROMPT_EN = {
+                "data": (
+                    "\n\nData management function establishment rule "
+                    "(MANDATORY):\n"
+                    "Because the organisation reported no dedicated data "
+                    "management department / organisational unit, this "
+                    "section MUST explicitly include: (1) establishing a "
+                    "Data Management Office (DMO) / data governance unit, "
+                    "(2) appointing a Chief Data Officer (CDO), "
+                    "(3) standing up a Data Governance Committee, "
+                    "(4) appointing data stewards and data owners and "
+                    "defining roles and responsibilities (RACI), and "
+                    "(5) the operating model and reporting lines. These "
+                    "concepts must appear inside the section's rows/gaps/"
+                    "initiatives/risks — not as a passing mention."
+                ),
+                "ai": (
+                    "\n\nAI governance function establishment rule "
+                    "(MANDATORY):\n"
+                    "Because the organisation reported no dedicated AI "
+                    "department / organisational unit, this section MUST "
+                    "explicitly include: (1) establishing an AI Governance "
+                    "Office / AI governance unit, "
+                    "(2) appointing a Chief AI Officer, "
+                    "(3) standing up an AI Governance Committee / AI "
+                    "Ethics Committee, "
+                    "(4) activating Model Risk roles and model owners and "
+                    "defining roles and responsibilities (RACI), and "
+                    "(5) the operating model and reporting lines. These "
+                    "concepts must appear inside the section's rows/gaps/"
+                    "initiatives/risks — not as a passing mention."
+                ),
+                "dt": (
+                    "\n\nDigital transformation function establishment "
+                    "rule (MANDATORY):\n"
+                    "Because the organisation reported no dedicated "
+                    "digital transformation department / organisational "
+                    "unit, this section MUST explicitly include: "
+                    "(1) establishing a Digital Transformation Office "
+                    "(DTO), "
+                    "(2) appointing a Chief Digital Officer, "
+                    "(3) standing up a Digital Transformation Committee / "
+                    "digital steering committee, "
+                    "(4) approving the digital transformation operating "
+                    "model and reporting lines, and "
+                    "(5) defining roles and responsibilities (RACI). "
+                    "These concepts must appear inside the section's rows/"
+                    "gaps/initiatives/risks — not as a passing mention."
+                ),
+                "erm": (
+                    "\n\nEnterprise risk management function "
+                    "establishment rule (MANDATORY):\n"
+                    "Because the organisation reported no dedicated ERM "
+                    "department / organisational unit, this section MUST "
+                    "explicitly include: (1) establishing an Enterprise "
+                    "Risk Management function / ERM office, "
+                    "(2) appointing a Chief Risk Officer (CRO), "
+                    "(3) standing up a Risk Committee, "
+                    "(4) appointing risk owners and defining roles and "
+                    "responsibilities (RACI), and "
+                    "(5) the operating model and reporting lines. These "
+                    "concepts must appear inside the section's rows/gaps/"
+                    "initiatives/risks — not as a passing mention."
+                ),
+            }
+            if is_ar:
+                prompt += _SPEC_FN_PROMPT_AR.get(_dom_code_inj, "")
+            else:
+                prompt += _SPEC_FN_PROMPT_EN.get(_dom_code_inj, "")
+
+    # ── PR-5B.9D: Per-domain expected gap categories (gaps section only) ────
+    # Strengthens the gaps prompt for Data and ERM (and other non-cyber
+    # domains) by naming the categories every consulting/assurance gap
+    # table is expected to surface. The validator threshold (>= 5 rows) is
+    # not weakened; this addendum gives the AI an explicit category list
+    # so it produces 5+ substantive rows distributed across the expected
+    # axes rather than 5 minor variants of one theme. Cyber retains its
+    # existing capability-coverage clauses below — no addendum here for
+    # cyber to avoid duplication.
+    if section_key == "gaps":
+        _GAP_CATEGORIES_AR = {
+            "data": (
+                "\n\nالفئات المتوقعة لتحليل الفجوات في إدارة البيانات "
+                "(إلزامية):\n"
+                "يجب أن تغطي صفوف جدول الفجوات الفئات التالية بحد أدنى "
+                "خمسة صفوف جوهرية موزعة عبرها:\n"
+                "- غياب مكتب إدارة البيانات / حوكمة البيانات\n"
+                "- جودة البيانات\n"
+                "- كتالوج البيانات / البيانات الوصفية\n"
+                "- حماية البيانات الشخصية / PDPL\n"
+                "- إدارة الموافقات أو حقوق صاحب البيانات أو الإبلاغ عن "
+                "الانتهاكات"
+            ),
+            "erm": (
+                "\n\nالفئات المتوقعة لتحليل الفجوات في إدارة المخاطر "
+                "المؤسسية (إلزامية):\n"
+                "يجب أن تغطي صفوف جدول الفجوات الفئات التالية بحد أدنى "
+                "خمسة صفوف جوهرية موزعة عبرها:\n"
+                "- غياب إدارة المخاطر المؤسسية\n"
+                "- غياب CRO / لجنة المخاطر\n"
+                "- شهية المخاطر\n"
+                "- سجل المخاطر\n"
+                "- مؤشرات المخاطر الرئيسية (KRIs) / تقارير المخاطر\n"
+                "- خطط المعالجة / متابعة المخاطر"
+            ),
+            "ai": (
+                "\n\nالفئات المتوقعة لتحليل الفجوات في حوكمة الذكاء "
+                "الاصطناعي (إلزامية):\n"
+                "يجب أن تغطي صفوف جدول الفجوات الفئات التالية بحد أدنى "
+                "خمسة صفوف جوهرية موزعة عبرها:\n"
+                "- غياب مكتب/وحدة حوكمة الذكاء الاصطناعي\n"
+                "- مخاطر النماذج (Model Risk) ومراقبة النماذج\n"
+                "- جودة بيانات التدريب والتحيز\n"
+                "- الشفافية والقابلية للتفسير والإشراف البشري\n"
+                "- الالتزام بمبادئ SDAIA / الأخلاقيات"
+            ),
+            "dt": (
+                "\n\nالفئات المتوقعة لتحليل الفجوات في التحول الرقمي "
+                "(إلزامية):\n"
+                "يجب أن تغطي صفوف جدول الفجوات الفئات التالية بحد أدنى "
+                "خمسة صفوف جوهرية موزعة عبرها:\n"
+                "- غياب مكتب التحول الرقمي / Chief Digital Officer\n"
+                "- نموذج التشغيل وتكامل الأنظمة\n"
+                "- تجربة المستخدم/المستفيد ومعدلات التبني\n"
+                "- الأتمتة والقدرات الرقمية\n"
+                "- الالتزام بإطار DGA"
+            ),
+        }
+        _GAP_CATEGORIES_EN = {
+            "data": (
+                "\n\nExpected gap-analysis categories for Data Management "
+                "(MANDATORY):\n"
+                "The gap-analysis table rows MUST cover the following "
+                "categories with at least five substantive rows distributed "
+                "across them:\n"
+                "- Absence of a Data Management Office / data governance\n"
+                "- Data quality\n"
+                "- Data catalog / metadata\n"
+                "- Personal data protection / PDPL\n"
+                "- Consent management / data subject rights / breach "
+                "reporting"
+            ),
+            "erm": (
+                "\n\nExpected gap-analysis categories for Enterprise Risk "
+                "Management (MANDATORY):\n"
+                "The gap-analysis table rows MUST cover the following "
+                "categories with at least five substantive rows distributed "
+                "across them:\n"
+                "- Absence of an Enterprise Risk Management function\n"
+                "- Absence of CRO / risk committee\n"
+                "- Risk appetite\n"
+                "- Risk register\n"
+                "- Key Risk Indicators (KRIs) / risk reporting\n"
+                "- Treatment plans / risk monitoring"
+            ),
+            "ai": (
+                "\n\nExpected gap-analysis categories for AI Governance "
+                "(MANDATORY):\n"
+                "The gap-analysis table rows MUST cover the following "
+                "categories with at least five substantive rows distributed "
+                "across them:\n"
+                "- Absence of an AI Governance Office / unit\n"
+                "- Model risk and model monitoring\n"
+                "- Training-data quality and bias\n"
+                "- Transparency, explainability, human oversight\n"
+                "- Compliance with SDAIA principles / AI ethics"
+            ),
+            "dt": (
+                "\n\nExpected gap-analysis categories for Digital "
+                "Transformation (MANDATORY):\n"
+                "The gap-analysis table rows MUST cover the following "
+                "categories with at least five substantive rows distributed "
+                "across them:\n"
+                "- Absence of a Digital Transformation Office / Chief "
+                "Digital Officer\n"
+                "- Operating model and system integration\n"
+                "- User/citizen experience and adoption rates\n"
+                "- Automation and digital capabilities\n"
+                "- Compliance with the DGA framework"
+            ),
+        }
+        if _dom_code_inj in _GAP_CATEGORIES_AR:
+            if is_ar:
+                prompt += _GAP_CATEGORIES_AR[_dom_code_inj]
+            else:
+                prompt += _GAP_CATEGORIES_EN[_dom_code_inj]
 
     # ── org_structure_is_none governance-first pillar contract ───────────────
     # When the user reported no defined organisational structure, the FIRST
@@ -26706,6 +27236,136 @@ def ai_repair_strategy_section(
                 "the Strategic Objectives table. Do NOT alter the "
                 "required 5-column structure."
             )
+
+    # ── PR-5B.9D: Vision specialized-function-objective clause ───────────
+    # When repairing the ``vision`` section AND ``org_structure_is_none``
+    # is True, instruct the AI to include at least one Strategic-Objective
+    # row whose subject is establishing the domain-specific specialized
+    # function (department/office, head officer, governance committee).
+    # This row is INDEPENDENT of and ADDITIONAL TO the compliance
+    # objective row above — the two must coexist; one must NOT overwrite
+    # or replace the other. AI-first only.
+    if section_key == "vision" and org_structure_is_none:
+        _SPEC_FN_OBJ_AR = {
+            "cyber": (
+                "\n\nقاعدة هدف إنشاء وظيفة الأمن السيبراني (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي مخصص، يجب أن "
+                "يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على الأقل "
+                "موضوعه إنشاء إدارة متخصصة للأمن السيبراني وتعيين CISO "
+                "وتفعيل لجنة حوكمة الأمن السيبراني. هذا الصف **إضافي** "
+                "إلى صف الالتزام بالأطر المختارة (إن وُجد) — يجب أن "
+                "يتعايش الصفان معًا ولا يحلّ أحدهما محلّ الآخر."
+            ),
+            "data": (
+                "\n\nقاعدة هدف إنشاء وظيفة إدارة البيانات (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي مخصص، يجب أن "
+                "يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على الأقل "
+                "موضوعه إنشاء مكتب إدارة البيانات وتفعيل أدوار CDO "
+                "وأمناء البيانات وتشكيل لجنة حوكمة البيانات. هذا الصف "
+                "**إضافي** إلى صف الالتزام بالأطر المختارة (NDMO/PDPL "
+                "إن وُجد) — يجب أن يتعايش الصفان معًا ولا يحلّ أحدهما "
+                "محلّ الآخر."
+            ),
+            "ai": (
+                "\n\nقاعدة هدف إنشاء وظيفة حوكمة الذكاء الاصطناعي "
+                "(إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي مخصص، يجب أن "
+                "يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على الأقل "
+                "موضوعه إنشاء مكتب أو وحدة حوكمة الذكاء الاصطناعي "
+                "وتفعيل لجنة الحوكمة وأدوار مخاطر النماذج. هذا الصف "
+                "**إضافي** إلى صف الالتزام بمبادئ SDAIA (إن وُجد) — يجب "
+                "أن يتعايش الصفان معًا ولا يحلّ أحدهما محلّ الآخر."
+            ),
+            "dt": (
+                "\n\nقاعدة هدف إنشاء وظيفة التحول الرقمي (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي مخصص، يجب أن "
+                "يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على الأقل "
+                "موضوعه إنشاء مكتب التحول الرقمي وتفعيل Chief Digital "
+                "Officer ونموذج تشغيل التحول الرقمي. هذا الصف **إضافي** "
+                "إلى صف الالتزام بإطار DGA (إن وُجد) — يجب أن يتعايش "
+                "الصفان معًا ولا يحلّ أحدهما محلّ الآخر."
+            ),
+            "erm": (
+                "\n\nقاعدة هدف إنشاء إدارة المخاطر المؤسسية (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب هيكل تنظيمي مخصص، يجب أن "
+                "يتضمن جدول الأهداف الاستراتيجية صفًا واحدًا على الأقل "
+                "موضوعه إنشاء إدارة المخاطر المؤسسية وتعيين CRO وتفعيل "
+                "لجنة المخاطر. هذا الصف **إضافي** إلى صف الالتزام "
+                "بمبادئ ISO 31000 / COSO ERM (إن وُجد) — يجب أن يتعايش "
+                "الصفان معًا ولا يحلّ أحدهما محلّ الآخر."
+            ),
+        }
+        _SPEC_FN_OBJ_EN = {
+            "cyber": (
+                "\n\nCybersecurity-function establishment objective rule "
+                "(MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "organisational structure, the Strategic Objectives table "
+                "MUST contain at least one row whose subject is "
+                "establishing a dedicated Cybersecurity Department, "
+                "appointing a CISO, and activating a cybersecurity "
+                "governance committee. This row is ADDITIONAL TO the "
+                "selected-framework compliance objective row (if any) — "
+                "the two MUST coexist; one must NOT overwrite the other."
+            ),
+            "data": (
+                "\n\nData-management-function establishment objective rule "
+                "(MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "organisational structure, the Strategic Objectives table "
+                "MUST contain at least one row whose subject is "
+                "establishing a Data Management Office (DMO), activating "
+                "the Chief Data Officer (CDO) and data steward roles, "
+                "and standing up the Data Governance Committee. This row "
+                "is ADDITIONAL TO the selected-framework compliance "
+                "objective row for NDMO/PDPL (if any) — the two MUST "
+                "coexist; one must NOT overwrite the other."
+            ),
+            "ai": (
+                "\n\nAI-governance-function establishment objective rule "
+                "(MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "organisational structure, the Strategic Objectives table "
+                "MUST contain at least one row whose subject is "
+                "establishing an AI Governance Office or unit, activating "
+                "the AI Governance Committee, and assigning model-risk "
+                "roles. This row is ADDITIONAL TO the selected-framework "
+                "compliance objective row for SDAIA principles (if any) "
+                "— the two MUST coexist; one must NOT overwrite the other."
+            ),
+            "dt": (
+                "\n\nDigital-transformation-function establishment "
+                "objective rule (MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "organisational structure, the Strategic Objectives table "
+                "MUST contain at least one row whose subject is "
+                "establishing a Digital Transformation Office, activating "
+                "the Chief Digital Officer, and adopting a digital "
+                "transformation operating model. This row is ADDITIONAL "
+                "TO the selected-framework compliance objective row for "
+                "DGA (if any) — the two MUST coexist; one must NOT "
+                "overwrite the other."
+            ),
+            "erm": (
+                "\n\nERM-function establishment objective rule "
+                "(MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "organisational structure, the Strategic Objectives table "
+                "MUST contain at least one row whose subject is "
+                "establishing an Enterprise Risk Management function, "
+                "appointing a Chief Risk Officer (CRO), and activating "
+                "the Risk Committee. This row is ADDITIONAL TO the "
+                "selected-framework compliance objective row for ISO "
+                "31000 / COSO ERM (if any) — the two MUST coexist; one "
+                "must NOT overwrite the other."
+            ),
+        }
+        _dom_code_vis = (domain_context.get("code") or "").strip().lower()
+        if _dom_code_vis in _SPEC_FN_OBJ_AR:
+            if is_ar:
+                prompt += _SPEC_FN_OBJ_AR[_dom_code_vis]
+            else:
+                prompt += _SPEC_FN_OBJ_EN[_dom_code_vis]
 
     # ── Single AI call (content_type='strategy' makes generate_ai_content
     #    raise RuntimeError when no provider is configured, as required) ─────
@@ -35681,7 +36341,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status,
                                 selected_frameworks=_frameworks_raw,
-                                domain=domain)
+                                domain=domain,
+                                org_structure_is_none=bool(
+                                    _final_ctx.get(
+                                        'org_structure_is_none', False)
+                                    if isinstance(_final_ctx, dict)
+                                    else False
+                                ),
+                            )
                             print(
                                 '[STRATEGY-DIAG] post_normalization_audit '
                                 f'defects={_post_norm_defects}',
