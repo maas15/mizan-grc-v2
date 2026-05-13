@@ -229,6 +229,8 @@ class GapsRepairPromptCategoriesTests(unittest.TestCase):
         self.assertIn('جودة البيانات', prompt)
         self.assertIn('كتالوج البيانات', prompt)
         self.assertIn('PDPL', prompt)
+        # consents — fifth required Data category per docstring
+        self.assertIn('إدارة الموافقات', prompt)
 
     @_skip_if_no_app
     def test_05_erm_gaps_prompt_names_required_categories(self):
@@ -254,6 +256,8 @@ class GapsRepairPromptCategoriesTests(unittest.TestCase):
         self.assertIn('شهية المخاطر', prompt)
         self.assertIn('سجل المخاطر', prompt)
         self.assertIn('KRIs', prompt)
+        # treatment — sixth required ERM category per docstring
+        self.assertIn('خطط المعالجة', prompt)
 
     @_skip_if_no_app
     def test_06_data_org_none_prompt_names_specialized_function(self):
