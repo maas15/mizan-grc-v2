@@ -22641,6 +22641,220 @@ def _compute_applicable_strategy_obligations(
     }
 
 
+# ── PR-5B.9H: Vision composite repair contract builder ─────────────────────
+# Builds the precise composite ``validation_error`` payload that drives the
+# Vision/Objectives AI repair. Centralises the obligation copy so both the
+# initial repair attempt and any subsequent retry inside PR-5B.9F's
+# VISION-OBLIGATIONS-REPAIR pass speak with one voice and the test suite
+# can assert prompt content directly. Read-only and side-effect free —
+# never mutates ``sections`` and never inserts deterministic content.
+def _build_vision_composite_repair_contract(
+        domain,
+        selected_frameworks,
+        org_structure_is_none,
+        generation_mode,
+        lang,
+        existing_vision='',
+        existing_valid_rows=0,
+        missing_obligations=None,
+        attempt=1):
+    """Return a ``(validation_error_text, min_rows)`` tuple describing the
+    composite Vision/Objectives repair contract.
+
+    ``missing_obligations`` (optional) overrides the live recomputation of
+    missing compliance / specialized-function rows; tests can pass a dict
+    such as ``{'compliance_missing': ['ECC'], 'specialized_missing': True}``
+    to drive deterministic prompt content without mutating sections.
+
+    The text covers every PR-5B.9H prompt requirement:
+
+      1. canonical heading                     (Arabic / English variants)
+      2. vision paragraph                       (must lead with **الرؤية**)
+      3. ≥ ``min_rows`` valid objective rows   (preserves existing rows)
+      4. canonical Arabic / English headers     (5-column SO table)
+      5. selected-framework compliance objective row (when frameworks
+         are selected, named explicitly)
+      6. specialized-function establishment objective row (when
+         ``org_structure_is_none`` is True)
+      7. no placeholders / brackets / template markers
+      8. valid timeframe in every row
+      9. no duplicate separator rows / no trailing prose
+
+    The prompt is intentionally explicit: the model is told the actual
+    row count, the required floor, the missing framework keys, the
+    missing specialized-function domain, and that the compliance /
+    specialized-function rows are SEPARATE objective rows that MUST
+    NOT replace one another.
+    """
+    obligations = _compute_applicable_strategy_obligations(
+        domain=domain,
+        selected_frameworks=selected_frameworks,
+        org_structure_is_none=bool(org_structure_is_none),
+        generation_mode=generation_mode,
+        lang=lang,
+    )
+    min_rows = int(
+        obligations.get('min_objective_rows', _RICHNESS_MIN_SO_ROWS)
+        or _RICHNESS_MIN_SO_ROWS)
+    try:
+        existing_valid_rows = int(existing_valid_rows or 0)
+    except (TypeError, ValueError):
+        existing_valid_rows = 0
+    min_rows = max(min_rows, existing_valid_rows)
+
+    # Derive missing obligation lists (explicit override wins).
+    if isinstance(missing_obligations, dict):
+        compliance_missing = list(
+            missing_obligations.get('compliance_missing') or [])
+        specialized_missing = bool(
+            missing_obligations.get('specialized_missing', False))
+    else:
+        try:
+            compliance_missing = list(
+                _compute_missing_compliance_objective(
+                    {'vision': existing_vision or ''},
+                    selected_frameworks,
+                    domain=domain, lang=lang) or [])
+        except Exception:  # noqa: BLE001 — defensive
+            compliance_missing = list(selected_frameworks or [])
+        try:
+            specialized_missing = bool(
+                _compute_missing_specialized_function_objective(
+                    {'vision': existing_vision or ''},
+                    domain, lang=lang,
+                    org_structure_is_none=bool(org_structure_is_none),
+                ))
+        except Exception:  # noqa: BLE001 — defensive
+            specialized_missing = bool(org_structure_is_none)
+
+    try:
+        domain_code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        domain_code = ''
+
+    # Domain-specific specialized-function descriptor used inside the
+    # prompt clause "(S) include ONE additional row …".
+    _spec_descriptor = {
+        'cyber': ('a dedicated Cybersecurity Department / Cybersecurity '
+                  'governance committee and appointing a CISO',
+                  'إنشاء الإدارة المتخصصة للأمن السيبراني '
+                  '(دائرة/مكتب/لجنة) وتعيين رئيس الأمن السيبراني (CISO)'),
+        'data':  ('a Data Management Office / Data Governance Committee '
+                  'and appointing a Chief Data Officer (CDO)',
+                  'إنشاء مكتب إدارة البيانات / لجنة حوكمة البيانات '
+                  'وتعيين رئيس البيانات (CDO)'),
+        'ai':    ('an AI Governance Office / AI governance committee '
+                  'with model risk roles and appointing a Chief AI '
+                  'Officer / AI ethics officer',
+                  'إنشاء مكتب أو وحدة حوكمة الذكاء الاصطناعي '
+                  'ولجنة حوكمة الذكاء الاصطناعي مع تفعيل مدير '
+                  'مخاطر النماذج'),
+        'dt':    ('a Digital Transformation Office and appointing a '
+                  'Chief Digital Officer',
+                  'إنشاء مكتب التحول الرقمي وتعيين رئيس التحول '
+                  'الرقمي (Chief Digital Officer)'),
+        'erm':   ('an Enterprise Risk Management function / Risk '
+                  'Committee and appointing a Chief Risk Officer (CRO)',
+                  'إنشاء إدارة المخاطر المؤسسية / لجنة المخاطر '
+                  'وتعيين رئيس إدارة المخاطر (CRO)'),
+    }.get(domain_code, (
+        'the domain-specialized governance function (department / '
+        'office / committee / chief role)',
+        'الوظيفة المتخصصة للمجال (دائرة/مكتب/لجنة/رئيس الإدارة)'))
+
+    is_ar = (str(lang or '').lower() == 'ar')
+    canonical_heading = (
+        '## 1. الرؤية والأهداف الاستراتيجية' if is_ar
+        else '## 1. Vision & Strategic Objectives')
+    canonical_headers = (
+        '| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |'
+        if is_ar else
+        '| # | Objective | Target Metric | Justification | Timeframe |')
+
+    clauses = []
+    clauses.append(
+        f'(R) The output MUST start with the EXACT canonical heading: '
+        f'"{canonical_heading}". Then a short Vision paragraph leading '
+        f'with **{"الرؤية" if is_ar else "Vision"}**. Then a SINGLE '
+        f'5-column Strategic Objectives table whose header row is '
+        f'EXACTLY: {canonical_headers}. The table MUST contain at '
+        f'least {min_rows} valid Strategic Objective rows '
+        f'(currently has {existing_valid_rows}). Preserve every '
+        'existing valid row; do NOT remove a valid row in order to '
+        'add a new one.'
+    )
+
+    if compliance_missing:
+        fw_display = []
+        for _fwk in compliance_missing:
+            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
+            fw_display.append(_spec.get('display', _fwk))
+        clauses.append(
+            '(C) Include ONE explicit Strategic Objective row whose '
+            'subject is achieving compliance with the selected '
+            'frameworks: ' + ', '.join(fw_display)
+            + '. This is a SEPARATE row dedicated solely to compliance.'
+        )
+    elif selected_frameworks:
+        fw_display = []
+        for _fwk in (selected_frameworks or []):
+            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
+            fw_display.append(_spec.get('display', _fwk))
+        clauses.append(
+            '(C) Preserve the existing Strategic Objective row that '
+            'commits to compliance with the selected frameworks: '
+            + ', '.join(fw_display) + '. Do not remove it.'
+        )
+
+    if specialized_missing:
+        descriptor_en, descriptor_ar = _spec_descriptor
+        if is_ar:
+            # Include both Arabic and English descriptors so the AI
+            # cannot mis-translate the specialized-function name; the
+            # contract validator checks tokens in both languages.
+            descriptor = (
+                f'{descriptor_ar} (English: {descriptor_en})')
+        else:
+            descriptor = descriptor_en
+        clauses.append(
+            '(S) Include ONE ADDITIONAL Strategic Objective row whose '
+            'subject is ESTABLISHING ' + descriptor + '. This row is '
+            'IN ADDITION to the framework-compliance row above; one '
+            'row MUST NOT replace the other. The organization currently '
+            'has no such specialized structure, so this row is '
+            'mandatory.'
+        )
+
+    clauses.append(
+        '(T) Every row MUST include a valid Timeframe value in the '
+        'Timeframe column (for example "12 شهراً" / "12 months" / '
+        '"18 شهراً" / "24 شهراً"). The Timeframe column must NEVER '
+        'duplicate the Objective text.'
+    )
+    clauses.append(
+        '(P) ABSOLUTELY NO placeholders, no bracketed variables '
+        '(e.g. {framework}, [organization], <INSERT…>), no English '
+        'template markers (EN_TEMPLATE / AR_TEMPLATE / TBD / TODO), '
+        'no duplicate header/separator rows inside the table body, '
+        'and no explanatory text after the table.'
+    )
+    if attempt and int(attempt) > 1:
+        clauses.insert(0, (
+            f'(A) This is repair attempt #{int(attempt)}. The previous '
+            'AI output failed the Vision contract. Read every clause '
+            'below carefully and emit a COMPLETE replacement Vision '
+            'section that satisfies ALL of them in a SINGLE table.'
+        ))
+
+    intro = (
+        'الرؤية/الأهداف الاستراتيجية يجب أن تستوفي جميع الالتزامات '
+        'المركبة التالية في جدول واحد مُعاد توليده بالكامل: '
+        if is_ar else
+        'Vision/Objectives must satisfy ALL of the following composite '
+        'obligations in a SINGLE regenerated objectives table: ')
+    return (intro + ' '.join(clauses), min_rows)
+
+
 # ── PR-5B.9G: Vision repair contract — single safe assignment guard ────────
 # After PR-5B.9F (VISION-OBLIGATIONS-REPAIR) the unified composite repair
 # pass became the canonical Vision writer. Runtime evidence shows the AI
@@ -26879,18 +27093,75 @@ _AI_REPAIR_SECTION_SCHEMA = {
     },
     "vision": {
         "ar": (
-            "أرجع قسم \"## 1. الرؤية والأهداف الاستراتيجية\" فقط. "
-            "ابدأ بفقرة قصيرة تبدأ بكلمة **الرؤية**، ثم جدول الأهداف "
-            "الاستراتيجية ذو 5 أعمدة:\n"
+            "أرجع قسم \"## 1. الرؤية والأهداف الاستراتيجية\" فقط، "
+            "ببنية صارمة وغير قابلة للتعديل:\n"
+            "1) عنوان رئيسي واحد فقط بهذه الصيغة الحرفية:\n"
+            "## 1. الرؤية والأهداف الاستراتيجية\n"
+            "2) فقرة قصيرة (سطر واحد إلى سطرين) تبدأ بكلمة "
+            "**الرؤية** وتعبّر عن الطموح الاستراتيجي.\n"
+            "3) جدول الأهداف الاستراتيجية كجدول Markdown أنبوبي ذو "
+            "5 أعمدة بالضبط، برأس حرفي:\n"
             "| # | الهدف | المقياس المستهدف | المبرر | الإطار الزمني |\n"
-            "أنشئ على الأقل {min_rows} صفًا."
+            "|---|------|-------------------|--------|----------------|\n"
+            "بحد أدنى {min_rows} صفًا جوهريًا صالحًا (لا خلايا نائبة، "
+            "لا خلايا فارغة، لا أقواس متغيّرات).\n"
+            "4) في حال وُجدت أُطر مختارة، يجب أن يحتوي الجدول على "
+            "صفّ هدف صريح ومستقل لتحقيق الالتزام بكل الأطر المختارة "
+            "(يُذكر اسم كل إطار بحرفه).\n"
+            "5) إذا أبلغت المنظمة عن غياب الإدارة/الهيكل المتخصص، "
+            "يجب أن يحتوي الجدول على صفّ هدف إضافي ومستقل لإنشاء/"
+            "تأسيس الوظيفة المتخصصة الخاصة بالمجال (دائرة/مكتب/"
+            "لجنة + رئيس الإدارة المعني). هذا الصف منفصل عن صفّ "
+            "الالتزام أعلاه ولا يستبدله.\n"
+            "6) عمود الإطار الزمني يجب أن يحتوي قيمة زمنية صالحة "
+            "في كل صف (مثل: 12 شهراً، 18 شهراً، 24 شهراً، 9 أشهر)؛ "
+            "ولا يجوز تكرار نص الهدف في عمود الإطار الزمني.\n"
+            "7) لا تُدرج رؤوسًا أو أقسامًا أخرى. لا تكرّر صفّ "
+            "الفواصل (---) داخل صفوف البيانات. لا تُدرج نصًا "
+            "تفسيريًا بعد الجدول. لا تستخدم خلايا نائبة "
+            "(مثل TBD / TODO / N/A) أو علامات قوالب "
+            "(مثل EN_TEMPLATE / AR_TEMPLATE / <INSERT> / "
+            "{{framework}} / [organization]). كل صف يجب أن يحتوي "
+            "بالضبط على 5 خلايا."
         ),
         "en": (
-            "Return ONLY the '## 1. Vision & Strategic Objectives' section. "
-            "Begin with a short paragraph starting with **Vision**, then a "
-            "5-column Strategic Objectives table:\n"
+            "Return ONLY the '## 1. Vision & Strategic Objectives' "
+            "section, with a STRICT, non-negotiable structure:\n"
+            "1) Exactly one top heading with the literal text:\n"
+            "## 1. Vision & Strategic Objectives\n"
+            "2) A short paragraph (1–2 sentences) leading with "
+            "**Vision** that expresses the strategic ambition.\n"
+            "3) A SINGLE Strategic Objectives table as a Markdown "
+            "pipe table with EXACTLY 5 columns and the literal "
+            "header row:\n"
             "| # | Objective | Target Metric | Justification | Timeframe |\n"
-            "Generate at least {min_rows} rows."
+            "|---|-----------|---------------|---------------|-----------|\n"
+            "with at least {min_rows} substantive valid rows (no "
+            "placeholder cells, no empty cells, no bracketed "
+            "variables).\n"
+            "4) If frameworks are selected, the table MUST contain "
+            "ONE explicit, separate Strategic Objective row whose "
+            "subject is achieving compliance with the selected "
+            "frameworks (each framework named verbatim).\n"
+            "5) If the organisation reported no specialized "
+            "department/structure, the table MUST contain ONE "
+            "ADDITIONAL, separate row whose subject is "
+            "ESTABLISHING the domain-specialized function "
+            "(department / office / committee + chief role). This "
+            "row is separate from the compliance row above and "
+            "must NOT replace it.\n"
+            "6) The Timeframe column MUST contain a valid "
+            "timeframe value in every row (e.g. '12 months', "
+            "'18 months', '24 months', '9 months'); it must NEVER "
+            "duplicate the Objective text.\n"
+            "7) Do not include any other headings or other "
+            "sections. Do not repeat the separator row (---) "
+            "inside the data rows. Do not emit explanatory prose "
+            "after the table. Do not use placeholder cells "
+            "(TBD / TODO / N/A) or template markers "
+            "(EN_TEMPLATE / AR_TEMPLATE / <INSERT> / "
+            "{{framework}} / [organization]). Each row MUST contain "
+            "exactly 5 cells."
         ),
     },
     "confidence": {
@@ -27326,19 +27597,21 @@ def ai_repair_strategy_section(
         if validation_error:
             prompt += f"\n\nRepair reason: {validation_error.strip()[:500]}"
 
-    # ── PR-5B.8U / PR-5B.9D: specialized-function establishment requirement ─
+    # ── PR-5B.8U / PR-5B.9D / PR-5B.9H: specialized-function establishment ──
     # When ``org_structure_is_none`` is True AND the section being repaired
-    # is one that naturally hosts the requirement (gaps / roadmap /
+    # is one that naturally hosts the requirement (vision / gaps / roadmap /
     # confidence / environment — pillars is handled separately below by the
     # governance-first contract), append an explicit clause naming the
     # required Arabic + English concepts so the AI cannot silently omit the
     # recommendation to ESTABLISH the domain-specific specialized function,
     # appoint the head officer, define roles+responsibilities, and stand up
     # the governance committee. Per-domain wording (cyber / data / ai / dt
-    # / erm) preserves the existing cyber prompt verbatim.
+    # / erm) preserves the existing cyber prompt verbatim. PR-5B.9H added
+    # ``vision`` to the section list so the Vision/Objectives repair prompt
+    # also carries the specialized-function requirement.
     _dom_code_inj = (domain_context.get("code") or "").strip().lower()
     if org_structure_is_none and section_key in (
-            "gaps", "roadmap", "confidence", "environment"):
+            "vision", "gaps", "roadmap", "confidence", "environment"):
         if _dom_code_inj == "cyber" or _dom_code_inj == "":
             if is_ar:
                 prompt += (
@@ -27496,6 +27769,44 @@ def ai_repair_strategy_section(
                 prompt += _SPEC_FN_PROMPT_AR.get(_dom_code_inj, "")
             else:
                 prompt += _SPEC_FN_PROMPT_EN.get(_dom_code_inj, "")
+
+    # ── PR-5B.9H: Selected-framework compliance objective row (vision) ─────
+    # When repairing the Vision/Objectives section AND any frameworks are
+    # selected, append an explicit clause requiring ONE separate Strategic
+    # Objective row whose subject is achieving compliance with the selected
+    # frameworks (each framework named verbatim). This row coexists with —
+    # and does NOT replace — the specialized-function establishment row
+    # injected above. Vision-only addendum; other sections retain their
+    # existing prompts.
+    if section_key == "vision" and fws:
+        _vfw_display = []
+        for _fwk in fws:
+            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
+            _vfw_display.append(_spec.get("display", _fwk))
+        if is_ar:
+            prompt += (
+                "\n\nقاعدة هدف الالتزام بالأطر المختارة (إلزامية):\n"
+                "يجب أن يحتوي جدول الأهداف الاستراتيجية على صفّ هدف "
+                "صريح ومستقل واحد لتحقيق الالتزام بكل الأطر المختارة "
+                "التالية: " + "، ".join(_vfw_display) + ". هذا الصف "
+                "منفصل عن صفّ إنشاء الوظيفة المتخصصة وعن صفوف القدرات "
+                "الأخرى، ويجب أن يذكر اسم كل إطار بحرفه. لا تدمج هذا "
+                "الصف مع أي هدف آخر."
+            )
+        else:
+            prompt += (
+                "\n\nSelected-framework compliance objective rule "
+                "(MANDATORY):\n"
+                "The Strategic Objectives table MUST contain ONE "
+                "explicit, separate Strategic Objective row whose "
+                "subject is achieving compliance with the following "
+                "selected frameworks: " + ", ".join(_vfw_display)
+                + ". This row is separate from the specialized-"
+                "function establishment row and from the other "
+                "capability rows; each framework must be named "
+                "verbatim. Do not merge this row with any other "
+                "objective."
+            )
 
     # ── PR-5B.9D: Per-domain expected gap categories (gaps section only) ────
     # Strengthens the gaps prompt for Data and ERM (and other non-cyber
@@ -37016,113 +37327,169 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         )
                                     except Exception:
                                         pass
-                                    # Build a composite validation_error
-                                    # naming every unmet obligation. The
-                                    # AI must satisfy ALL of them in one
-                                    # regenerated objectives table.
-                                    _vo_clauses = []
-                                    _vo_clauses.append(
-                                        '(R) preserve every existing '
-                                        'valid Strategic Objective row '
-                                        'and produce at least '
-                                        f'{_vo_min_rows_req} valid rows'
-                                        ' in the canonical objectives '
-                                        'table; do NOT remove a valid '
-                                        'row in order to add a new one.'
-                                    )
-                                    if _vo_compliance_missing:
-                                        _vo_fw_names = []
-                                        for _fwk in _vo_compliance_missing:
-                                            _spec = (
-                                                _FRAMEWORK_COVERAGE_REQUIREMENTS
-                                                .get(_fwk, {}))
-                                            _vo_fw_names.append(
-                                                _spec.get('display', _fwk))
-                                        _vo_clauses.append(
-                                            '(C) include ONE explicit '
-                                            'Strategic Objective row '
-                                            'whose subject is achieving '
-                                            'compliance with the '
-                                            'selected frameworks: '
-                                            + ', '.join(_vo_fw_names)
-                                            + '.'
-                                        )
-                                    if _vo_sf_missing:
-                                        try:
-                                            _vo_dcode = normalize_domain(
-                                                domain or '')
-                                        except Exception:
-                                            _vo_dcode = ''
-                                        _vo_clauses.append(
-                                            '(S) include ONE additional '
-                                            'explicit Strategic '
-                                            'Objective row whose '
-                                            'subject is ESTABLISHING '
-                                            'the specialized '
-                                            + (f'{_vo_dcode} '
-                                               if _vo_dcode else '')
-                                            + 'function (dedicated '
-                                            'department / office / '
-                                            'committee / chief role) — '
-                                            'this is mandatory because '
-                                            'the organization currently '
-                                            'has no such specialized '
-                                            'structure. This row is IN '
-                                            'ADDITION to the framework-'
-                                            'compliance row above; one '
-                                            'row MUST NOT replace the '
-                                            'other.'
-                                        )
-                                    _vo_clauses.append(
-                                        '(T) every row must include a '
-                                        'valid Timeframe value (e.g. '
-                                        '"12 شهراً" / "12 months"); no '
-                                        'placeholder rows or bracketed '
-                                        'tokens; preserve the canonical '
-                                        'Arabic / English table headers '
-                                        'used by the section.'
-                                    )
-                                    _vo_ve_msg = (
-                                        'Vision/Objectives must satisfy '
-                                        'ALL of the following composite '
-                                        'obligations in a SINGLE '
-                                        'regenerated objectives table: '
-                                        + ' '.join(_vo_clauses)
-                                    )
+                                    # PR-5B.9H — bounded retry orchestration
+                                    # for the composite Vision/Objectives
+                                    # repair. Up to MAX_ATTEMPTS attempts
+                                    # are made; intermediate attempts call
+                                    # the safe-assign helper with
+                                    # ``synth_status=None`` so a transient
+                                    # rejection does NOT prematurely mark
+                                    # ``synth_failed:vision``. Each retry
+                                    # uses a stricter validation_error
+                                    # built by
+                                    # ``_build_vision_composite_repair_contract``
+                                    # carrying the previous attempt's
+                                    # actual row count, missing
+                                    # obligations, table-header and
+                                    # timeframe requirements. On final
+                                    # rejection the helper restores the
+                                    # original Vision and marks
+                                    # ``synth_failed:vision`` so the
+                                    # post-normalization audit fails
+                                    # closed.
                                     _vo_before_text = _vo_text_now
-                                    try:
-                                        _vo_new = ai_repair_strategy_section(
-                                            section_key='vision',
-                                            sections=sections,
-                                            lang=lang,
-                                            domain_context=_vo_dctx,
-                                            org_name=org_name,
-                                            sector=_model_sector,
-                                            maturity=maturity,
-                                            generation_mode=(
-                                                _generation_mode),
-                                            validation_error=_vo_ve_msg,
-                                            min_rows=_vo_min_rows_req,
-                                            org_structure_is_none=(
-                                                _vo_org_none),
-                                        )
-                                        # PR-5B.9G — route the AI-repair
-                                        # Vision candidate through the
-                                        # safe-assign guard. The contract
-                                        # validator atomically enforces
-                                        # all PR-5B.9F composite
-                                        # obligations (row count,
-                                        # compliance objective,
-                                        # specialized-function objective)
-                                        # PLUS template-marker rejection
-                                        # and framework-leakage rejection.
-                                        # On failure the original Vision
-                                        # is restored and synth_failed is
-                                        # marked so the post-normalization
-                                        # audit fails closed.
-                                        _vo_before_rows = (
-                                            count_valid_objective_rows(
-                                                _vo_before_text))
+                                    _vo_before_rows = (
+                                        count_valid_objective_rows(
+                                            _vo_before_text))
+                                    _VO_MAX_ATTEMPTS = 2
+                                    _vo_accepted = False
+                                    _vo_last_report = None
+                                    _vo_last_err = None
+                                    for _vo_attempt in range(
+                                            1, _VO_MAX_ATTEMPTS + 1):
+                                        # First attempt uses the live
+                                        # missing-obligation snapshot. On
+                                        # retry, recompute from the
+                                        # restored baseline (the helper
+                                        # has already put back
+                                        # ``_vo_before_text``).
+                                        if _vo_attempt == 1:
+                                            _vo_missing_arg = {
+                                                'compliance_missing':
+                                                    list(
+                                                        _vo_compliance_missing
+                                                        or []),
+                                                'specialized_missing':
+                                                    bool(_vo_sf_missing),
+                                            }
+                                        else:
+                                            _vo_missing_arg = None
+                                        try:
+                                            _vo_ve_msg, _vo_min_eff = (
+                                                _build_vision_composite_repair_contract(
+                                                    domain=domain,
+                                                    selected_frameworks=(
+                                                        _frameworks_raw),
+                                                    org_structure_is_none=(
+                                                        _vo_org_none),
+                                                    generation_mode=(
+                                                        _generation_mode),
+                                                    lang=lang,
+                                                    existing_vision=(
+                                                        _vo_before_text),
+                                                    existing_valid_rows=(
+                                                        _vo_before_rows),
+                                                    missing_obligations=(
+                                                        _vo_missing_arg),
+                                                    attempt=_vo_attempt,
+                                                ))
+                                        except Exception as _vobe:
+                                            _vo_ve_msg = (
+                                                'Vision/Objectives '
+                                                'composite repair '
+                                                f'(attempt #{_vo_attempt}).')
+                                            _vo_min_eff = _vo_min_rows_req
+                                            print(
+                                                '[VISION-OBLIGATIONS-'
+                                                f'REPAIR] contract_'
+                                                f'builder_failed: '
+                                                f'{_vobe}',
+                                                flush=True,
+                                            )
+                                        # Append previous attempt's
+                                        # rejection details so the model
+                                        # has explicit corrective signal.
+                                        if (_vo_attempt > 1
+                                                and _vo_last_report
+                                                is not None):
+                                            _vo_ve_msg += (
+                                                ' [retry context] '
+                                                'previous attempt '
+                                                'produced rows='
+                                                f'{_vo_last_report.get("rows", 0)}'
+                                                '/'
+                                                f'{_vo_last_report.get("required_min_rows", _vo_min_eff)}, '
+                                                'errors='
+                                                f'{_vo_last_report.get("errors", [])[:6]}.'
+                                            )
+                                        try:
+                                            _vo_new = ai_repair_strategy_section(
+                                                section_key='vision',
+                                                sections=sections,
+                                                lang=lang,
+                                                domain_context=_vo_dctx,
+                                                org_name=org_name,
+                                                sector=_model_sector,
+                                                maturity=maturity,
+                                                generation_mode=(
+                                                    _generation_mode),
+                                                validation_error=(
+                                                    _vo_ve_msg),
+                                                min_rows=_vo_min_eff,
+                                                org_structure_is_none=(
+                                                    _vo_org_none),
+                                            )
+                                        except RepairError as _vore:
+                                            _vo_last_err = _vore
+                                            _vo_last_report = {
+                                                'rows': _vo_before_rows,
+                                                'required_min_rows': (
+                                                    _vo_min_eff),
+                                                'errors': [
+                                                    f'ai_repair_error:'
+                                                    f'{_vore}'],
+                                            }
+                                            print(
+                                                '[VISION-OBLIGATIONS-'
+                                                'REPAIR] attempt='
+                                                f'{_vo_attempt} '
+                                                f'repair_failed err='
+                                                f'{_vore}',
+                                                flush=True,
+                                            )
+                                            if (_vo_attempt
+                                                    < _VO_MAX_ATTEMPTS):
+                                                continue
+                                            # Final attempt — restore +
+                                            # mark synth_failed.
+                                            sections['vision'] = (
+                                                _vo_before_text)
+                                            _mark_synth_failed(
+                                                _synth_status, 'vision',
+                                                _vore)
+                                            break
+                                        except Exception as _vore2:
+                                            _vo_last_err = _vore2
+                                            print(
+                                                '[VISION-OBLIGATIONS-'
+                                                'REPAIR] attempt='
+                                                f'{_vo_attempt} '
+                                                'repair_unexpected err='
+                                                f'{_vore2}',
+                                                flush=True,
+                                            )
+                                            if (_vo_attempt
+                                                    < _VO_MAX_ATTEMPTS):
+                                                continue
+                                            break
+                                        # Validate the candidate. Only
+                                        # mark synth_failed on the FINAL
+                                        # attempt; intermediate attempts
+                                        # restore silently so the next
+                                        # retry has a clean baseline.
+                                        _is_final = (
+                                            _vo_attempt
+                                            == _VO_MAX_ATTEMPTS)
                                         _vo_report = (
                                             _assign_vision_if_valid_or_restore(
                                                 sections,
@@ -37137,52 +37504,52 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     _generation_mode),
                                                 lang=lang,
                                                 synth_status=(
-                                                    _synth_status),
+                                                    _synth_status
+                                                    if _is_final
+                                                    else None),
                                                 original_valid_rows=(
                                                     _vo_before_rows),
                                                 repair_label=(
-                                                    'vision-obligations-repair'),
+                                                    'vision-obligations-'
+                                                    f'repair-attempt-'
+                                                    f'{_vo_attempt}'),
                                             ))
-                                        if _vo_report.get('assign_allowed'):
+                                        _vo_last_report = _vo_report
+                                        if _vo_report.get(
+                                                'assign_allowed'):
+                                            _vo_accepted = True
                                             print(
                                                 '[VISION-OBLIGATIONS-'
                                                 'REPAIR] accepted '
+                                                f'attempt={_vo_attempt} '
                                                 f'rows={_vo_report["rows"]}'
-                                                f'/{_vo_min_rows_req} '
+                                                f'/{_vo_min_eff} '
                                                 'compliance_ok='
                                                 f'{_vo_report["has_compliance"]}'
                                                 ' specialized_function_ok='
                                                 f'{_vo_report["has_specialized"]}',
                                                 flush=True,
                                             )
-                                        else:
-                                            print(
-                                                '[VISION-OBLIGATIONS-'
-                                                'REPAIR] rejected '
-                                                f'rows={_vo_report["rows"]}'
-                                                f'/{_vo_report["required_min_rows"]} '
-                                                f'errors={_vo_report["errors"][:4]}'
-                                                ' — restored original '
-                                                'vision',
-                                                flush=True,
-                                            )
-                                    except RepairError as _vore:
-                                        sections['vision'] = (
-                                            _vo_before_text)
-                                        _mark_synth_failed(
-                                            _synth_status, 'vision',
-                                            _vore)
+                                            break
                                         print(
-                                            '[VISION-OBLIGATIONS-REPAIR'
-                                            f'] repair_failed err='
-                                            f'{_vore}',
+                                            '[VISION-OBLIGATIONS-'
+                                            'REPAIR] attempt='
+                                            f'{_vo_attempt} rejected '
+                                            f'rows={_vo_report["rows"]}'
+                                            f'/{_vo_report["required_min_rows"]} '
+                                            f'errors={_vo_report["errors"][:4]}'
+                                            + (' — restored original '
+                                               'vision'
+                                               if _is_final
+                                               else ' — retrying'),
                                             flush=True,
                                         )
-                                    except Exception as _vore2:
+                                    if not _vo_accepted:
                                         print(
-                                            '[VISION-OBLIGATIONS-REPAIR'
-                                            f'] repair_unexpected err='
-                                            f'{_vore2}',
+                                            '[VISION-OBLIGATIONS-'
+                                            'REPAIR] all_attempts_'
+                                            f'failed attempts='
+                                            f'{_VO_MAX_ATTEMPTS}',
                                             flush=True,
                                         )
                         except Exception as _voxe:
