@@ -19679,6 +19679,147 @@ def _compute_missing_structural_gap_for_domain(
     return missing
 
 
+# ── PR-5B.9J: roadmap-section governance-setup requirement ────────────────
+# When ``org_structure_is_none=True``, the **Roadmap** section MUST contain
+# at least one explicit governance/setup activity for the selected domain
+# (e.g. DT → "إنشاء مكتب التحول الرقمي" / "تعيين Chief Digital Officer" /
+# "تشكيل لجنة التحول الرقمي"). The diagnosis-grounding gate downstream
+# blocks the save with "roadmap does not include governance setup" when
+# such an activity is absent — even if Vision/Objectives and Gaps already
+# satisfy the specialized-function obligation in their respective tables.
+#
+# This helper mirrors ``_compute_missing_structural_gap_for_domain`` but
+# scoped to the roadmap text only, reusing the SAME domain registry
+# (``_DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS``) so the three obligations
+# (Vision SO row, Gaps row, Roadmap activity) speak with one voice and
+# cannot drift. AI-first detection only — no deterministic content is
+# inserted anywhere.
+#
+# Returns ``[]`` (nothing missing) when:
+#   * ``org_structure_is_none`` is False, OR
+#   * the domain code is not in the registry, OR
+#   * the roadmap text contains at least one token from ANY concept family
+#     for the resolved domain (i.e. the roadmap mentions the specialized
+#     function in some form).
+#
+# Otherwise returns the list of uncovered concept-family names so the
+# repair caller can name them in the validation_error.
+def _compute_missing_governance_setup_in_roadmap(
+        roadmap_text, domain, org_structure_is_none, lang='en'):
+    """Domain-specific governance-setup activity presence check, scoped
+    to the roadmap section text only. See module-level docstring above.
+    """
+    if not org_structure_is_none:
+        return []
+    try:
+        code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        code = ''
+    code = (code or '').strip().lower()
+    concepts = _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS.get(code)
+    if not concepts:
+        return []
+    text = roadmap_text or ''
+    if not text.strip():
+        # Empty roadmap text — every family is missing.
+        return list(concepts.keys())
+    text_lc = text.lower()
+    # ``True`` when the roadmap text contains AT LEAST ONE token from
+    # ANY concept family — the AI was asked for at least ONE explicit
+    # governance-setup activity that names the function, not coverage
+    # of every family. The same any-family-match semantics used by
+    # ``_compute_missing_structural_gap_for_domain`` keeps the two
+    # contracts symmetrical.
+    matched_any = False
+    missing = []
+    for fam, tokens in concepts.items():
+        if any((t.lower() in text_lc) or (t in text) for t in tokens):
+            matched_any = True
+        else:
+            missing.append(fam)
+    if matched_any:
+        return []
+    return missing
+
+
+# ── PR-5B.9J: per-selected-framework reference check for the env section ──
+# The Environment / Threat Landscape section MUST explicitly mention every
+# selected framework by one of its canonical aliases. The pre-existing
+# ``env_text_contains_any_framework`` returns success when at least one
+# framework matches; this helper instead returns the list of selected
+# frameworks NOT referenced so the env-framework repair pass can name
+# them explicitly in the validation_error and the env validator can fail
+# closed when any selected framework is absent.
+#
+# Detection-only — no env text is mutated. AI-first repair is wired
+# separately. Unselected frameworks are NEVER required by this helper.
+def _compute_missing_framework_references_in_env(
+        env_text, selected_frameworks, domain=None):
+    """Return the list of selected frameworks (raw labels as supplied)
+    NOT referenced in ``env_text`` via any canonical alias. Returns
+    ``[]`` when ``selected_frameworks`` is empty/None or the env text
+    references every selected framework.
+
+    PR-5B.9J distinguishing-alias rule: when two selected frameworks
+    share a canonical alias (e.g. ``SDAIA AI Ethics Principles`` and
+    ``SDAIA AI Governance Framework`` both produce ``SDAIA`` and
+    ``SDAIA AI``), a match against the *shared* alias does NOT prove
+    the env mentions the framework specifically. Each framework must
+    be referenced by an alias that is NOT a substring-alias of any
+    other selected framework. This closes the loophole where env
+    mentioning only one framework (or only the bare acronym) silently
+    satisfied the other.
+    """
+    if not selected_frameworks:
+        return []
+    if isinstance(selected_frameworks, str):
+        items = [selected_frameworks]
+    else:
+        try:
+            items = [str(x) for x in selected_frameworks if str(x).strip()]
+        except TypeError:
+            return []
+    if not items:
+        return []
+    text = env_text or ''
+    if not text.strip():
+        return list(items)
+    # Pre-compute alias sets per selected framework.
+    alias_sets = {}
+    for fw in items:
+        try:
+            alias_sets[fw] = set(canonical_framework_aliases(fw) or [fw])
+        except Exception:  # noqa: BLE001 — defensive
+            alias_sets[fw] = {str(fw)}
+    missing = []
+    for fw in items:
+        own = alias_sets.get(fw, set())
+        # Shared aliases: any alias also present in ANOTHER selected
+        # framework's alias set.
+        shared = set()
+        for other_fw, other_aliases in alias_sets.items():
+            if other_fw == fw:
+                continue
+            shared |= (own & other_aliases)
+        # Distinguishing aliases: own set minus the shared set. When
+        # only one framework is selected, ``shared`` is empty so all
+        # aliases (including the bare acronym) count.
+        distinguishing = [a for a in own if a not in shared]
+        if not distinguishing:
+            # Pathological case: framework has no distinguishing alias
+            # vs. the other selected frameworks — fall back to its own
+            # full label so the missing-list is meaningful.
+            distinguishing = [fw]
+        matched = False
+        for alias in distinguishing:
+            if alias and alias in text:
+                matched = True
+                break
+        if not matched:
+            missing.append(fw)
+    return missing
+
+
 def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                                                generation_mode='consulting',
                                                domain=None,
@@ -24658,7 +24799,13 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
                 f'{sector_val!r}',
                 f'قسم البيئة لا يذكر القطاع {sector_val!r}',
             ))
-        # At least one framework from the list must appear in env text.
+        # PR-5B.9J: EVERY selected framework MUST appear in env text via
+        # one of its canonical aliases. Unselected frameworks are NEVER
+        # required by this validator. Previously a single match was
+        # accepted (any-semantics); generic "SDAIA" passed even when
+        # both "SDAIA AI Ethics Principles" and "SDAIA AI Governance
+        # Framework" were selected and the env body never named the
+        # second. Strengthening this to all-required closes that gap.
         # ── FRAMEWORK ALIAS MATCHING (canonical, generic) ──────────
         # Uses module-level canonical_framework_aliases() which derives
         # aliases STRUCTURALLY from each framework label (full name,
@@ -24668,9 +24815,9 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
         # — closing the recurring `environment_missing_framework_reference`
         # for PDPL, NDMO, SDAIA AI Ethics, etc.
         if frameworks_val:
-            _matched_fw, _matched_alias = env_text_contains_any_framework(
-                env_txt, frameworks_val)
-            # Build per-framework alias map for log line (clause 7).
+            _missing_fws = _compute_missing_framework_references_in_env(
+                env_txt, frameworks_val, domain=None)
+            # Build per-framework alias map for log line.
             _alias_map = {
                 str(f): canonical_framework_aliases(f)
                 for f in frameworks_val
@@ -24679,18 +24826,18 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
                 '[STRATEGY-DIAG] env_framework_validation '
                 f'selected={list(_alias_map.keys())} '
                 f'aliases={_alias_map} '
-                f'matched_framework={_matched_fw!r} '
-                f'matched_alias={_matched_alias!r} '
-                f'passed={_matched_fw is not None}',
+                f'missing={_missing_fws} '
+                f'passed={not _missing_fws}',
                 flush=True,
             )
-            if _matched_fw is None:
+            if _missing_fws:
                 defects.append((
                     'environment_missing_framework_reference',
-                    f'environment section does not mention any of: '
-                    f'{frameworks_val} (canonical aliases checked: '
-                    f'{_alias_map})',
-                    f'قسم البيئة لا يذكر أياً من: {frameworks_val}',
+                    f'environment section does not mention every '
+                    f'selected framework: missing={_missing_fws} '
+                    f'(canonical aliases checked: {_alias_map})',
+                    f'قسم البيئة لا يذكر كل الأطر المختارة: '
+                    f'{_missing_fws}',
                 ))
 
     # ── G. Placeholder mitigation text in confidence risks ──
@@ -28017,6 +28164,166 @@ def ai_repair_strategy_section(
                 "capability rows; each framework must be named "
                 "verbatim. Do not merge this row with any other "
                 "objective."
+            )
+
+    # ── PR-5B.9J: Roadmap governance-setup activity (org_structure_is_none) ─
+    # When repairing the Roadmap AND ``org_structure_is_none=True``, the
+    # roadmap MUST contain ONE explicit activity that establishes the
+    # domain-specific specialized function (office / committee / chief
+    # role), with explicit Owner, Timeframe, and Deliverable. Vague
+    # phrases such as "تعزيز الحوكمة" / "Strengthen governance" without
+    # naming the office/committee/chief role are NOT acceptable. This
+    # addendum runs after the per-domain SF prompt block above so the
+    # AI sees both the section-level wording AND the roadmap-row-level
+    # contract.
+    if section_key == "roadmap" and org_structure_is_none:
+        _RM_GOV_AR = {
+            "cyber": (
+                "إنشاء إدارة الأمن السيبراني، تعيين CISO، تشكيل لجنة "
+                "حوكمة الأمن السيبراني، اعتماد نموذج تشغيل الأمن "
+                "السيبراني"
+            ),
+            "data": (
+                "إنشاء مكتب إدارة البيانات، تعيين Chief Data Officer "
+                "(CDO)، تشكيل لجنة حوكمة البيانات، تفعيل أمناء البيانات "
+                "وملكية البيانات"
+            ),
+            "ai": (
+                "إنشاء مكتب أو وحدة حوكمة الذكاء الاصطناعي، تشكيل لجنة "
+                "حوكمة الذكاء الاصطناعي، تعيين AI Ethics Officer / "
+                "Model Risk Manager / AI Compliance Lead، إنشاء مخزون "
+                "النماذج ونموذج تشغيل الذكاء الاصطناعي"
+            ),
+            "dt": (
+                "إنشاء مكتب التحول الرقمي، تعيين Chief Digital Officer، "
+                "تشكيل لجنة التحول الرقمي، اعتماد نموذج تشغيل التحول "
+                "الرقمي، تفعيل حوكمة الخدمات الرقمية والتكامل"
+            ),
+            "erm": (
+                "إنشاء إدارة المخاطر المؤسسية، تعيين CRO، تشكيل لجنة "
+                "المخاطر، تفعيل ملاك المخاطر، اعتماد شهية المخاطر وسجل "
+                "المخاطر"
+            ),
+        }
+        _RM_GOV_EN = {
+            "cyber": (
+                "Establish the Cybersecurity Department, appoint a "
+                "CISO, stand up the Cybersecurity Governance Committee, "
+                "approve the cybersecurity operating model"
+            ),
+            "data": (
+                "Establish the Data Management Office, appoint a Chief "
+                "Data Officer (CDO), stand up the Data Governance "
+                "Committee, activate data stewards and data ownership"
+            ),
+            "ai": (
+                "Establish the AI Governance Office / unit, stand up the "
+                "AI Governance Committee, appoint an AI Ethics Officer / "
+                "Model Risk Manager / AI Compliance Lead, set up the "
+                "model inventory and AI operating model"
+            ),
+            "dt": (
+                "Establish the Digital Transformation Office, appoint a "
+                "Chief Digital Officer, stand up the Digital "
+                "Transformation Committee, approve the digital "
+                "transformation operating model, activate digital "
+                "services governance and integration"
+            ),
+            "erm": (
+                "Establish the Enterprise Risk Management function, "
+                "appoint a CRO, stand up the Risk Committee, activate "
+                "risk owners, approve the risk appetite and risk "
+                "register"
+            ),
+        }
+        _rm_ar = _RM_GOV_AR.get(_dom_code_inj or "cyber")
+        _rm_en = _RM_GOV_EN.get(_dom_code_inj or "cyber")
+        if is_ar and _rm_ar:
+            prompt += (
+                "\n\nقاعدة نشاط حوكمة وتأسيس الوظيفة المتخصصة في خارطة "
+                "الطريق (إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص، "
+                "يجب أن يحتوي جدول خارطة الطريق على نشاط واحد صريح على "
+                "الأقل لتأسيس الوظيفة المتخصصة لهذا المجال، يسمّيها "
+                "بالاسم على غرار: "
+                f"{_rm_ar}. النشاط يجب أن يحتوي صراحةً على: "
+                "(أ) اسم النشاط الذي يسمّي المكتب/اللجنة/المنصب المراد "
+                "إنشاؤه، (ب) المالك (Owner)، (ج) الإطار الزمني "
+                "(Timeline) — مثل \"خلال 3 أشهر\"، (د) المخرج "
+                "(Deliverable) — مثل \"قرار إنشاء، ميثاق اللجنة، نموذج "
+                "تشغيل معتمد\". يُمنع منعاً باتاً استبدال هذا النشاط "
+                "بصياغة عامة مثل \"تعزيز الحوكمة\" أو \"تحسين الهيكلة\" "
+                "دون تسمية الوظيفة المتخصصة. حافظ على بقية صفوف خارطة "
+                "الطريق ولا تُضعف أي صف آخر."
+            )
+        elif _rm_en:
+            prompt += (
+                "\n\nRoadmap governance-setup activity rule (MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "department / organisational unit, the roadmap table "
+                "MUST contain at least ONE explicit activity that "
+                "establishes the domain-specific specialized function, "
+                "naming it by name, e.g.: "
+                f"{_rm_en}. The activity must explicitly include: "
+                "(a) Activity name that names the office/committee/"
+                "chief role to be established, (b) Owner, (c) Timeline "
+                "(e.g. \"within 3 months\"), and (d) Deliverable (e.g. "
+                "\"establishment decision, committee charter, approved "
+                "operating model\"). It is strictly forbidden to "
+                "replace this activity with vague phrasing such as "
+                "\"Strengthen governance\" or \"Improve organisational "
+                "structure\" without naming the specialized function. "
+                "Preserve every other roadmap row; do not weaken any "
+                "other row."
+            )
+
+    # ── PR-5B.9J: Environment section — explicit selected-framework names ──
+    # When repairing the Environment / Threat Landscape section AND any
+    # frameworks are selected, the section MUST open with a "السياق
+    # التنظيمي" / "Regulatory context" paragraph that names every
+    # selected framework by its canonical display name (Arabic + English
+    # aliases where applicable). Generic mentions of an acronym alone
+    # (e.g. "SDAIA") are NOT acceptable when both "SDAIA AI Ethics
+    # Principles" and "SDAIA AI Governance Framework" are selected. The
+    # AI must NOT inject any framework that is not in the selected
+    # list. The same canonical framework list flows from
+    # ``_resolve_selected_frameworks`` / scope / final audit so the four
+    # surfaces (scope, environment validation, environment repair,
+    # final audit) cannot drift.
+    if section_key == "environment" and fws:
+        _efw_display = []
+        for _fwk in fws:
+            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
+            _efw_display.append(_spec.get("display", _fwk))
+        if is_ar:
+            prompt += (
+                "\n\nقاعدة ذكر الأطر المختارة في السياق التنظيمي "
+                "(إلزامية):\n"
+                "يجب أن يبدأ القسم بفقرة عنوانها **السياق التنظيمي** "
+                "تذكر صراحةً كل إطار من الأطر المختارة باسمه القانوني "
+                "الكامل (مع الأسماء العربية والإنجليزية حيث ينطبق): "
+                + "، ".join(_efw_display)
+                + ". الذكر العام للاختصار وحده (مثل \"SDAIA\") غير "
+                "مقبول عندما يُختار أكثر من إطار من نفس الجهة — كل "
+                "إطار يجب أن يُسمّى بحرفه. لا تُدرج أي إطار آخر غير "
+                "مذكور في القائمة المختارة، ولا تستبدل اسم إطار "
+                "بآخر."
+            )
+        else:
+            prompt += (
+                "\n\nRegulatory-context selected-framework naming rule "
+                "(MANDATORY):\n"
+                "The section MUST open with a paragraph titled "
+                "**Regulatory context** that explicitly names every "
+                "selected framework by its canonical display name "
+                "(Arabic + English aliases where applicable): "
+                + ", ".join(_efw_display)
+                + ". Generic mentions of an acronym alone (e.g. "
+                "\"SDAIA\") are NOT acceptable when more than one "
+                "framework from the same authority is selected — every "
+                "framework must be named verbatim. Do not include any "
+                "framework that is not in the selected list, and do "
+                "not substitute one framework name for another."
             )
 
     # ── PR-5B.9D: Per-domain expected gap categories (gaps section only) ────
@@ -37975,6 +38282,418 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 '[GAPS-STRUCTURAL-GAP-REPAIR] '
                                 f'non-fatal: {_sgxe}',
+                                flush=True,
+                            )
+
+                    # ── PR-5B.9J: Roadmap governance-setup repair ────────
+                    # When ``org_structure_is_none=True`` the Roadmap
+                    # section MUST contain at least one explicit
+                    # governance/setup activity for the selected domain
+                    # (e.g. DT → "إنشاء مكتب التحول الرقمي"). The
+                    # diagnosis-grounding gate downstream blocks the save
+                    # with "roadmap does not include governance setup"
+                    # when this activity is absent — even after Vision
+                    # and Gaps already satisfy the specialized-function
+                    # obligation. This pass runs AFTER
+                    # ``GAPS-STRUCTURAL-GAP-REPAIR`` and BEFORE the
+                    # post-normalization re-audit. AI-first only — no
+                    # deterministic roadmap row is inserted; on
+                    # RepairError or rejected candidate the original
+                    # roadmap text is restored and ``synth_failed:roadmap``
+                    # is marked so the post-normalization audit blocks
+                    # the save (422).
+                    if doc_subtype != 'board':
+                        try:
+                            _rg_org_none = bool(
+                                _final_ctx.get(
+                                    'org_structure_is_none', False)
+                                if isinstance(_final_ctx, dict)
+                                else False
+                            )
+                            if _rg_org_none:
+                                _rg_before = sections.get('roadmap', '') or ''
+                                _rg_missing = (
+                                    _compute_missing_governance_setup_in_roadmap(
+                                        _rg_before, domain,
+                                        org_structure_is_none=True,
+                                        lang=lang,
+                                    ))
+                                if _rg_missing:
+                                    try:
+                                        _rg_dcode = normalize_domain(
+                                            domain or '')
+                                    except Exception:  # noqa: BLE001
+                                        _rg_dcode = ''
+                                    print(
+                                        '[ROADMAP-GOVERNANCE-SETUP-REPAIR] '
+                                        f'missing={_rg_missing} '
+                                        f'domain={_rg_dcode}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _rg_dctx = (
+                                            get_strategy_domain_context(
+                                                domain))
+                                    except Exception as _rgdce:
+                                        print(
+                                            '[ROADMAP-GOVERNANCE-SETUP-'
+                                            'REPAIR] '
+                                            'domain_context_failed: '
+                                            f'{_rgdce}',
+                                            flush=True,
+                                        )
+                                        _rg_dctx = None
+                                    if _rg_dctx is not None:
+                                        try:
+                                            _rg_dctx = dict(_rg_dctx)
+                                            _rg_dctx[
+                                                'selected_frameworks'] = (
+                                                list(_frameworks_raw)
+                                                if isinstance(
+                                                    _frameworks_raw,
+                                                    (list, tuple))
+                                                else (
+                                                    [str(_frameworks_raw)]
+                                                    if _frameworks_raw
+                                                    else []))
+                                        except Exception:
+                                            pass
+                                        _rg_ve_msg = (
+                                            'Roadmap is missing an '
+                                            'explicit domain-specific '
+                                            'governance-setup activity '
+                                            'for the absent specialized '
+                                            'function. Uncovered concept '
+                                            'families: '
+                                            + ', '.join(_rg_missing)
+                                            + '. Add ONE explicit roadmap '
+                                            'activity that names the '
+                                            'function/office/committee/'
+                                            'chief role to be '
+                                            'established (e.g. '
+                                            '"إنشاء مكتب التحول الرقمي" '
+                                            'for DT, "إنشاء مكتب حوكمة '
+                                            'الذكاء الاصطناعي" for AI), '
+                                            'with explicit Owner, '
+                                            'Timeframe, and Deliverable '
+                                            'columns. Vague phrasing '
+                                            'such as "تعزيز الحوكمة" '
+                                            'without naming the office/'
+                                            'committee/chief role is '
+                                            'NOT acceptable. Preserve '
+                                            'every existing roadmap row; '
+                                            'do not weaken any other row.'
+                                        )
+                                        try:
+                                            _rg_new = (
+                                                ai_repair_strategy_section(
+                                                    section_key='roadmap',
+                                                    sections=sections,
+                                                    lang=lang,
+                                                    domain_context=(
+                                                        _rg_dctx),
+                                                    org_name=org_name,
+                                                    sector=_model_sector,
+                                                    maturity=maturity,
+                                                    generation_mode=(
+                                                        _generation_mode),
+                                                    validation_error=(
+                                                        _rg_ve_msg),
+                                                    org_structure_is_none=(
+                                                        True),
+                                                ))
+                                            if _rg_new and _rg_new.strip():
+                                                # Validate: AI candidate
+                                                # must (a) preserve the
+                                                # min roadmap-row floor
+                                                # and (b) actually cover
+                                                # at least one token from
+                                                # ANY previously-missing
+                                                # concept family. If
+                                                # either fails, restore
+                                                # original + mark
+                                                # ``synth_failed:roadmap``.
+                                                _rg_new_rows = (
+                                                    _count_substantive_roadmap_rows(
+                                                        _rg_new))
+                                                _rg_still_missing = (
+                                                    _compute_missing_governance_setup_in_roadmap(
+                                                        _rg_new, domain,
+                                                        org_structure_is_none=(
+                                                            True),
+                                                        lang=lang,
+                                                    ))
+                                                if (_rg_new_rows
+                                                        >= _RICHNESS_MIN_ROADMAP_ROWS
+                                                        and not
+                                                        _rg_still_missing):
+                                                    sections['roadmap'] = (
+                                                        _rg_new)
+                                                    print(
+                                                        '[ROADMAP-'
+                                                        'GOVERNANCE-'
+                                                        'SETUP-REPAIR] '
+                                                        'accepted rows='
+                                                        f'{_rg_new_rows}'
+                                                        f'/{_RICHNESS_MIN_ROADMAP_ROWS}'
+                                                        ' missing_after=[]',
+                                                        flush=True,
+                                                    )
+                                                else:
+                                                    sections['roadmap'] = (
+                                                        _rg_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        'roadmap',
+                                                        Exception(
+                                                            'governance_'
+                                                            'setup_unmet '
+                                                            'rows='
+                                                            f'{_rg_new_rows}'
+                                                            ' still_missing='
+                                                            f'{_rg_still_missing}'
+                                                        ))
+                                                    print(
+                                                        '[ROADMAP-'
+                                                        'GOVERNANCE-'
+                                                        'SETUP-REPAIR] '
+                                                        'rejected rows='
+                                                        f'{_rg_new_rows}'
+                                                        f'/{_RICHNESS_MIN_ROADMAP_ROWS}'
+                                                        ' still_missing='
+                                                        f'{_rg_still_missing}'
+                                                        ' — restored '
+                                                        'original roadmap',
+                                                        flush=True,
+                                                    )
+                                            else:
+                                                sections['roadmap'] = (
+                                                    _rg_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    'roadmap',
+                                                    Exception(
+                                                        'governance_setup_'
+                                                        'empty_repair'))
+                                                print(
+                                                    '[ROADMAP-GOVERNANCE-'
+                                                    'SETUP-REPAIR] '
+                                                    'empty_response — '
+                                                    'restored original',
+                                                    flush=True,
+                                                )
+                                        except RepairError as _rgre:
+                                            sections['roadmap'] = _rg_before
+                                            _mark_synth_failed(
+                                                _synth_status, 'roadmap',
+                                                _rgre)
+                                            print(
+                                                '[ROADMAP-GOVERNANCE-'
+                                                'SETUP-REPAIR] '
+                                                f'repair_failed err='
+                                                f'{_rgre}',
+                                                flush=True,
+                                            )
+                                        except Exception as _rgre2:
+                                            print(
+                                                '[ROADMAP-GOVERNANCE-'
+                                                'SETUP-REPAIR] '
+                                                f'repair_unexpected err='
+                                                f'{_rgre2}',
+                                                flush=True,
+                                            )
+                        except Exception as _rgxe:
+                            print(
+                                '[ROADMAP-GOVERNANCE-SETUP-REPAIR] '
+                                f'non-fatal: {_rgxe}',
+                                flush=True,
+                            )
+
+                    # ── PR-5B.9J: Environment framework-reference repair ─
+                    # The Environment / Threat Landscape section MUST
+                    # explicitly mention every selected framework by one
+                    # of its canonical aliases. The
+                    # ``validate_strategy_fail_closed`` validator (clause
+                    # F) blocks the save with
+                    # ``environment_missing_framework_reference`` listing
+                    # the missing frameworks when the env body fails to
+                    # name them. This pass runs BEFORE the post-
+                    # normalization re-audit AND BEFORE the fail-closed
+                    # validator so the env section is repaired in time.
+                    # AI-first only — no deterministic env paragraphs are
+                    # inserted; on RepairError or rejected candidate the
+                    # original env text is restored and
+                    # ``synth_failed:environment`` is marked so the
+                    # downstream audit fails closed.
+                    if doc_subtype != 'board' and _frameworks_raw:
+                        try:
+                            _ef_before = sections.get('environment', '') or ''
+                            _ef_missing = (
+                                _compute_missing_framework_references_in_env(
+                                    _ef_before, _frameworks_raw,
+                                    domain=None,
+                                ))
+                            if _ef_missing:
+                                _ef_alias_map = {
+                                    str(f): canonical_framework_aliases(f)
+                                    for f in _frameworks_raw
+                                }
+                                print(
+                                    '[ENVIRONMENT-FRAMEWORK-REPAIR] '
+                                    f'missing={_ef_missing} '
+                                    f'aliases={_ef_alias_map}',
+                                    flush=True,
+                                )
+                                try:
+                                    _ef_dctx = (
+                                        get_strategy_domain_context(domain))
+                                except Exception as _efdce:
+                                    print(
+                                        '[ENVIRONMENT-FRAMEWORK-REPAIR] '
+                                        f'domain_context_failed: {_efdce}',
+                                        flush=True,
+                                    )
+                                    _ef_dctx = None
+                                if _ef_dctx is not None:
+                                    try:
+                                        _ef_dctx = dict(_ef_dctx)
+                                        _ef_dctx[
+                                            'selected_frameworks'] = (
+                                            list(_frameworks_raw)
+                                            if isinstance(
+                                                _frameworks_raw,
+                                                (list, tuple))
+                                            else (
+                                                [str(_frameworks_raw)]
+                                                if _frameworks_raw
+                                                else []))
+                                    except Exception:
+                                        pass
+                                    _ef_ve_msg = (
+                                        'Environment section is missing '
+                                        'an explicit reference to every '
+                                        'selected framework. Missing: '
+                                        + ', '.join(_ef_missing)
+                                        + '. Open the section with a '
+                                        'paragraph titled '
+                                        '"السياق التنظيمي" / '
+                                        '"Regulatory context" that '
+                                        'EXPLICITLY names every selected '
+                                        'framework by its canonical '
+                                        'display name (Arabic + English '
+                                        'aliases where applicable, e.g. '
+                                        '"SDAIA AI Ethics Principles" / '
+                                        '"مبادئ أخلاقيات الذكاء '
+                                        'الاصطناعي من سدايا"). Generic '
+                                        'mentions of "SDAIA" alone are '
+                                        'NOT acceptable — every selected '
+                                        'framework must be named '
+                                        'verbatim. Do not invent or '
+                                        'inject any framework that is '
+                                        'not in the selected list.'
+                                    )
+                                    try:
+                                        _ef_new = (
+                                            ai_repair_strategy_section(
+                                                section_key='environment',
+                                                sections=sections,
+                                                lang=lang,
+                                                domain_context=_ef_dctx,
+                                                org_name=org_name,
+                                                sector=_model_sector,
+                                                maturity=maturity,
+                                                generation_mode=(
+                                                    _generation_mode),
+                                                validation_error=(
+                                                    _ef_ve_msg),
+                                                org_structure_is_none=(
+                                                    bool(
+                                                        _final_ctx.get(
+                                                            'org_structure_is_none',
+                                                            False)
+                                                        if isinstance(
+                                                            _final_ctx,
+                                                            dict)
+                                                        else False)),
+                                            ))
+                                        if _ef_new and _ef_new.strip():
+                                            _ef_still_missing = (
+                                                _compute_missing_framework_references_in_env(
+                                                    _ef_new,
+                                                    _frameworks_raw,
+                                                    domain=None,
+                                                ))
+                                            if not _ef_still_missing:
+                                                sections['environment'] = (
+                                                    _ef_new)
+                                                print(
+                                                    '[ENVIRONMENT-'
+                                                    'FRAMEWORK-REPAIR] '
+                                                    'accepted '
+                                                    'missing_after=[]',
+                                                    flush=True,
+                                                )
+                                            else:
+                                                sections['environment'] = (
+                                                    _ef_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    'environment',
+                                                    Exception(
+                                                        'framework_'
+                                                        'reference_unmet'
+                                                        ' still_missing='
+                                                        f'{_ef_still_missing}'
+                                                    ))
+                                                print(
+                                                    '[ENVIRONMENT-'
+                                                    'FRAMEWORK-REPAIR] '
+                                                    'rejected '
+                                                    'still_missing='
+                                                    f'{_ef_still_missing}'
+                                                    ' — restored '
+                                                    'original env',
+                                                    flush=True,
+                                                )
+                                        else:
+                                            sections['environment'] = (
+                                                _ef_before)
+                                            _mark_synth_failed(
+                                                _synth_status,
+                                                'environment',
+                                                Exception(
+                                                    'framework_reference_'
+                                                    'empty_repair'))
+                                            print(
+                                                '[ENVIRONMENT-FRAMEWORK-'
+                                                'REPAIR] empty_response '
+                                                '— restored original',
+                                                flush=True,
+                                            )
+                                    except RepairError as _efre:
+                                        sections['environment'] = (
+                                            _ef_before)
+                                        _mark_synth_failed(
+                                            _synth_status,
+                                            'environment', _efre)
+                                        print(
+                                            '[ENVIRONMENT-FRAMEWORK-'
+                                            f'REPAIR] repair_failed '
+                                            f'err={_efre}',
+                                            flush=True,
+                                        )
+                                    except Exception as _efre2:
+                                        print(
+                                            '[ENVIRONMENT-FRAMEWORK-'
+                                            'REPAIR] '
+                                            f'repair_unexpected err='
+                                            f'{_efre2}',
+                                            flush=True,
+                                        )
+                        except Exception as _efxe:
+                            print(
+                                '[ENVIRONMENT-FRAMEWORK-REPAIR] '
+                                f'non-fatal: {_efxe}',
                                 flush=True,
                             )
 
