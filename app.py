@@ -19611,6 +19611,74 @@ def _compute_missing_specialized_function_concepts(sections, domain_code):
     return missing
 
 
+# ── PR-5B.9I: gaps-section structural-gap requirement ─────────────────────
+# When ``org_structure_is_none=True``, the **Gaps** section MUST contain
+# at least one explicit row that names the *missing* domain-specific
+# specialized function — phrased as a gap (e.g. "غياب مكتب حوكمة الذكاء
+# الاصطناعي"). The pre-existing
+# ``_compute_missing_specialized_function_concepts`` helper scans ALL
+# assembled sections and is satisfied when, say, the Vision/Objectives
+# table mentions establishing the function — that is **not** sufficient
+# here: the diagnosis-grounding gate downstream specifically inspects
+# the gaps table and 422s ("gaps do not include structural gap") when
+# the gaps row is absent.
+#
+# This helper isolates the gaps-text inspection and reuses the SAME
+# domain registry (``_DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS``) used by
+# the specialized-function objective check, so the two contracts speak
+# with one voice and cannot drift. AI-first detection only — no
+# deterministic content is inserted anywhere.
+#
+# Returns ``[]`` (nothing missing) when:
+#   * ``org_structure_is_none`` is False, OR
+#   * the domain code is not in the registry, OR
+#   * the gaps text contains at least one token from ANY concept family
+#     for the resolved domain (i.e. the gaps table mentions the
+#     specialized function in some form).
+#
+# Otherwise returns the list of uncovered concept-family names so the
+# repair caller can name them in the validation_error.
+def _compute_missing_structural_gap_for_domain(
+        gaps_text, domain, org_structure_is_none, lang='en'):
+    """Domain-specific structural-gap presence check, scoped to the gaps
+    section text only. See module-level docstring above.
+    """
+    if not org_structure_is_none:
+        return []
+    try:
+        code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        code = ''
+    code = (code or '').strip().lower()
+    concepts = _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS.get(code)
+    if not concepts:
+        return []
+    text = gaps_text or ''
+    if not text.strip():
+        # Empty gaps text — every family is missing.
+        return list(concepts.keys())
+    text_lc = text.lower()
+    # ``True`` when the gaps text contains AT LEAST ONE token from ANY
+    # concept family — that's enough to count as "the structural gap
+    # row is present" (the AI was asked for ONE row that names the
+    # missing function, not coverage of every concept family). The
+    # all-or-nothing semantics of
+    # ``_compute_missing_specialized_function_concepts`` are
+    # appropriate when scanning the entire assembled strategy (each
+    # family must be addressed somewhere) but would be overly strict
+    # here where we are checking for a single row.
+    matched_any = False
+    missing = []
+    for fam, tokens in concepts.items():
+        if any((t.lower() in text_lc) or (t in text) for t in tokens):
+            matched_any = True
+        else:
+            missing.append(fam)
+    if matched_any:
+        return []
+    return missing
+
+
 def validate_arabic_strategy_semantic_richness(sections, lang, doc_subtype=None,
                                                generation_mode='consulting',
                                                domain=None,
@@ -23363,6 +23431,35 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                 0,
                 1,
             ))
+        # PR-5B.9I — Gaps section must include an explicit domain-specific
+        # structural-gap row when ``org_structure_is_none`` is True. The
+        # check is scoped to the gaps text only (not the assembled
+        # strategy) because the diagnosis-grounding gate downstream
+        # specifically inspects the gaps table and 422s
+        # ("gaps do not include structural gap") when this row is
+        # absent. AI-first detection only — repair is routed via
+        # ``ai_repair_strategy_section('gaps', ...)`` whose prompt
+        # addendum names the per-domain required wording.
+        if org_structure_is_none:
+            try:
+                _dcode_sg = normalize_domain(domain or '')
+            except Exception:  # noqa: BLE001 — defensive
+                _dcode_sg = ''
+            _missing_sg = _compute_missing_structural_gap_for_domain(
+                sections.get('gaps', '') or '',
+                domain,
+                org_structure_is_none=True,
+                lang=lang,
+            )
+            if _missing_sg:
+                defects.append((
+                    'gaps',
+                    'missing_structural_gap-org_structure_is_none:'
+                    + (_dcode_sg or '')
+                    + ':' + ','.join(_missing_sg),
+                    0,
+                    1,
+                ))
     except Exception as _fwe:
         # Audit must never abort generation. Log and continue.
         print(f'[FW-COVERAGE-AUDIT] non-fatal: {_fwe}', flush=True)
@@ -27769,6 +27866,120 @@ def ai_repair_strategy_section(
                 prompt += _SPEC_FN_PROMPT_AR.get(_dom_code_inj, "")
             else:
                 prompt += _SPEC_FN_PROMPT_EN.get(_dom_code_inj, "")
+
+    # ── PR-5B.9I: explicit structural-gap row in the Gaps section ─────────
+    # When repairing the **gaps** section AND ``org_structure_is_none`` is
+    # True, the table MUST contain ONE row whose Gap text explicitly names
+    # the *missing* domain-specific specialized function — phrased as a
+    # gap (Arabic: starting with "غياب…"). The diagnosis-grounding gate
+    # downstream blocks the save with "gaps do not include structural
+    # gap" when this row is absent, even if the Vision/Objectives table
+    # already mentions establishing the function. The row coexists with
+    # — and does NOT replace — the other ≥4 substantive gap rows. The
+    # 1:1 implementation guide for this row MUST also be present.
+    if section_key == "gaps" and org_structure_is_none:
+        _GAPS_STRUCT_GAP_AR = {
+            "cyber": (
+                "غياب إدارة الأمن السيبراني / عدم وجود CISO / غياب لجنة "
+                "حوكمة الأمن السيبراني / غياب نموذج تشغيل الأمن السيبراني"
+            ),
+            "data": (
+                "غياب مكتب إدارة البيانات / غياب Chief Data Officer (CDO) / "
+                "غياب لجنة حوكمة البيانات / غياب أدوار أمناء البيانات "
+                "وملكية البيانات"
+            ),
+            "ai": (
+                "غياب مكتب/وحدة حوكمة الذكاء الاصطناعي / غياب لجنة حوكمة "
+                "الذكاء الاصطناعي / غياب مسؤول أخلاقيات الذكاء الاصطناعي / "
+                "غياب Model Risk Manager / غياب AI Compliance Lead / غياب "
+                "مخزون النماذج ونموذج تشغيل الذكاء الاصطناعي"
+            ),
+            "dt": (
+                "غياب مكتب التحول الرقمي / غياب إدارة التحول الرقمي / غياب "
+                "Chief Digital Officer / غياب لجنة التحول الرقمي / غياب "
+                "نموذج تشغيل التحول الرقمي / غياب حوكمة الخدمات الرقمية "
+                "والتكامل"
+            ),
+            "erm": (
+                "غياب إدارة المخاطر المؤسسية / غياب CRO / غياب لجنة "
+                "المخاطر / غياب ملاك المخاطر / غياب شهية المخاطر وسجل "
+                "المخاطر وخطوط التصعيد"
+            ),
+        }
+        _GAPS_STRUCT_GAP_EN = {
+            "cyber": (
+                "Absent Cybersecurity Department / No CISO / Absent "
+                "cybersecurity governance committee / Absent cybersecurity "
+                "operating model"
+            ),
+            "data": (
+                "Absent Data Management Office / Absent Chief Data Officer "
+                "(CDO) / Absent Data Governance Committee / Absent data "
+                "stewardship and data ownership roles"
+            ),
+            "ai": (
+                "Absent AI Governance Office / unit / Absent AI Governance "
+                "Committee / Absent AI Ethics Officer / Absent Model Risk "
+                "Manager / Absent AI Compliance Lead / Absent model "
+                "inventory and AI operating model"
+            ),
+            "dt": (
+                "Absent Digital Transformation Office / Absent Digital "
+                "Transformation Department / Absent Chief Digital Officer / "
+                "Absent Digital Transformation Committee / Absent digital "
+                "transformation operating model / Absent digital services "
+                "governance and integration"
+            ),
+            "erm": (
+                "Absent Enterprise Risk Management function / Absent CRO / "
+                "Absent Risk Committee / Absent risk owners / Absent risk "
+                "appetite, risk register, and escalation lines"
+            ),
+        }
+        _struct_ar = _GAPS_STRUCT_GAP_AR.get(_dom_code_inj or "cyber")
+        _struct_en = _GAPS_STRUCT_GAP_EN.get(_dom_code_inj or "cyber")
+        if is_ar and _struct_ar:
+            prompt += (
+                "\n\nقاعدة الفجوة الهيكلية الإلزامية في جدول الفجوات "
+                "(إلزامية):\n"
+                "بما أن المنظمة أبلغت عن غياب إدارة/هيكل تنظيمي مخصص، "
+                "يجب أن يحتوي جدول الفجوات على ما يلي:\n"
+                "- خمسة (5) صفوف فجوات جوهرية على الأقل، بدون أي صفوف "
+                "نائبة (placeholder) وبدون قوالب فارغة.\n"
+                "- صفّ واحد صريح ومستقل يصف الفجوة الهيكلية للوظيفة "
+                "المتخصصة المفقودة لهذا المجال (مرتبط مباشرة بمجال "
+                f"\"{domain_display}\")، يبدأ نصّه بكلمة \"غياب\" "
+                "ويسمّي الوظيفة باسمها، على غرار: "
+                f"{_struct_ar}.\n"
+                "- يجب أن يكون رأس الجدول صحيحاً بالعربية (#، الفجوة، "
+                "الأثر، الأولوية، …)، وأن يُرفَق لكل فجوة دليل تنفيذ "
+                "(Implementation Guide) مخصّص بنسبة 1:1 (لا تكرار/لا "
+                "قوالب موحدة).\n"
+                "- يُمنع منعاً باتاً استبدال هذا الصف بفجوة \"حوكمة\" "
+                "عامة دون تسمية الوظيفة المتخصصة المفقودة بالاسم."
+            )
+        elif _struct_en:
+            prompt += (
+                "\n\nMandatory structural-gap row in the Gaps table "
+                "(MANDATORY):\n"
+                "Because the organisation reported no dedicated "
+                "department / organisational unit, the Gaps table MUST "
+                "contain:\n"
+                "- At least five (5) substantive gap rows — no "
+                "placeholders, no empty templates.\n"
+                "- ONE explicit standalone row describing the structural "
+                "gap of the missing domain-specific specialized function "
+                f"(directly tied to the \"{domain_display}\" domain), "
+                "naming the missing function by name, e.g.: "
+                f"{_struct_en}.\n"
+                "- The table header must be valid (#, Gap, Impact, "
+                "Priority, …) and each gap MUST have a dedicated 1:1 "
+                "Implementation Guide (no duplicates, no shared "
+                "templates).\n"
+                "- It is strictly forbidden to replace this row with a "
+                "generic \"governance gap\" without naming the missing "
+                "specialized function by name."
+            )
 
     # ── PR-5B.9H: Selected-framework compliance objective row (vision) ─────
     # When repairing the Vision/Objectives section AND any frameworks are
@@ -37556,6 +37767,214 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 '[VISION-OBLIGATIONS-REPAIR] '
                                 f'non-fatal: {_voxe}',
+                                flush=True,
+                            )
+
+                    # ── PR-5B.9I: Gaps structural-gap repair ─────────────
+                    # When ``org_structure_is_none=True`` the Gaps section
+                    # MUST contain one explicit row that names the missing
+                    # domain-specific specialized function (e.g. AI →
+                    # "غياب مكتب/وحدة حوكمة الذكاء الاصطناعي ونموذج تشغيل
+                    # الذكاء الاصطناعي"). The diagnosis-grounding gate
+                    # downstream blocks the save with "gaps do not include
+                    # structural gap" when this row is absent — even after
+                    # the Vision/Objectives composite repair satisfied the
+                    # specialized-function objective row. This pass runs
+                    # AFTER ``VISION-OBLIGATIONS-REPAIR`` (which may have
+                    # rewritten Vision) and BEFORE the post-normalization
+                    # re-audit. AI-first only — no deterministic gap row
+                    # is inserted; on RepairError the original gaps text
+                    # is restored and ``synth_failed:gaps`` is marked so
+                    # the post-normalization audit blocks the save.
+                    if doc_subtype != 'board':
+                        try:
+                            _sg_org_none = bool(
+                                _final_ctx.get(
+                                    'org_structure_is_none', False)
+                                if isinstance(_final_ctx, dict)
+                                else False
+                            )
+                            if _sg_org_none:
+                                _sg_before = sections.get('gaps', '') or ''
+                                _sg_missing = (
+                                    _compute_missing_structural_gap_for_domain(
+                                        _sg_before, domain,
+                                        org_structure_is_none=True,
+                                        lang=lang,
+                                    ))
+                                if _sg_missing:
+                                    try:
+                                        _sg_dcode = normalize_domain(
+                                            domain or '')
+                                    except Exception:  # noqa: BLE001
+                                        _sg_dcode = ''
+                                    print(
+                                        '[GAPS-STRUCTURAL-GAP-REPAIR] '
+                                        f'missing={_sg_missing} '
+                                        f'domain={_sg_dcode}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _sg_dctx = (
+                                            get_strategy_domain_context(
+                                                domain))
+                                    except Exception as _sgdce:
+                                        print(
+                                            '[GAPS-STRUCTURAL-GAP-REPAIR] '
+                                            'domain_context_failed: '
+                                            f'{_sgdce}',
+                                            flush=True,
+                                        )
+                                        _sg_dctx = None
+                                    if _sg_dctx is not None:
+                                        try:
+                                            _sg_dctx = dict(_sg_dctx)
+                                            _sg_dctx[
+                                                'selected_frameworks'] = (
+                                                list(_frameworks_raw)
+                                                if isinstance(
+                                                    _frameworks_raw,
+                                                    (list, tuple))
+                                                else (
+                                                    [str(_frameworks_raw)]
+                                                    if _frameworks_raw
+                                                    else []))
+                                        except Exception:
+                                            pass
+                                        _sg_ve_msg = (
+                                            'Gaps section is missing a '
+                                            'domain-specific structural '
+                                            'gap row for the absent '
+                                            'specialized function. '
+                                            'Uncovered concept families: '
+                                            + ', '.join(_sg_missing)
+                                            + '. Add ONE explicit gap row '
+                                            'naming the missing function '
+                                            '(e.g. starting with "غياب…") '
+                                            'while keeping the table at '
+                                            '≥5 substantive rows with '
+                                            '1:1 implementation guides. '
+                                            'Do not weaken any other row.'
+                                        )
+                                        try:
+                                            _sg_new = (
+                                                ai_repair_strategy_section(
+                                                    section_key='gaps',
+                                                    sections=sections,
+                                                    lang=lang,
+                                                    domain_context=(
+                                                        _sg_dctx),
+                                                    org_name=org_name,
+                                                    sector=_model_sector,
+                                                    maturity=maturity,
+                                                    generation_mode=(
+                                                        _generation_mode),
+                                                    validation_error=(
+                                                        _sg_ve_msg),
+                                                    org_structure_is_none=(
+                                                        True),
+                                                ))
+                                            if _sg_new and _sg_new.strip():
+                                                # Validate: AI candidate
+                                                # must (a) preserve the
+                                                # min gap-row floor and
+                                                # (b) actually cover at
+                                                # least one token from
+                                                # every previously-missing
+                                                # concept family. If
+                                                # either check fails,
+                                                # restore + mark
+                                                # ``synth_failed:gaps``.
+                                                _sg_new_rows = (
+                                                    count_substantive_gaps(
+                                                        _sg_new))
+                                                _sg_still_missing = (
+                                                    _compute_missing_structural_gap_for_domain(
+                                                        _sg_new, domain,
+                                                        org_structure_is_none=(
+                                                            True),
+                                                        lang=lang,
+                                                    ))
+                                                if (_sg_new_rows
+                                                        >= _RICHNESS_MIN_GAP_ROWS
+                                                        and not
+                                                        _sg_still_missing):
+                                                    sections['gaps'] = (
+                                                        _sg_new)
+                                                    print(
+                                                        '[GAPS-STRUCTURAL-'
+                                                        'GAP-REPAIR] '
+                                                        'accepted rows='
+                                                        f'{_sg_new_rows}'
+                                                        f'/{_RICHNESS_MIN_GAP_ROWS}'
+                                                        ' missing_after=[]',
+                                                        flush=True,
+                                                    )
+                                                else:
+                                                    sections['gaps'] = (
+                                                        _sg_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        'gaps',
+                                                        Exception(
+                                                            'structural_'
+                                                            'gap_unmet '
+                                                            'rows='
+                                                            f'{_sg_new_rows}'
+                                                            ' still_missing='
+                                                            f'{_sg_still_missing}'
+                                                        ))
+                                                    print(
+                                                        '[GAPS-STRUCTURAL-'
+                                                        'GAP-REPAIR] '
+                                                        'rejected rows='
+                                                        f'{_sg_new_rows}'
+                                                        f'/{_RICHNESS_MIN_GAP_ROWS}'
+                                                        ' still_missing='
+                                                        f'{_sg_still_missing}'
+                                                        ' — restored '
+                                                        'original gaps',
+                                                        flush=True,
+                                                    )
+                                            else:
+                                                sections['gaps'] = (
+                                                    _sg_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    'gaps',
+                                                    Exception(
+                                                        'structural_gap_'
+                                                        'empty_repair'))
+                                                print(
+                                                    '[GAPS-STRUCTURAL-'
+                                                    'GAP-REPAIR] '
+                                                    'empty_response — '
+                                                    'restored original',
+                                                    flush=True,
+                                                )
+                                        except RepairError as _sgre:
+                                            sections['gaps'] = _sg_before
+                                            _mark_synth_failed(
+                                                _synth_status, 'gaps',
+                                                _sgre)
+                                            print(
+                                                '[GAPS-STRUCTURAL-GAP-'
+                                                f'REPAIR] repair_failed '
+                                                f'err={_sgre}',
+                                                flush=True,
+                                            )
+                                        except Exception as _sgre2:
+                                            print(
+                                                '[GAPS-STRUCTURAL-GAP-'
+                                                'REPAIR] '
+                                                f'repair_unexpected err='
+                                                f'{_sgre2}',
+                                                flush=True,
+                                            )
+                        except Exception as _sgxe:
+                            print(
+                                '[GAPS-STRUCTURAL-GAP-REPAIR] '
+                                f'non-fatal: {_sgxe}',
                                 flush=True,
                             )
 
