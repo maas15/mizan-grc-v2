@@ -11308,6 +11308,47 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
 
     informative_rows = [r for r in rows if _row_is_informative(r)]
 
+    # PR-5B.9S — Data Management traceability depth. For the Data
+    # domain (or whenever NDMO/PDPL is in the selected-framework set)
+    # the rendered matrix must not contain rows with "—" placeholders.
+    # We drop any row containing a dash cell from the rendered
+    # ``rows`` list and emit a ``[TRACEABILITY-DIAG]`` diagnostic per
+    # dropped framework / capability so QA can spot incomplete source
+    # sections. No row content is invented — dropping is purely
+    # subtractive. Other domains (Cyber / AI / DT / ERM) keep the
+    # historical behaviour (``rows`` includes dash placeholders) so
+    # cross-domain rendering is byte-for-byte unchanged.
+    _trace_domain = (domain_code or '').strip().lower()
+    _selected_keys_upper = {str(k).upper()
+                            for k in (selected_fws_keys or [])}
+    _data_scope = (
+        _trace_domain == 'data'
+        or 'NDMO' in _selected_keys_upper
+        or 'PDPL' in _selected_keys_upper
+    )
+    if _data_scope:
+        def _row_has_no_dash(r):
+            if not r:
+                return False
+            return not any(_is_dash(c) for c in r)
+        complete_rows = [r for r in rows if _row_has_no_dash(r)]
+        if len(complete_rows) != len(rows):
+            try:
+                for _r in rows:
+                    if _row_has_no_dash(_r):
+                        continue
+                    _fw_lbl = (_r[0] if _r and len(_r) > 0 else '')
+                    _cap_lbl = (_r[1] if _r and len(_r) > 1 else '')
+                    print(
+                        '[TRACEABILITY-DIAG] dropped_incomplete_row '
+                        f'domain={_trace_domain or "?"} '
+                        f'framework={_fw_lbl!s} capability={_cap_lbl!s}',
+                        flush=True,
+                    )
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+            rows = complete_rows
+
     return {'header': header, 'rows': rows,
             'informative_rows': informative_rows}
 
@@ -19887,6 +19928,121 @@ def _compute_missing_governance_setup_in_roadmap(
     return missing
 
 
+# ── PR-5B.9S: Data-Management roadmap balance topics ──────────────────────
+# When the Data Management strategy selects NDMO and/or PDPL the roadmap
+# must cover more than office-setup activities. The prior runtime
+# (PR-5B.9K + PR-5B.9Q) hardened roadmap governance-setup wording but
+# left the rest of the roadmap free to be a thin office-only plan.
+# This helper detects whether each balance topic (data quality, data
+# catalog/metadata, data lifecycle, PDPL privacy governance, consent,
+# data subject rights, breach notification) is named somewhere in the
+# roadmap text. Office-setup activities (DMO/CDO/committee) are not
+# replaced — they are additive. Detection only; no deterministic rows
+# are inserted by this helper. Guarded by caller to Data domain + at
+# least one of NDMO / PDPL selected so cross-domain behaviour is
+# unaffected.
+_DATA_ROADMAP_BALANCE_TOPICS = {
+    # NDMO-aligned operational families
+    'data_quality': (
+        'جودة البيانات', 'إدارة جودة البيانات', 'مقاييس جودة البيانات',
+        'data quality', 'data quality management', 'dq',
+    ),
+    'data_catalog': (
+        'كتالوج البيانات', 'فهرس البيانات',
+        'البيانات الوصفية', 'بيانات وصفية', 'ميتاداتا',
+        'data catalog', 'data catalogue', 'metadata',
+        'metadata management',
+    ),
+    'data_lifecycle': (
+        'دورة حياة البيانات', 'الاحتفاظ بالبيانات', 'إتلاف البيانات',
+        'أرشفة البيانات',
+        'data lifecycle', 'data retention', 'data disposal',
+        'data archiving', 'records lifecycle',
+    ),
+    # PDPL-aligned privacy controls
+    'privacy_governance': (
+        'حوكمة الخصوصية', 'خصوصية البيانات', 'حماية البيانات الشخصية',
+        'ضوابط الخصوصية',
+        'privacy governance', 'data privacy', 'privacy controls',
+        'privacy program',
+    ),
+    'consent_management': (
+        'إدارة الموافقات', 'الموافقة', 'موافقة صاحب البيانات',
+        'consent management', 'consent', 'subject consent',
+    ),
+    'data_subject_rights': (
+        'حقوق صاحب البيانات', 'حقوق أصحاب البيانات', 'حقوق الأفراد',
+        'data subject rights', 'dsr', 'subject access request',
+        'sar',
+    ),
+    'breach_notification': (
+        'الإبلاغ عن الانتهاكات', 'إخطار الخروقات',
+        'الإخطار بالخروقات', 'الإبلاغ عن خروقات البيانات',
+        'breach notification', 'breach reporting',
+        'data breach notification', 'incident notification',
+    ),
+}
+
+# Which balance topics each framework requires. NDMO selection requires
+# the three NDMO-aligned families; PDPL selection requires the four
+# PDPL-aligned families. If both are selected, the union is required.
+_DATA_ROADMAP_BALANCE_BY_FRAMEWORK = {
+    'NDMO': ('data_quality', 'data_catalog', 'data_lifecycle'),
+    'PDPL': ('privacy_governance', 'consent_management',
+             'data_subject_rights', 'breach_notification'),
+}
+
+
+def _compute_missing_data_roadmap_balance_topics(
+        roadmap_text, selected_frameworks, lang='en'):
+    """Return the list of balance-topic family keys missing from the
+    Data Management roadmap text.
+
+    Args:
+        roadmap_text: the full roadmap section text (markdown).
+        selected_frameworks: iterable of free-form framework identifiers
+            or registry keys (e.g. ``['NDMO', 'PDPL']``).
+        lang: 'ar' or 'en' (informational only; matching is bilingual).
+
+    Returns:
+        A list of missing topic-family keys (in declaration order). An
+        empty list means every required topic is present somewhere in
+        the roadmap text. Callers must guard the check to the Data
+        Management domain — this helper does NOT inspect the domain.
+
+    Detection only — no deterministic content is inserted anywhere. The
+    intended use is to emit a roadmap defect that an AI-first repair
+    pass can react to.
+    """
+    # Resolve selection -> registry keys via the existing resolver so
+    # callers can pass either canonical keys or free-form aliases.
+    try:
+        resolved = _resolve_selected_frameworks(
+            selected_frameworks, domain='Data Management')
+    except Exception:  # noqa: BLE001 — defensive
+        resolved = []
+    required = []
+    seen = set()
+    for fw_key in resolved or []:
+        for fam in _DATA_ROADMAP_BALANCE_BY_FRAMEWORK.get(fw_key, ()):
+            if fam not in seen:
+                seen.add(fam)
+                required.append(fam)
+    if not required:
+        return []
+    text = roadmap_text or ''
+    if not text.strip():
+        return list(required)
+    text_lc = text.lower()
+    missing = []
+    for fam in required:
+        tokens = _DATA_ROADMAP_BALANCE_TOPICS.get(fam, ())
+        if not any((t.lower() in text_lc) or (t in text)
+                   for t in tokens):
+            missing.append(fam)
+    return missing
+
+
 # ── PR-5B.9K: pillars-section governance/structure requirement ────────────
 # When ``org_structure_is_none=True``, the **Strategic Pillars** section
 # MUST include — as the FIRST pillar — a domain-specific governance,
@@ -24158,6 +24314,30 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                     'missing_governance_setup-org_structure_is_none:'
                     + (_dcode_sg or '')
                     + ':' + ','.join(_missing_rg),
+                    0,
+                    1,
+                ))
+        # PR-5B.9S — Data Management roadmap balance. When the domain is
+        # Data and NDMO and/or PDPL was selected, the roadmap must
+        # cover balance topics (data quality / catalog / lifecycle /
+        # privacy / consent / DSR / breach) in addition to office
+        # setup. Detection only — repair is AI-first via the existing
+        # roadmap repair pathways. No deterministic content injected.
+        try:
+            _dcode_bal = normalize_domain(domain or '')
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode_bal = ''
+        if (_dcode_bal or '').strip().lower() == 'data':
+            _missing_bal = _compute_missing_data_roadmap_balance_topics(
+                sections.get('roadmap', '') or '',
+                selected_frameworks=selected_frameworks,
+                lang=lang,
+            )
+            if _missing_bal:
+                defects.append((
+                    'roadmap',
+                    'data_roadmap_balance_missing:'
+                    + ','.join(_missing_bal),
                     0,
                     1,
                 ))
@@ -47013,10 +47193,17 @@ def _pdf_safe_text(s, max_run=22):
     Rules:
       * Insert ``\\u200B`` after every ``/``, ``-``, ``_``, ``(``, ``)``,
         ``:``, ``,`` so long compound tokens (e.g. ``data/AI/cyber``,
-        ``SDAIA-AI-Governance``) gain a wrap point.
+        ``SDAIA-AI-Governance``) gain a wrap point — BUT only when
+        neither neighbour is an Arabic character. PR-5B.9S: Arabic
+        compounds such as ``تأسيس/تطوير`` or parenthesised Arabic
+        phrases (``رئيس البيانات (CDO)``) must not gain a wrap point
+        inside or immediately adjacent to the Arabic run because
+        ReportLab will then split the Arabic word visually in a
+        narrow table cell.
       * Insert ``\\u200B`` every ``max_run`` chars inside any run of
         ASCII letters/digits >= 18 chars (e.g. ``ModelMonitoringOfficer``)
-        so it can wrap.
+        so it can wrap. Arabic runs are not matched by the regex and
+        are never split.
       * Arabic characters and existing whitespace are untouched.
 
     Idempotent. Always returns a ``str``.
@@ -47026,16 +47213,42 @@ def _pdf_safe_text(s, max_run=22):
     text = s if isinstance(s, str) else str(s)
     if not text:
         return text
-    # 1. Insert ZWSP after token-delimiter chars.
+
+    def _is_arabic(ch):
+        if not ch:
+            return False
+        cp = ord(ch)
+        # Arabic, Arabic Supplement, Arabic Extended-A, Presentation
+        # forms A & B. Covers all glyphs used by reshaper output.
+        return (
+            0x0600 <= cp <= 0x06FF
+            or 0x0750 <= cp <= 0x077F
+            or 0x08A0 <= cp <= 0x08FF
+            or 0xFB50 <= cp <= 0xFDFF
+            or 0xFE70 <= cp <= 0xFEFF
+        )
+
+    # 1. Insert ZWSP after token-delimiter chars, skipping Arabic
+    # neighbours so Arabic words cannot gain a wrap point inside or
+    # immediately around them.
     out = []
     _break_after = '/-_(),:'
-    for ch in text:
+    n = len(text)
+    for i, ch in enumerate(text):
         out.append(ch)
         if ch in _break_after:
-            # avoid duplicate ZWSP
+            prev_ch = text[i - 1] if i > 0 else ''
+            next_ch = text[i + 1] if i + 1 < n else ''
+            if _is_arabic(prev_ch) or _is_arabic(next_ch):
+                # Adjacent to Arabic — do not insert a break point.
+                continue
+            if next_ch == '\u200B':
+                # Idempotent: a ZWSP already follows this char.
+                continue
             out.append('\u200B')
     text = ''.join(out)
-    # 2. Break long ASCII runs every max_run chars.
+    # 2. Break long ASCII runs every max_run chars. The regex only
+    # matches ASCII [A-Za-z0-9] so Arabic runs are never affected.
     def _split_long(m):
         run = m.group(1)
         if len(run) <= max_run:
