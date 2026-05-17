@@ -22316,8 +22316,46 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
     },
     "NDMO": {
         "display": "NDMO Data Management Framework",
-        "aliases": ["ndmo", "ndmo data", "إدارة البيانات الوطنية",
-                    "المكتب الوطني لإدارة البيانات"],
+        # PR-5B.9N — widened AR/EN aliases so vision/objectives compliance
+        # detection recognises the natural Arabic phrasings used by AI
+        # output ("إطار حوكمة البيانات الوطني",
+        # "تحقيق الامتثال لإطار إدارة البيانات الوطني",
+        # "حوكمة البيانات", …) and the canonical English variants
+        # ("NDMO Data Management Framework", "National Data Management
+        # Office", "data governance", "data stewardship"). Without
+        # these aliases the compliance-objective check at
+        # ``_compute_missing_compliance_objective`` would emit
+        # ``selected_framework_compliance_objective_missing:NDMO`` even
+        # when the vision text already names the obligation. Detection
+        # still requires a compliance keyword (الالتزام/الامتثال/
+        # compliance/align) in the SAME objective row, so broad data-
+        # vocabulary aliases below cannot false-positive on benign
+        # narrative content.
+        "aliases": ["ndmo", "ndmo data",
+                    "ndmo data management framework",
+                    "ndmo data governance framework",
+                    "national data management office",
+                    "data governance", "data management",
+                    "data quality", "data catalog", "metadata",
+                    "data classification", "data lifecycle",
+                    "data ownership", "data stewardship",
+                    "إدارة البيانات الوطنية",
+                    "المكتب الوطني لإدارة البيانات",
+                    "مكتب إدارة البيانات الوطنية",
+                    "إطار إدارة البيانات الوطني",
+                    "إطار حوكمة البيانات الوطني",
+                    "إطار حوكمة البيانات من ndmo",
+                    "إطار إدارة البيانات من ndmo",
+                    "الالتزام بضوابط ndmo",
+                    "الالتزام بإطار ndmo",
+                    "تحقيق الالتزام بضوابط ndmo",
+                    "تحقيق الامتثال لإطار إدارة البيانات الوطني",
+                    "تحقيق الامتثال لإطار حوكمة البيانات الوطني",
+                    "حوكمة البيانات", "إدارة البيانات",
+                    "جودة البيانات", "كتالوج البيانات",
+                    "البيانات الوصفية", "تصنيف البيانات",
+                    "دورة حياة البيانات", "ملكية البيانات",
+                    "أمناء البيانات"],
         "applicable_domains": ["Data Management"],
         "capabilities": [
             ("data_governance", ["حوكمة البيانات", "إدارة البيانات"],
