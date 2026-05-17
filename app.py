@@ -3753,9 +3753,15 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
         # ``_GLOSSARY_TERMS``). PR-5B.9B — these acronyms are always
         # safe to surface in this domain's appendix; cross-domain terms
         # never leak in unless they appear in the actual content.
+        # PR-5B.9K — TCC/VPN/ZTNA/MDM_MOBILE moved out of the universal
+        # cyber baseline into ``_CYBER_FRAMEWORK_GLOSSARY_SUPPLEMENT``
+        # below so they only auto-inject when TCC is selected (or
+        # literally referenced in the content). This stops the
+        # cross-framework leakage where ECC+DCC strategies got VPN/ZTNA/
+        # TCC entries in Appendix B even though TCC was not selected.
         "glossary_baseline": [
-            "ECC", "TCC", "IAM", "PAM", "SOC", "SIEM", "CSIRT",
-            "DLP", "EDR", "MDM_MOBILE", "MFA", "VPN", "ZTNA",
+            "ECC", "IAM", "PAM", "SOC", "SIEM", "CSIRT",
+            "DLP", "EDR", "MFA",
         ],
     },
     "data": {
@@ -10170,6 +10176,11 @@ _GLOSSARY_TERMS = [
              'Essential Cybersecurity Controls (NCA)'),
     ('TCC',  'ضوابط الأمن السيبراني للعمل عن بُعد (NCA)',
              'Telework Cybersecurity Controls (NCA)'),
+    # PR-5B.9K — DCC glossary entry. Required so a Cyber strategy with
+    # selected_frameworks=ECC+DCC surfaces DCC in Appendix B (without
+    # leaking TCC/VPN/ZTNA when TCC is not selected).
+    ('DCC',  'ضوابط الأمن السيبراني للبيانات (NCA)',
+             'Data Cybersecurity Controls (NCA)'),
     ('MFA',  'المصادقة متعددة العوامل',
              'Multi-Factor Authentication'),
     ('VPN',  'الشبكة الافتراضية الخاصة',
@@ -10381,6 +10392,26 @@ _DOMAIN_GLOSSARY_FORBIDDEN = {
     'global': (_GLOSSARY_CYBER_TERMS | _GLOSSARY_DATA_TERMS
                | _GLOSSARY_AI_TERMS | _GLOSSARY_DT_TERMS
                | _GLOSSARY_ERM_TERMS),
+}
+
+
+# PR-5B.9K — Per-framework glossary supplements (cyber domain).
+# When a Cyber strategy is generated, the universal cyber baseline
+# (IAM/PAM/SOC/SIEM/CSIRT/MFA/DLP/EDR) is augmented with the
+# acronyms most directly tied to each SELECTED framework. Acronyms
+# only auto-inject when their associated framework is in
+# ``selected_fws_keys`` — otherwise they are not added by baseline,
+# so the appendix no longer leaks TCC/VPN/ZTNA terms when only ECC
+# (and/or DCC) is selected.
+#
+# These are auto-injection hints only — the cross-domain forbidden-set
+# check is unchanged, and any acronym that literally appears in the
+# strategy body still surfaces via ``_glossary_terms_used_in_content``.
+_CYBER_FRAMEWORK_GLOSSARY_SUPPLEMENT = {
+    'TCC':  ('VPN', 'ZTNA', 'MDM_MOBILE'),
+    'CCC':  (),
+    'DCC':  (),  # DCC itself is added via the framework-acronym path.
+    'CSCC': (),
 }
 
 
@@ -11409,6 +11440,21 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
                            or _DOMAIN_STRATEGY_PROFILES.get('cyber', {})
                                   .get('glossary_baseline')
                            or [])
+
+    # PR-5B.9K — Per-framework cyber glossary supplement. Augment the
+    # universal cyber baseline with framework-specific acronyms ONLY
+    # when the matching framework is in ``selected_fws_keys``. This
+    # prevents the ECC+DCC strategies from receiving TCC/VPN/ZTNA
+    # auto-injected entries in Appendix B.
+    if code == 'cyber':
+        try:
+            _supp = _CYBER_FRAMEWORK_GLOSSARY_SUPPLEMENT
+            for _fw_sel in (selected_fws_keys or []):
+                for _ac_extra in (_supp.get(_fw_sel) or ()):
+                    if _ac_extra not in domain_baseline:
+                        domain_baseline.append(_ac_extra)
+        except Exception:  # noqa: BLE001 — defensive
+            pass
 
     for ac in domain_baseline:
         if ac in used_set:
@@ -19519,12 +19565,18 @@ _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
             'مكتب حوكمة الذكاء الاصطناعي', 'وحدة حوكمة الذكاء الاصطناعي',
             'إنشاء مكتب الذكاء الاصطناعي',
             'ai governance office', 'establish an ai governance office',
-            'ai office',
+            'ai office', 'ai governance unit',
         ),
         'head_officer': (
             'caio', 'chief ai officer',
             'رئيس الذكاء الاصطناعي', 'مدير الذكاء الاصطناعي',
             'كبير مسؤولي الذكاء الاصطناعي',
+            # PR-5B.9K — AI domain head/officer family widened so the
+            # AI strategy can satisfy the obligation by appointing one
+            # of the recognised responsible-AI accountable roles.
+            'ai ethics officer', 'مسؤول أخلاقيات الذكاء الاصطناعي',
+            'model risk manager', 'مدير مخاطر النماذج',
+            'ai compliance lead', 'قائد الامتثال للذكاء الاصطناعي',
         ),
         'committee': (
             'لجنة حوكمة الذكاء الاصطناعي',
@@ -19535,6 +19587,12 @@ _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
             'model risk', 'مخاطر النماذج', 'model owner',
             'مالك النموذج', 'الأدوار والمسؤوليات',
             'roles and responsibilities', 'raci',
+            # PR-5B.9K — AI inventory & operating-model concepts so the
+            # AI strategy can demonstrate it covers model lifecycle
+            # ownership beyond a generic governance mention.
+            'model inventory', 'مخزون النماذج', 'سجل النماذج',
+            'نموذج تشغيل الذكاء الاصطناعي', 'ai operating model',
+            'خطوط الرفع', 'reporting lines',
         ),
     },
     'dt': {
@@ -19556,6 +19614,11 @@ _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
         'operating_model': (
             'نموذج تشغيل التحول الرقمي', 'digital operating model',
             'نموذج التشغيل', 'operating model',
+            # PR-5B.9K — DT operating-model family widened with
+            # service / integration governance & reporting lines.
+            'حوكمة الخدمات الرقمية', 'digital services governance',
+            'حوكمة التكامل', 'integration governance',
+            'خطوط الرفع', 'reporting lines',
         ),
     },
     'erm': {
@@ -19742,7 +19805,99 @@ def _compute_missing_governance_setup_in_roadmap(
     return missing
 
 
-# ── PR-5B.9J: per-selected-framework reference check for the env section ──
+# ── PR-5B.9K: pillars-section governance/structure requirement ────────────
+# When ``org_structure_is_none=True``, the **Strategic Pillars** section
+# MUST include — as the FIRST pillar — a domain-specific governance,
+# operating-model, and structure pillar (e.g. AI →
+# "الركيزة 1: حوكمة الذكاء الاصطناعي والهيكل التنظيمي ونموذج التشغيل").
+# The post-normalization save gate previously accepted any generic
+# governance/committee/structure wording, which let strategies pass with
+# vague phrasing such as "تعزيز الحوكمة" while still missing the AI
+# Governance Office / CDO / CRO / Digital Transformation Office wording
+# the diagnosed structural gap demands.
+#
+# This helper isolates the FIRST pillar's text and reuses the SAME
+# domain registry (``_DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS``) used by
+# the gaps and roadmap obligations so all four enforcement points
+# (Vision SO row, Pillar 1, Gaps row, Roadmap activity) speak with
+# one voice and cannot drift. AI-first detection only — no
+# deterministic content is inserted.
+#
+# Returns ``[]`` (nothing missing) when:
+#   * ``org_structure_is_none`` is False, OR
+#   * the domain code is not in the registry, OR
+#   * the FIRST pillar's title + body contains at least one token from
+#     ANY concept family for the resolved domain (i.e. the first pillar
+#     names the specialized function in some form).
+#
+# Otherwise returns the list of uncovered concept-family names so the
+# repair caller can name them in the validation_error.
+def _compute_missing_governance_structure_in_pillars(
+        pillars_text, domain, org_structure_is_none, lang='en'):
+    """Domain-specific governance/structure presence check, scoped to the
+    FIRST pillar's text only. See module-level docstring above.
+    """
+    if not org_structure_is_none:
+        return []
+    try:
+        code = normalize_domain(domain or '')
+    except Exception:  # noqa: BLE001 — defensive
+        code = ''
+    code = (code or '').strip().lower()
+    concepts = _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS.get(code)
+    if not concepts:
+        return []
+    text = pillars_text or ''
+    if not text.strip():
+        return list(concepts.keys())
+    # Extract the FIRST pillar's heading + body. We use the same
+    # extractor the repair contract validates against
+    # (``_extract_existing_pillars``) when available; otherwise fall
+    # back to a simple H3-headed split so the helper remains usable
+    # from validators that run before the markdown is normalized.
+    first_blob = ''
+    try:
+        existing = _extract_existing_pillars(text)
+        if existing:
+            _t, _b = existing[0]
+            first_blob = ((_t or '') + '\n' + (_b or ''))
+    except Exception:  # noqa: BLE001 — defensive
+        first_blob = ''
+    if not first_blob.strip():
+        # Fallback: take everything from the first H3 heading up to
+        # the next H3 heading (or end of text) so we still have a
+        # meaningful slice when the canonical extractor returns nothing.
+        try:
+            _h3_iter = list(_ts_re.finditer(
+                r'^###[^#\n][^\n]*$', text, _ts_re.MULTILINE))
+            if _h3_iter:
+                _start = _h3_iter[0].start()
+                _end = (_h3_iter[1].start()
+                        if len(_h3_iter) > 1 else len(text))
+                first_blob = text[_start:_end]
+        except Exception:  # noqa: BLE001 — defensive
+            first_blob = ''
+    if not first_blob.strip():
+        # Cannot identify a first pillar — every family is missing
+        # because there is no pillar to host them.
+        return list(concepts.keys())
+    blob_lc = first_blob.lower()
+    # Any-family-match semantics: as long as the FIRST pillar mentions
+    # at least one token from ANY concept family, the
+    # governance/structure pillar contract is considered satisfied
+    # for detection purposes. The repair prompt addendum still names
+    # every required family so the AI is pushed to cover them all,
+    # but the detection threshold mirrors the gaps/roadmap helpers.
+    matched_any = False
+    missing = []
+    for fam, tokens in concepts.items():
+        if any((t.lower() in blob_lc) or (t in first_blob) for t in tokens):
+            matched_any = True
+        else:
+            missing.append(fam)
+    if matched_any:
+        return []
+    return missing
 # The Environment / Threat Landscape section MUST explicitly mention every
 # selected framework by one of its canonical aliases. The pre-existing
 # ``env_text_contains_any_framework`` returns success when at least one
@@ -23598,6 +23753,53 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                     'missing_structural_gap-org_structure_is_none:'
                     + (_dcode_sg or '')
                     + ':' + ','.join(_missing_sg),
+                    0,
+                    1,
+                ))
+            # PR-5B.9K — Pillars section must include — as the FIRST
+            # pillar — a domain-specific governance/structure/operating-
+            # model pillar when ``org_structure_is_none=True``. Generic
+            # governance wording such as "تعزيز الحوكمة" no longer
+            # silently satisfies the obligation; the FIRST pillar must
+            # name the AI Governance Office / CDO / CRO / Digital
+            # Transformation Office or one of the registered concept
+            # tokens. AI-first detection only — repair is routed via
+            # ``ai_repair_strategy_section('pillars', ...)``.
+            _missing_gp = _compute_missing_governance_structure_in_pillars(
+                sections.get('pillars', '') or '',
+                domain,
+                org_structure_is_none=True,
+                lang=lang,
+            )
+            if _missing_gp:
+                defects.append((
+                    'pillars',
+                    'missing_governance-org_structure_is_none:'
+                    + (_dcode_sg or '')
+                    + ':' + ','.join(_missing_gp),
+                    0,
+                    1,
+                ))
+            # PR-5B.9K — Roadmap section must include — as a separate
+            # activity — a domain-specific governance-setup activity
+            # when ``org_structure_is_none=True``. The check reuses
+            # the existing ``_compute_missing_governance_setup_in_roadmap``
+            # helper (previously surfaced only by the
+            # ``[ROADMAP-GOVERNANCE-SETUP-REPAIR]`` repair pass) so the
+            # final audit can also fail closed when the roadmap lacks
+            # the activity.
+            _missing_rg = _compute_missing_governance_setup_in_roadmap(
+                sections.get('roadmap', '') or '',
+                domain,
+                org_structure_is_none=True,
+                lang=lang,
+            )
+            if _missing_rg:
+                defects.append((
+                    'roadmap',
+                    'missing_governance_setup-org_structure_is_none:'
+                    + (_dcode_sg or '')
+                    + ':' + ','.join(_missing_rg),
                     0,
                     1,
                 ))
@@ -28508,6 +28710,106 @@ def ai_repair_strategy_section(
                 "not make the first pillar a purely technical pillar "
                 "before governance and structure are addressed."
             )
+
+        # ── PR-5B.9K: Domain-specific governance/structure clause ──────
+        # Generic governance wording is no longer sufficient. The FIRST
+        # pillar must explicitly name the domain-specific specialized
+        # function (office / committee / chief-role / operating-model)
+        # that the diagnosed structural gap requires. Reuse the SAME
+        # ``_DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS`` registry that the
+        # gaps and roadmap repair passes use so all four obligations
+        # (Vision SO row, Pillar 1, Gaps row, Roadmap activity) speak
+        # with one voice and cannot drift. Also enforce the
+        # per-pillar initiative-row floor specifically on Pillar 1
+        # (≥3 initiatives) so vague single-line phrasing such as
+        # "تعزيز الحوكمة" is not enough to satisfy the contract.
+        try:
+            _dcode_pg = (domain_context.get("code") or "").strip().lower()
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode_pg = ""
+        _pg_concepts = _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS.get(_dcode_pg)
+        if _pg_concepts:
+            # Pretty per-domain "required examples" copy.
+            _pg_examples = {
+                'cyber': (
+                    "إدارة الأمن السيبراني، CISO، لجنة حوكمة الأمن "
+                    "السيبراني، نموذج التشغيل، الأدوار والمسؤوليات، "
+                    "RACI، خطوط الرفع",
+                    "Cybersecurity Department / CISO / Cybersecurity "
+                    "Governance Committee / operating model / roles & "
+                    "responsibilities / RACI / reporting lines",
+                ),
+                'data': (
+                    "مكتب إدارة البيانات، CDO، لجنة حوكمة البيانات، "
+                    "أمناء البيانات، ملكية البيانات، نموذج تشغيل "
+                    "إدارة البيانات، خطوط الرفع",
+                    "Data Management Office / CDO / Data Governance "
+                    "Committee / data stewards / data ownership / data "
+                    "management operating model / reporting lines",
+                ),
+                'ai': (
+                    "مكتب/وحدة حوكمة الذكاء الاصطناعي، لجنة حوكمة الذكاء "
+                    "الاصطناعي، AI Ethics Officer، Model Risk Manager، "
+                    "AI Compliance Lead، مخزون النماذج، نموذج تشغيل "
+                    "الذكاء الاصطناعي",
+                    "AI Governance Office/Unit / AI Governance Committee "
+                    "/ AI Ethics Officer / Model Risk Manager / AI "
+                    "Compliance Lead / model inventory / AI operating "
+                    "model",
+                ),
+                'dt': (
+                    "مكتب التحول الرقمي، Chief Digital Officer، لجنة "
+                    "التحول الرقمي، نموذج تشغيل التحول الرقمي، حوكمة "
+                    "الخدمات الرقمية، حوكمة التكامل، خطوط الرفع",
+                    "Digital Transformation Office / Chief Digital "
+                    "Officer / Digital Transformation Committee / "
+                    "digital operating model / digital services "
+                    "governance / integration governance / reporting "
+                    "lines",
+                ),
+                'erm': (
+                    "إدارة المخاطر المؤسسية، CRO، لجنة المخاطر، ملاك "
+                    "المخاطر، شهية المخاطر، سجل المخاطر، التصعيد لمجلس "
+                    "الإدارة",
+                    "Enterprise Risk Management function / CRO / Risk "
+                    "Committee / risk owners / risk appetite / risk "
+                    "register / board escalation",
+                ),
+            }
+            _ex_ar, _ex_en = _pg_examples.get(
+                _dcode_pg, ("", ""))
+            if is_ar:
+                prompt += (
+                    "\n\nقاعدة المفاهيم المتخصصة لحوكمة المجال "
+                    f"({_dcode_pg}) — إلزامية:\n"
+                    "إضافةً إلى ما سبق، يجب أن يحتوي نص الركيزة الأولى "
+                    "(العنوان + وصف المبادرات) على ذكر صريح ومتكامل "
+                    "للوظيفة المتخصصة المطلوب تأسيسها للمجال المختار، "
+                    "ولا يكفي الاكتفاء بعبارات عامة مثل \"تعزيز الحوكمة\". "
+                    f"يجب أن يتضمن النص: {_ex_ar}.\n"
+                    "ويجب أن تحتوي الركيزة الأولى على ما لا يقل عن "
+                    "3 مبادرات تشغيلية تتناول تأسيس المكتب/الوحدة "
+                    "وتعيين المسؤول التنفيذي وتشكيل لجنة الحوكمة "
+                    "وتحديد الأدوار والمسؤوليات وخطوط الرفع. حافظ "
+                    "على الركائز القائمة الصحيحة دون حذف."
+                )
+            else:
+                prompt += (
+                    "\n\nDomain-specific governance-concept rule "
+                    f"({_dcode_pg}) — MANDATORY:\n"
+                    "In addition to the above, the FIRST pillar (title + "
+                    "initiative descriptions) MUST explicitly name the "
+                    "domain-specific specialized function to be "
+                    "established. Vague phrasing such as \"strengthen "
+                    "governance\" is NOT sufficient. The text MUST cover: "
+                    f"{_ex_en}.\n"
+                    "The first pillar MUST contain AT LEAST 3 operational "
+                    "initiatives addressing establishing the office/unit, "
+                    "appointing the chief role, standing up the "
+                    "governance committee, and defining roles, "
+                    "responsibilities, and reporting lines. Preserve "
+                    "every existing valid pillar — do not remove them."
+                )
 
     # ── Cybersecurity capability coverage requirement ────────────────────────
     # validate_arabic_strategy_semantic_richness emits
@@ -38077,6 +38379,239 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 flush=True,
                             )
 
+                    # ── PR-5B.9K: Pillars governance/structure repair ────
+                    # When ``org_structure_is_none=True`` the Strategic
+                    # Pillars section MUST surface — as the FIRST pillar —
+                    # a domain-specific governance/structure/operating-
+                    # model pillar. The post-normalization audit emits
+                    # ``missing_governance-org_structure_is_none:<domain>:
+                    # <families>`` (section=``pillars``) when the FIRST
+                    # pillar lacks the required wording. This pass runs
+                    # BEFORE the gaps and roadmap governance-setup
+                    # repair passes so Pillar 1 is fixed first; the
+                    # downstream gaps/roadmap passes naturally inherit
+                    # the corrected wording. AI-first only — no
+                    # deterministic pillar rows are inserted; on
+                    # RepairError or rejected candidate the original
+                    # pillars text is restored and ``synth_failed:
+                    # pillars`` is marked so the post-normalization
+                    # audit blocks the save.
+                    if doc_subtype != 'board':
+                        try:
+                            _pg_org_none = bool(
+                                _final_ctx.get(
+                                    'org_structure_is_none', False)
+                                if isinstance(_final_ctx, dict)
+                                else False
+                            )
+                            if _pg_org_none:
+                                _pg_before = sections.get('pillars',
+                                                          '') or ''
+                                _pg_missing = (
+                                    _compute_missing_governance_structure_in_pillars(
+                                        _pg_before, domain,
+                                        org_structure_is_none=True,
+                                        lang=lang,
+                                    ))
+                                if _pg_missing:
+                                    try:
+                                        _pg_dcode = normalize_domain(
+                                            domain or '')
+                                    except Exception:  # noqa: BLE001
+                                        _pg_dcode = ''
+                                    print(
+                                        '[PILLARS-GOVERNANCE-REPAIR] '
+                                        f'missing={_pg_missing} '
+                                        f'domain={_pg_dcode}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _pg_dctx = (
+                                            get_strategy_domain_context(
+                                                domain))
+                                    except Exception as _pgdce:
+                                        print(
+                                            '[PILLARS-GOVERNANCE-REPAIR'
+                                            f'] domain_context_failed: '
+                                            f'{_pgdce}',
+                                            flush=True,
+                                        )
+                                        _pg_dctx = None
+                                    if _pg_dctx is not None:
+                                        try:
+                                            _pg_dctx = dict(_pg_dctx)
+                                            _pg_dctx[
+                                                'selected_frameworks'] = (
+                                                list(_frameworks_raw)
+                                                if isinstance(
+                                                    _frameworks_raw,
+                                                    (list, tuple))
+                                                else (
+                                                    [str(_frameworks_raw)]
+                                                    if _frameworks_raw
+                                                    else []))
+                                        except Exception:
+                                            pass
+                                        _pg_ve_msg = (
+                                            'Strategic Pillars section is '
+                                            'missing the domain-specific '
+                                            'governance/structure/'
+                                            'operating-model pillar. '
+                                            'Pillar 1 must explicitly '
+                                            'name the specialized '
+                                            'function for the selected '
+                                            'domain (office/unit, chief '
+                                            'role, governance committee, '
+                                            'operating model, roles & '
+                                            'responsibilities, reporting '
+                                            'lines). Uncovered concept '
+                                            'families: '
+                                            + ', '.join(_pg_missing)
+                                            + '. Vague phrasing such as '
+                                            '"تعزيز الحوكمة" / '
+                                            '"strengthen governance" is '
+                                            'NOT acceptable. Pillar 1 '
+                                            'MUST contain at least 3 '
+                                            'operational initiatives '
+                                            'covering establishing the '
+                                            'office/unit, appointing the '
+                                            'chief role, and standing up '
+                                            'the governance committee. '
+                                            'Preserve every existing '
+                                            'valid pillar — do not '
+                                            'remove them.'
+                                        )
+                                        try:
+                                            _pg_new = (
+                                                ai_repair_strategy_section(
+                                                    section_key='pillars',
+                                                    sections=sections,
+                                                    lang=lang,
+                                                    domain_context=(
+                                                        _pg_dctx),
+                                                    org_name=org_name,
+                                                    sector=_model_sector,
+                                                    maturity=maturity,
+                                                    generation_mode=(
+                                                        _generation_mode),
+                                                    validation_error=(
+                                                        _pg_ve_msg),
+                                                    org_structure_is_none=(
+                                                        True),
+                                                ))
+                                            if _pg_new and _pg_new.strip():
+                                                # Validate: AI candidate
+                                                # must (a) preserve the
+                                                # min pillars-count floor
+                                                # and (b) actually cover
+                                                # at least one token
+                                                # from ANY previously-
+                                                # missing concept
+                                                # family in the FIRST
+                                                # pillar. If either
+                                                # check fails, restore +
+                                                # mark synth_failed:
+                                                # pillars.
+                                                _pg_new_count = (
+                                                    _count_substantive_pillars(
+                                                        _pg_new))
+                                                _pg_still_missing = (
+                                                    _compute_missing_governance_structure_in_pillars(
+                                                        _pg_new, domain,
+                                                        org_structure_is_none=(
+                                                            True),
+                                                        lang=lang,
+                                                    ))
+                                                if (_pg_new_count
+                                                        >= _RICHNESS_MIN_PILLARS
+                                                        and not
+                                                        _pg_still_missing):
+                                                    sections['pillars'] = (
+                                                        _pg_new)
+                                                    print(
+                                                        '[PILLARS-'
+                                                        'GOVERNANCE-'
+                                                        'REPAIR] '
+                                                        'accepted '
+                                                        'pillars='
+                                                        f'{_pg_new_count}'
+                                                        f'/{_RICHNESS_MIN_PILLARS}'
+                                                        ' missing_after=[]',
+                                                        flush=True,
+                                                    )
+                                                else:
+                                                    sections['pillars'] = (
+                                                        _pg_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        'pillars',
+                                                        Exception(
+                                                            'governance_'
+                                                            'structure_'
+                                                            'unmet '
+                                                            'pillars='
+                                                            f'{_pg_new_count}'
+                                                            ' still_missing='
+                                                            f'{_pg_still_missing}'
+                                                        ))
+                                                    print(
+                                                        '[PILLARS-'
+                                                        'GOVERNANCE-'
+                                                        'REPAIR] '
+                                                        'rejected '
+                                                        'pillars='
+                                                        f'{_pg_new_count}'
+                                                        f'/{_RICHNESS_MIN_PILLARS}'
+                                                        ' still_missing='
+                                                        f'{_pg_still_missing}'
+                                                        ' — restored '
+                                                        'original pillars',
+                                                        flush=True,
+                                                    )
+                                            else:
+                                                sections['pillars'] = (
+                                                    _pg_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    'pillars',
+                                                    Exception(
+                                                        'governance_'
+                                                        'structure_'
+                                                        'empty_repair'))
+                                                print(
+                                                    '[PILLARS-'
+                                                    'GOVERNANCE-REPAIR'
+                                                    '] empty_response — '
+                                                    'restored original',
+                                                    flush=True,
+                                                )
+                                        except RepairError as _pgre:
+                                            sections['pillars'] = (
+                                                _pg_before)
+                                            _mark_synth_failed(
+                                                _synth_status, 'pillars',
+                                                _pgre)
+                                            print(
+                                                '[PILLARS-GOVERNANCE-'
+                                                f'REPAIR] repair_failed '
+                                                f'err={_pgre}',
+                                                flush=True,
+                                            )
+                                        except Exception as _pgre2:
+                                            print(
+                                                '[PILLARS-GOVERNANCE-'
+                                                'REPAIR] repair_'
+                                                f'unexpected err='
+                                                f'{_pgre2}',
+                                                flush=True,
+                                            )
+                        except Exception as _pgxe:
+                            print(
+                                '[PILLARS-GOVERNANCE-REPAIR] '
+                                f'non-fatal: {_pgxe}',
+                                flush=True,
+                            )
+
                     # ── PR-5B.9I: Gaps structural-gap repair ─────────────
                     # When ``org_structure_is_none=True`` the Gaps section
                     # MUST contain one explicit row that names the missing
@@ -45063,11 +45598,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             # Framework traceability matrix
             _tm = _dblocks.get('traceability_matrix', {})
             _docx_pro_heading(_tm.get('title', ''))
-            # PR-5B.9E — drop dashy rows and emit narrative note when
-            # no informative rows survive.  Mirrors the PDF renderer's
-            # filtering so the DOCX export never carries
+            # PR-5B.9E / PR-5B.9K — drop dashy rows and emit narrative
+            # note when no informative rows survive.  Mirrors the PDF
+            # renderer's filtering so the DOCX export never carries
             # "—"-stuffed traceability rows that the PDF would have
-            # suppressed.
+            # suppressed.  PR-5B.9K tightens the rule: a row is
+            # dropped when the Initiative, KPI, or Risk column is a
+            # dash (any of them) — narrative-only rows that look
+            # informative because they have a real Gap but no real
+            # Initiative / KPI / Risk are no longer rendered.
             _tm_header = _tm.get('header') or []
             _tm_rows = list(_tm.get('rows') or [])
 
@@ -45088,7 +45627,9 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                         continue
                     if _tm_is_dash(_init_c):
                         continue
-                    if _tm_is_dash(_kpi_c) and _tm_is_dash(_risk_c):
+                    if _tm_is_dash(_kpi_c):
+                        continue
+                    if _tm_is_dash(_risk_c):
                         continue
                     _tm_filtered.append(_row)
                 _tm_rows = _tm_filtered
@@ -46725,13 +47266,13 @@ def api_generate_pdf():
             flow = list(_pro_section_heading(block.get('title', '')))
             header = block.get('header') or []
             rows   = block.get('rows') or []
-            # PR-5B.8V / PR-5B.9C — Drop rows whose informative cells
-            # (gap / initiative / kpi / risk) are too thin to be useful
-            # to a reader. A row is kept only when its Gap AND
-            # Initiative are real and at least one of (KPI, Risk) is
-            # real. Pure ``—``-stuffed rows produce dense stacked text
-            # in the PDF; the prior threshold (more than half dashes)
-            # still let "gap + 4×—" rows through.
+            # PR-5B.8V / PR-5B.9C / PR-5B.9K — Drop rows whose
+            # informative cells (initiative / kpi / risk) carry a
+            # dash. The previous threshold (gap + initiative real,
+            # at least one of (KPI, Risk) real) still let
+            # "gap + initiative + 2×—" rows through; PR-5B.9K tightens
+            # this so a row only renders when EVERY one of (gap,
+            # initiative, kpi, risk) carries real content.
             def _is_dash(v):
                 if v is None:
                     return True
@@ -46749,7 +47290,9 @@ def api_generate_pdf():
                         continue
                     if _is_dash(_init):
                         continue
-                    if _is_dash(_kpi) and _is_dash(_risk):
+                    if _is_dash(_kpi):
+                        continue
+                    if _is_dash(_risk):
                         continue
                     _filtered.append(_r)
                 rows = _filtered
