@@ -19601,6 +19601,20 @@ _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
             'تأسيس مكتب التحول الرقمي', 'وحدة التحول الرقمي',
             'digital transformation office', 'dto',
             'establish a digital transformation office',
+            # PR-5B.9L — DT establish-dept family widened so the DT
+            # structural-gap row can be phrased as an absent
+            # "إدارة التحول الرقمي" (department wording) in addition
+            # to the existing "مكتب" (office) wording; mirrors the
+            # accepted-concept list in the problem statement and
+            # makes the helper tolerant of both Arabic phrasings
+            # ("غياب مكتب…" / "غياب إدارة…" / "عدم وجود إدارة
+            # متخصصة للتحول الرقمي") and their English equivalents
+            # ("Digital Transformation Department").
+            'إدارة التحول الرقمي', 'إنشاء إدارة التحول الرقمي',
+            'تأسيس إدارة التحول الرقمي',
+            'إدارة متخصصة للتحول الرقمي',
+            'digital transformation department',
+            'establish a digital transformation department',
         ),
         'head_officer': (
             'chief digital officer', 'cdo',
@@ -28244,10 +28258,12 @@ def ai_repair_strategy_section(
                 "مخزون النماذج ونموذج تشغيل الذكاء الاصطناعي"
             ),
             "dt": (
-                "غياب مكتب التحول الرقمي / غياب إدارة التحول الرقمي / غياب "
-                "Chief Digital Officer / غياب لجنة التحول الرقمي / غياب "
-                "نموذج تشغيل التحول الرقمي / غياب حوكمة الخدمات الرقمية "
-                "والتكامل"
+                "غياب مكتب التحول الرقمي ونموذج تشغيل التحول الرقمي / "
+                "غياب إدارة التحول الرقمي / غياب Chief Digital Officer "
+                "(رئيس التحول الرقمي) / غياب لجنة التحول الرقمي / "
+                "غياب نموذج تشغيل التحول الرقمي / غياب حوكمة الخدمات "
+                "الرقمية / غياب حوكمة التكامل / غياب خطوط الرفع "
+                "والصلاحيات للتحول الرقمي"
             ),
             "erm": (
                 "غياب إدارة المخاطر المؤسسية / غياب CRO / غياب لجنة "
@@ -28273,11 +28289,14 @@ def ai_repair_strategy_section(
                 "inventory and AI operating model"
             ),
             "dt": (
-                "Absent Digital Transformation Office / Absent Digital "
-                "Transformation Department / Absent Chief Digital Officer / "
-                "Absent Digital Transformation Committee / Absent digital "
-                "transformation operating model / Absent digital services "
-                "governance and integration"
+                "Absent Digital Transformation Office and digital "
+                "transformation operating model / Absent Digital "
+                "Transformation Department / Absent Chief Digital "
+                "Officer / Absent Digital Transformation Committee / "
+                "Absent digital transformation operating model / "
+                "Absent digital services governance / Absent "
+                "integration governance / Absent reporting lines for "
+                "digital transformation"
             ),
             "erm": (
                 "Absent Enterprise Risk Management function / Absent CRO / "
@@ -28329,6 +28348,74 @@ def ai_repair_strategy_section(
                 "generic \"governance gap\" without naming the missing "
                 "specialized function by name."
             )
+
+        # ── PR-5B.9L: Digital-Transformation-specific reinforcement ─────
+        # The model has historically responded to the generic
+        # specialized-function clause with vague Arabic wording like
+        # "تعزيز الحوكمة" / "تحسين النموذج التشغيلي" /
+        # "تطوير الإطار المؤسسي" — which the DT
+        # ``_compute_missing_structural_gap_for_domain`` check rejects
+        # because none of those phrases name the Digital Transformation
+        # Office, Chief Digital Officer, or digital operating model.
+        # Pin the canonical row title verbatim and explicitly enumerate
+        # the unacceptable vague variants so the AI cannot silently
+        # produce a generic governance row.
+        if _dom_code_inj == "dt":
+            if is_ar:
+                prompt += (
+                    "\n\nقاعدة الفجوة الهيكلية للتحول الرقمي (إلزامية):\n"
+                    "صفّ الفجوة الهيكلية للتحول الرقمي يجب أن يكون "
+                    "بصياغة صريحة تشبه — وتسمّي بالاسم — ما يلي:\n"
+                    "\"غياب مكتب التحول الرقمي ونموذج تشغيل التحول "
+                    "الرقمي\".\n"
+                    "أو ما يكافئها مع تسمية واحدة على الأقل من: مكتب "
+                    "التحول الرقمي، إدارة التحول الرقمي، Chief Digital "
+                    "Officer (رئيس التحول الرقمي)، لجنة التحول الرقمي، "
+                    "نموذج تشغيل التحول الرقمي، حوكمة الخدمات الرقمية، "
+                    "حوكمة التكامل، خطوط الرفع والصلاحيات للتحول "
+                    "الرقمي.\n"
+                    "يجب أن يُرفَق بهذا الصف دليل تنفيذ مخصّص بنسبة 1:1 "
+                    "يحتوي صراحةً على: المالك (Owner)، الإطار الزمني "
+                    "(Timeframe/Timeline)، والمخرج (Output/"
+                    "Deliverable) — لكل خطوة من خطواته الأربع "
+                    "كحدّ أدنى.\n"
+                    "صياغات عامة مثل: \"تعزيز الحوكمة\"، \"تحسين "
+                    "النموذج التشغيلي\"، \"تطوير الإطار المؤسسي\" "
+                    "مرفوضة ولا تُعدّ كافية إلا إذا سمّت صراحةً مكتب "
+                    "التحول الرقمي / Chief Digital Officer / نموذج "
+                    "تشغيل التحول الرقمي. حافظ على بقية صفوف الجدول "
+                    "(لا يقل عددها عن خمسة صفوف جوهرية) ولا تُضعف أي "
+                    "صف آخر."
+                )
+            else:
+                prompt += (
+                    "\n\nDigital-Transformation structural-gap rule "
+                    "(MANDATORY):\n"
+                    "The Digital Transformation structural-gap row MUST "
+                    "be phrased explicitly as — and name verbatim — "
+                    "wording such as:\n"
+                    "\"Missing Digital Transformation Office and "
+                    "digital transformation operating model\".\n"
+                    "Or an equivalent that names at least one of: "
+                    "Digital Transformation Office, Digital "
+                    "Transformation Department, Chief Digital Officer, "
+                    "Digital Transformation Committee, digital "
+                    "transformation operating model, digital services "
+                    "governance, integration governance, reporting "
+                    "lines for digital transformation.\n"
+                    "This row MUST be accompanied by a dedicated 1:1 "
+                    "Implementation Guide that explicitly includes "
+                    "Owner, Timeframe/Timeline, and Output/Deliverable "
+                    "for each of its at-least-four steps.\n"
+                    "Vague wording such as \"Strengthen governance\", "
+                    "\"Improve the operating model\", or \"Develop the "
+                    "institutional framework\" is REJECTED and not "
+                    "sufficient unless it explicitly names the Digital "
+                    "Transformation Office / Chief Digital Officer / "
+                    "digital transformation operating model. Preserve "
+                    "every other row (at least five substantive gap "
+                    "rows total) and do not weaken any other row."
+                )
 
     # ── PR-5B.9H: Selected-framework compliance objective row (vision) ─────
     # When repairing the Vision/Objectives section AND any frameworks are
@@ -38698,6 +38785,36 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             '1:1 implementation guides. '
                                             'Do not weaken any other row.'
                                         )
+                                        # PR-5B.9L — DT-specific clarifier.
+                                        # Make the failure mode and the
+                                        # required wording unambiguous so
+                                        # the AI cannot return a generic
+                                        # "governance gap" again.
+                                        if _sg_dcode == 'dt':
+                                            _sg_ve_msg += (
+                                                ' Digital Transformation '
+                                                'gaps must include an '
+                                                'explicit row for missing '
+                                                'Digital Transformation '
+                                                'Office / Chief Digital '
+                                                'Officer / digital '
+                                                'operating model — e.g. '
+                                                '"غياب مكتب التحول '
+                                                'الرقمي ونموذج تشغيل '
+                                                'التحول الرقمي". Vague '
+                                                'wording such as '
+                                                '"تعزيز الحوكمة" / '
+                                                '"تحسين النموذج '
+                                                'التشغيلي" / "تطوير '
+                                                'الإطار المؤسسي" is '
+                                                'rejected unless it '
+                                                'names the Digital '
+                                                'Transformation Office, '
+                                                'Chief Digital Officer, '
+                                                'or digital '
+                                                'transformation '
+                                                'operating model.'
+                                            )
                                         try:
                                             _sg_new = (
                                                 ai_repair_strategy_section(
