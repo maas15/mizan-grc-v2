@@ -29249,10 +29249,12 @@ def ai_repair_strategy_section(
                 'data': (
                     "مكتب إدارة البيانات، CDO، لجنة حوكمة البيانات، "
                     "أمناء البيانات، ملكية البيانات، نموذج تشغيل "
-                    "إدارة البيانات، خطوط الرفع",
+                    "إدارة البيانات، خطوط الرفع، الأدوار "
+                    "والمسؤوليات (RACI)",
                     "Data Management Office / CDO / Data Governance "
                     "Committee / data stewards / data ownership / data "
-                    "management operating model / reporting lines",
+                    "management operating model / reporting lines / "
+                    "roles and responsibilities (RACI)",
                 ),
                 'ai': (
                     "مكتب/وحدة حوكمة الذكاء الاصطناعي، لجنة حوكمة الذكاء "
@@ -40895,6 +40897,385 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'missing_after={_missing_dept_after}',
                                     flush=True,
                                 )
+                    # ── PR-5B.9R: targeted AI repair for cross-domain
+                    # ``specialized_function_missing`` (Data only) ───────────
+                    # PR-5B.9Q tightened the Data specialized-function
+                    # registry to 5 families (establish_dept, head_officer,
+                    # committee, roles_responsibilities, operating_model).
+                    # The pre-existing PILLARS-GOVERNANCE / GAPS-STRUCTURAL /
+                    # ROADMAP-GOVERNANCE-SETUP repair passes use ANY-family
+                    # match semantics per-section, so they may each leave
+                    # different families uncovered. The cross-section
+                    # validator ``_compute_missing_specialized_function_
+                    # concepts`` then emits ``specialized_function_missing``
+                    # at the final save gate, and the previous fail-closed
+                    # path would 422 with no corrective attempt.
+                    #
+                    # This pass mirrors the cyber dept-establishment repair
+                    # above: it invokes ``ai_repair_strategy_section`` on
+                    # the sections that naturally host the requirement
+                    # (pillars + gaps + roadmap + confidence), passes a
+                    # validation_error that NAMES the exact uncovered
+                    # concept families, validates each candidate, restores
+                    # the original on failure (and marks
+                    # ``synth_failed:<section>`` so the post-norm audit
+                    # blocks the save), then re-runs the same richness
+                    # validator. STRICT SCOPE: gated on ``domain == 'data'``
+                    # only — Cyber/AI/DT/ERM behaviour is preserved
+                    # verbatim. AI-first only; no deterministic rows are
+                    # injected; no validator is weakened.
+                    try:
+                        _sf_tag_present = any(
+                            t == 'specialized_function_missing'
+                            for t, _ in (_richness_defects or [])
+                        )
+                    except Exception:
+                        _sf_tag_present = False
+                    _sf_org_none = bool(
+                        _final_ctx.get('org_structure_is_none', False))
+                    try:
+                        _sf_dcode = normalize_domain(domain or '')
+                    except Exception:  # noqa: BLE001 — defensive
+                        _sf_dcode = ''
+                    if (_sf_tag_present and _sf_org_none
+                            and _sf_dcode == 'data'):
+                        try:
+                            _sf_dctx = get_strategy_domain_context(
+                                domain, lang=lang,
+                                selected_frameworks=fw_short)
+                        except Exception as _sfdctx_e:
+                            print(
+                                '[SPECIALIZED-FUNCTION-REPAIR] '
+                                f'domain_context_failed: {_sfdctx_e}',
+                                flush=True,
+                            )
+                            _sf_dctx = None
+                        if _sf_dctx is not None:
+                            _sf_missing_now = (
+                                _compute_missing_specialized_function_concepts(
+                                    sections, _sf_dcode))
+                            _sf_sections_scanned = [
+                                'vision', 'pillars', 'environment',
+                                'gaps', 'roadmap', 'kpis', 'confidence']
+                            # Per-family matched-tokens diagnostic so log
+                            # readers can see EXACTLY which Arabic/English
+                            # variant the AI chose for each family.
+                            _sf_matched_terms = {}
+                            try:
+                                _sf_text_all = ' '.join(
+                                    (sections.get(_sk) or '')
+                                    for _sk in _sf_sections_scanned)
+                                _sf_text_all_lc = _sf_text_all.lower()
+                                _sf_concepts_now = (
+                                    _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS
+                                    .get(_sf_dcode) or {})
+                                for _fam, _toks in _sf_concepts_now.items():
+                                    _hits = [
+                                        _t for _t in _toks
+                                        if (_t.lower() in _sf_text_all_lc)
+                                        or (_t in _sf_text_all)
+                                    ]
+                                    if _hits:
+                                        _sf_matched_terms[_fam] = _hits[:3]
+                            except Exception:  # noqa: BLE001
+                                _sf_matched_terms = {}
+                            _sf_matched_families = sorted(
+                                _sf_matched_terms.keys())
+                            print(
+                                '[SPECIALIZED-FUNCTION-CHECK] '
+                                f'domain={_sf_dcode} '
+                                f'org_structure_is_none={_sf_org_none} '
+                                f'missing_families={_sf_missing_now} '
+                                f'matched_families={_sf_matched_families} '
+                                f'sections_scanned={_sf_sections_scanned} '
+                                f'matched_terms={_sf_matched_terms}',
+                                flush=True,
+                            )
+                            if _sf_missing_now:
+                                # Build a data-specific validation_error
+                                # that NAMES the exact missing families
+                                # AND the per-section placement contract
+                                # (pillar 1 covers DGO/CDO/committee/
+                                # stewards/operating-model; gaps row
+                                # surfaces the structural gap; roadmap
+                                # activity establishes DMO + CDO +
+                                # committee; confidence/governance names
+                                # CDO/Committee/Stewards/reporting lines).
+                                _sf_fam_label_en = {
+                                    'establish_dept': (
+                                        'Data Management Office / '
+                                        'Data Governance Office '
+                                        '(مكتب إدارة البيانات)'),
+                                    'head_officer': (
+                                        'Chief Data Officer (CDO / '
+                                        'رئيس البيانات)'),
+                                    'committee': (
+                                        'Data Governance Committee '
+                                        '(لجنة حوكمة البيانات)'),
+                                    'roles_responsibilities': (
+                                        'Data Stewards / Data Owners / '
+                                        'Data Ownership / RACI '
+                                        '(أمناء البيانات، ملكية '
+                                        'البيانات، الأدوار '
+                                        'والمسؤوليات)'),
+                                    'operating_model': (
+                                        'Data Operating Model / '
+                                        'reporting lines '
+                                        '(نموذج تشغيل إدارة البيانات، '
+                                        'خطوط الرفع)'),
+                                }
+                                _sf_missing_labels = ', '.join(
+                                    _sf_fam_label_en.get(_f, _f)
+                                    for _f in _sf_missing_now)
+                                _sf_ve_en = (
+                                    'The assembled Data Management '
+                                    'strategy fails the cross-section '
+                                    'specialized-function check '
+                                    '(specialized_function_missing). '
+                                    'Uncovered concept families: '
+                                    + _sf_missing_labels
+                                    + '. This section MUST explicitly '
+                                    'cover: (1) establishing the Data '
+                                    'Management Office / Data Governance '
+                                    'Office (مكتب إدارة البيانات), '
+                                    '(2) appointing the Chief Data '
+                                    'Officer (CDO / رئيس البيانات), '
+                                    '(3) standing up the Data Governance '
+                                    'Committee (لجنة حوكمة البيانات), '
+                                    '(4) appointing Data Stewards / Data '
+                                    'Owners and defining Data Ownership / '
+                                    'roles and responsibilities (RACI / '
+                                    'authority matrix), and (5) the Data '
+                                    'Management Operating Model with '
+                                    'reporting lines (نموذج تشغيل إدارة '
+                                    'البيانات، خطوط الرفع). Pillar 1 '
+                                    'title should be close to: '
+                                    '"الركيزة 1: حوكمة البيانات ومكتب '
+                                    'إدارة البيانات ونموذج التشغيل". '
+                                    'The gaps table MUST include a row '
+                                    'such as "غياب مكتب إدارة البيانات '
+                                    'ونموذج تشغيل إدارة البيانات" with '
+                                    'owner / timeframe / output. The '
+                                    'roadmap MUST include an activity '
+                                    'such as "تأسيس مكتب إدارة البيانات '
+                                    'وتعيين CDO وتفعيل لجنة حوكمة '
+                                    'البيانات وأمناء البيانات" with '
+                                    'owner / timeframe / output. The '
+                                    'governance / confidence narrative '
+                                    'MUST mention CDO, Data Governance '
+                                    'Committee, Data Owners / Stewards, '
+                                    'reporting lines, and operating '
+                                    'model. Generic phrasing such as '
+                                    '"حوكمة البيانات" alone is NOT '
+                                    'sufficient — each missing family '
+                                    'must be named verbatim. Surface '
+                                    'these inside rows / initiatives / '
+                                    'gaps / activities / risks — not as '
+                                    'a passing mention. No placeholder '
+                                    'cells; preserve every existing '
+                                    'valid row.'
+                                )
+                                _sf_ve_ar = (
+                                    'يفشل نص استراتيجية إدارة البيانات '
+                                    'في تدقيق التغطية الشاملة للوظيفة '
+                                    'المتخصصة (specialized_function_'
+                                    'missing). عائلات المفاهيم غير '
+                                    'المغطاة: '
+                                    + ', '.join(_sf_missing_now)
+                                    + '. يجب أن يغطي هذا القسم صراحةً: '
+                                    '(1) إنشاء/تأسيس مكتب إدارة '
+                                    'البيانات (Data Management Office)، '
+                                    '(2) تعيين رئيس البيانات (Chief '
+                                    'Data Officer / CDO)، (3) تشكيل '
+                                    'لجنة حوكمة البيانات (Data '
+                                    'Governance Committee)، (4) تعيين '
+                                    'أمناء البيانات (Data Stewards) '
+                                    'ومالكي البيانات (Data Owners) '
+                                    'وتثبيت ملكية البيانات (Data '
+                                    'Ownership) وتحديد الأدوار '
+                                    'والمسؤوليات (مصفوفة RACI)، '
+                                    '(5) اعتماد نموذج تشغيل إدارة '
+                                    'البيانات (Data Operating Model) '
+                                    'وخطوط الرفع (reporting lines). '
+                                    'يجب أن يكون عنوان الركيزة الأولى '
+                                    'قريبًا من: "الركيزة 1: حوكمة '
+                                    'البيانات ومكتب إدارة البيانات '
+                                    'ونموذج التشغيل". يجب أن يتضمن '
+                                    'جدول الفجوات صفًا مثل: "غياب مكتب '
+                                    'إدارة البيانات ونموذج تشغيل إدارة '
+                                    'البيانات" مع تحديد المالك والإطار '
+                                    'الزمني والمخرج. يجب أن تتضمن '
+                                    'خارطة الطريق نشاطًا مثل: "تأسيس '
+                                    'مكتب إدارة البيانات وتعيين CDO '
+                                    'وتفعيل لجنة حوكمة البيانات '
+                                    'وأمناء البيانات" مع المالك '
+                                    'والإطار الزمني والمخرج. يجب أن '
+                                    'يذكر نص الحوكمة/الثقة: CDO، لجنة '
+                                    'حوكمة البيانات، أمناء/مالكي '
+                                    'البيانات، خطوط الرفع، نموذج '
+                                    'التشغيل. الصياغة العامة مثل '
+                                    '"حوكمة البيانات" وحدها غير كافية '
+                                    '— يجب تسمية كل عائلة مفاهيم ناقصة '
+                                    'بشكل صريح داخل الصفوف/المبادرات/'
+                                    'الفجوات/الأنشطة/المخاطر وليس '
+                                    'كذكر عابر. لا خلايا فارغة؛ احتفظ '
+                                    'بكل صف صالح موجود.'
+                                )
+                                _sf_ve = (_sf_ve_ar if lang == 'ar'
+                                          else _sf_ve_en)
+                                # Determine which families each section
+                                # is best positioned to host. We attempt
+                                # repair on every section that may host
+                                # the missing requirement; per the
+                                # problem statement Vision is only
+                                # repaired when the SO-row obligation is
+                                # also missing (the dedicated VISION-
+                                # OBLIGATIONS-REPAIR pass already
+                                # handles that path upstream — we do
+                                # NOT duplicate it here to avoid double
+                                # repair of vision).
+                                _sf_repair_sections = (
+                                    'pillars', 'gaps', 'roadmap',
+                                    'confidence')
+                                _sf_repair_log = {}
+                                _sf_per_section_concepts = (
+                                    _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS
+                                    .get(_sf_dcode) or {})
+                                for _sfsec in _sf_repair_sections:
+                                    _sf_before_text = sections.get(
+                                        _sfsec, '') or ''
+                                    # Pre-compute baseline cross-section
+                                    # missing count so we can detect
+                                    # whether THIS section's repair
+                                    # actually reduced uncovered families
+                                    # somewhere in the document.
+                                    _sf_baseline_missing = (
+                                        _compute_missing_specialized_function_concepts(
+                                            sections, _sf_dcode))
+                                    try:
+                                        _sf_new = ai_repair_strategy_section(
+                                            section_key=_sfsec,
+                                            sections=sections,
+                                            lang=lang,
+                                            domain_context=_sf_dctx,
+                                            org_name=_final_ctx.get(
+                                                'org_name',
+                                                'The Organization'),
+                                            sector=_final_ctx.get(
+                                                'sector', 'Government'),
+                                            maturity=_final_ctx.get(
+                                                'maturity', '') or '',
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            validation_error=_sf_ve,
+                                            org_structure_is_none=True,
+                                        )
+                                    except RepairError as _sfrpe:
+                                        sections[_sfsec] = _sf_before_text
+                                        _mark_synth_failed(
+                                            _synth_status, _sfsec, _sfrpe)
+                                        _sf_repair_log[_sfsec] = (
+                                            f'repair_error:{_sfrpe}')
+                                        continue
+                                    except Exception as _sfrgen:  # noqa: BLE001
+                                        sections[_sfsec] = _sf_before_text
+                                        _sf_repair_log[_sfsec] = (
+                                            f'unexpected_error:{_sfrgen}')
+                                        continue
+                                    if not (_sf_new and _sf_new.strip()):
+                                        sections[_sfsec] = _sf_before_text
+                                        _sf_repair_log[_sfsec] = (
+                                            'empty_response_restored')
+                                        continue
+                                    # Trial-assign and validate. The
+                                    # candidate is accepted only if
+                                    # the cross-section missing-family
+                                    # set strictly improves (or stays
+                                    # the same when this particular
+                                    # section is not expected to host
+                                    # the remaining families). If the
+                                    # candidate REGRESSES (introduces
+                                    # MORE missing families), restore.
+                                    _sf_trial = sections.get(
+                                        _sfsec, '') or ''
+                                    sections[_sfsec] = _sf_new
+                                    _sf_after_missing = (
+                                        _compute_missing_specialized_function_concepts(
+                                            sections, _sf_dcode))
+                                    if (len(_sf_after_missing)
+                                            > len(_sf_baseline_missing)):
+                                        sections[_sfsec] = _sf_before_text
+                                        _sf_repair_log[_sfsec] = (
+                                            'rejected_regression:'
+                                            + ','.join(_sf_after_missing))
+                                    else:
+                                        _sf_repair_log[_sfsec] = (
+                                            'ok missing_after_section='
+                                            + (','.join(_sf_after_missing)
+                                               if _sf_after_missing
+                                               else '[]'))
+                                print(
+                                    '[SPECIALIZED-FUNCTION-REPAIR] '
+                                    f'domain={_sf_dcode} '
+                                    f'missing_before={_sf_missing_now} '
+                                    f'per_section={_sf_repair_log}',
+                                    flush=True,
+                                )
+                                # Re-normalize canonical headings — AI
+                                # may have emitted near-variant titles.
+                                try:
+                                    _reapply_canonical_section_headings(
+                                        sections, lang)
+                                except Exception as _rch_eSF:
+                                    print(
+                                        '[STRATEGY-DIAG] canonical_heading_reapply_failed: '
+                                        f'{_rch_eSF}', flush=True)
+                                # Re-run the same richness validator so
+                                # the gate below sees the post-repair
+                                # defect set. If specialized_function_
+                                # missing persists, the existing 422
+                                # fail-closed path fires.
+                                try:
+                                    _richness_defects = (
+                                        validate_arabic_strategy_semantic_richness(
+                                            sections, lang,
+                                            doc_subtype=doc_subtype,
+                                            generation_mode=_final_ctx.get(
+                                                'generation_mode',
+                                                'consulting'),
+                                            domain=domain,
+                                            org_structure_is_none=True))
+                                except Exception as _rdeSF:
+                                    print(
+                                        '[STRATEGY-DIAG] specialized_function_revalidate_failed: '
+                                        f'{_rdeSF}', flush=True)
+                                _sf_missing_after = (
+                                    _compute_missing_specialized_function_concepts(
+                                        sections, _sf_dcode))
+                                print(
+                                    '[SPECIALIZED-FUNCTION-REPAIR] '
+                                    f'domain={_sf_dcode} '
+                                    f'missing_after={_sf_missing_after}',
+                                    flush=True,
+                                )
+                                # If cross-section coverage is still
+                                # incomplete after the AI-first repair
+                                # attempt, mark synth_failed on the
+                                # section that was MOST likely intended
+                                # to host the remaining family
+                                # (pillars). This causes the post-
+                                # normalization audit / final gate to
+                                # 422 with a clear synth_failed tag
+                                # rather than silently shipping an
+                                # incomplete strategy.
+                                if _sf_missing_after:
+                                    _mark_synth_failed(
+                                        _synth_status, 'pillars',
+                                        Exception(
+                                            'specialized_function_missing:'
+                                            + _sf_dcode + ':'
+                                            + ','.join(_sf_missing_after)))
                     # ── PR-5B.8L: targeted AI repair for environment-section
                     # depth defects ───────────────────────────────────────────
                     # When ``validate_arabic_strategy_semantic_richness`` flags
