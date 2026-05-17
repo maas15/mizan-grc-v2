@@ -22874,16 +22874,38 @@ def _compute_missing_compliance_objective(
         return False
 
     # Pre-scan rows to find which frameworks each row covers explicitly.
+    # PR-5B.9P — also record, per framework, the actual alias substring
+    # and compliance keyword that produced the match. Used by the
+    # ``[NDMO-OBJECTIVE-CHECK]`` diagnostic emitted below so an
+    # operator can see WHY a given Vision was accepted or rejected.
     covered_fws = set()
+    matched_alias_by_fw = {}
+    matched_kw_by_fw = {}
     for cells in rows:
         if len(cells) < 4:
             continue
         blob = _row_blob(cells)
         if not _has_compliance_kw(blob):
             continue
+        # Identify which compliance keyword matched (first hit wins) so
+        # the diagnostic can name it.
+        row_kw = None
+        for _kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_AR:
+            if _kw and _kw in blob:
+                row_kw = _kw
+                break
+        if row_kw is None:
+            _bl = blob.lower()
+            for _kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_EN:
+                if _kw and _kw in _bl:
+                    row_kw = _kw
+                    break
         # Generic phrase covers everything selected.
         if _has_generic_selected_frameworks_phrase(blob):
-            covered_fws.update(fws)
+            for _fwk in fws:
+                covered_fws.add(_fwk)
+                matched_alias_by_fw.setdefault(_fwk, '<generic>')
+                matched_kw_by_fw.setdefault(_fwk, row_kw or '')
             continue
         # Otherwise look for each framework's aliases by substring.
         blob_lower = blob.lower()
@@ -22895,9 +22917,34 @@ def _compute_missing_compliance_objective(
                     continue
                 if a.lower() in blob_lower:
                     covered_fws.add(fw_key)
+                    matched_alias_by_fw.setdefault(fw_key, a)
+                    matched_kw_by_fw.setdefault(fw_key, row_kw or '')
                     break
 
-    return [fw for fw in fws if fw not in covered_fws]
+    missing = [fw for fw in fws if fw not in covered_fws]
+
+    # PR-5B.9P — emit the [NDMO-OBJECTIVE-CHECK] diagnostic whenever
+    # NDMO is among the resolved selected frameworks. The log line lets
+    # an operator confirm the runtime path is using the widened aliases
+    # AND see the actual alias / compliance keyword that matched (or
+    # the empty match indicating a missing objective). Detection logic
+    # itself is unchanged.
+    if 'NDMO' in fws:
+        try:
+            print(
+                '[NDMO-OBJECTIVE-CHECK] '
+                f'selected_frameworks={list(fws)} '
+                f'rows={len(rows)} '
+                f'matched_alias={matched_alias_by_fw.get("NDMO", "")!r} '
+                'matched_compliance_keyword='
+                f'{matched_kw_by_fw.get("NDMO", "")!r} '
+                f'missing={missing}',
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — diagnostic must never break
+            pass
+
+    return missing
 
 
 # ── PR-5B.9D: specialized-function establishment objective check ────────────
@@ -38529,15 +38576,32 @@ The confidence score is based on a comprehensive assessment of the organization'
                             if (_vo_rows_now < _vo_min_rows_req
                                     or _vo_compliance_missing
                                     or _vo_sf_missing):
+                                # PR-5B.9P — include domain and the raw
+                                # selected_frameworks list so the log line
+                                # is sufficient by itself to diagnose a
+                                # Data + NDMO + PDPL run.
+                                try:
+                                    _dcode_vo = normalize_domain(
+                                        domain or '')
+                                except Exception:  # noqa: BLE001
+                                    _dcode_vo = ''
                                 print(
                                     '[VISION-OBLIGATIONS-REPAIR] '
                                     'composite_unmet '
+                                    f'domain={_dcode_vo or "?"} '
+                                    f'selected_frameworks='
+                                    f'{list(_frameworks_raw) if isinstance(_frameworks_raw,(list,tuple)) else _frameworks_raw} '
                                     f'rows={_vo_rows_now}/'
                                     f'{_vo_min_rows_req} '
                                     f'compliance_missing='
                                     f'{_vo_compliance_missing} '
                                     f'specialized_function_missing='
-                                    f'{_vo_sf_missing}',
+                                    f'{_vo_sf_missing} '
+                                    f'required_ndmo='
+                                    f'{"NDMO" in (_vo_compliance_missing or [])} '
+                                    f'required_pdpl='
+                                    f'{"PDPL" in (_vo_compliance_missing or [])} '
+                                    f'required_dmo={bool(_vo_sf_missing)}',
                                     flush=True,
                                 )
                                 try:
