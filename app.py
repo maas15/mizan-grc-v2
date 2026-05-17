@@ -22816,20 +22816,73 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
         "aliases": ["pdpl", "personal data protection law",
                     "نظام حماية البيانات الشخصية", "حماية البيانات الشخصية"],
         "applicable_domains": ["Data Management"],
+        # PR-5B.9U: alias lists widened so the validator accepts the
+        # broader AR/EN vocabulary the DATA-FRAMEWORK-COVERAGE-REPAIR
+        # prompt asks the model to use. The detection contract is
+        # unchanged (substring, case-insensitive); we only acknowledge
+        # additional valid expressions of the same concept so the
+        # repair pass does not flag content the model legitimately
+        # added under a slightly different phrasing.  ``personal_data_
+        # classification`` is added as a sibling capability of
+        # ``data_classification_pdpl`` so both naming conventions emit
+        # a consistent defect/coverage signal.
         "capabilities": [
-            ("privacy_governance", ["حوكمة الخصوصية", "خصوصية البيانات"],
-             ["privacy governance", "data privacy"]),
-            ("consent_management", ["إدارة الموافقات", "موافقة"],
-             ["consent management", "consent"]),
-            ("data_subject_rights", ["حقوق صاحب البيانات",
-                                       "حقوق الأفراد"],
-             ["data subject rights", "subject rights"]),
-            ("data_classification_pdpl", ["تصنيف البيانات الشخصية",
-                                            "تصنيف البيانات"],
-             ["personal data classification", "data classification"]),
-            ("breach_notification", ["الإبلاغ عن الانتهاكات",
-                                       "إخطار الخروقات"],
-             ["breach notification", "breach reporting"]),
+            ("privacy_governance",
+             ["حوكمة الخصوصية", "خصوصية البيانات",
+              "سياسات الخصوصية", "سياسة الخصوصية",
+              "حماية البيانات الشخصية", "حماية بيانات الأفراد"],
+             ["privacy governance", "data privacy",
+              "privacy policy", "personal data protection",
+              "personal-data protection"]),
+            ("consent_management",
+             ["إدارة الموافقات", "موافقة", "الموافقة الصريحة",
+              "سجل الموافقات", "سجلات الموافقات",
+              "موافقات أصحاب البيانات"],
+             ["consent management", "consent",
+              "explicit consent", "consent register",
+              "consent records"]),
+            ("data_subject_rights",
+             ["حقوق صاحب البيانات", "حقوق أصحاب البيانات",
+              "حقوق الأفراد", "حق الوصول",
+              "حق التصحيح", "حق الحذف"],
+             ["data subject rights", "subject rights",
+              "data subject access request",
+              "access request", "rectification", "erasure"]),
+            ("data_classification_pdpl",
+             ["تصنيف البيانات الشخصية", "تصنيف البيانات",
+              "تصنيف البيانات الحساسة",
+              "تصنيف ومعالجة البيانات الشخصية",
+              "معالجة البيانات الشخصية"],
+             ["personal data classification",
+              "sensitive personal data classification",
+              "personal-data classification",
+              "personal data handling",
+              "data classification"]),
+            # PR-5B.9U: sibling family — same tokens, distinct id.
+            # Several upstream components (e.g. the Data roadmap-
+            # balance topics, the SO/KPI banks, and human-authored
+            # defect strings) refer to this capability under the
+            # ``personal_data_classification`` id. Emitting both ids
+            # keeps the parser / repair pass consistent regardless of
+            # which naming convention surfaces in the defect list.
+            ("personal_data_classification",
+             ["تصنيف البيانات الشخصية", "تصنيف البيانات",
+              "تصنيف البيانات الحساسة",
+              "تصنيف ومعالجة البيانات الشخصية",
+              "معالجة البيانات الشخصية"],
+             ["personal data classification",
+              "sensitive personal data classification",
+              "personal-data classification",
+              "personal data handling",
+              "data classification"]),
+            ("breach_notification",
+             ["الإبلاغ عن الانتهاكات", "إخطار الخروقات",
+              "إخطار تسرب البيانات", "الإبلاغ عن خرق البيانات",
+              "الإخطار بالخروقات", "الإبلاغ عن خروقات البيانات"],
+             ["breach notification", "breach reporting",
+              "data breach notification",
+              "personal data breach notification",
+              "incident notification"]),
         ],
         "required_sections": ["pillars", "gaps", "roadmap", "kpis",
                                "confidence"],
@@ -22964,6 +23017,145 @@ def _compute_missing_selected_framework_coverage(
                 if not _family_present(text, ar_kws, en_kws):
                     missing.append((fw_key, fam_id, '*'))
     return missing
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.9U — Audit-defect section key normalization + parser helpers
+#
+# Two helpers used by the Data Management DATA-FRAMEWORK-COVERAGE-REPAIR
+# pass. Pure (no I/O, no mutation). Defined at module scope so tests and
+# future repair passes can reuse them.
+#
+#   _normalize_audit_section_key(name): map free-form section labels
+#       used in defect strings (``kpi``, ``indicators``, ``risks`` ...)
+#       onto the canonical keys used in the request-scoped ``sections``
+#       dict (``kpis``, ``confidence`` ...). Unknown labels are returned
+#       unchanged so callers can still report on novel section keys.
+#
+#   _parse_selected_framework_coverage_defects(defects, domain="data"):
+#       parse and group ``selected_framework_coverage_missing:<FW>:<fam>
+#       [:<section>]`` defects into ``{section: {fw: [family, ...]}}``.
+#       Accepts both the canonical 3-tuple defect shape emitted by
+#       ``_final_strategy_audit`` (``(section, "selected_framework_
+#       coverage_missing:<FW>:<fam>", obs, exp)``) AND the 4-component
+#       colon-delimited string form (``selected_framework_coverage_
+#       missing:<FW>:<fam>:<section>``) that surfaces in serialised
+#       ``synth_failed`` messages and in human-authored defect lists.
+#       Section labels are normalised via _normalize_audit_section_key
+#       so callers can drive ``ai_repair_strategy_section`` with the
+#       same key the runtime sections dict uses.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Free-form section label -> canonical sections-dict key. Keep keys
+# lowercased; the helper lowercases the input before lookup.
+_AUDIT_SECTION_KEY_ALIASES = {
+    'kpi': 'kpis',
+    'kpis': 'kpis',
+    'indicators': 'kpis',
+    'indicator': 'kpis',
+    'kri': 'kpis',
+    'kris': 'kpis',
+    'confidence': 'confidence',
+    'risk': 'confidence',
+    'risks': 'confidence',
+    'csf': 'confidence',
+    'success_factors': 'confidence',
+    'roadmap': 'roadmap',
+    'plan': 'roadmap',
+    'implementation_plan': 'roadmap',
+    'gap': 'gaps',
+    'gaps': 'gaps',
+    'pillar': 'pillars',
+    'pillars': 'pillars',
+    'environment': 'environment',
+    'env': 'environment',
+    'context': 'environment',
+    'regulatory_context': 'environment',
+    'vision': 'vision',
+    'objectives': 'vision',
+}
+
+
+def _normalize_audit_section_key(name):
+    """Map a free-form section label to the canonical sections-dict key.
+
+    Unknown labels (after lowercasing/strip) are returned in their
+    lowercased form so callers can still surface them in logs without
+    silently dropping them.
+    """
+    if not name:
+        return ''
+    s = str(name).strip().lower()
+    if not s:
+        return ''
+    return _AUDIT_SECTION_KEY_ALIASES.get(s, s)
+
+
+def _parse_selected_framework_coverage_defects(defects, domain='data'):
+    """Parse + group ``selected_framework_coverage_missing`` defects.
+
+    Args:
+        defects: Iterable of either:
+            * ``(section, flag, observed, expected)`` 4-tuples emitted
+              by :func:`_final_strategy_audit`, where ``flag`` starts
+              with ``selected_framework_coverage_missing:<FW>:<fam>``;
+              OR
+            * plain ``flag`` strings of the same shape, optionally with
+              a trailing ``:<section>`` component
+              (``selected_framework_coverage_missing:PDPL:privacy_
+              governance:gaps``). Used when defects have been
+              serialised into ``synth_failed`` messages or come from
+              human-authored runbooks.
+        domain: Reserved for future scoping (e.g. limit to Data
+            Management). Currently informational only — the parser
+            does not filter by domain.
+
+    Returns:
+        ``{section_key: {fw_key: [family_id, ...], ...}, ...}``. Section
+        keys are normalised through :func:`_normalize_audit_section_key`
+        so they always match the runtime sections dict. Duplicates are
+        de-duplicated while preserving first-seen order.
+    """
+    grouped = {}
+    if not defects:
+        return grouped
+    PREFIX = 'selected_framework_coverage_missing:'
+    for entry in defects:
+        section = ''
+        flag = ''
+        if isinstance(entry, (tuple, list)):
+            if len(entry) >= 2:
+                section = entry[0] or ''
+                flag = entry[1] or ''
+            elif len(entry) == 1:
+                flag = entry[0] or ''
+        else:
+            flag = entry or ''
+        if not isinstance(flag, str):
+            continue
+        if not flag.startswith(PREFIX):
+            continue
+        body = flag[len(PREFIX):]
+        # Tolerate comma-separated multi-family flags emitted by the
+        # post-repair fail-closure (``...missing:NDMO:data_quality,
+        # PDPL:breach_notification``).
+        for part in body.split(','):
+            tokens = [t.strip() for t in part.split(':') if t.strip()]
+            if len(tokens) < 2:
+                continue
+            fw_key = tokens[0]
+            fam_id = tokens[1]
+            # Optional 3rd component is a section label.
+            tail_section = tokens[2] if len(tokens) >= 3 else ''
+            sec_key = _normalize_audit_section_key(
+                tail_section or section)
+            if not sec_key:
+                sec_key = '*'
+            fw_bucket = grouped.setdefault(sec_key, {})
+            fam_list = fw_bucket.setdefault(fw_key, [])
+            if fam_id not in fam_list:
+                fam_list.append(fam_id)
+    return grouped
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -40601,7 +40793,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'rights, breach '
                                             'notification, and personal '
                                             'data classification — each '
-                                            'as a distinct gap row.'),
+                                            'as a distinct gap row. For '
+                                            'PDPL specifically include '
+                                            'explicit gaps named: '
+                                            'حوكمة الخصوصية، إدارة '
+                                            'الموافقات، حقوق صاحب '
+                                            'البيانات، تصنيف البيانات '
+                                            'الشخصية، إخطار الخروقات '
+                                            '/ الإبلاغ عن الانتهاكات.'),
                                         'roadmap': (
                                             'Roadmap MUST include '
                                             'balanced activities for '
@@ -40615,7 +40814,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'distinct, substantive '
                                             'roadmap row with Owner, '
                                             'Timeframe, and '
-                                            'Deliverable.'),
+                                            'Deliverable. For PDPL '
+                                            'specifically include '
+                                            'implementation activities '
+                                            'named: تنفيذ ضوابط حماية '
+                                            'البيانات الشخصية وفق PDPL، '
+                                            'إدارة الموافقات، تفعيل '
+                                            'حقوق صاحب البيانات، تصنيف '
+                                            'البيانات الشخصية، إخطار '
+                                            'الخروقات والإبلاغ عن '
+                                            'الانتهاكات.'),
                                         'kpis': (
                                             'KPIs MUST include '
                                             'measurable KPIs/KRIs for '
@@ -40627,7 +40835,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'subject rights SLA, breach '
                                             'notification SLA, and '
                                             'personal data '
-                                            'classification coverage.'),
+                                            'classification coverage. '
+                                            'For PDPL specifically '
+                                            'include measurable '
+                                            'KPIs/KRIs named: نسبة '
+                                            'الامتثال لحوكمة الخصوصية، '
+                                            'نسبة الموافقات المدارة، '
+                                            'زمن الاستجابة لطلبات حقوق '
+                                            'صاحب البيانات، نسبة تصنيف '
+                                            'البيانات الشخصية، زمن '
+                                            'إخطار الخروقات أو نسبة '
+                                            'الإخطار في الوقت المحدد.'),
                                         'confidence': (
                                             'Confidence/Risk MUST '
                                             'include risks and success '
@@ -40637,7 +40855,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'handling, breach '
                                             'notification, data '
                                             'lifecycle, and '
-                                            'classification.'),
+                                            'classification. For PDPL '
+                                            'specifically include '
+                                            'success factors / risks '
+                                            'named: حوكمة الخصوصية، '
+                                            'إدارة الموافقات، حقوق '
+                                            'صاحب البيانات، تصنيف '
+                                            'البيانات الشخصية، إخطار '
+                                            'الخروقات.'),
                                     }
                                     # Group missing families per section
                                     # so ONE AI repair call per section
@@ -40773,57 +40998,88 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 'no placeholders, no '
                                                 'dashy rows.'
                                             )
-                                            try:
-                                                _dfc_new = (
-                                                    ai_repair_strategy_section(
-                                                        section_key=_sk,
-                                                        sections=sections,
-                                                        lang=lang,
-                                                        domain_context=(
-                                                            _dfc_dctx),
-                                                        org_name=org_name,
-                                                        sector=_model_sector,
-                                                        maturity=maturity,
-                                                        generation_mode=(
-                                                            _generation_mode),
-                                                        validation_error=(
-                                                            _dfc_ve_msg),
-                                                        org_structure_is_none=(
-                                                            _dfc_osn),
-                                                    ))
-                                                if not (_dfc_new
-                                                        and _dfc_new.strip()):
-                                                    sections[_sk] = (
-                                                        _dfc_before)
-                                                    _mark_synth_failed(
-                                                        _synth_status,
-                                                        _sk,
-                                                        Exception(
-                                                            'selected_'
-                                                            'framework_'
-                                                            'coverage_'
-                                                            'missing:'
-                                                            'empty_repair'
+                                            # PR-5B.9U: bounded iterative
+                                            # repair — make up to 2 AI
+                                            # attempts before fail-closing
+                                            # so a single under-covered
+                                            # candidate does not trigger
+                                            # an unnecessary synth_failed.
+                                            # First attempt uses the
+                                            # standard validation_error;
+                                            # second attempt appends a
+                                            # stricter directive that
+                                            # names the still-unmet
+                                            # families verbatim.
+                                            _dfc_attempt = 0
+                                            _dfc_accepted = False
+                                            _dfc_unmet = set()
+                                            _dfc_last_err = None
+                                            _dfc_ve_current = _dfc_ve_msg
+                                            while _dfc_attempt < 2 and not (
+                                                    _dfc_accepted):
+                                                _dfc_attempt += 1
+                                                try:
+                                                    _dfc_new = (
+                                                        ai_repair_strategy_section(
+                                                            section_key=_sk,
+                                                            sections=sections,
+                                                            lang=lang,
+                                                            domain_context=(
+                                                                _dfc_dctx),
+                                                            org_name=org_name,
+                                                            sector=_model_sector,
+                                                            maturity=maturity,
+                                                            generation_mode=(
+                                                                _generation_mode),
+                                                            validation_error=(
+                                                                _dfc_ve_current),
+                                                            org_structure_is_none=(
+                                                                _dfc_osn),
                                                         ))
+                                                except RepairError as _dfcre:
+                                                    _dfc_last_err = _dfcre
                                                     print(
                                                         '[DATA-FRAMEWORK-'
                                                         'COVERAGE-REPAIR] '
                                                         f'section={_sk} '
-                                                        'empty_response '
-                                                        '— restored '
-                                                        'original',
+                                                        f'attempt={_dfc_attempt} '
+                                                        f'repair_failed '
+                                                        f'err={_dfcre}',
                                                         flush=True,
                                                     )
-                                                    continue
+                                                    break
+                                                except Exception as _dfcre2:
+                                                    _dfc_last_err = _dfcre2
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-REPAIR] '
+                                                        f'section={_sk} '
+                                                        f'attempt={_dfc_attempt} '
+                                                        f'repair_unexpected '
+                                                        f'err={_dfcre2}',
+                                                        flush=True,
+                                                    )
+                                                    break
+                                                if not (_dfc_new
+                                                        and _dfc_new.strip()):
+                                                    _dfc_last_err = Exception(
+                                                        'empty_repair')
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-REPAIR] '
+                                                        f'section={_sk} '
+                                                        f'attempt={_dfc_attempt} '
+                                                        'empty_response',
+                                                        flush=True,
+                                                    )
+                                                    # Empty response — do
+                                                    # not retry; restore
+                                                    # & fail-close below.
+                                                    break
                                                 # Substitute candidate
-                                                # in place and re-run
-                                                # the coverage helper
-                                                # against the full
-                                                # sections dict; revert
-                                                # if any of THIS
-                                                # section's targeted
-                                                # families remains
-                                                # globally uncovered.
+                                                # and re-run the coverage
+                                                # helper against the
+                                                # full sections dict.
                                                 sections[_sk] = _dfc_new
                                                 _dfc_still_missing = (
                                                     _compute_missing_selected_framework_coverage(
@@ -40841,65 +41097,123 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 _dfc_unmet = (
                                                     _dfc_target_families
                                                     & _dfc_still_targets)
-                                                if _dfc_unmet:
-                                                    sections[_sk] = (
-                                                        _dfc_before)
-                                                    _mark_synth_failed(
-                                                        _synth_status,
-                                                        _sk,
-                                                        Exception(
-                                                            'selected_'
-                                                            'framework_'
-                                                            'coverage_'
-                                                            'missing:'
-                                                            + ','.join(
-                                                                f'{fw}:{fam}'
-                                                                for fw, fam
-                                                                in sorted(
-                                                                    _dfc_unmet))
-                                                        ))
+                                                if not _dfc_unmet:
+                                                    _dfc_accepted = True
                                                     print(
                                                         '[DATA-FRAMEWORK-'
                                                         'COVERAGE-REPAIR] '
                                                         f'section={_sk} '
-                                                        'rejected '
-                                                        'unmet='
-                                                        f'{sorted(_dfc_unmet)}'
-                                                        ' — restored '
-                                                        'original',
-                                                        flush=True,
-                                                    )
-                                                else:
-                                                    print(
-                                                        '[DATA-FRAMEWORK-'
-                                                        'COVERAGE-REPAIR] '
-                                                        f'section={_sk} '
+                                                        f'attempt={_dfc_attempt} '
                                                         'accepted '
                                                         'targeted='
                                                         f'{sorted(_dfc_target_families)}',
                                                         flush=True,
                                                     )
-                                            except RepairError as _dfcre:
-                                                sections[_sk] = (
-                                                    _dfc_before)
-                                                _mark_synth_failed(
-                                                    _synth_status,
-                                                    _sk, _dfcre)
+                                                    break
+                                                # Roll back the rejected
+                                                # candidate so the next
+                                                # attempt sees the
+                                                # original (preserves
+                                                # AI-first inputs and
+                                                # avoids compounding
+                                                # mistakes).
+                                                sections[_sk] = _dfc_before
                                                 print(
                                                     '[DATA-FRAMEWORK-'
                                                     'COVERAGE-REPAIR] '
                                                     f'section={_sk} '
-                                                    f'repair_failed '
-                                                    f'err={_dfcre}',
+                                                    f'attempt={_dfc_attempt} '
+                                                    'rejected unmet='
+                                                    f'{sorted(_dfc_unmet)}',
                                                     flush=True,
                                                 )
-                                            except Exception as _dfcre2:
+                                                if _dfc_attempt < 2:
+                                                    # Build a stricter
+                                                    # second-attempt VE
+                                                    # message that names
+                                                    # the still-unmet
+                                                    # families verbatim
+                                                    # along with their
+                                                    # token vocabulary.
+                                                    _dfc_unmet_lines = []
+                                                    for _ufw, _ufam in sorted(
+                                                            _dfc_unmet):
+                                                        _utoks = (
+                                                            _DFC_FAMILY_TOKENS
+                                                            .get((_ufw, _ufam)))
+                                                        if not _utoks:
+                                                            _dfc_unmet_lines.append(
+                                                                f'- {_ufw}:'
+                                                                f'{_ufam}')
+                                                            continue
+                                                        _uar = '، '.join(
+                                                            _utoks.get(
+                                                                'ar', []))
+                                                        _uen = ', '.join(
+                                                            _utoks.get(
+                                                                'en', []))
+                                                        _dfc_unmet_lines.append(
+                                                            f'- {_ufw}:'
+                                                            f'{_ufam} — '
+                                                            'Arabic concepts: '
+                                                            f'{_uar}; '
+                                                            'English concepts: '
+                                                            f'{_uen}')
+                                                    _dfc_ve_current = (
+                                                        _dfc_ve_msg
+                                                        + '\n\nSECOND-PASS '
+                                                        'STRICT REQUIREMENT: '
+                                                        'the previous '
+                                                        'attempt still '
+                                                        'left the '
+                                                        'following '
+                                                        'capability '
+                                                        'families '
+                                                        'uncovered. You '
+                                                        'MUST include at '
+                                                        'least one '
+                                                        'literal token '
+                                                        'from EACH '
+                                                        'family\'s '
+                                                        'vocabulary in '
+                                                        'this section '
+                                                        '(substring, '
+                                                        'case-insensitive '
+                                                        'match):\n'
+                                                        + '\n'.join(
+                                                            _dfc_unmet_lines)
+                                                    )
+                                            if not _dfc_accepted:
+                                                # Restore original and
+                                                # fail-close so the
+                                                # post-normalization
+                                                # save gate blocks the
+                                                # 422.
+                                                sections[_sk] = _dfc_before
+                                                _fc_err = _dfc_last_err
+                                                if _fc_err is None:
+                                                    _fc_err = Exception(
+                                                        'selected_'
+                                                        'framework_'
+                                                        'coverage_'
+                                                        'missing:'
+                                                        + ','.join(
+                                                            f'{fw}:{fam}'
+                                                            for fw, fam
+                                                            in sorted(
+                                                                _dfc_unmet))
+                                                    )
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    _sk, _fc_err)
                                                 print(
                                                     '[DATA-FRAMEWORK-'
                                                     'COVERAGE-REPAIR] '
                                                     f'section={_sk} '
-                                                    f'repair_unexpected '
-                                                    f'err={_dfcre2}',
+                                                    'fail_closed after '
+                                                    f'attempts={_dfc_attempt} '
+                                                    f'unmet={sorted(_dfc_unmet)} '
+                                                    '— restored original',
                                                     flush=True,
                                                 )
                         except Exception as _dfcxe:
