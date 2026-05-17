@@ -22158,15 +22158,62 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
         "aliases": ["nca dcc", "dcc", "data cybersecurity",
                     "ضوابط الأمن السيبراني للبيانات"],
         "applicable_domains": ["Cyber Security", "Data Management"],
+        # PR-5B.9M — DCC capability families widened so the traceability
+        # matrix for ECC+DCC strategies produces meaningful DCC rows.
+        # Previously only 3 narrow families existed; the AI body often
+        # uses synonyms ("سرية", "حماية البيانات الحساسة", "data
+        # handling", "sensitive data") that did not match the original
+        # keyword list, yielding all-dash DCC rows that were dropped by
+        # the dash-row suppression. AI-first only — no deterministic
+        # strategy rows are inserted; the broader keyword list lets the
+        # existing AI content satisfy the lookup.
         "capabilities": [
             ("data_classification", ["تصنيف البيانات", "تصنيف",
+                                       "تصنيف المعلومات",
+                                       "مستوى التصنيف",
                                        "حماية البيانات"],
              ["data classification", "classification",
+              "classify data", "data categorization",
               "data protection"]),
-            ("dlp", ["DLP", "منع تسرب البيانات", "منع فقدان البيانات"],
-             ["DLP", "data loss prevention"]),
-            ("encryption", ["التشفير", "تشفير البيانات"],
-             ["encryption", "cryptography"]),
+            ("encryption", ["التشفير", "تشفير البيانات",
+                             "تشفير المعلومات",
+                             "تشفير الاتصالات",
+                             "تشفير عند التخزين",
+                             "تشفير عند النقل"],
+             ["encryption", "cryptography", "data encryption",
+              "encrypt", "at rest encryption", "in transit encryption"]),
+            ("dlp", ["DLP", "منع تسرب البيانات",
+                      "منع فقدان البيانات",
+                      "تسرب البيانات",
+                      "منع التسريب"],
+             ["DLP", "data loss prevention", "data leakage prevention",
+              "data exfiltration prevention"]),
+            # PR-5B.9M — sensitive data handling family. Required so
+            # DCC strategies that emphasise sensitive data lifecycle
+            # (collection / use / sharing / disposal) surface a
+            # traceability row instead of an all-dash entry.
+            ("sensitive_data_handling",
+             ["البيانات الحساسة", "معالجة البيانات الحساسة",
+              "تداول البيانات", "التعامل مع البيانات",
+              "دورة حياة البيانات", "مشاركة البيانات",
+              "إتلاف البيانات"],
+             ["sensitive data", "sensitive data handling",
+              "data handling", "data lifecycle",
+              "data sharing", "data disposal",
+              "secure data handling"]),
+            # PR-5B.9M — data protection / data cybersecurity controls
+            # family. Required so the traceability matrix can match a
+            # generic "data protection controls" / "ضوابط حماية
+            # البيانات" mention against DCC even when no narrow
+            # classification/encryption/DLP wording is present.
+            ("data_protection",
+             ["حماية البيانات", "ضوابط حماية البيانات",
+              "ضوابط الأمن السيبراني للبيانات",
+              "أمن البيانات",
+              "السرية والسلامة والتوافر للبيانات"],
+             ["data protection", "data protection controls",
+              "data cybersecurity", "data cybersecurity controls",
+              "data security", "data confidentiality integrity"]),
         ],
         "required_sections": ["pillars", "environment", "gaps", "roadmap",
                                "kpis"],
@@ -23336,6 +23383,98 @@ def _vision_template_marker_hits(vision_text):
     return hits
 
 
+# ── PR-5B.9M: vision template-RESIDUE detector ───────────────────────────
+# Distinct from `_vision_template_marker_hits` (which catches scaffolding
+# placeholders like ``{framework}`` / ``EN_TEMPLATE``), the RESIDUE
+# detector catches English template/scaffold tokens that historically
+# survived into the Arabic Vision body and tripped the final-audit
+# ``vision_contains_en_template_residue`` defect AFTER the contract had
+# already accepted the candidate. PR-5B.9G's contract did not check this
+# class of residue, so a Data Management Vision could pass the marker
+# contract while still containing "System/Tool", "Within 6 months", or
+# the bare scaffold labels "Objective", "Framework", "Target", "Reason",
+# "Timeframe", "Strategic Objectives template" — and the final audit
+# would reject it after the retry budget was exhausted.
+#
+# These tokens are checked AT CANDIDATE-VALIDATION TIME so the unified
+# vision-repair contract can re-prompt naming the exact residue tokens
+# (`validation_error=vision_contains_en_template_residue:<tokens>`) and
+# the original Vision is preserved if the retry fails.
+#
+# AI-first: no deterministic rows are inserted; rejection is the only
+# action taken.
+_VISION_TEMPLATE_RESIDUE_EN_SCAFFOLD = (
+    # Bare scaffold labels — appear when the AI emits an English template
+    # placeholder header inside an Arabic Vision body. We use word-bounded
+    # matches against followed-by colon or equals to avoid false-positives
+    # on legitimate English-in-Arabic mentions (e.g. NDMO acronym).
+    'Strategic Objectives template',
+    'STRATEGIC OBJECTIVES TEMPLATE',
+    'EN_TEMPLATE',
+    'AR_TEMPLATE',
+    'TEMPLATE_MARKER',
+    '<<TEMPLATE>>',
+)
+
+# Word-bounded English scaffold-label regex. Matches the bare label
+# followed by ``:`` or ``=`` (the template scaffolding shape), inside
+# an Arabic Vision body. Avoids false positives on natural prose.
+_VISION_TEMPLATE_RESIDUE_LABEL_RE = _ts_re.compile(
+    r'(?<![A-Za-z])'
+    r'(Objective|Framework|Target|Reason|Timeframe|Justification|Indicator)'
+    r'\s*[:=]\s*<',
+)
+
+
+def _vision_template_residue_hits(vision_text, lang=None):
+    """Return list of EN template-RESIDUE tokens detected in
+    ``vision_text``.
+
+    Independent of ``_vision_template_marker_hits`` — this catches the
+    EN scaffold/residue tokens that the FINAL AUDIT's
+    ``*_contains_en_template_residue`` check flags (the
+    ``_AR_TEMPLATE_RESIDUE_MAP`` keys: ``System/Tool``,
+    ``Within ``, `` months``, framework long-names) plus an extended
+    curated set of bare scaffold labels (``Strategic Objectives
+    template``, ``EN_TEMPLATE`` etc.) and the
+    ``<label>:\\s*<placeholder>`` shape.
+
+    Returns ``[]`` when no residue is detected. An empty list means
+    the candidate is free of EN template residue.
+    """
+    if not vision_text:
+        return []
+    text = str(vision_text)
+    hits = []
+    seen = set()
+    # 1. _AR_TEMPLATE_RESIDUE_MAP keys (the same keys the final-audit
+    # `*_contains_en_template_residue` check uses).  Apply ONLY when the
+    # candidate is for an Arabic strategy — the map is AR-only.
+    if (lang or '').lower() == 'ar':
+        try:
+            _residue_map = _AR_TEMPLATE_RESIDUE_MAP
+        except NameError:  # pragma: no cover — module-load order safety
+            _residue_map = {}
+        for en in _residue_map:
+            if en and en in text and en not in seen:
+                hits.append(en)
+                seen.add(en)
+    # 2. Curated EN scaffold labels (lang-agnostic — these are always
+    # rejected even in EN visions because they are template markers).
+    for tok in _VISION_TEMPLATE_RESIDUE_EN_SCAFFOLD:
+        if tok and tok in text and tok not in seen:
+            hits.append(tok)
+            seen.add(tok)
+    # 3. ``<Label>: <placeholder>`` shape (Objective: <...>,
+    # Framework: <...>, Target: <...>, Timeframe: <...>, etc.).
+    for m in _VISION_TEMPLATE_RESIDUE_LABEL_RE.finditer(text):
+        token = m.group(0).strip()
+        if token and token not in seen:
+            hits.append(token)
+            seen.add(token)
+    return hits
+
+
 # Per-framework "leakage tokens" — the unambiguous strings that, when
 # present in Vision content while the framework is NOT selected, signal
 # scope leakage (e.g. SAMA CSF appearing in an ECC + TCC strategy).
@@ -23428,6 +23567,35 @@ def _validate_vision_contract(
             + ','.join(marker_hits[:6])
         )
 
+    # PR-5B.9M: vision template-RESIDUE check (distinct from marker
+    # check). The final-audit ``*_contains_en_template_residue`` defect
+    # was firing AFTER the contract accepted a candidate, exhausting the
+    # retry budget. Move detection up to candidate time so the retry can
+    # be re-prompted with the exact residue tokens and the original
+    # Vision is restored if the retry fails.
+    residue_hits = _vision_template_residue_hits(text, lang=lang)
+    has_template_residue = bool(residue_hits)
+    if has_template_residue:
+        errors.append(
+            'vision_contains_en_template_residue:'
+            + ','.join(residue_hits[:6])
+        )
+        try:
+            _dcode_log = normalize_domain(domain or '')
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode_log = ''
+        try:
+            print(
+                '[VISION-TEMPLATE-RESIDUE] '
+                f'hits={residue_hits[:6]} '
+                f'section=vision '
+                f'domain={_dcode_log or "?"} '
+                f'lang={lang}',
+                flush=True,
+            )
+        except Exception:
+            pass
+
     # 5. Language sanity — Arabic strategy must contain Arabic letters.
     if (lang or '').lower() == 'ar' and text.strip():
         if not _ts_re.search(r'[\u0600-\u06FF]', text):
@@ -23510,6 +23678,8 @@ def _validate_vision_contract(
         'has_compliance': has_compliance,
         'has_specialized': has_specialized,
         'has_template_marker': has_template_marker,
+        'has_template_residue': has_template_residue,
+        'template_residue_hits': list(residue_hits),
         'leaked_frameworks': list(leaked),
     }
 
@@ -23578,6 +23748,7 @@ def _assign_vision_if_valid_or_restore(
         f'has_compliance={report["has_compliance"]} '
         f'has_specialized={report["has_specialized"]} '
         f'has_template_marker={report["has_template_marker"]} '
+        f'has_template_residue={report.get("has_template_residue", False)} '
         f'leaked_frameworks={report["leaked_frameworks"]} '
         f'label={repair_label}',
         flush=True,
@@ -46118,6 +46289,67 @@ def _sanitize_pdf_story(story):
     return out
 
 
+# ── PR-5B.9M: PDF-safe text wrapper ──────────────────────────────────────
+# ReportLab's Paragraph wraps on whitespace by default. Long unbreakable
+# tokens (e.g. "SDAIA AI Governance Framework", "Human-in-the-Loop",
+# "Model Monitoring Officer", "data-classification-and-encryption") that
+# are wider than the available cell width raise a LayoutError ("Flowable
+# … too large on page") during doc.build() — producing the observed
+# HTTP 500 on AI strategy PDF download.
+#
+# This helper inserts ZERO-WIDTH-SPACE break opportunities around the
+# token delimiters '/', '-', '_', '(', ')' so Paragraph can wrap the
+# token at a clean boundary instead of refusing to break. Arabic text
+# (\u0600-\u06FF) is preserved unchanged — Arabic word boundaries
+# already wrap correctly. The helper is idempotent (inserting another
+# ZWSP next to an existing ZWSP is a no-op visually).
+#
+# AI-first / lossless: no characters are dropped; only break hints are
+# inserted. The text round-trips through PDF cleanly.
+_PDF_SAFE_TEXT_LONG_RUN_RE = _ts_re.compile(r'([A-Za-z0-9]{18,})')
+
+
+def _pdf_safe_text(s, max_run=22):
+    """Return ``s`` with ZERO-WIDTH-SPACE break opportunities inserted
+    so ReportLab Paragraphs can wrap long unbreakable English tokens
+    in narrow table cells.
+
+    Rules:
+      * Insert ``\\u200B`` after every ``/``, ``-``, ``_``, ``(``, ``)``,
+        ``:``, ``,`` so long compound tokens (e.g. ``data/AI/cyber``,
+        ``SDAIA-AI-Governance``) gain a wrap point.
+      * Insert ``\\u200B`` every ``max_run`` chars inside any run of
+        ASCII letters/digits >= 18 chars (e.g. ``ModelMonitoringOfficer``)
+        so it can wrap.
+      * Arabic characters and existing whitespace are untouched.
+
+    Idempotent. Always returns a ``str``.
+    """
+    if s is None:
+        return ''
+    text = s if isinstance(s, str) else str(s)
+    if not text:
+        return text
+    # 1. Insert ZWSP after token-delimiter chars.
+    out = []
+    _break_after = '/-_(),:'
+    for ch in text:
+        out.append(ch)
+        if ch in _break_after:
+            # avoid duplicate ZWSP
+            out.append('\u200B')
+    text = ''.join(out)
+    # 2. Break long ASCII runs every max_run chars.
+    def _split_long(m):
+        run = m.group(1)
+        if len(run) <= max_run:
+            return run
+        return '\u200B'.join(
+            run[i:i + max_run] for i in range(0, len(run), max_run))
+    text = _PDF_SAFE_TEXT_LONG_RUN_RE.sub(_split_long, text)
+    return text
+
+
 @app.route('/api/generate-pdf', methods=['POST'])
 @login_required
 def api_generate_pdf():
@@ -46719,6 +46951,27 @@ def api_generate_pdf():
             'الولاية الاستراتيجية', 'النجم الشمالي للامتثال',
             'مبرر الاستثمار', 'الرؤية الاستراتيجية', 'الرؤية',
         }
+
+        # ── PR-5B.9M: enable splitLongWords + CJK wrap on every body
+        # ParagraphStyle defined so far. Long unbreakable English tokens
+        # in body Paragraphs (e.g. "SDAIA AI Governance Framework" inside
+        # narrow callout panels) would otherwise raise a ReportLab
+        # LayoutError ("Flowable too large on page") during doc.build()
+        # and surface as an HTTP 500 on the PDF download. CJK word-wrap
+        # is the ReportLab idiom for "wrap on character boundary as a
+        # last resort".  splitLongWords=1 inserts hyphenless breaks
+        # inside long runs of word characters. Both are no-ops for
+        # ordinary prose.
+        for _sty in (
+                normal_style, bullet_style, numbered_style, callout_style,
+                kpmg_panel_label_style, kpmg_panel_body_style):
+            try:
+                if _sty is not None:
+                    setattr(_sty, 'splitLongWords', 1)
+                    if not getattr(_sty, 'wordWrap', None):
+                        setattr(_sty, 'wordWrap', 'CJK')
+            except Exception:
+                pass
         def _make_kpmg_panel(label_txt, body_txt, avail_w):
             """Return a KPMG-style shaded callout panel (label + body).
 
@@ -48618,6 +48871,14 @@ def api_generate_pdf():
                         leading=_cell_leading,
                         fontName=arabic_font_name if is_arabic else 'Helvetica',
                         alignment=TA_RIGHT if is_arabic else TA_LEFT,
+                        # PR-5B.9M: enable word splitting + CJK-style
+                        # word wrap so long unbreakable English tokens
+                        # (e.g. "SDAIA AI Governance Framework",
+                        # "Model Monitoring Officer") can be broken
+                        # inside narrow table cells without raising a
+                        # ReportLab LayoutError.
+                        splitLongWords=1,
+                        wordWrap='CJK',
                     )
                     header_cell_style = ParagraphStyle(
                         'HeaderCellStyle', 
@@ -48626,6 +48887,8 @@ def api_generate_pdf():
                         textColor=colors.white,
                         fontName=arabic_font_bold if is_arabic else 'Helvetica-Bold',
                         alignment=TA_RIGHT if is_arabic else TA_LEFT,
+                        splitLongWords=1,
+                        wordWrap='CJK',
                     )
                     
                     wrapped_data = []
@@ -48633,6 +48896,11 @@ def api_generate_pdf():
                         wrapped_row = []
                         for col_idx, cell in enumerate(row):
                             cell_text = str(cell) if cell is not None else ''
+                            # PR-5B.9M: insert ZWSP break-opportunities
+                            # into long English tokens (Arabic content is
+                            # preserved untouched by _pdf_safe_text).
+                            if cell_text:
+                                cell_text = _pdf_safe_text(cell_text)
                             # Process Arabic: reshape and per-cell-width bidi
                             if is_arabic and cell_text:
                                 cw = col_widths[col_idx] if col_idx < len(col_widths) else text_width / len(row)
@@ -49119,7 +49387,18 @@ def api_generate_pdf():
 
         try:
             doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
-        except (TypeError, ValueError, AttributeError) as _te:
+        except Exception as _te:
+            # PR-5B.9M: catch ANY exception from doc.build() (was only
+            # TypeError/ValueError/AttributeError). ReportLab raises
+            # ``LayoutError`` ("Flowable … too large on page") when a
+            # single unbreakable flowable (oversized table row, long
+            # English token, oversized cell paragraph) doesn't fit on
+            # any page. Without this broadening the outer ``except
+            # Exception`` returned HTTP 500 — the AI strategy PDF
+            # download failure reported in production. The retry path
+            # below applies _pdf_safe_text() to cell content so long
+            # AI governance tokens (SDAIA AI Governance Framework,
+            # Human-in-the-Loop, Model Monitoring Officer) wrap cleanly.
             import traceback as _tb
             _tb_str = _tb.format_exc()
             print(f'[PDF-BUILD] {type(_te).__name__} during doc.build — '
@@ -49128,6 +49407,15 @@ def api_generate_pdf():
             # PR-5B.8N: rebuild from the SNAPSHOT, not from the (now-mutated)
             # ``story`` list — see snapshot rationale above.
             _retry_source = _story_snapshot
+            # ── PR-5B.9M: prefer LongTable for the retry pass ──────────────
+            # LongTable supports row-by-row splitting across pages, which
+            # avoids the "Flowable too large" crash for dense tables that
+            # would otherwise refuse to split. We import it best-effort so
+            # the retry still works on installations without LongTable.
+            try:
+                from reportlab.platypus import LongTable as _LongTable
+            except Exception:
+                _LongTable = Table  # type: ignore
             # Sanitise each Table flowable in-place before retry. We log per-
             # table diagnostics (index, col count, row count, header row) so
             # rendering issues can be debugged without dropping all tables.
@@ -49150,13 +49438,56 @@ def api_generate_pdf():
                             table_index=_idx,
                             section_heading='retry',
                         )
+                        # PR-5B.9M: apply _pdf_safe_text() to every
+                        # PLAIN-STRING cell so long unbreakable English
+                        # tokens (AI governance terms) get ZWSP wrap
+                        # hints. Skip Paragraph / Table / other rich
+                        # cell types — they already have their own wrap
+                        # machinery and may break if mutated.
+                        try:
+                            _safe_rows = []
+                            for _r in _new_data:
+                                _safe_row = []
+                                for _c in _r:
+                                    if isinstance(_c, str):
+                                        _safe_row.append(_pdf_safe_text(_c))
+                                    else:
+                                        _safe_row.append(_c)
+                                _safe_rows.append(_safe_row)
+                            _new_data = _safe_rows
+                        except Exception:
+                            pass
+                        # PR-5B.9M: structured PDF diagnostic (no full content).
+                        try:
+                            _preview = ''
+                            for _r in _new_data[:2]:
+                                for _c in _r:
+                                    _preview = str(_c)[:60]
+                                    if _preview:
+                                        break
+                                if _preview:
+                                    break
+                            print(
+                                f'[PDF-DIAG] flowable_index={_idx} '
+                                f'table_name=retry section=? '
+                                f'col_count={len(_new_data[0]) if _new_data else 0} '
+                                f'row_count={len(_new_data)} '
+                                f'text_preview={_preview!r}',
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                         print(
                             f"[PDF-BUILD] retry sanitised table_index={_idx} "
                             f"col_count={len(_new_data[0]) if _new_data else 0} "
                             f"row_count={len(_new_data)}",
                             flush=True,
                         )
-                        _new_table = Table(_new_data, colWidths=_new_cw, repeatRows=1)
+                        # PR-5B.9M: use LongTable so the retry table can
+                        # split across pages (avoids unbreakable-flowable
+                        # crashes for dense multi-page tables).
+                        _new_table = _LongTable(
+                            _new_data, colWidths=_new_cw, repeatRows=1)
                         # Reapply the original style (best-effort — original
                         # `_argW` may also have changed).
                         try:
@@ -49224,10 +49555,22 @@ def api_generate_pdf():
     except ImportError as e:
         return jsonify({'error': f'PDF generation not available: {str(e)}'}), 500
     except Exception as e:
-        print(f"PDF generation error: {str(e)}")
+        # PR-5B.9M: structured PDF error path. Log type + short message
+        # for diagnostics, but do NOT leak the raw traceback or internal
+        # paths to the API client. ReportLab layout failures (oversized
+        # flowable) surface as HTTP 500 only after the retry pass has
+        # also failed — at which point the content is truly unrenderable.
+        print(f"[PDF-BUILD] PDF generation error: {type(e).__name__}: {e}",
+              flush=True)
         import traceback
         traceback.print_exc()
-        return jsonify({'error': f'PDF generation failed: {str(e)}'}), 500
+        _err_name = type(e).__name__
+        return jsonify({
+            'error': 'PDF generation failed — please try regenerating '
+                     'the strategy or contact support.',
+            'reason': 'pdf_render_failed',
+            'detail': _err_name,
+        }), 500
 
 @app.route('/api/set-language/<lang>')
 def set_language(lang):
