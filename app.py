@@ -19483,24 +19483,71 @@ def _compute_missing_cyber_capabilities(sections):
 # capabilities-missing repair flow.
 _CYBER_DEPT_ESTAB_CONCEPTS = {
     # Concept family → accepted Arabic + English tokens (case-insensitive).
+    # PR-5B.9O — widened to cover every accepted Cyber structural-gap
+    # phrasing from the problem statement so the helper does not
+    # false-fail when the AI returns a valid wording (e.g.
+    # "غياب الإدارة المتخصصة للأمن السيبراني" / "غياب الهيكل
+    # التنظيمي للأمن السيبراني" / "غياب نموذج تشغيل الأمن السيبراني").
+    # No deterministic injection — these are recognition tokens only.
     'establish_dept': (
         'إنشاء إدارة', 'تأسيس إدارة', 'إدارة متخصصة',
         'إدارة الأمن السيبراني', 'إدارة مختصة',
+        # PR-5B.9O — accept "الإدارة المتخصصة" (with ال) and
+        # "الهيكل التنظيمي للأمن السيبراني" / "هيكل تنظيمي للأمن
+        # السيبراني" phrasings; also accept the bare "غياب إدارة
+        # الأمن السيبراني" / "عدم وجود إدارة الأمن السيبراني" forms
+        # via the existing "إدارة الأمن السيبراني" token.
+        'الإدارة المتخصصة للأمن السيبراني',
+        'إدارة متخصصة للأمن السيبراني',
+        'الهيكل التنظيمي للأمن السيبراني',
+        'هيكل تنظيمي للأمن السيبراني',
+        'cybersecurity organisational structure',
+        'cybersecurity organizational structure',
         'establish a dedicated cybersecurity', 'cybersecurity department',
         'dedicated cybersecurity department',
+        # PR-5B.9O — English "missing cybersecurity department" /
+        # "no cybersecurity department" / "missing dedicated
+        # cybersecurity function" phrasings from the problem
+        # statement (the validator is substring-based so the
+        # "missing" prefix is matched implicitly when the noun
+        # phrase is present, but we add the canonical noun
+        # phrases here explicitly).
+        'dedicated cybersecurity function',
     ),
     'ciso': (
         'ciso', 'رئيس الأمن السيبراني', 'مدير الأمن السيبراني',
         'تعيين رئيس', 'appoint a ciso', 'chief information security',
+        # PR-5B.9O — accept "غياب رئيس الأمن السيبراني" / "غياب
+        # CISO" / "missing CISO" via the existing tokens; add the
+        # canonical chief-information-security-officer phrasing.
+        'chief information security officer',
     ),
     'roles_responsibilities': (
         'الأدوار والمسؤوليات', 'تحديد الأدوار', 'roles and responsibilities',
         'raci', 'authority matrix', 'الصلاحيات',
+        # PR-5B.9O — accept "غياب مصفوفة RACI للأمن السيبراني" /
+        # "missing cybersecurity RACI" via the explicit
+        # cybersecurity-scoped tokens (in addition to the
+        # already-present generic 'raci' token).
+        'مصفوفة raci', 'مصفوفة المسؤوليات',
+        'cybersecurity raci',
     ),
     'operating_model': (
         'نموذج التشغيل', 'operating model', 'خطوط الرفع', 'reporting lines',
         'لجنة حوكمة الأمن السيبراني', 'cybersecurity governance committee',
         'حوكمة الأمن السيبراني',
+        # PR-5B.9O — accept "غياب نموذج تشغيل الأمن السيبراني"
+        # (without the ال definite article on "تشغيل") which the
+        # legacy 'نموذج التشغيل' token would otherwise miss, plus
+        # the English "cybersecurity operating model" /
+        # "cybersecurity reporting lines" / "missing cybersecurity
+        # governance committee" / "missing cybersecurity operating
+        # model" phrasings from the problem statement.
+        'نموذج تشغيل الأمن السيبراني',
+        'cybersecurity operating model',
+        'cybersecurity reporting lines',
+        'خطوط الرفع والصلاحيات للأمن السيبراني',
+        'خطوط الرفع للأمن السيبراني',
     ),
 }
 
@@ -28624,6 +28671,82 @@ def ai_repair_strategy_section(
                     "digital transformation operating model. Preserve "
                     "every other row (at least five substantive gap "
                     "rows total) and do not weaken any other row."
+                )
+
+        # ── PR-5B.9O: Cybersecurity-specific reinforcement ──────────────
+        # Production symptom: ``missing_structural_gap-org_structure_is_none``
+        # for Cyber strategies whose Gaps table contained only generic
+        # governance wording ("تعزيز الحوكمة" / "تحسين الإطار التنظيمي"
+        # / "تطوير السياسات") that does NOT name the Cybersecurity
+        # Department, CISO, cybersecurity governance committee, or
+        # cybersecurity operating model. Pin the canonical Arabic row
+        # title verbatim and explicitly enumerate the unacceptable
+        # vague variants so the AI cannot silently produce a generic
+        # governance row that the structural-gap helper rejects. The
+        # required 1:1 implementation guide must include Owner /
+        # Timeframe / Output for each step. Mirrors the DT
+        # reinforcement block above.
+        if _dom_code_inj == "cyber":
+            if is_ar:
+                prompt += (
+                    "\n\nقاعدة الفجوة الهيكلية للأمن السيبراني "
+                    "(إلزامية):\n"
+                    "صفّ الفجوة الهيكلية للأمن السيبراني يجب أن "
+                    "يكون بصياغة صريحة تشبه — وتسمّي بالاسم — ما "
+                    "يلي:\n"
+                    "\"غياب إدارة الأمن السيبراني وتعيين CISO "
+                    "ونموذج تشغيل الأمن السيبراني\".\n"
+                    "أو ما يكافئها مع تسمية واحدة على الأقل من: "
+                    "إدارة الأمن السيبراني، الإدارة المتخصصة للأمن "
+                    "السيبراني، CISO (رئيس الأمن السيبراني)، لجنة "
+                    "حوكمة الأمن السيبراني، نموذج تشغيل الأمن "
+                    "السيبراني، الهيكل التنظيمي للأمن السيبراني، "
+                    "خطوط الرفع والصلاحيات للأمن السيبراني، مصفوفة "
+                    "RACI للأمن السيبراني.\n"
+                    "يجب أن يُرفَق بهذا الصف دليل تنفيذ مخصّص "
+                    "بنسبة 1:1 يحتوي صراحةً على: المالك (Owner)، "
+                    "الإطار الزمني (Timeframe/Timeline)، "
+                    "والمخرج (Output/Deliverable) — لكل خطوة من "
+                    "خطواته الأربع كحدّ أدنى.\n"
+                    "صياغات عامة مثل: \"تعزيز الحوكمة\"، \"تحسين "
+                    "الإطار التنظيمي\"، \"تطوير السياسات\" مرفوضة "
+                    "ولا تُعدّ كافية إلا إذا سمّت صراحةً إدارة "
+                    "الأمن السيبراني / CISO / نموذج تشغيل الأمن "
+                    "السيبراني. حافظ على بقية صفوف الجدول (لا "
+                    "يقل عددها عن خمسة صفوف جوهرية) ولا تُضعف أي "
+                    "صف آخر."
+                )
+            else:
+                prompt += (
+                    "\n\nCybersecurity structural-gap rule "
+                    "(MANDATORY):\n"
+                    "The Cybersecurity structural-gap row MUST be "
+                    "phrased explicitly as — and name verbatim — "
+                    "wording such as:\n"
+                    "\"Missing Cybersecurity Department, CISO, and "
+                    "cybersecurity operating model\".\n"
+                    "Or an equivalent that names at least one of: "
+                    "Cybersecurity Department, dedicated "
+                    "Cybersecurity function, CISO (Chief "
+                    "Information Security Officer), Cybersecurity "
+                    "Governance Committee, cybersecurity operating "
+                    "model, cybersecurity organisational "
+                    "structure, cybersecurity reporting lines, "
+                    "cybersecurity RACI matrix.\n"
+                    "This row MUST be accompanied by a dedicated "
+                    "1:1 Implementation Guide that explicitly "
+                    "includes Owner, Timeframe/Timeline, and "
+                    "Output/Deliverable for each of its at-least-"
+                    "four steps.\n"
+                    "Vague wording such as \"Strengthen "
+                    "governance\", \"Improve the organisational "
+                    "framework\", or \"Develop policies\" is "
+                    "REJECTED and not sufficient unless it "
+                    "explicitly names the Cybersecurity "
+                    "Department / CISO / cybersecurity operating "
+                    "model. Preserve every other row (at least "
+                    "five substantive gap rows total) and do not "
+                    "weaken any other row."
                 )
 
     # ── PR-5B.9H: Selected-framework compliance objective row (vision) ─────
@@ -38946,10 +39069,59 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             domain or '')
                                     except Exception:  # noqa: BLE001
                                         _sg_dcode = ''
+                                    # PR-5B.9O — richer structural-gap
+                                    # diagnostic line: include the
+                                    # canonical required wording so
+                                    # log readers can confirm which
+                                    # specialized function the
+                                    # structural-gap row was expected
+                                    # to name. Mirrors the spec wording
+                                    # required by the problem
+                                    # statement: ``[GAPS-STRUCTURAL-
+                                    # GAP-REPAIR] domain=cyber
+                                    # required="Cybersecurity
+                                    # Department/CISO" rows=…
+                                    # missing_families=…``.
+                                    _sg_required_map = {
+                                        'cyber': (
+                                            'Cybersecurity Department/'
+                                            'CISO/Cybersecurity '
+                                            'Governance Committee/'
+                                            'Cybersecurity Operating '
+                                            'Model'),
+                                        'data': (
+                                            'Data Management Office/'
+                                            'CDO/Data Governance '
+                                            'Committee'),
+                                        'ai': (
+                                            'AI Governance Office/'
+                                            'AI Ethics Officer/'
+                                            'Model Risk Manager/'
+                                            'AI Compliance Lead'),
+                                        'dt': (
+                                            'Digital Transformation '
+                                            'Office/Chief Digital '
+                                            'Officer/Digital '
+                                            'Operating Model'),
+                                        'erm': (
+                                            'Enterprise Risk '
+                                            'Management Function/'
+                                            'CRO/Risk Committee'),
+                                    }
+                                    _sg_required = _sg_required_map.get(
+                                        _sg_dcode, 'specialized function')
+                                    try:
+                                        _sg_row_count_before = (
+                                            count_substantive_gaps(
+                                                _sg_before))
+                                    except Exception:
+                                        _sg_row_count_before = -1
                                     print(
                                         '[GAPS-STRUCTURAL-GAP-REPAIR] '
-                                        f'missing={_sg_missing} '
-                                        f'domain={_sg_dcode}',
+                                        f'domain={_sg_dcode} '
+                                        f'required="{_sg_required}" '
+                                        f'rows={_sg_row_count_before} '
+                                        f'missing_families={_sg_missing}',
                                         flush=True,
                                     )
                                     try:
@@ -49579,7 +49751,188 @@ def api_generate_pdf():
                 )
             except Exception as _re2:
                 print(f'[PDF-BUILD] retry build also failed: {type(_re2).__name__}: {_re2}', flush=True)
-                raise
+                # ── PR-5B.9O: bullet/key-value fallback tier ───────────
+                # When the retry build ALSO fails (e.g. a single table
+                # row contains an oversized unsplittable Paragraph that
+                # is taller than the available page height), do NOT
+                # return HTTP 500. Replace every remaining ``Table``
+                # flowable in the sanitised story with a paragraph-
+                # based key-value rendering of the same content so the
+                # PDF still delivers the strategy text. The first row
+                # is treated as the header (column labels) and each
+                # subsequent row is rendered as a numbered block whose
+                # cells are emitted as "Header: value" bullets — no
+                # data is dropped. An Arabic notice is inserted before
+                # each replaced table explaining that the tabular
+                # rendering was unavailable.
+                #
+                # AI-first / lossless: every cell value is preserved
+                # via ``_pdf_safe_text``; no row is summarised away.
+                _fb_notice_ar = (
+                    'تعذر عرض الجدول الكامل بصيغته الجدولية، وتم '
+                    'عرضه كنقاط تفصيلية.'
+                )
+                _fb_notice_en = (
+                    'The full table could not be rendered in tabular '
+                    'form; it is presented as detailed bullets.'
+                )
+                _fb_notice = _fb_notice_ar if is_arabic else _fb_notice_en
+                try:
+                    _fb_para_style = ParagraphStyle(
+                        'PDFFallbackBody',
+                        parent=(kpmg_panel_body_style
+                                if is_arabic else normal_style),
+                        fontSize=9, leading=12,
+                        splitLongWords=1, wordWrap='CJK',
+                    )
+                    _fb_notice_style = ParagraphStyle(
+                        'PDFFallbackNotice',
+                        parent=_fb_para_style,
+                        textColor=colors.HexColor('#777777'),
+                        fontSize=8, leading=11,
+                    )
+                except Exception:
+                    _fb_para_style = normal_style
+                    _fb_notice_style = normal_style
+                _fallback_story = []
+                _fb_replaced = 0
+                for _fb_idx, _fl in enumerate(_sanitised_story or []):
+                    if _fl is None:
+                        continue
+                    if isinstance(_fl, Table):
+                        try:
+                            _tbl_data = (
+                                getattr(_fl, '_cellvalues', None) or [])
+                            if not _tbl_data:
+                                # No content — drop the empty table.
+                                continue
+                            _hdr = [
+                                _pdf_safe_text(
+                                    str(c) if c is not None else '')
+                                for c in _tbl_data[0]
+                            ]
+                            _fallback_story.append(
+                                Paragraph(_pdf_safe_text(_fb_notice),
+                                          _fb_notice_style))
+                            _fallback_story.append(Spacer(1, 4))
+                            _row_count_fb = max(0, len(_tbl_data) - 1)
+                            _col_count_fb = len(_hdr)
+                            try:
+                                print(
+                                    '[PDF-DIAG] route=api_generate_pdf '
+                                    'section=fallback '
+                                    f'flowable_index={_fb_idx} '
+                                    'flowable_type=Table '
+                                    f'row_count={_row_count_fb} '
+                                    f'col_count={_col_count_fb} '
+                                    'fallback=bullets',
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
+                            for _ri, _r in enumerate(_tbl_data[1:], 1):
+                                if not isinstance(_r, (list, tuple)):
+                                    _r = [_r]
+                                # Emit a "## row_n" key/value block.
+                                _fallback_story.append(Paragraph(
+                                    _pdf_safe_text(f'#{_ri}'),
+                                    _fb_para_style))
+                                for _ci, _cell in enumerate(_r):
+                                    _label = (_hdr[_ci]
+                                              if _ci < len(_hdr) else '')
+                                    _val = (str(_cell)
+                                            if _cell is not None else '')
+                                    # Render Paragraph cells as their
+                                    # text content so the fallback
+                                    # body is plain text only.
+                                    if hasattr(_cell, 'text'):
+                                        try:
+                                            _val = (getattr(_cell, 'text',
+                                                            None)
+                                                    or _val)
+                                        except Exception:
+                                            pass
+                                    if not _label.strip() and not _val.strip():
+                                        continue
+                                    _line = (f'<b>{_pdf_safe_text(_label)}'
+                                             f'</b>: '
+                                             f'{_pdf_safe_text(_val)}')
+                                    try:
+                                        _fallback_story.append(
+                                            Paragraph(_line,
+                                                      _fb_para_style))
+                                    except Exception:
+                                        # If even Paragraph rejects
+                                        # this line, fall back to a
+                                        # plain-text Paragraph with
+                                        # ampersands escaped.
+                                        _safe_line = (
+                                            _pdf_safe_text(
+                                                f'{_label}: {_val}')
+                                            .replace('&', '&amp;')
+                                            .replace('<', '&lt;')
+                                            .replace('>', '&gt;'))
+                                        try:
+                                            _fallback_story.append(
+                                                Paragraph(
+                                                    _safe_line,
+                                                    _fb_para_style))
+                                        except Exception:
+                                            pass
+                                _fallback_story.append(Spacer(1, 6))
+                            _fb_replaced += 1
+                        except Exception as _fb_te:
+                            print(
+                                '[PDF-BUILD] fallback: table_index='
+                                f'{_fb_idx} replacement_failed: '
+                                f'{_fb_te}',
+                                flush=True,
+                            )
+                            try:
+                                _fallback_story.append(Paragraph(
+                                    _pdf_safe_text(_fb_notice),
+                                    _fb_notice_style))
+                            except Exception:
+                                pass
+                    else:
+                        _fallback_story.append(_fl)
+                _fallback_story = _sanitize_pdf_story(_fallback_story)
+                print(
+                    '[PDF-BUILD] bullet fallback: '
+                    f'tables_replaced={_fb_replaced}',
+                    flush=True,
+                )
+                # Fresh buffer + fresh SimpleDocTemplate for the
+                # bullet-fallback pass.
+                try:
+                    buffer.close()
+                except Exception:
+                    pass
+                buffer = BytesIO()
+                doc = SimpleDocTemplate(
+                    buffer,
+                    pagesize=A4,
+                    rightMargin=1.5*cm,
+                    leftMargin=1.5*cm,
+                    topMargin=2.8*cm,
+                    bottomMargin=2.4*cm,
+                )
+                try:
+                    doc.build(
+                        _fallback_story,
+                        onFirstPage=_on_page_combined,
+                        onLaterPages=_on_page_combined,
+                    )
+                except Exception as _re3:
+                    # Last resort — propagate so the outer handler
+                    # returns the controlled 500 with reason=
+                    # pdf_render_failed (no raw traceback leakage).
+                    print(
+                        '[PDF-BUILD] bullet fallback also failed: '
+                        f'{type(_re3).__name__}: {_re3}',
+                        flush=True,
+                    )
+                    raise
         buffer.seek(0)
         
         from flask import send_file
