@@ -19981,6 +19981,16 @@ _DATA_ROADMAP_BALANCE_TOPICS = {
         'breach notification', 'breach reporting',
         'data breach notification', 'incident notification',
     ),
+    # PR-5B.9S fix — PDPL personal-data classification was missing
+    # from PR-5B.9S's registry. Detection only — tokens are token-
+    # specific (not generic "data classification") so they cannot
+    # be satisfied by unrelated phrasings.
+    'personal_data_classification': (
+        'تصنيف البيانات الشخصية', 'تصنيف بيانات شخصية',
+        'تصنيف البيانات', 'تصنيف الأصول البياناتية',
+        'personal data classification', 'personal-data classification',
+        'pii classification', 'data classification',
+    ),
 }
 
 # Which balance topics each framework requires. NDMO selection requires
@@ -19989,7 +19999,8 @@ _DATA_ROADMAP_BALANCE_TOPICS = {
 _DATA_ROADMAP_BALANCE_BY_FRAMEWORK = {
     'NDMO': ('data_quality', 'data_catalog', 'data_lifecycle'),
     'PDPL': ('privacy_governance', 'consent_management',
-             'data_subject_rights', 'breach_notification'),
+             'data_subject_rights', 'personal_data_classification',
+             'breach_notification'),
 }
 
 
@@ -24379,7 +24390,29 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         'cycles': [],
         'synth_status': {},
     }
-    initial = _final_strategy_audit(sections, lang, doc_subtype)
+    # PR-5B.9S fix — surface selected-framework / domain / org-structure
+    # context so per-framework audit branches (e.g. Data Management
+    # roadmap balance, structural-gap / governance-setup, selected-
+    # framework coverage) fire during convergence repair cycles, not
+    # only at the post-normalization save gate. Without this threading
+    # the convergence loop reports ``converged=True`` on the generic
+    # richness counts while the per-framework defects remain — they
+    # then trigger a hard 422 at the post-normalization audit with no
+    # repair attempt. Reuses values already present in ``ctx`` (no new
+    # call-site contract).
+    _audit_selected_fws = ctx.get('frameworks', []) or []
+    _audit_org_struct_none = bool(ctx.get('org_structure_is_none', False))
+
+    def _audit():
+        return _final_strategy_audit(
+            sections, lang, doc_subtype,
+            synth_status=log.get('synth_status'),
+            selected_frameworks=_audit_selected_fws,
+            domain=domain,
+            org_structure_is_none=_audit_org_struct_none,
+        )
+
+    initial = _audit()
     log['initial_defects'] = [(s, t, c, m) for s, t, c, m in initial]
     if not initial:
         log['converged'] = True
@@ -24391,8 +24424,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         cycle = {'before': prev_defect_count, 'repairs': []}
 
         # Group failing sections to know which synths to re-invoke
-        failing_keys = {d[0] for d in
-                        _final_strategy_audit(sections, lang, doc_subtype)}
+        failing_keys = {d[0] for d in _audit()}
         if not failing_keys:
             # PR-5B.5F1: same fail-closed guard as the post-cycle
             # re-audit branch below — do not claim convergence if a
@@ -24649,7 +24681,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 cycle['repairs'].append(f'confidence_failed:{_e}')
 
         # Re-audit after this cycle's repairs.
-        post = _final_strategy_audit(sections, lang, doc_subtype)
+        post = _audit()
         cycle['after'] = len(post)
         log['cycles'].append(cycle)
 
@@ -24685,8 +24717,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
     if not log['converged'] and not log['final_defects']:
         # Reached max_iter still failing — capture final state.
         log['final_defects'] = [
-            (s, t, c, m) for s, t, c, m
-            in _final_strategy_audit(sections, lang, doc_subtype)
+            (s, t, c, m) for s, t, c, m in _audit()
         ]
     return log
 
@@ -39826,6 +39857,300 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 '[ROADMAP-GOVERNANCE-SETUP-REPAIR] '
                                 f'non-fatal: {_rgxe}',
+                                flush=True,
+                            )
+
+                    # ── PR-5B.9S fix — Data Management roadmap-balance
+                    # repair. When the domain is Data Management and
+                    # NDMO and/or PDPL is among the selected frameworks,
+                    # the roadmap MUST cover balance topics beyond
+                    # office setup (data quality / data catalog &
+                    # metadata / data lifecycle for NDMO; privacy
+                    # governance / consent / DSR / personal-data
+                    # classification / breach notification for PDPL).
+                    # ``_compute_missing_data_roadmap_balance_topics``
+                    # surfaces the gap via the
+                    # ``data_roadmap_balance_missing`` defect, but the
+                    # generic ``synthesize_roadmap_depth`` repair has
+                    # no prompt addendum naming these families and
+                    # therefore keeps regenerating the same office-
+                    # only output. This dedicated pass issues ONE
+                    # composite ``ai_repair_strategy_section('roadmap',
+                    # …)`` call whose ``validation_error`` enumerates
+                    # the uncovered families so the AI repairs the
+                    # roadmap holistically. Runs AFTER
+                    # ``ROADMAP-GOVERNANCE-SETUP-REPAIR`` so the
+                    # governance/setup rows that pass already added
+                    # are preserved, and BEFORE the post-normalization
+                    # re-audit so the gate sees a balanced roadmap.
+                    # AI-first only — no deterministic balance rows
+                    # are inserted; on RepairError, empty response, or
+                    # a candidate that still leaves any required
+                    # balance family uncovered, the original roadmap
+                    # text is restored and ``synth_failed:roadmap`` is
+                    # marked so the post-normalization audit blocks
+                    # the save (422).
+                    if doc_subtype != 'board':
+                        try:
+                            _rb_dcode = ''
+                            try:
+                                _rb_dcode = (
+                                    normalize_domain(domain or '') or '')
+                            except Exception:  # noqa: BLE001 — defensive
+                                _rb_dcode = ''
+                            if (_rb_dcode.strip().lower() == 'data'
+                                    and _frameworks_raw):
+                                _rb_before = (
+                                    sections.get('roadmap', '') or '')
+                                _rb_missing = (
+                                    _compute_missing_data_roadmap_balance_topics(
+                                        _rb_before,
+                                        selected_frameworks=_frameworks_raw,
+                                        lang=lang,
+                                    ))
+                                if _rb_missing:
+                                    print(
+                                        '[ROADMAP-BALANCE-REPAIR] '
+                                        f'missing={_rb_missing} '
+                                        f'frameworks={list(_frameworks_raw)}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _rb_dctx = (
+                                            get_strategy_domain_context(
+                                                domain))
+                                    except Exception as _rbdce:
+                                        print(
+                                            '[ROADMAP-BALANCE-REPAIR] '
+                                            'domain_context_failed: '
+                                            f'{_rbdce}',
+                                            flush=True,
+                                        )
+                                        _rb_dctx = None
+                                    if _rb_dctx is not None:
+                                        try:
+                                            _rb_dctx = dict(_rb_dctx)
+                                            _rb_dctx[
+                                                'selected_frameworks'] = (
+                                                list(_frameworks_raw)
+                                                if isinstance(
+                                                    _frameworks_raw,
+                                                    (list, tuple))
+                                                else (
+                                                    [str(_frameworks_raw)]
+                                                    if _frameworks_raw
+                                                    else []))
+                                        except Exception:
+                                            pass
+                                        # Human-readable family names for
+                                        # the prompt so the AI knows
+                                        # exactly which capabilities to
+                                        # add as additional roadmap
+                                        # activities. Mapping preserved
+                                        # locally so the helper registry
+                                        # stays the single source of
+                                        # truth for token matching.
+                                        _RB_LABEL = {
+                                            'data_quality': (
+                                                'Data Quality / إدارة '
+                                                'جودة البيانات'),
+                                            'data_catalog': (
+                                                'Data Catalog & Metadata '
+                                                'Management / كتالوج '
+                                                'البيانات والبيانات '
+                                                'الوصفية'),
+                                            'data_lifecycle': (
+                                                'Data Lifecycle, Retention '
+                                                '& Disposal / دورة حياة '
+                                                'البيانات والاحتفاظ '
+                                                'والإتلاف'),
+                                            'privacy_governance': (
+                                                'Privacy Governance / '
+                                                'حوكمة الخصوصية وحماية '
+                                                'البيانات الشخصية'),
+                                            'consent_management': (
+                                                'Consent Management / '
+                                                'إدارة الموافقات'),
+                                            'data_subject_rights': (
+                                                'Data Subject Rights / '
+                                                'حقوق صاحب البيانات '
+                                                '(الوصول/التصحيح/الحذف)'),
+                                            'personal_data_classification': (
+                                                'Personal Data '
+                                                'Classification / تصنيف '
+                                                'البيانات الشخصية'),
+                                            'breach_notification': (
+                                                'Personal-Data Breach '
+                                                'Notification / الإبلاغ '
+                                                'عن انتهاكات البيانات '
+                                                'الشخصية'),
+                                        }
+                                        _rb_named = ', '.join(
+                                            _RB_LABEL.get(f, f)
+                                            for f in _rb_missing)
+                                        _rb_ve_msg = (
+                                            'Roadmap is missing required '
+                                            'Data Management balance '
+                                            'topics for the selected '
+                                            'framework(s) '
+                                            + ', '.join(str(f) for f
+                                                        in _frameworks_raw)
+                                            + '. Uncovered capability '
+                                            'families that MUST appear '
+                                            'as distinct, substantive '
+                                            'roadmap activities (in '
+                                            'addition to office / CDO / '
+                                            'committee / operating-model '
+                                            'setup): '
+                                            + _rb_named
+                                            + '. Add one explicit roadmap '
+                                            'row per uncovered family '
+                                            'with explicit Owner, '
+                                            'Timeframe, and Deliverable '
+                                            'columns. Vague phrasing '
+                                            'such as "تعزيز إدارة '
+                                            'البيانات" or "تحسين الحوكمة" '
+                                            'is NOT acceptable; each '
+                                            'family must be named '
+                                            'literally (e.g. "إطلاق '
+                                            'برنامج إدارة جودة البيانات", '
+                                            '"بناء كتالوج البيانات '
+                                            'والبيانات الوصفية", '
+                                            '"إدارة الموافقات", '
+                                            '"تفعيل حقوق صاحب '
+                                            'البيانات", "تصنيف '
+                                            'البيانات الشخصية", '
+                                            '"الإبلاغ عن انتهاكات '
+                                            'البيانات"). Preserve every '
+                                            'existing roadmap row '
+                                            '(including office/CDO/'
+                                            'committee/operating-model '
+                                            'setup); do not weaken any '
+                                            'other row.'
+                                        )
+                                        try:
+                                            _rb_new = (
+                                                ai_repair_strategy_section(
+                                                    section_key='roadmap',
+                                                    sections=sections,
+                                                    lang=lang,
+                                                    domain_context=(
+                                                        _rb_dctx),
+                                                    org_name=org_name,
+                                                    sector=_model_sector,
+                                                    maturity=maturity,
+                                                    generation_mode=(
+                                                        _generation_mode),
+                                                    validation_error=(
+                                                        _rb_ve_msg),
+                                                    org_structure_is_none=(
+                                                        bool(
+                                                            _final_ctx.get(
+                                                                'org_structure_is_none',
+                                                                False)
+                                                            if isinstance(
+                                                                _final_ctx,
+                                                                dict)
+                                                            else False)),
+                                                ))
+                                            if _rb_new and _rb_new.strip():
+                                                # Validate: candidate
+                                                # must preserve the min
+                                                # roadmap-row floor AND
+                                                # leave no balance
+                                                # family uncovered. If
+                                                # either fails, restore
+                                                # original and mark
+                                                # synth_failed:roadmap.
+                                                _rb_new_rows = (
+                                                    _count_substantive_roadmap_rows(
+                                                        _rb_new))
+                                                _rb_still_missing = (
+                                                    _compute_missing_data_roadmap_balance_topics(
+                                                        _rb_new,
+                                                        selected_frameworks=(
+                                                            _frameworks_raw),
+                                                        lang=lang,
+                                                    ))
+                                                if (_rb_new_rows
+                                                        >= _RICHNESS_MIN_ROADMAP_ROWS
+                                                        and not
+                                                        _rb_still_missing):
+                                                    sections['roadmap'] = (
+                                                        _rb_new)
+                                                    print(
+                                                        '[ROADMAP-BALANCE-'
+                                                        'REPAIR] accepted '
+                                                        f'rows={_rb_new_rows}'
+                                                        f'/{_RICHNESS_MIN_ROADMAP_ROWS}'
+                                                        ' missing_after=[]',
+                                                        flush=True,
+                                                    )
+                                                else:
+                                                    sections['roadmap'] = (
+                                                        _rb_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        'roadmap',
+                                                        Exception(
+                                                            'data_roadmap_'
+                                                            'balance_unmet '
+                                                            'rows='
+                                                            f'{_rb_new_rows}'
+                                                            ' still_missing='
+                                                            f'{_rb_still_missing}'
+                                                        ))
+                                                    print(
+                                                        '[ROADMAP-BALANCE-'
+                                                        'REPAIR] rejected '
+                                                        f'rows={_rb_new_rows}'
+                                                        f'/{_RICHNESS_MIN_ROADMAP_ROWS}'
+                                                        ' still_missing='
+                                                        f'{_rb_still_missing}'
+                                                        ' — restored '
+                                                        'original roadmap',
+                                                        flush=True,
+                                                    )
+                                            else:
+                                                sections['roadmap'] = (
+                                                    _rb_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    'roadmap',
+                                                    Exception(
+                                                        'data_roadmap_'
+                                                        'balance_empty_'
+                                                        'repair'))
+                                                print(
+                                                    '[ROADMAP-BALANCE-'
+                                                    'REPAIR] '
+                                                    'empty_response — '
+                                                    'restored original',
+                                                    flush=True,
+                                                )
+                                        except RepairError as _rbre:
+                                            sections['roadmap'] = (
+                                                _rb_before)
+                                            _mark_synth_failed(
+                                                _synth_status, 'roadmap',
+                                                _rbre)
+                                            print(
+                                                '[ROADMAP-BALANCE-REPAIR] '
+                                                f'repair_failed err='
+                                                f'{_rbre}',
+                                                flush=True,
+                                            )
+                                        except Exception as _rbre2:
+                                            print(
+                                                '[ROADMAP-BALANCE-REPAIR] '
+                                                f'repair_unexpected err='
+                                                f'{_rbre2}',
+                                                flush=True,
+                                            )
+                        except Exception as _rbxe:
+                            print(
+                                '[ROADMAP-BALANCE-REPAIR] '
+                                f'non-fatal: {_rbxe}',
                                 flush=True,
                             )
 

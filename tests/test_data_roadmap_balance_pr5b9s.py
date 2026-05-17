@@ -76,7 +76,7 @@ _OFFICE_ONLY_ROADMAP_AR = (
     '| 3 | اعتماد نموذج التشغيل وخطوط الرفع | operating model |\n'
 )
 
-# Balanced roadmap — covers office setup PLUS all 7 balance topics.
+# Balanced roadmap — covers office setup PLUS all 8 balance topics.
 _BALANCED_ROADMAP_AR = _OFFICE_ONLY_ROADMAP_AR + (
     '| 4 | إطلاق برنامج إدارة جودة البيانات | data quality program |\n'
     '| 5 | بناء كتالوج البيانات وإدارة البيانات الوصفية | metadata |\n'
@@ -84,7 +84,8 @@ _BALANCED_ROADMAP_AR = _OFFICE_ONLY_ROADMAP_AR + (
     '| 7 | تفعيل حوكمة الخصوصية وحماية البيانات الشخصية | privacy |\n'
     '| 8 | إدارة الموافقات لأصحاب البيانات | consent management |\n'
     '| 9 | تفعيل حقوق صاحب البيانات والاستجابة | data subject rights |\n'
-    '| 10 | إجراءات الإبلاغ عن الانتهاكات | breach notification |\n'
+    '| 10 | اعتماد تصنيف البيانات الشخصية | personal data classification |\n'
+    '| 11 | إجراءات الإبلاغ عن الانتهاكات | breach notification |\n'
 )
 
 
@@ -93,11 +94,13 @@ class TestDataRoadmapBalanceHelper(unittest.TestCase):
     def test_office_only_roadmap_missing_all_ndmo_pdpl_families(self):
         missing = _APP._compute_missing_data_roadmap_balance_topics(
             _OFFICE_ONLY_ROADMAP_AR, ['NDMO', 'PDPL'], lang='ar')
-        # All 7 families are missing.
+        # All 8 families are missing (PR-5B.9S fix added
+        # personal_data_classification under PDPL).
         self.assertEqual(set(missing), {
             'data_quality', 'data_catalog', 'data_lifecycle',
             'privacy_governance', 'consent_management',
-            'data_subject_rights', 'breach_notification',
+            'data_subject_rights', 'personal_data_classification',
+            'breach_notification',
         }, f'unexpected missing set: {missing}')
 
     @_skip_if_no_app
@@ -123,7 +126,8 @@ class TestDataRoadmapBalanceHelper(unittest.TestCase):
             _OFFICE_ONLY_ROADMAP_AR, ['PDPL'], lang='ar')
         self.assertEqual(set(missing), {
             'privacy_governance', 'consent_management',
-            'data_subject_rights', 'breach_notification',
+            'data_subject_rights', 'personal_data_classification',
+            'breach_notification',
         }, f'PDPL-only missing set wrong: {missing}')
 
     @_skip_if_no_app
@@ -153,7 +157,8 @@ class TestDataRoadmapBalanceHelper(unittest.TestCase):
             '| 5 | Privacy governance |\n'
             '| 6 | Consent management |\n'
             '| 7 | Data subject rights program |\n'
-            '| 8 | Breach notification procedure |\n'
+            '| 8 | Personal data classification scheme |\n'
+            '| 9 | Breach notification procedure |\n'
         )
         missing = _APP._compute_missing_data_roadmap_balance_topics(
             en_road, ['NDMO', 'PDPL'], lang='en')
