@@ -19605,6 +19605,27 @@ _DOMAIN_SPECIALIZED_FUNCTION_CONCEPTS = {
             'data steward', 'data owner', 'أمناء البيانات',
             'مالكي البيانات', 'مسؤول البيانات', 'الأدوار والمسؤوليات',
             'roles and responsibilities', 'raci',
+            # PR-5B.9Q — explicit ownership wording (ملكية البيانات / data
+            # ownership) so the Data domain Pillar 1 governance check
+            # accepts ownership-focused phrasings without requiring the
+            # exact "مالكي البيانات" token. Mirrors the spec's accepted-
+            # concept list (أمناء البيانات / ملكية البيانات).
+            'ملكية البيانات', 'data ownership',
+        ),
+        # PR-5B.9Q — Data operating-model family. Pillar 1 / roadmap
+        # governance-setup checks accept any of these tokens as evidence
+        # the Data Management operating model + reporting lines have
+        # been named, matching the AI/DT widening from PR-5B.9K/9L so
+        # the three obligations (Vision SO, Pillar 1, Roadmap) speak
+        # with one voice. Detection only — no deterministic content
+        # is inserted anywhere.
+        'operating_model': (
+            'نموذج تشغيل إدارة البيانات',
+            'نموذج تشغيل البيانات',
+            'data management operating model',
+            'data operating model',
+            'نموذج التشغيل', 'operating model',
+            'خطوط الرفع', 'reporting lines',
         ),
     },
     'ai': {
@@ -22410,8 +22431,28 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             ("data_quality", ["جودة البيانات"],
              ["data quality"]),
             ("data_catalog", ["كتالوج البيانات", "بيانات وصفية",
-                                "ميتاداتا"],
+                                "ميتاداتا", "البيانات الوصفية"],
              ["data catalog", "metadata"]),
+            # PR-5B.9Q — NDMO traceability depth. The scope statement
+            # ("NDMO covers data governance, data quality, data catalog")
+            # under-represented stewardship/ownership and lifecycle.
+            # These two families add meaningful traceability rows so
+            # the NDMO matrix maps to ≥3 distinct capability families
+            # (governance / quality / catalog / stewardship / lifecycle)
+            # whenever the AI-generated body actually mentions them.
+            # Detection only — dash-row suppression at the model layer
+            # still drops rows that would otherwise be empty, so no
+            # deterministic content is invented.
+            ("data_stewardship",
+             ["أمناء البيانات", "مالكي البيانات", "ملكية البيانات",
+              "مسؤول البيانات"],
+             ["data stewardship", "data ownership", "data steward",
+              "data owner"]),
+            ("data_lifecycle",
+             ["دورة حياة البيانات", "تصنيف البيانات",
+              "الاحتفاظ بالبيانات", "إتلاف البيانات"],
+             ["data lifecycle", "data classification",
+              "data retention", "data disposal"]),
         ],
         "required_sections": ["pillars", "environment", "gaps", "roadmap",
                                "kpis"],
