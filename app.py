@@ -40342,6 +40342,573 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 flush=True,
                             )
 
+                    # ── PR-5B.9T: Data framework coverage repair pass ────
+                    # AI-first repair for ``selected_framework_coverage_
+                    # missing:<FW>:<family>`` defects scoped to Data
+                    # Management strategies that selected NDMO and/or
+                    # PDPL. The generic ``[FW-COVERAGE-REPAIR]`` pass
+                    # runs much earlier (before the PR-5B.9K/9P/9R/9S
+                    # Data passes for pillars/gaps/roadmap), so any
+                    # NDMO/PDPL family content it added can be silently
+                    # overwritten by the later passes that rebuild the
+                    # pillars/gaps/roadmap sections holistically. This
+                    # pass runs AFTER ``[ROADMAP-BALANCE-REPAIR]`` and
+                    # ``[ENVIRONMENT-FRAMEWORK-REPAIR]`` and BEFORE the
+                    # post-normalization re-audit so the audit sees a
+                    # roadmap/pillars/gaps/kpis/confidence/environment
+                    # that actually names every NDMO/PDPL capability
+                    # family. AI-first only — no deterministic strategy
+                    # rows are inserted; on RepairError, empty
+                    # response, or a candidate that still leaves the
+                    # repaired section's targeted families uncovered,
+                    # the original section text is restored and
+                    # ``synth_failed:<section>`` is marked so the post-
+                    # normalization audit blocks the save (422).
+                    if doc_subtype != 'board' and _frameworks_raw:
+                        try:
+                            _dfc_dcode = ''
+                            try:
+                                _dfc_dcode = (
+                                    normalize_domain(domain or '') or '')
+                            except Exception:  # noqa: BLE001 — defensive
+                                _dfc_dcode = ''
+                            _dfc_resolved_fw = []
+                            if _dfc_dcode.strip().lower() == 'data':
+                                try:
+                                    _dfc_resolved_fw = (
+                                        _resolve_selected_frameworks(
+                                            _frameworks_raw,
+                                            domain='Data Management')
+                                        or [])
+                                except Exception:  # noqa: BLE001
+                                    _dfc_resolved_fw = []
+                            _dfc_trigger = (
+                                _dfc_dcode.strip().lower() == 'data'
+                                and (
+                                    'NDMO' in _dfc_resolved_fw
+                                    or 'PDPL' in _dfc_resolved_fw))
+                            if _dfc_trigger:
+                                _dfc_missing = (
+                                    _compute_missing_selected_framework_coverage(
+                                        sections, _frameworks_raw,
+                                        domain=domain, lang=lang,
+                                    ))
+                                # Only act on NDMO/PDPL defects; leave
+                                # any other framework (defensive — e.g.
+                                # DCC selected alongside) to the
+                                # generic FW-COVERAGE-REPAIR pass.
+                                _dfc_missing = [
+                                    (fw, fam, sk) for fw, fam, sk
+                                    in (_dfc_missing or [])
+                                    if fw in ('NDMO', 'PDPL')
+                                ]
+                                if _dfc_missing:
+                                    # Per-family AR/EN concept catalog
+                                    # (problem statement Part B). The
+                                    # AI repair prompt names these
+                                    # tokens explicitly so the model
+                                    # writes content that satisfies
+                                    # ``_compute_missing_selected_
+                                    # framework_coverage`` afterwards.
+                                    _DFC_FAMILY_TOKENS = {
+                                        # NDMO families
+                                        ('NDMO', 'data_governance'): {
+                                            'ar': [
+                                                'حوكمة البيانات',
+                                                'سياسات حوكمة البيانات',
+                                                'مكتب إدارة البيانات',
+                                            ],
+                                            'en': [
+                                                'data governance',
+                                                'data governance policy',
+                                                'data management office',
+                                            ],
+                                        },
+                                        ('NDMO', 'data_quality'): {
+                                            'ar': [
+                                                'جودة البيانات',
+                                                'دقة البيانات',
+                                                'اكتمال البيانات',
+                                                'اتساق البيانات',
+                                            ],
+                                            'en': [
+                                                'data quality',
+                                                'accuracy',
+                                                'completeness',
+                                                'consistency',
+                                            ],
+                                        },
+                                        ('NDMO', 'data_catalog'): {
+                                            'ar': [
+                                                'كتالوج البيانات',
+                                                'البيانات الوصفية',
+                                                'الميتاداتا',
+                                            ],
+                                            'en': [
+                                                'data catalog',
+                                                'metadata',
+                                            ],
+                                        },
+                                        ('NDMO', 'data_stewardship'): {
+                                            'ar': [
+                                                'أمناء البيانات',
+                                                'مشرفو البيانات',
+                                                'ملاك البيانات',
+                                                'ملكية البيانات',
+                                            ],
+                                            'en': [
+                                                'data stewards',
+                                                'data owners',
+                                                'data ownership',
+                                                'stewardship',
+                                            ],
+                                        },
+                                        ('NDMO', 'data_lifecycle'): {
+                                            'ar': [
+                                                'دورة حياة البيانات',
+                                                'إدارة دورة حياة البيانات',
+                                                'الاحتفاظ والأرشفة والإتلاف',
+                                                'سياسات الاحتفاظ بالبيانات',
+                                                'تصنيف وتخزين وإتلاف البيانات',
+                                            ],
+                                            'en': [
+                                                'data lifecycle',
+                                                'data lifecycle management',
+                                                'retention',
+                                                'archival',
+                                                'disposal',
+                                                'data retention policy',
+                                            ],
+                                        },
+                                        # PDPL families
+                                        ('PDPL', 'privacy_governance'): {
+                                            'ar': [
+                                                'حوكمة الخصوصية',
+                                                'سياسات الخصوصية',
+                                                'حماية البيانات الشخصية',
+                                            ],
+                                            'en': [
+                                                'privacy governance',
+                                                'privacy policy',
+                                                'personal data protection',
+                                            ],
+                                        },
+                                        ('PDPL', 'consent_management'): {
+                                            'ar': [
+                                                'إدارة الموافقات',
+                                                'موافقات أصحاب البيانات',
+                                                'الموافقة الصريحة',
+                                            ],
+                                            'en': [
+                                                'consent management',
+                                                'consent records',
+                                                'explicit consent',
+                                            ],
+                                        },
+                                        ('PDPL', 'data_subject_rights'): {
+                                            'ar': [
+                                                'حقوق صاحب البيانات',
+                                                'حقوق أصحاب البيانات',
+                                                'حق الوصول',
+                                                'حق التصحيح',
+                                                'حق الحذف',
+                                            ],
+                                            'en': [
+                                                'data subject rights',
+                                                'access request',
+                                                'rectification',
+                                                'erasure',
+                                            ],
+                                        },
+                                        ('PDPL',
+                                         'data_classification_pdpl'): {
+                                            'ar': [
+                                                'تصنيف البيانات الشخصية',
+                                                'تصنيف البيانات الحساسة',
+                                                'تصنيف ومعالجة البيانات الشخصية',
+                                            ],
+                                            'en': [
+                                                'personal data classification',
+                                                'sensitive personal data classification',
+                                                'data classification',
+                                            ],
+                                        },
+                                        ('PDPL',
+                                         'personal_data_classification'): {
+                                            'ar': [
+                                                'تصنيف البيانات الشخصية',
+                                                'تصنيف البيانات الحساسة',
+                                                'تصنيف ومعالجة البيانات الشخصية',
+                                            ],
+                                            'en': [
+                                                'personal data classification',
+                                                'sensitive personal data classification',
+                                                'data classification',
+                                            ],
+                                        },
+                                        ('PDPL', 'breach_notification'): {
+                                            'ar': [
+                                                'الإبلاغ عن الانتهاكات',
+                                                'إخطار الخروقات',
+                                                'إخطار تسرب البيانات',
+                                                'الإبلاغ عن خرق البيانات',
+                                            ],
+                                            'en': [
+                                                'breach notification',
+                                                'breach reporting',
+                                                'data breach notification',
+                                            ],
+                                        },
+                                    }
+                                    # Per-section narrative guidance
+                                    # (problem statement Part C).
+                                    _DFC_SECTION_GUIDANCE = {
+                                        'environment': (
+                                            'Environment / Regulatory '
+                                            'Context MUST explicitly name '
+                                            'NDMO and PDPL and describe '
+                                            'NDMO data governance, data '
+                                            'quality, catalog/metadata, '
+                                            'and data lifecycle '
+                                            'obligations alongside PDPL '
+                                            'privacy, consent, data '
+                                            'subject rights, personal '
+                                            'data classification, and '
+                                            'breach notification '
+                                            'obligations.'),
+                                        'pillars': (
+                                            'Pillars MUST include NDMO '
+                                            'pillars/initiatives for '
+                                            'data governance, data '
+                                            'quality, data catalog & '
+                                            'metadata, and data '
+                                            'lifecycle/stewardship; AND '
+                                            'PDPL privacy / consent / '
+                                            'data subject rights / '
+                                            'breach notification / '
+                                            'personal-data classification '
+                                            'initiatives (either '
+                                            'embedded in existing pillars '
+                                            'or as a dedicated privacy '
+                                            'pillar).'),
+                                        'gaps': (
+                                            'Gaps MUST include explicit '
+                                            'rows for missing/weak data '
+                                            'lifecycle, catalog/metadata, '
+                                            'data quality, privacy '
+                                            'governance, consent '
+                                            'management, data subject '
+                                            'rights, breach '
+                                            'notification, and personal '
+                                            'data classification — each '
+                                            'as a distinct gap row.'),
+                                        'roadmap': (
+                                            'Roadmap MUST include '
+                                            'balanced activities for '
+                                            'data quality, data catalog '
+                                            '/ metadata, data lifecycle, '
+                                            'privacy controls, consent '
+                                            'management, data subject '
+                                            'rights, personal data '
+                                            'classification, and breach '
+                                            'notification — each as a '
+                                            'distinct, substantive '
+                                            'roadmap row with Owner, '
+                                            'Timeframe, and '
+                                            'Deliverable.'),
+                                        'kpis': (
+                                            'KPIs MUST include '
+                                            'measurable KPIs/KRIs for '
+                                            'data quality, catalog '
+                                            'completeness / metadata '
+                                            'completeness, data '
+                                            'lifecycle compliance, '
+                                            'consent management, data '
+                                            'subject rights SLA, breach '
+                                            'notification SLA, and '
+                                            'personal data '
+                                            'classification coverage.'),
+                                        'confidence': (
+                                            'Confidence/Risk MUST '
+                                            'include risks and success '
+                                            'factors for privacy '
+                                            'governance, consent '
+                                            'management, rights '
+                                            'handling, breach '
+                                            'notification, data '
+                                            'lifecycle, and '
+                                            'classification.'),
+                                    }
+                                    # Group missing families per section
+                                    # so ONE AI repair call per section
+                                    # carries ALL its missing families.
+                                    _dfc_by_section = {}
+                                    for _fw_key, _fam_id, _sk in (
+                                            _dfc_missing):
+                                        _dfc_by_section.setdefault(
+                                            _sk, []).append(
+                                            (_fw_key, _fam_id))
+                                    print(
+                                        '[DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                                        f'missing sections='
+                                        f'{list(_dfc_by_section.keys())} '
+                                        f'count={len(_dfc_missing)} '
+                                        f'frameworks={_dfc_resolved_fw}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _dfc_dctx = (
+                                            get_strategy_domain_context(
+                                                domain))
+                                    except Exception as _dfcdce:
+                                        print(
+                                            '[DATA-FRAMEWORK-COVERAGE-'
+                                            'REPAIR] '
+                                            'domain_context_failed: '
+                                            f'{_dfcdce}',
+                                            flush=True,
+                                        )
+                                        _dfc_dctx = None
+                                    if _dfc_dctx is not None:
+                                        try:
+                                            _dfc_dctx = dict(_dfc_dctx)
+                                            _dfc_dctx[
+                                                'selected_frameworks'] = (
+                                                list(_frameworks_raw)
+                                                if isinstance(
+                                                    _frameworks_raw,
+                                                    (list, tuple))
+                                                else (
+                                                    [str(_frameworks_raw)]
+                                                    if _frameworks_raw
+                                                    else []))
+                                        except Exception:
+                                            pass
+                                        _dfc_osn = bool(
+                                            _final_ctx.get(
+                                                'org_structure_is_none',
+                                                False)
+                                            if isinstance(
+                                                _final_ctx, dict)
+                                            else False)
+                                        # Allowed sections list — guard
+                                        # against unknown keys that
+                                        # ``ai_repair_strategy_section``
+                                        # would reject.
+                                        _dfc_allowed = {
+                                            'environment', 'pillars',
+                                            'gaps', 'roadmap', 'kpis',
+                                            'confidence',
+                                        }
+                                        for _sk, _miss_list in (
+                                                _dfc_by_section.items()):
+                                            if _sk not in _dfc_allowed:
+                                                continue
+                                            _dfc_before = (
+                                                sections.get(_sk, '')
+                                                or '')
+                                            # Build a rich
+                                            # validation_error message
+                                            # naming every uncovered
+                                            # family with its exact
+                                            # AR/EN concept vocabulary.
+                                            _dfc_family_lines = []
+                                            _dfc_target_families = set()
+                                            for _fwk, _famid in _miss_list:
+                                                _dfc_target_families.add(
+                                                    (_fwk, _famid))
+                                                _toks = (
+                                                    _DFC_FAMILY_TOKENS
+                                                    .get((_fwk, _famid)))
+                                                if not _toks:
+                                                    _dfc_family_lines.append(
+                                                        f'- {_fwk}:{_famid}')
+                                                    continue
+                                                _ar_join = '، '.join(
+                                                    _toks.get('ar', []))
+                                                _en_join = ', '.join(
+                                                    _toks.get('en', []))
+                                                _dfc_family_lines.append(
+                                                    f'- {_fwk}:{_famid} '
+                                                    '— Arabic concepts: '
+                                                    f'{_ar_join}; '
+                                                    'English concepts: '
+                                                    f'{_en_join}')
+                                            _dfc_section_guide = (
+                                                _DFC_SECTION_GUIDANCE
+                                                .get(_sk, ''))
+                                            _dfc_ve_msg = (
+                                                'Selected-framework '
+                                                'coverage is missing for '
+                                                'the Data Management '
+                                                f'{_sk} section. The '
+                                                'following NDMO/PDPL '
+                                                'capability families are '
+                                                'not covered anywhere in '
+                                                'the strategy and MUST '
+                                                'be added to this '
+                                                'section using the '
+                                                'literal Arabic/English '
+                                                'concept vocabulary '
+                                                'shown below (do NOT '
+                                                'paraphrase the named '
+                                                'concepts — they are '
+                                                'matched as substrings '
+                                                'by the validator):\n'
+                                                + '\n'.join(
+                                                    _dfc_family_lines)
+                                                + ('\n\n' + _dfc_section_guide
+                                                   if _dfc_section_guide
+                                                   else '')
+                                                + ' Preserve every '
+                                                'existing row, pillar, '
+                                                'KPI, gap, and risk '
+                                                'already in the '
+                                                'section; do not remove '
+                                                'or weaken any other '
+                                                'content. Do not invent '
+                                                'frameworks that are '
+                                                'not in the selected '
+                                                'list. AI-first only — '
+                                                'no placeholders, no '
+                                                'dashy rows.'
+                                            )
+                                            try:
+                                                _dfc_new = (
+                                                    ai_repair_strategy_section(
+                                                        section_key=_sk,
+                                                        sections=sections,
+                                                        lang=lang,
+                                                        domain_context=(
+                                                            _dfc_dctx),
+                                                        org_name=org_name,
+                                                        sector=_model_sector,
+                                                        maturity=maturity,
+                                                        generation_mode=(
+                                                            _generation_mode),
+                                                        validation_error=(
+                                                            _dfc_ve_msg),
+                                                        org_structure_is_none=(
+                                                            _dfc_osn),
+                                                    ))
+                                                if not (_dfc_new
+                                                        and _dfc_new.strip()):
+                                                    sections[_sk] = (
+                                                        _dfc_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        _sk,
+                                                        Exception(
+                                                            'selected_'
+                                                            'framework_'
+                                                            'coverage_'
+                                                            'missing:'
+                                                            'empty_repair'
+                                                        ))
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-REPAIR] '
+                                                        f'section={_sk} '
+                                                        'empty_response '
+                                                        '— restored '
+                                                        'original',
+                                                        flush=True,
+                                                    )
+                                                    continue
+                                                # Substitute candidate
+                                                # in place and re-run
+                                                # the coverage helper
+                                                # against the full
+                                                # sections dict; revert
+                                                # if any of THIS
+                                                # section's targeted
+                                                # families remains
+                                                # globally uncovered.
+                                                sections[_sk] = _dfc_new
+                                                _dfc_still_missing = (
+                                                    _compute_missing_selected_framework_coverage(
+                                                        sections,
+                                                        _frameworks_raw,
+                                                        domain=domain,
+                                                        lang=lang,
+                                                    )) or []
+                                                _dfc_still_targets = {
+                                                    (fw, fam) for fw, fam, _ in
+                                                    _dfc_still_missing
+                                                    if fw in ('NDMO',
+                                                              'PDPL')
+                                                }
+                                                _dfc_unmet = (
+                                                    _dfc_target_families
+                                                    & _dfc_still_targets)
+                                                if _dfc_unmet:
+                                                    sections[_sk] = (
+                                                        _dfc_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        _sk,
+                                                        Exception(
+                                                            'selected_'
+                                                            'framework_'
+                                                            'coverage_'
+                                                            'missing:'
+                                                            + ','.join(
+                                                                f'{fw}:{fam}'
+                                                                for fw, fam
+                                                                in sorted(
+                                                                    _dfc_unmet))
+                                                        ))
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-REPAIR] '
+                                                        f'section={_sk} '
+                                                        'rejected '
+                                                        'unmet='
+                                                        f'{sorted(_dfc_unmet)}'
+                                                        ' — restored '
+                                                        'original',
+                                                        flush=True,
+                                                    )
+                                                else:
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-REPAIR] '
+                                                        f'section={_sk} '
+                                                        'accepted '
+                                                        'targeted='
+                                                        f'{sorted(_dfc_target_families)}',
+                                                        flush=True,
+                                                    )
+                                            except RepairError as _dfcre:
+                                                sections[_sk] = (
+                                                    _dfc_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    _sk, _dfcre)
+                                                print(
+                                                    '[DATA-FRAMEWORK-'
+                                                    'COVERAGE-REPAIR] '
+                                                    f'section={_sk} '
+                                                    f'repair_failed '
+                                                    f'err={_dfcre}',
+                                                    flush=True,
+                                                )
+                                            except Exception as _dfcre2:
+                                                print(
+                                                    '[DATA-FRAMEWORK-'
+                                                    'COVERAGE-REPAIR] '
+                                                    f'section={_sk} '
+                                                    f'repair_unexpected '
+                                                    f'err={_dfcre2}',
+                                                    flush=True,
+                                                )
+                        except Exception as _dfcxe:
+                            print(
+                                '[DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                                f'non-fatal: {_dfcxe}',
+                                flush=True,
+                            )
+
                     # ── POST-NORMALIZATION RE-AUDIT (prompt clause F) ───
                     # The convergence loop ran BEFORE final AR
                     # normalization. If normalization happened to mutate
