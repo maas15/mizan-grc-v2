@@ -11217,25 +11217,39 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
         except Exception:
             return (row[0] if row else '').strip()
 
-    def _find_match(section_key, ar_kws, en_kws):
+    def _find_match(section_key, ar_kws, en_kws, exclude=None):
         sec_text = (content_sections or {}).get(section_key) or ''
+        _ex = {str(x).strip().lower() for x in (exclude or []) if x}
         for tbl in _parse_markdown_tables(sec_text):
             for r in tbl[1:]:
                 blob = ' '.join(r).lower()
                 for kw in (ar_kws or []) + (en_kws or []):
                     if kw and kw.lower() in blob:
-                        return _row_label(r)
+                        lbl = _row_label(r)
+                        if lbl and lbl.strip().lower() in _ex:
+                            # Skip rows whose label has already been
+                            # used in a sibling cell — prevents the
+                            # initiative / KPI / risk columns from
+                            # rendering the exact same phrase.
+                            continue
+                        return lbl
         return None
 
-    def _find_match_any(section_keys, ar_kws, en_kws):
+    def _find_match_any(section_keys, ar_kws, en_kws, exclude=None):
         """PR-5B.9AB — fallback lookup. Try section keys in order;
         return the first match found. Lets PDPL/NDMO rows fill cells
         from secondary sections (e.g., roadmap/KPIs/confidence) when
         the primary section omits the capability. Pure content lookup
         — never invents text.
+
+        PR-5B.9AC — accepts an ``exclude`` set of already-chosen cell
+        labels so initiative / KPI / risk lookups don't return the
+        same row text. Pure subtractive filter; if all candidates are
+        excluded the cell stays empty and the row is dropped by the
+        data-scope no-dash gate downstream.
         """
         for sk in (section_keys or []):
-            hit = _find_match(sk, ar_kws, en_kws)
+            hit = _find_match(sk, ar_kws, en_kws, exclude=exclude)
             if hit:
                 return hit
         return None
@@ -11305,6 +11319,17 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                 # when the primary section is silent. Pure content
                 # lookup — no row is invented; if all fallbacks miss,
                 # the cell stays as dash and the row is dropped below.
+                #
+                # PR-5B.9AC — KPI and Risk lookups exclude labels
+                # already chosen for Initiative / KPI in the same row
+                # so the three columns can't render the same phrase
+                # (e.g. the initiative text leaking into the KPI cell
+                # when the KPI section has no matching row and the
+                # fallback falls back to the roadmap). Gap stays
+                # outside the exclusion set — when only the roadmap
+                # carries a capability, gap and initiative may
+                # legitimately share the same source row label and
+                # dropping initiative would lose the whole row.
                 gap        = (_find_match_any(
                                   ['gaps', 'roadmap', 'kpis',
                                    'pillars', 'confidence'],
@@ -11314,10 +11339,12 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                    'kpis'], ar_kws, en_kws) or dash)
                 kpi        = (_find_match_any(
                                   ['kpis', 'roadmap', 'confidence'],
-                                  ar_kws, en_kws) or dash)
+                                  ar_kws, en_kws,
+                                  exclude=[initiative]) or dash)
                 risk       = (_find_match_any(
                                   ['confidence', 'kpis', 'roadmap'],
-                                  ar_kws, en_kws) or dash)
+                                  ar_kws, en_kws,
+                                  exclude=[initiative, kpi]) or dash)
             else:
                 gap        = _find_match('gaps',       ar_kws, en_kws) or dash
                 initiative = (_find_match('pillars',   ar_kws, en_kws)
@@ -11604,6 +11631,17 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
     # appears in the actual content (word-boundary). Prevents IAM
     # leaking from "data management" via the phrase
     # "data management".
+    #
+    # PR-5B.9AC — disambiguated forbidden acronyms (where the registry
+    # key differs from the display acronym, e.g. ``MDM_MOBILE`` →
+    # display "MDM") share the bare display acronym with a same-domain
+    # legitimate entry (``MDM_MASTER`` → display "MDM" on data). For
+    # those, the bare display acronym in content is NOT sufficient
+    # evidence — the AR expansion or the full EN expansion (with any
+    # trailing ``(ACR)`` stripped) must appear literally. This prevents
+    # Mobile Device Management from leaking into the Data appendix
+    # whenever the data body mentions "MDM" (intended as Master Data
+    # Management).
     if forbidden and used:
         import re as _re_g
         kept = []
@@ -11611,11 +11649,25 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
         for ac, ar, en in used:
             if ac in forbidden:
                 disp_ac = _GLOSSARY_DISPLAY_ACRONYM.get(ac, ac)
+                en_clean_f = _re_g.sub(
+                    r'\s*\([^)]+\)\s*$', '', (en or '')).strip()
+                disambiguated = (disp_ac != ac)
                 _kept = False
-                if _re_g.search(rf'\b{_re_g.escape(disp_ac)}\b', blob_raw):
-                    _kept = True
-                elif ar and ar in blob_raw:
-                    _kept = True
+                if disambiguated:
+                    # Require AR or full EN expansion to be present;
+                    # the bare display acronym is ambiguous.
+                    if ar and ar in blob_raw:
+                        _kept = True
+                    elif en_clean_f and _re_g.search(
+                            rf'(?<![\w]){_re_g.escape(en_clean_f)}(?![\w])',
+                            blob_raw, flags=_re_g.IGNORECASE):
+                        _kept = True
+                else:
+                    if _re_g.search(
+                            rf'\b{_re_g.escape(disp_ac)}\b', blob_raw):
+                        _kept = True
+                    elif ar and ar in blob_raw:
+                        _kept = True
                 if not _kept:
                     continue
             kept.append((ac, ar, en))
