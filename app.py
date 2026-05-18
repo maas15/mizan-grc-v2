@@ -40949,7 +40949,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'for: إدارة دورة حياة '
                                             'البيانات، تصنيف البيانات '
                                             'الشخصية، حوكمة الخصوصية، '
-                                            'إخطار الخروقات.'),
+                                            'إخطار الخروقات. '
+                                            # PR-5B.9X — both phrases
+                                            # verbatim, both breach forms.
+                                            'PR-5B.9X MANDATORY (verbatim, '
+                                            'both phrases required in '
+                                            'this section): '
+                                            '«تصنيف البيانات الشخصية» '
+                                            'AND '
+                                            '«إخطار الخروقات / الإبلاغ '
+                                            'عن الانتهاكات».'),
                                         'gaps': (
                                             'Gaps MUST include explicit '
                                             'rows for missing/weak data '
@@ -40974,7 +40983,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'البيانات، ضعف أو غياب '
                                             'تصنيف البيانات الشخصية، '
                                             'ضعف إخطار الخروقات والإبلاغ '
-                                            'عن الانتهاكات.'),
+                                            'عن الانتهاكات. '
+                                            # PR-5B.9X — both phrases
+                                            # verbatim, both breach forms.
+                                            'PR-5B.9X MANDATORY (verbatim, '
+                                            'both phrases required in '
+                                            'this section): '
+                                            '«تصنيف البيانات الشخصية» '
+                                            'AND '
+                                            '«إخطار الخروقات / الإبلاغ '
+                                            'عن الانتهاكات».'),
                                         'roadmap': (
                                             'Roadmap MUST include '
                                             'balanced activities for '
@@ -41004,7 +41022,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'تطبيق تصنيف البيانات '
                                             'الشخصية، تفعيل إخطار '
                                             'الخروقات والإبلاغ عن '
-                                            'الانتهاكات.'),
+                                            'الانتهاكات. '
+                                            # PR-5B.9X — both phrases
+                                            # verbatim, both breach forms.
+                                            'PR-5B.9X MANDATORY (verbatim, '
+                                            'both phrases required in '
+                                            'this section): '
+                                            '«تصنيف البيانات الشخصية» '
+                                            'AND '
+                                            '«إخطار الخروقات / الإبلاغ '
+                                            'عن الانتهاكات».'),
                                         'kpis': (
                                             'KPIs MUST include '
                                             'measurable KPIs/KRIs for '
@@ -41030,7 +41057,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'الوقت المحدد. The KPIs '
                                             'MUST also include: نسبة '
                                             'الالتزام بسياسات دورة '
-                                            'حياة البيانات.'),
+                                            'حياة البيانات. '
+                                            # PR-5B.9X — both phrases
+                                            # verbatim, both breach forms.
+                                            'PR-5B.9X MANDATORY (verbatim, '
+                                            'both phrases required in '
+                                            'this section): '
+                                            '«تصنيف البيانات الشخصية» '
+                                            'AND '
+                                            '«إخطار الخروقات / الإبلاغ '
+                                            'عن الانتهاكات».'),
                                         'confidence': (
                                             'Confidence/Risk MUST '
                                             'include risks and success '
@@ -41052,7 +41088,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'reference: دورة حياة '
                                             'البيانات، تصنيف البيانات '
                                             'الشخصية، إخطار الخروقات، '
-                                            'حوكمة الخصوصية.'),
+                                            'حوكمة الخصوصية. '
+                                            # PR-5B.9X — both phrases
+                                            # verbatim, both breach forms.
+                                            'PR-5B.9X MANDATORY (verbatim, '
+                                            'both phrases required in '
+                                            'this section): '
+                                            '«تصنيف البيانات الشخصية» '
+                                            'AND '
+                                            '«إخطار الخروقات / الإبلاغ '
+                                            'عن الانتهاكات».'),
                                     }
                                     # Group missing families per section
                                     # so ONE AI repair call per section
@@ -41863,6 +41908,158 @@ The confidence score is based on a comprehensive assessment of the organization'
                         except Exception as _pnae:
                             print(f'[STRATEGY-DIAG] post_normalization_audit_failed: '
                                   f'{_pnae}', flush=True)
+
+                    # ── PR-5B.9X — FINAL PDPL DATA SAVE GUARD ───────────
+                    # Explicit, focused pre-save check that runs after
+                    # every section overwrite, the
+                    # [DATA-FRAMEWORK-COVERAGE-REPAIR] pass, AR
+                    # normalization, the [DATA-FRAMEWORK-COVERAGE-FINAL]
+                    # overwrite guard, and the post-normalization audit.
+                    # Scoped to Data Management strategies that selected
+                    # PDPL. Re-computes the selected-framework coverage
+                    # one last time and fail-closes (422) if any of the
+                    # three PDPL families that have been observed to
+                    # regress at runtime are still missing from any of
+                    # the affected sections (pillars, gaps, roadmap,
+                    # kpis, confidence):
+                    #   • data_classification_pdpl
+                    #   • personal_data_classification
+                    #   • breach_notification
+                    # No deterministic content is inserted; validators
+                    # are not weakened; Cyber / AI / Digital
+                    # Transformation / ERM domains are untouched
+                    # because the guard only activates for
+                    # ``domain == 'data'`` + PDPL.
+                    if doc_subtype != 'board' and _frameworks_raw:
+                        try:
+                            _pr5b9x_dcode = ''
+                            try:
+                                _pr5b9x_dcode = (
+                                    normalize_domain(domain or '') or '')
+                            except Exception:  # noqa: BLE001
+                                _pr5b9x_dcode = ''
+                            _pr5b9x_resolved = []
+                            if (_pr5b9x_dcode.strip().lower()
+                                    == 'data'):
+                                try:
+                                    _pr5b9x_resolved = (
+                                        _resolve_selected_frameworks(
+                                            _frameworks_raw,
+                                            domain='Data Management')
+                                        or [])
+                                except Exception:  # noqa: BLE001
+                                    _pr5b9x_resolved = []
+                            if ('PDPL' in _pr5b9x_resolved):
+                                _PR5B9X_PDPL_TARGETS = {
+                                    'data_classification_pdpl',
+                                    'personal_data_classification',
+                                    'breach_notification',
+                                }
+                                _PR5B9X_SECTIONS = (
+                                    'pillars', 'gaps', 'roadmap',
+                                    'kpis', 'confidence')
+                                _pr5b9x_remaining = (
+                                    _compute_missing_selected_framework_coverage(
+                                        sections, _frameworks_raw,
+                                        domain=domain, lang=lang,
+                                    )) or []
+                                _pr5b9x_pdpl_residual = [
+                                    (fw, fam, sk) for fw, fam, sk
+                                    in _pr5b9x_remaining
+                                    if fw == 'PDPL'
+                                    and fam in _PR5B9X_PDPL_TARGETS
+                                    and sk in _PR5B9X_SECTIONS
+                                ]
+                                # Group by canonical family for the
+                                # human-facing diagnostic so
+                                # ``data_classification_pdpl`` and
+                                # ``personal_data_classification`` show
+                                # up as the same conceptual obligation
+                                # (PR-5B.9V canonicalization).
+                                _pr5b9x_canon_signals = sorted({
+                                    'PDPL:{}'.format(
+                                        _canonicalize_selected_framework_family(
+                                            'PDPL', _f))
+                                    for _, _f, _ in _pr5b9x_pdpl_residual
+                                })
+                                _pr5b9x_raw_signals = sorted({
+                                    'PDPL:{}:{}'.format(_f, _s)
+                                    for _, _f, _s in _pr5b9x_pdpl_residual
+                                })
+                                print(
+                                    '[DATA-PDPL-SAVE-GUARD] '
+                                    f'pdpl_residual='
+                                    f'{_pr5b9x_raw_signals} '
+                                    f'canonical='
+                                    f'{_pr5b9x_canon_signals} '
+                                    f'will_fail='
+                                    f'{bool(_pr5b9x_pdpl_residual)}',
+                                    flush=True,
+                                )
+                                if _pr5b9x_pdpl_residual:
+                                    _pr5b9x_by_sec = {}
+                                    for _fw, _fam, _sk in (
+                                            _pr5b9x_pdpl_residual):
+                                        _pr5b9x_by_sec.setdefault(
+                                            _sk, []).append(_fam)
+                                    _pr5b9x_msg_en = (
+                                        'PDPL Data Management save guard '
+                                        '(PR-5B.9X): personal-data '
+                                        'classification and/or breach '
+                                        'notification coverage is still '
+                                        'missing after all repair passes. '
+                                        'Affected: '
+                                        + '; '.join(
+                                            f'{s}={sorted(set(fams))}'
+                                            for s, fams
+                                            in sorted(
+                                                _pr5b9x_by_sec.items()))
+                                        + '. Please regenerate.'
+                                    )
+                                    _pr5b9x_msg_ar = (
+                                        'حارس الحفظ النهائي للبيانات '
+                                        'الشخصية (PDPL — PR-5B.9X): لا '
+                                        'تزال تغطية تصنيف البيانات '
+                                        'الشخصية و/أو إخطار الخروقات / '
+                                        'الإبلاغ عن الانتهاكات ناقصة بعد '
+                                        'جميع محاولات الإصلاح. الأقسام '
+                                        'المتأثرة: '
+                                        + '؛ '.join(
+                                            f'{s}={sorted(set(fams))}'
+                                            for s, fams
+                                            in sorted(
+                                                _pr5b9x_by_sec.items()))
+                                        + '. يُرجى إعادة التوليد.'
+                                    )
+                                    print(
+                                        '[STRATEGY-GATE] '
+                                        'save_decision=BLOCKED '
+                                        'reason=pdpl_data_save_guard_'
+                                        'pr5b9x '
+                                        f'residual='
+                                        f'{_pr5b9x_raw_signals}',
+                                        flush=True,
+                                    )
+                                    return jsonify({
+                                        'success': False,
+                                        'strategy_id': None,
+                                        'error': (
+                                            _pr5b9x_msg_ar
+                                            if lang == 'ar'
+                                            else _pr5b9x_msg_en),
+                                        'pdpl_save_guard_residual': [
+                                            list(d) for d
+                                            in _pr5b9x_pdpl_residual
+                                        ],
+                                        'pdpl_save_guard_canonical': (
+                                            _pr5b9x_canon_signals),
+                                    }), 422
+                        except Exception as _pr5b9xe:  # noqa: BLE001
+                            print(
+                                '[DATA-PDPL-SAVE-GUARD] '
+                                f'non_fatal: {_pr5b9xe}',
+                                flush=True,
+                            )
 
                     # ── HARD GATE: residual inline duplicates MUST be
                     # zero after collapse. If the collapser failed to
