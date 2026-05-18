@@ -22610,11 +22610,22 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             # Detection only — dash-row suppression at the model layer
             # still drops rows that would otherwise be empty, so no
             # deterministic content is invented.
+            # PR-5B.9Z — widened AR/EN stewardship/ownership vocabulary so
+            # the validator and convergence-stage DFC repair recognise
+            # every natural phrasing of NDMO's data-stewardship
+            # obligation (stewards / owners / ownership / roles /
+            # responsibilities). Detection only — no deterministic
+            # content is invented.
             ("data_stewardship",
-             ["أمناء البيانات", "مالكي البيانات", "ملكية البيانات",
-              "مسؤول البيانات"],
-             ["data stewardship", "data ownership", "data steward",
-              "data owner"]),
+             ["أمناء البيانات", "مشرفو البيانات",
+              "مالكي البيانات", "مالكو البيانات",
+              "ملاك البيانات", "ملكية البيانات",
+              "مسؤول البيانات", "مسؤوليات أمناء البيانات",
+              "أدوار أمناء البيانات"],
+             ["data stewardship", "data ownership",
+              "data steward", "data stewards",
+              "data owner", "data owners",
+              "data owner roles", "data steward responsibilities"]),
             # PR-5B.9W — widened AR/EN vocabulary so the validator
             # accepts every natural Arabic/English phrasing of NDMO's
             # data-lifecycle obligation (retention / archival / disposal
@@ -24903,6 +24914,562 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     return defects
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# PR-5B.9Z — Convergence-stage Data framework coverage + roadmap-balance
+# repair helpers.
+#
+# Runtime diagnosis (problem statement): the existing late
+# ``DATA-FRAMEWORK-COVERAGE-REPAIR`` and ``ROADMAP-BALANCE-REPAIR``
+# passes run AFTER ``converge_strategy_sections``. When convergence
+# fails (selected_framework_coverage_missing / data_roadmap_balance_
+# missing remain or increase), the request is rejected with
+# ``reason=convergence_failed`` BEFORE those late passes can run.
+#
+# These helpers move the AI-first NDMO/PDPL coverage repair INTO the
+# convergence loop so per-cycle audit defects can actually be reduced.
+# They reuse ``ai_repair_strategy_section`` and
+# ``_compute_missing_selected_framework_coverage`` (no deterministic
+# rows, no validator weakening) and fail-closed via the request-scoped
+# ``synth_status`` container when the AI cannot produce a satisfying
+# candidate within two attempts.
+#
+# Section vocabulary mirrors the late DATA-FRAMEWORK-COVERAGE-REPAIR
+# block (~line 40912) so both passes share the exact AR/EN concept list
+# the validator (``_FRAMEWORK_COVERAGE_REQUIREMENTS``) accepts.
+# ────────────────────────────────────────────────────────────────────────────
+
+_CONV_DATAFW_FAMILY_TOKENS = {
+    # NDMO families
+    ('NDMO', 'data_governance'): {
+        'ar': ['حوكمة البيانات', 'سياسات حوكمة البيانات',
+               'مكتب إدارة البيانات'],
+        'en': ['data governance', 'data governance policy',
+               'data management office'],
+    },
+    ('NDMO', 'data_quality'): {
+        'ar': ['جودة البيانات', 'دقة البيانات', 'اكتمال البيانات',
+               'اتساق البيانات'],
+        'en': ['data quality', 'accuracy', 'completeness', 'consistency'],
+    },
+    ('NDMO', 'data_catalog'): {
+        'ar': ['كتالوج البيانات', 'البيانات الوصفية', 'الميتاداتا'],
+        'en': ['data catalog', 'metadata'],
+    },
+    # PR-5B.9Z — full stewardship/ownership vocabulary (problem
+    # statement Part B). Exact AR/EN phrases required by the
+    # validator are listed here so the AI repair prompt names every
+    # accepted token; the validator (`_FRAMEWORK_COVERAGE_REQUIREMENTS`
+    # `data_stewardship` tokens) matches any one of them as a
+    # substring.
+    ('NDMO', 'data_stewardship'): {
+        'ar': ['أمناء البيانات', 'مشرفو البيانات',
+               'ملاك البيانات', 'مالكو البيانات',
+               'ملكية البيانات',
+               'مسؤوليات أمناء البيانات',
+               'أدوار أمناء البيانات'],
+        'en': ['data stewards', 'data stewardship',
+               'data owners', 'data ownership',
+               'data owner roles',
+               'data steward responsibilities'],
+    },
+    ('NDMO', 'data_lifecycle'): {
+        'ar': ['دورة حياة البيانات', 'إدارة دورة حياة البيانات',
+               'الاحتفاظ والأرشفة والإتلاف',
+               'سياسات الاحتفاظ بالبيانات',
+               'الاحتفاظ بالبيانات', 'أرشفة البيانات',
+               'إتلاف البيانات', 'حذف البيانات',
+               'تصنيف وتخزين وأرشفة وإتلاف البيانات'],
+        'en': ['data lifecycle', 'data lifecycle management',
+               'data retention', 'retention policy', 'archival',
+               'archiving', 'disposal', 'data disposal', 'deletion',
+               'data retention and disposal'],
+    },
+    # PDPL families
+    ('PDPL', 'privacy_governance'): {
+        'ar': ['حوكمة الخصوصية', 'سياسات الخصوصية',
+               'حماية البيانات الشخصية'],
+        'en': ['privacy governance', 'privacy policy',
+               'personal data protection'],
+    },
+    ('PDPL', 'consent_management'): {
+        'ar': ['إدارة الموافقات', 'موافقات أصحاب البيانات',
+               'الموافقة الصريحة'],
+        'en': ['consent management', 'consent records',
+               'explicit consent'],
+    },
+    ('PDPL', 'data_subject_rights'): {
+        'ar': ['حقوق صاحب البيانات', 'حقوق أصحاب البيانات',
+               'حق الوصول', 'حق التصحيح', 'حق الحذف'],
+        'en': ['data subject rights', 'access request',
+               'rectification', 'erasure'],
+    },
+    # PR-5B.9Z — PDPL classification exact-term enforcement (problem
+    # statement Part C). Generic phrases ("حماية البيانات الشخصية",
+    # "الامتثال لـ PDPL") are intentionally NOT in this list — they
+    # are too vague to satisfy the classification obligation and the
+    # validator must continue to reject them.
+    ('PDPL', 'data_classification_pdpl'): {
+        'ar': ['تصنيف البيانات الشخصية',
+               'تصنيف البيانات الحساسة',
+               'تصنيف ومعالجة البيانات الشخصية'],
+        'en': ['personal data classification',
+               'sensitive personal data classification',
+               'personal data handling'],
+    },
+    ('PDPL', 'personal_data_classification'): {
+        'ar': ['تصنيف البيانات الشخصية',
+               'تصنيف البيانات الحساسة',
+               'تصنيف ومعالجة البيانات الشخصية'],
+        'en': ['personal data classification',
+               'sensitive personal data classification',
+               'personal data handling'],
+    },
+    ('PDPL', 'breach_notification'): {
+        'ar': ['إخطار الخروقات', 'الإبلاغ عن الانتهاكات',
+               'الإبلاغ عن خرق البيانات'],
+        'en': ['data breach notification', 'breach notification',
+               'breach reporting'],
+    },
+}
+
+
+_CONV_DATAFW_SECTION_GUIDANCE = {
+    'environment': (
+        'Environment / Regulatory Context MUST explicitly name NDMO '
+        'and PDPL and describe NDMO governance roles, data stewards, '
+        'ownership, data quality, catalog/metadata, and data '
+        'lifecycle obligations alongside PDPL privacy, consent, data '
+        'subject rights, personal data classification, and breach '
+        'notification obligations.'),
+    'pillars': (
+        'Pillars MUST include initiatives for data stewards / '
+        'ownership, data governance, data quality, catalog & '
+        'metadata, and data lifecycle; AND PDPL privacy / consent / '
+        'data subject rights / personal-data classification / breach '
+        'notification initiatives.'),
+    'gaps': (
+        'Gaps MUST include explicit rows for missing stewards / '
+        'ownership, missing/weak data lifecycle, catalog/metadata, '
+        'data quality, privacy governance, consent management, data '
+        'subject rights, breach notification, and personal-data '
+        'classification.'),
+    'roadmap': (
+        'Roadmap MUST include activities for appointing data '
+        'stewards/owners, balanced activities for data quality, data '
+        'catalog/metadata, data lifecycle, privacy controls, consent '
+        'management, data subject rights, personal data '
+        'classification, and breach notification — each as a '
+        'distinct, substantive roadmap row with Owner, Timeframe, '
+        'and Deliverable.'),
+    'kpis': (
+        'KPIs MUST include measurable KPIs for steward assignment / '
+        'ownership coverage, data quality, catalog completeness / '
+        'metadata completeness, data lifecycle compliance, consent '
+        'management, data subject rights SLA, breach notification '
+        'SLA, and personal-data classification coverage.'),
+    'confidence': (
+        'Confidence/Risk MUST include risks and success factors for '
+        'ownership / stewardship, privacy governance, consent '
+        'management, rights handling, breach notification, data '
+        'lifecycle, and classification.'),
+}
+
+
+def _convergence_data_framework_coverage_repair(
+        sections, lang, domain, ctx, log, cycle_no):
+    """PR-5B.9Z Part A — convergence-stage NDMO/PDPL coverage repair.
+
+    Runs INSIDE ``converge_strategy_sections`` BEFORE the generic
+    per-section synth rebuilds. Returns the number of (fw, family)
+    pairs successfully covered by this pass (informational — the
+    caller re-audits to decide progress).
+
+    AI-first; on RepairError / empty response / a candidate that still
+    leaves a section's targeted families uncovered after two attempts,
+    the original section text is restored and ``synth_failed:<section>``
+    is marked in ``log['synth_status']`` so the surrounding convergence
+    loop fail-closes (no deterministic rows are ever inserted).
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    selected_fws = ctx.get('frameworks') or []
+    if not selected_fws:
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'data':
+        return 0
+    try:
+        resolved_fw = (
+            _resolve_selected_frameworks(
+                selected_fws, domain='Data Management') or [])
+    except Exception:  # noqa: BLE001
+        resolved_fw = []
+    if 'NDMO' not in resolved_fw and 'PDPL' not in resolved_fw:
+        return 0
+    try:
+        missing = _compute_missing_selected_framework_coverage(
+            sections, selected_fws, domain=domain, lang=lang) or []
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+              f'cycle={cycle_no} compute_missing_failed err={_e}',
+              flush=True)
+        return 0
+    missing = [(fw, fam, sk) for fw, fam, sk in missing
+               if fw in ('NDMO', 'PDPL')]
+    if not missing:
+        return 0
+    by_section = {}
+    for fw, fam, sk in missing:
+        by_section.setdefault(sk, []).append((fw, fam))
+    print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+          f'cycle={cycle_no} missing_sections={list(by_section.keys())} '
+          f'count={len(missing)} frameworks={resolved_fw}',
+          flush=True)
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+              f'cycle={cycle_no} domain_context_failed err={_e}',
+              flush=True)
+        return 0
+    if dctx is None:
+        return 0
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws) if isinstance(selected_fws, (list, tuple))
+            else [str(selected_fws)])
+    except Exception:  # noqa: BLE001
+        pass
+    _allowed = {'environment', 'pillars', 'gaps', 'roadmap', 'kpis',
+                'confidence'}
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+    osn = bool(ctx.get('org_structure_is_none', False))
+    accepted_count = 0
+    for sk, miss_list in by_section.items():
+        if sk not in _allowed:
+            continue
+        before_text = sections.get(sk, '') or ''
+        target_families = set(miss_list)
+        family_lines = []
+        for fw, fam in miss_list:
+            toks = _CONV_DATAFW_FAMILY_TOKENS.get((fw, fam))
+            if not toks:
+                family_lines.append(f'- {fw}:{fam}')
+                continue
+            ar_join = '، '.join(toks.get('ar', []))
+            en_join = ', '.join(toks.get('en', []))
+            family_lines.append(
+                f'- {fw}:{fam} — Arabic concepts: {ar_join}; '
+                f'English concepts: {en_join}')
+        guide = _CONV_DATAFW_SECTION_GUIDANCE.get(sk, '')
+        ve_base = (
+            'Selected-framework coverage is missing for the Data '
+            f'Management {sk} section. The following NDMO/PDPL '
+            'capability families are not covered anywhere in the '
+            'strategy and MUST be added to this section using the '
+            'literal Arabic/English concept vocabulary shown below '
+            '(do NOT paraphrase the named concepts — they are matched '
+            'as substrings by the validator):\n'
+            + '\n'.join(family_lines)
+            + ('\n\n' + guide if guide else '')
+            + ' Preserve every existing row, pillar, KPI, gap, and '
+            'risk already in the section; do not remove or weaken any '
+            'other content. Do not invent frameworks that are not in '
+            'the selected list. AI-first only — no placeholders, no '
+            'dashy rows.'
+        )
+        attempt = 0
+        accepted = False
+        unmet = set()
+        last_err = None
+        ve_current = ve_base
+        while attempt < 2 and not accepted:
+            attempt += 1
+            try:
+                new_text = ai_repair_strategy_section(
+                    section_key=sk,
+                    sections=sections,
+                    lang=lang,
+                    domain_context=dctx,
+                    org_name=org_name,
+                    sector=sector,
+                    maturity=maturity,
+                    generation_mode=gen_mode,
+                    validation_error=ve_current,
+                    org_structure_is_none=osn,
+                )
+            except RepairError as _re:
+                last_err = _re
+                print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} repair_failed err={_re}',
+                      flush=True)
+                break
+            except Exception as _re2:  # noqa: BLE001
+                last_err = _re2
+                print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} repair_unexpected err={_re2}',
+                      flush=True)
+                break
+            if not (new_text and new_text.strip()):
+                last_err = Exception('empty_repair')
+                print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} empty_response',
+                      flush=True)
+                break
+            sections[sk] = new_text
+            still_missing = (
+                _compute_missing_selected_framework_coverage(
+                    sections, selected_fws, domain=domain,
+                    lang=lang) or [])
+            still_targets = {
+                (fw, fam) for fw, fam, _ in still_missing
+                if fw in ('NDMO', 'PDPL')
+            }
+            unmet = target_families & still_targets
+            if not unmet:
+                accepted = True
+                accepted_count += len(target_families)
+                print(
+                    '[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                    f'cycle={cycle_no} section={sk} '
+                    f'attempt={attempt} '
+                    f'missing_before={sorted(target_families)} '
+                    'missing_after=[] candidate_len='
+                    f'{len(new_text)} accepted=True restored=False',
+                    flush=True,
+                )
+                break
+            # Roll back the rejected candidate so the next attempt
+            # starts from the original section text.
+            sections[sk] = before_text
+            print(
+                '[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                f'cycle={cycle_no} section={sk} '
+                f'attempt={attempt} '
+                f'missing_before={sorted(target_families)} '
+                f'missing_after={sorted(unmet)} candidate_len='
+                f'{len(new_text)} accepted=False restored=True',
+                flush=True,
+            )
+            if attempt < 2:
+                unmet_lines = []
+                for ufw, ufam in sorted(unmet):
+                    utoks = _CONV_DATAFW_FAMILY_TOKENS.get((ufw, ufam))
+                    if not utoks:
+                        unmet_lines.append(f'- {ufw}:{ufam}')
+                        continue
+                    uar = '، '.join(utoks.get('ar', []))
+                    uen = ', '.join(utoks.get('en', []))
+                    unmet_lines.append(
+                        f'- {ufw}:{ufam} — Arabic concepts: {uar}; '
+                        f'English concepts: {uen}')
+                ve_current = (
+                    ve_base
+                    + '\n\nSECOND-PASS STRICT REQUIREMENT: the '
+                    'previous attempt still left the following '
+                    'capability families uncovered. You MUST include '
+                    'at least one literal token from EACH family\'s '
+                    'vocabulary in this section (substring, '
+                    'case-insensitive match):\n'
+                    + '\n'.join(unmet_lines)
+                )
+        if not accepted:
+            sections[sk] = before_text
+            fc_err = last_err or Exception(
+                'selected_framework_coverage_missing:'
+                + ','.join(f'{fw}:{fam}'
+                          for fw, fam in sorted(unmet)))
+            _mark_synth_failed(_synth_status, sk, fc_err)
+            print(
+                '[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                f'cycle={cycle_no} section={sk} fail_closed '
+                f'attempts={attempt} unmet={sorted(unmet)} '
+                '— restored original',
+                flush=True,
+            )
+    return accepted_count
+
+
+def _convergence_data_roadmap_balance_repair(
+        sections, lang, domain, ctx, log, cycle_no):
+    """PR-5B.9Z Part D — convergence-stage Data Management roadmap
+    balance repair.
+
+    Runs alongside the framework-coverage repair. AI-first; rejects
+    candidates that still leave any required balance family uncovered
+    or fall below ``_RICHNESS_MIN_ROADMAP_ROWS``, restores the
+    original roadmap, and marks ``synth_failed:roadmap`` so the
+    convergence loop fail-closes.
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    selected_fws = ctx.get('frameworks') or []
+    if not selected_fws:
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001
+        dcode = ''
+    if dcode != 'data':
+        return 0
+    before_text = sections.get('roadmap', '') or ''
+    try:
+        missing = _compute_missing_data_roadmap_balance_topics(
+            before_text,
+            selected_frameworks=selected_fws,
+            lang=lang) or []
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} compute_missing_failed err={_e}',
+              flush=True)
+        return 0
+    if not missing:
+        return 0
+    print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+          f'cycle={cycle_no} missing_before={missing} '
+          f'frameworks={list(selected_fws)}',
+          flush=True)
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} domain_context_failed err={_e}',
+              flush=True)
+        return 0
+    if dctx is None:
+        return 0
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws) if isinstance(selected_fws, (list, tuple))
+            else [str(selected_fws)])
+    except Exception:  # noqa: BLE001
+        pass
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+    osn = bool(ctx.get('org_structure_is_none', False))
+    label_map = {
+        'data_quality':
+            'Data Quality / إدارة جودة البيانات',
+        'data_catalog':
+            'Data Catalog & Metadata / كتالوج البيانات والبيانات الوصفية',
+        'data_lifecycle':
+            'Data Lifecycle, Retention & Disposal / دورة حياة البيانات',
+        'privacy_governance':
+            'Privacy Governance / حوكمة الخصوصية',
+        'consent_management':
+            'Consent Management / إدارة الموافقات',
+        'data_subject_rights':
+            'Data Subject Rights / حقوق صاحب البيانات',
+        'personal_data_classification':
+            'Personal Data Classification / تصنيف البيانات الشخصية',
+        'breach_notification':
+            'Personal-Data Breach Notification / الإبلاغ عن الانتهاكات',
+    }
+    named = ', '.join(label_map.get(f, f) for f in missing)
+    ve_msg = (
+        'Roadmap is missing required Data Management balance topics '
+        'for the selected framework(s) '
+        + ', '.join(str(f) for f in selected_fws)
+        + '. Uncovered capability families that MUST appear as '
+        'distinct, substantive roadmap activities (in addition to '
+        'office / CDO / committee / operating-model setup — '
+        'governance-office setup alone is NOT acceptable): '
+        + named
+        + '. Required activities by family include: privacy '
+        'governance, consent management, data subject rights, '
+        'personal data classification, breach notification. Add one '
+        'explicit roadmap row per uncovered family with explicit '
+        'Owner, Timeframe, and Deliverable columns. Each family must '
+        'be named literally (e.g. "إطلاق برنامج إدارة جودة '
+        'البيانات", "بناء كتالوج البيانات والبيانات الوصفية", '
+        '"إدارة الموافقات", "تفعيل حقوق صاحب البيانات", "تصنيف '
+        'البيانات الشخصية", "الإبلاغ عن انتهاكات البيانات"). '
+        'Preserve every existing roadmap row.'
+    )
+    try:
+        new_text = ai_repair_strategy_section(
+            section_key='roadmap',
+            sections=sections,
+            lang=lang,
+            domain_context=dctx,
+            org_name=org_name,
+            sector=sector,
+            maturity=maturity,
+            generation_mode=gen_mode,
+            validation_error=ve_msg,
+            org_structure_is_none=osn,
+        )
+    except RepairError as _re:
+        sections['roadmap'] = before_text
+        _mark_synth_failed(_synth_status, 'roadmap', _re)
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} missing_before={missing} '
+              f'missing_after={missing} accepted=False repair_failed '
+              f'err={_re} — restored original',
+              flush=True)
+        return 0
+    except Exception as _re2:  # noqa: BLE001
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} missing_before={missing} '
+              f'repair_unexpected err={_re2}',
+              flush=True)
+        return 0
+    if not (new_text and new_text.strip()):
+        sections['roadmap'] = before_text
+        _mark_synth_failed(_synth_status, 'roadmap',
+                           Exception('data_roadmap_balance_empty_repair'))
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} missing_before={missing} '
+              'missing_after=same accepted=False empty_response '
+              '— restored original',
+              flush=True)
+        return 0
+    sections['roadmap'] = new_text
+    try:
+        new_rows = _count_substantive_roadmap_rows(new_text)
+    except Exception:  # noqa: BLE001
+        new_rows = 0
+    still_missing = (
+        _compute_missing_data_roadmap_balance_topics(
+            new_text,
+            selected_frameworks=selected_fws,
+            lang=lang) or [])
+    if (new_rows >= _RICHNESS_MIN_ROADMAP_ROWS
+            and not still_missing):
+        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} missing_before={missing} '
+              'missing_after=[] accepted=True '
+              f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS}',
+              flush=True)
+        return len(missing)
+    sections['roadmap'] = before_text
+    _mark_synth_failed(_synth_status, 'roadmap', Exception(
+        'data_roadmap_balance_unmet '
+        f'rows={new_rows} still_missing={still_missing}'))
+    print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+          f'cycle={cycle_no} missing_before={missing} '
+          f'missing_after={still_missing} accepted=False '
+          f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+          '— restored original',
+          flush=True)
+    return 0
+
+
 def converge_strategy_sections(sections, lang, domain, fw_short,
                                ctx=None, doc_subtype=None,
                                max_iter=3):
@@ -24986,6 +25553,64 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             log['converged'] = True
             log['final_defects'] = []
             log['cycles'].append(cycle)
+            break
+
+        # PR-5B.9Z — Snapshot section text BEFORE this cycle so that
+        # if the cycle's repairs INCREASE the defect count we can
+        # restore the originals (problem statement Part E — generic
+        # holistic rebuilds can overwrite previously-repaired NDMO/PDPL
+        # coverage and produce after=16 from before=11).
+        _cycle_snapshot = dict(sections)
+
+        # PR-5B.9Z Part A/C/D — Convergence-stage Data Management
+        # framework-coverage and roadmap-balance repair. Runs BEFORE
+        # the generic per-section synth rebuilds so the NDMO/PDPL
+        # coverage repair has a chance to add stewardship / lifecycle
+        # / classification / breach-notification content that the
+        # generic rebuilds would otherwise overwrite. AI-first;
+        # fail-closes via log['synth_status'] when the AI cannot
+        # produce a satisfying candidate within two attempts. No-op
+        # for non-Data domains and for Data without NDMO/PDPL
+        # selected.
+        try:
+            _conv_dfc_n = _convergence_data_framework_coverage_repair(
+                sections, lang, domain, ctx, log, _it + 1)
+            if _conv_dfc_n:
+                cycle['repairs'].append(
+                    f'conv_data_fw_coverage:{_conv_dfc_n}')
+        except Exception as _conv_dfcxe:  # noqa: BLE001
+            print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
+                  f'cycle={_it + 1} non-fatal: {_conv_dfcxe}',
+                  flush=True)
+        try:
+            _conv_bal_n = _convergence_data_roadmap_balance_repair(
+                sections, lang, domain, ctx, log, _it + 1)
+            if _conv_bal_n:
+                cycle['repairs'].append(
+                    f'conv_data_roadmap_balance:{_conv_bal_n}')
+        except Exception as _conv_balxe:  # noqa: BLE001
+            print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={_it + 1} non-fatal: {_conv_balxe}',
+                  flush=True)
+        # Recompute failing keys after the convergence-stage Data
+        # repairs so the generic per-section synth rebuilds below
+        # only target the sections that still need work.
+        failing_keys = {d[0] for d in _audit()}
+        if not failing_keys:
+            cycle['after'] = 0
+            log['cycles'].append(cycle)
+            if log.get('synth_status'):
+                log['converged'] = False
+                log['final_defects'] = [
+                    (sec, f'synth_failed:{sec}', 0, 1)
+                    for sec, st in log['synth_status'].items()
+                    if st == 'failed'
+                ]
+                log['progress'] = True
+                break
+            log['converged'] = True
+            log['final_defects'] = []
+            log['progress'] = True
             break
 
         # Re-invoke synthesizers for failing families. Each synth is
@@ -25228,6 +25853,44 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         # Re-audit after this cycle's repairs.
         post = _audit()
         cycle['after'] = len(post)
+
+        # PR-5B.9Z Part E — Progress accounting & rollback.
+        # Reject any cycle whose repairs INCREASED the defect count
+        # (e.g. before=11 after=16 in the runtime trace). Restore the
+        # section snapshot taken at the start of the cycle so the
+        # follow-up audit sees the original content rather than the
+        # over-rewritten holistic candidate. before==after also does
+        # NOT count as progress (problem statement: "before=11 after=11
+        # does not count as progress"). Emit a structured
+        # [CONVERGENCE-REPAIR-RESULT] log for diagnosability.
+        _cycle_accepted = (len(post) < prev_defect_count)
+        _cycle_reason = (
+            'progress' if _cycle_accepted
+            else ('no_progress' if len(post) == prev_defect_count
+                  else 'defects_increased'))
+        if not _cycle_accepted and len(post) > prev_defect_count:
+            # Restore originals: the holistic per-section rebuilds in
+            # this cycle made things worse. Keep convergence-stage
+            # repairs that we ran BEFORE the snapshot? No — the
+            # snapshot is taken at start of cycle so it preserves
+            # whatever state existed before BOTH the convergence-
+            # stage Data repairs and the generic rebuilds. Restoring
+            # to it gives us a deterministic rollback.
+            for _rk, _rv in _cycle_snapshot.items():
+                sections[_rk] = _rv
+            try:
+                post = _audit()
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+            cycle['after'] = len(post)
+            cycle['rolled_back'] = True
+        print(
+            '[CONVERGENCE-REPAIR-RESULT] '
+            f'cycle={_it + 1} before={prev_defect_count} '
+            f'after={cycle["after"]} accepted={_cycle_accepted} '
+            f'reason={_cycle_reason}',
+            flush=True,
+        )
         log['cycles'].append(cycle)
 
         if not post:
@@ -25248,11 +25911,11 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             log['final_defects'] = []
             log['progress'] = (len(post) < prev_defect_count)
             break
-        if len(post) >= prev_defect_count and _it >= 1:
-            # No progress after at least two repair cycles (iteration 0
-            # attempts preserve-and-top-up; iteration ≥ 1 force-clears
-            # pillars/vision for a clean rebuild). Bail only after the
-            # force-clear path has had a chance to fire.
+        if not _cycle_accepted:
+            # PR-5B.9Z — either no progress (before==after) OR the
+            # rollback branch above already restored originals. Either
+            # way, do not attempt another cycle of holistic rebuilds
+            # that we know will not reduce defects.
             log['final_defects'] = [(s, t, c, m) for s, t, c, m in post]
             log['progress'] = False
             break
