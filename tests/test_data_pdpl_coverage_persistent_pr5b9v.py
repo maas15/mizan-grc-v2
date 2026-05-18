@@ -343,7 +343,7 @@ class TestFinalAuditAndOverwriteGuard(unittest.TestCase):
         self.assertGreater(
             guard_anchor, 0,
             'PR-5B.9V final overwrite guard marker missing')
-        guard_block = src[guard_anchor:guard_anchor + 20000]
+        guard_block = src[guard_anchor:guard_anchor + 30000]
         self.assertIn('ai_repair_strategy_section(', guard_block)
         self.assertIn('_compute_missing_selected_framework_coverage(',
                       guard_block)

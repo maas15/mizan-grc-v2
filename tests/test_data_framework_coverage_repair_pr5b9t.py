@@ -103,8 +103,8 @@ class TestDataFrameworkCoverageRepairExists(unittest.TestCase):
             src = f.read()
         anchor = src.find('PR-5B.9T: Data framework coverage repair')
         self.assertGreater(anchor, 0)
-        # The full repair block is ~36KB; take a generous window.
-        block = src[anchor:anchor + 50000]
+        # The full repair block is ~40KB; take a generous window.
+        block = src[anchor:anchor + 60000]
         self.assertIn("normalize_domain", block)
         self.assertIn("'data'", block)
         self.assertIn("'NDMO'", block)
@@ -128,7 +128,7 @@ class TestDataFrameworkCoverageRepairExists(unittest.TestCase):
             src = f.read()
         anchor = src.find('PR-5B.9T: Data framework coverage repair')
         self.assertGreater(anchor, 0)
-        block = src[anchor:anchor + 50000]
+        block = src[anchor:anchor + 60000]
         # Strip whitespace so multi-line tuple literals match.
         compact = re.sub(r'\s+', '', block)
         # NDMO families
@@ -170,7 +170,7 @@ class TestDataFrameworkCoverageRepairExists(unittest.TestCase):
             src = f.read()
         anchor = src.find('PR-5B.9T: Data framework coverage repair')
         self.assertGreater(anchor, 0)
-        block = src[anchor:anchor + 50000]
+        block = src[anchor:anchor + 60000]
         guidance_anchor = block.find('_DFC_SECTION_GUIDANCE')
         self.assertGreater(guidance_anchor, 0)
         # The map must contain a key for every required section.
@@ -265,7 +265,7 @@ class TestCrossDomainUntouched(unittest.TestCase):
             src = f.read()
         anchor = src.find('PR-5B.9T: Data framework coverage repair')
         self.assertGreater(anchor, 0)
-        block = src[anchor:anchor + 50000]
+        block = src[anchor:anchor + 60000]
         # The trigger composes domain check AND framework resolution.
         self.assertIn("_dfc_dcode.strip().lower() == 'data'", block)
         self.assertIn("'NDMO' in _dfc_resolved_fw", block)
