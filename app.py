@@ -19972,12 +19972,16 @@ _DATA_ROADMAP_BALANCE_TOPICS = {
     ),
     'data_subject_rights': (
         'حقوق صاحب البيانات', 'حقوق أصحاب البيانات', 'حقوق الأفراد',
+        'حق الوصول', 'حق التصحيح', 'حق الحذف',
+        'طلبات أصحاب البيانات',
         'data subject rights', 'dsr', 'subject access request',
-        'sar',
+        'sar', 'access request', 'rectification', 'erasure',
     ),
     'breach_notification': (
         'الإبلاغ عن الانتهاكات', 'إخطار الخروقات',
         'الإخطار بالخروقات', 'الإبلاغ عن خروقات البيانات',
+        'الإبلاغ عن خرق البيانات', 'إشعار خرق البيانات',
+        'آلية إخطار الخروقات',
         'breach notification', 'breach reporting',
         'data breach notification', 'incident notification',
     ),
@@ -22878,7 +22882,8 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             ("data_subject_rights",
              ["حقوق صاحب البيانات", "حقوق أصحاب البيانات",
               "حقوق الأفراد", "حق الوصول",
-              "حق التصحيح", "حق الحذف"],
+              "حق التصحيح", "حق الحذف",
+              "طلبات أصحاب البيانات"],
              ["data subject rights", "subject rights",
               "data subject access request",
               "access request", "rectification", "erasure"]),
@@ -22923,7 +22928,8 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             ("breach_notification",
              ["الإبلاغ عن الانتهاكات", "إخطار الخروقات",
               "إخطار تسرب البيانات", "الإبلاغ عن خرق البيانات",
-              "الإخطار بالخروقات", "الإبلاغ عن خروقات البيانات"],
+              "الإخطار بالخروقات", "الإبلاغ عن خروقات البيانات",
+              "إشعار خرق البيانات", "آلية إخطار الخروقات"],
              ["breach notification", "breach reporting",
               "data breach notification",
               "personal data breach notification",
@@ -23364,11 +23370,36 @@ _PR5B9Y_PDPL_EXACT_TERMS = {
             'إخطار الخروقات',
             'الإبلاغ عن الانتهاكات',
             'الإبلاغ عن خرق البيانات',
+            'إشعار خرق البيانات',
+            'آلية إخطار الخروقات',
         ),
         'en': (
             'data breach notification',
             'breach notification',
             'breach reporting',
+        ),
+    },
+    # PR-5B.9AA — data_subject_rights added to the PDPL save guard so
+    # the runtime residual ``selected_framework_coverage_missing:PDPL:
+    # data_subject_rights (roadmap) 0/1`` gets the same final bounded
+    # AI repair attempt + exact-term acceptance gate as the
+    # classification / breach-notification families. Without this entry
+    # the guard skipped DSR residuals and the generic 422 fired with
+    # no further repair attempt.
+    'data_subject_rights': {
+        'ar': (
+            'حقوق صاحب البيانات',
+            'حقوق أصحاب البيانات',
+            'حق الوصول',
+            'حق التصحيح',
+            'حق الحذف',
+            'طلبات أصحاب البيانات',
+        ),
+        'en': (
+            'data subject rights',
+            'access request',
+            'rectification',
+            'erasure',
         ),
     },
 }
@@ -23457,6 +23488,9 @@ def _pdpl_save_guard_parse_runtime_residuals(defects):
         'data_classification_pdpl',
         'personal_data_classification',
         'breach_notification',
+        # PR-5B.9AA — DSR also drains through the save guard so the
+        # runtime residual gets a final bounded repair attempt.
+        'data_subject_rights',
     }
     PREFIX = 'selected_framework_coverage_missing:'
     out = []
@@ -24999,7 +25033,8 @@ _CONV_DATAFW_FAMILY_TOKENS = {
     },
     ('PDPL', 'data_subject_rights'): {
         'ar': ['حقوق صاحب البيانات', 'حقوق أصحاب البيانات',
-               'حق الوصول', 'حق التصحيح', 'حق الحذف'],
+               'حق الوصول', 'حق التصحيح', 'حق الحذف',
+               'طلبات أصحاب البيانات'],
         'en': ['data subject rights', 'access request',
                'rectification', 'erasure'],
     },
@@ -25026,7 +25061,8 @@ _CONV_DATAFW_FAMILY_TOKENS = {
     },
     ('PDPL', 'breach_notification'): {
         'ar': ['إخطار الخروقات', 'الإبلاغ عن الانتهاكات',
-               'الإبلاغ عن خرق البيانات'],
+               'الإبلاغ عن خرق البيانات',
+               'إشعار خرق البيانات', 'آلية إخطار الخروقات'],
         'en': ['data breach notification', 'breach notification',
                'breach reporting'],
     },
@@ -25311,6 +25347,17 @@ def _convergence_data_roadmap_balance_repair(
     or fall below ``_RICHNESS_MIN_ROADMAP_ROWS``, restores the
     original roadmap, and marks ``synth_failed:roadmap`` so the
     convergence loop fail-closes.
+
+    PR-5B.9AA — adds a PDPL-specific contract addendum to the prompt
+    (Part A — explicit DSR / breach-notification activities with
+    Owner / Timeframe / Deliverable columns and the required Arabic
+    terms) AND a Part B candidate acceptance gate that checks the
+    candidate roadmap text directly for the exact DSR / breach
+    Arabic / English terms (via the PR-5B.9Y exact-term registry) and
+    re-runs ``_compute_missing_selected_framework_coverage`` before
+    accepting. Rejected candidates trigger a second stricter attempt;
+    a second failure restores the original roadmap and marks
+    ``synth_failed:roadmap``.
     """
     if not isinstance(ctx, dict):
         return 0
@@ -25334,10 +25381,35 @@ def _convergence_data_roadmap_balance_repair(
               f'cycle={cycle_no} compute_missing_failed err={_e}',
               flush=True)
         return 0
-    if not missing:
+    # PR-5B.9AA — also surface PDPL DSR / breach residuals from
+    # ``_compute_missing_selected_framework_coverage`` even when the
+    # broader balance-topics check has been satisfied (the two
+    # vocabularies are similar but not identical — a candidate that
+    # mentions "حقوق الأفراد" passes the balance check but does not
+    # satisfy the strict framework-coverage vocabulary). When PDPL is
+    # selected and DSR or breach is missing in the roadmap text, we
+    # still want the repair pass to run.
+    try:
+        _pdpl_pre = (
+            _compute_missing_selected_framework_coverage(
+                sections, selected_fws,
+                domain=domain, lang=lang) or [])
+    except Exception:  # noqa: BLE001
+        _pdpl_pre = []
+    _roadmap_pdpl_missing_pre = sorted({
+        fam for fw, fam, sk in _pdpl_pre
+        if fw == 'PDPL'
+        and fam in ('data_subject_rights', 'breach_notification')
+        and sk == 'roadmap'
+    })
+    if not missing and not _roadmap_pdpl_missing_pre:
         return 0
     print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
           f'cycle={cycle_no} missing_before={missing} '
+          f'roadmap_pdpl_rights='
+          f'{"data_subject_rights" in _roadmap_pdpl_missing_pre} '
+          f'roadmap_pdpl_breach='
+          f'{"breach_notification" in _roadmap_pdpl_missing_pre} '
           f'frameworks={list(selected_fws)}',
           flush=True)
     try:
@@ -25380,8 +25452,61 @@ def _convergence_data_roadmap_balance_repair(
         'breach_notification':
             'Personal-Data Breach Notification / الإبلاغ عن الانتهاكات',
     }
-    named = ', '.join(label_map.get(f, f) for f in missing)
-    ve_msg = (
+    # PR-5B.9AA Part A — when PDPL is among the selected frameworks
+    # (which it is by construction when DSR or breach is missing),
+    # append an explicit PDPL roadmap contract enumerating the five
+    # mandatory activities and the exact Arabic/English terms the
+    # acceptance check enforces. This is the prompt the AI must obey.
+    try:
+        _resolved_fw_for_pdpl = (
+            _resolve_selected_frameworks(
+                selected_fws, domain='Data Management') or [])
+    except Exception:  # noqa: BLE001
+        _resolved_fw_for_pdpl = []
+    _pdpl_selected = 'PDPL' in _resolved_fw_for_pdpl
+    _pdpl_contract_block = ''
+    if _pdpl_selected:
+        _dsr_ar, _dsr_en = _pdpl_save_guard_required_terms(
+            'data_subject_rights')
+        _brn_ar, _brn_en = _pdpl_save_guard_required_terms(
+            'breach_notification')
+        _pdpl_contract_block = (
+            '\n\nPR-5B.9AA — PDPL ROADMAP CONTRACT (mandatory when '
+            'PDPL is among the selected frameworks). The roadmap '
+            'MUST include the following five distinct activities, '
+            'each as a separate row with explicit Owner, Timeframe, '
+            'and Deliverable/Output columns:\n'
+            '  1. إدارة الموافقات وحقوق أصحاب البيانات '
+            '(Consent management and data subject rights).\n'
+            '  2. تفعيل آلية حقوق صاحب البيانات بما يشمل: '
+            'حق الوصول، حق التصحيح، حق الحذف '
+            '(Operationalize data subject rights mechanism: '
+            'access request, rectification, erasure).\n'
+            '  3. تفعيل إخطار الخروقات والإبلاغ عن الانتهاكات '
+            '(Operationalize breach notification and reporting).\n'
+            '  4. قياس زمن إخطار الخروقات والالتزام بالمهل '
+            'التنظيمية (Measure breach-notification timing and '
+            'compliance with regulatory deadlines).\n'
+            '  5. تصنيف البيانات الشخصية وربطها بضوابط PDPL '
+            '(Classify personal data and link to PDPL controls).\n'
+            'EXACT ARABIC TERMS that MUST appear literally in the '
+            'roadmap text (at least one per family — substring '
+            'match, case-sensitive for Arabic):\n'
+            '  - data_subject_rights: '
+            + '، '.join(_dsr_ar) + '\n'
+            '  - breach_notification: '
+            + '، '.join(_brn_ar) + '\n'
+            'EXACT ENGLISH TERMS (substring, case-insensitive):\n'
+            '  - data_subject_rights: '
+            + ', '.join(_dsr_en) + '\n'
+            '  - breach_notification: '
+            + ', '.join(_brn_en) + '\n'
+            'Generic phrases such as "حماية البيانات الشخصية" or '
+            '"PDPL compliance" do NOT satisfy DSR or breach '
+            'notification — the literal terms above are required.')
+    named = ', '.join(label_map.get(f, f) for f in missing) or (
+        'PDPL data subject rights and breach notification')
+    ve_base = (
         'Roadmap is missing required Data Management balance topics '
         'for the selected framework(s) '
         + ', '.join(str(f) for f in selected_fws)
@@ -25400,74 +25525,201 @@ def _convergence_data_roadmap_balance_repair(
         '"إدارة الموافقات", "تفعيل حقوق صاحب البيانات", "تصنيف '
         'البيانات الشخصية", "الإبلاغ عن انتهاكات البيانات"). '
         'Preserve every existing roadmap row.'
+        + _pdpl_contract_block
     )
-    try:
-        new_text = ai_repair_strategy_section(
-            section_key='roadmap',
-            sections=sections,
-            lang=lang,
-            domain_context=dctx,
-            org_name=org_name,
-            sector=sector,
-            maturity=maturity,
-            generation_mode=gen_mode,
-            validation_error=ve_msg,
-            org_structure_is_none=osn,
-        )
-    except RepairError as _re:
+
+    def _candidate_pdpl_status(text):
+        """Return (terms_found_dict, unmet_families) for the PDPL DSR /
+        breach acceptance gate against ``text``."""
+        terms = {}
+        unmet = []
+        if not _pdpl_selected:
+            return terms, unmet
+        for fam in ('data_subject_rights', 'breach_notification'):
+            found = _pdpl_save_guard_terms_found(fam, text)
+            terms[fam] = found
+            if not _pdpl_save_guard_candidate_satisfies(fam, text):
+                unmet.append(fam)
+        return terms, unmet
+
+    attempt = 0
+    accepted = False
+    last_err = None
+    ve_current = ve_base
+    new_text = ''
+    candidate_terms_found = {}
+    candidate_unmet = []
+    still_missing = []
+    new_rows = 0
+    while attempt < 2 and not accepted:
+        attempt += 1
+        try:
+            new_text = ai_repair_strategy_section(
+                section_key='roadmap',
+                sections=sections,
+                lang=lang,
+                domain_context=dctx,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=gen_mode,
+                validation_error=ve_current,
+                org_structure_is_none=osn,
+            )
+        except RepairError as _re:
+            last_err = _re
+            print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} repair_failed '
+                  f'err={_re}',
+                  flush=True)
+            break
+        except Exception as _re2:  # noqa: BLE001
+            last_err = _re2
+            print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} repair_unexpected '
+                  f'err={_re2}',
+                  flush=True)
+            break
+        if not (new_text and new_text.strip()):
+            last_err = Exception('data_roadmap_balance_empty_repair')
+            print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} empty_response',
+                  flush=True)
+            break
+        sections['roadmap'] = new_text
+        try:
+            new_rows = _count_substantive_roadmap_rows(new_text)
+        except Exception:  # noqa: BLE001
+            new_rows = 0
+        still_missing = (
+            _compute_missing_data_roadmap_balance_topics(
+                new_text,
+                selected_frameworks=selected_fws,
+                lang=lang) or [])
+        # PR-5B.9AA Part B — direct exact-term check on the candidate
+        # roadmap text for DSR / breach, then a fresh
+        # ``_compute_missing_selected_framework_coverage`` re-run for
+        # the (PDPL, roadmap) pair. Both must pass.
+        candidate_terms_found, candidate_unmet = (
+            _candidate_pdpl_status(new_text))
+        try:
+            _pdpl_post = (
+                _compute_missing_selected_framework_coverage(
+                    sections, selected_fws,
+                    domain=domain, lang=lang) or [])
+        except Exception:  # noqa: BLE001
+            _pdpl_post = []
+        _roadmap_pdpl_missing_post = sorted({
+            fam for fw, fam, sk in _pdpl_post
+            if fw == 'PDPL'
+            and fam in ('data_subject_rights', 'breach_notification')
+            and sk == 'roadmap'
+        })
+        # Merge both signals — either the direct exact-term check or
+        # the framework-coverage re-run flagging DSR/breach as missing
+        # rejects the candidate.
+        _unmet_combined = sorted(
+            set(candidate_unmet) | set(_roadmap_pdpl_missing_post))
+        if (new_rows >= _RICHNESS_MIN_ROADMAP_ROWS
+                and not still_missing
+                and not _unmet_combined):
+            accepted = True
+            print(
+                '[DATA-ROADMAP-PDPL-COVERAGE] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={_roadmap_pdpl_missing_pre} '
+                f'candidate_terms_found={candidate_terms_found} '
+                f'missing_after=[] accepted=True restored=False',
+                flush=True,
+            )
+            print(
+                '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={missing} missing_after=[] '
+                f'accepted=True '
+                f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+                f'roadmap_pdpl_rights=True '
+                f'roadmap_pdpl_breach=True',
+                flush=True,
+            )
+            break
+        # Rejected — roll back candidate before the next attempt and
+        # tighten the prompt with the residual families.
         sections['roadmap'] = before_text
-        _mark_synth_failed(_synth_status, 'roadmap', _re)
-        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
-              f'cycle={cycle_no} missing_before={missing} '
-              f'missing_after={missing} accepted=False repair_failed '
-              f'err={_re} — restored original',
-              flush=True)
-        return 0
-    except Exception as _re2:  # noqa: BLE001
-        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
-              f'cycle={cycle_no} missing_before={missing} '
-              f'repair_unexpected err={_re2}',
-              flush=True)
-        return 0
-    if not (new_text and new_text.strip()):
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'cycle={cycle_no} attempt={attempt} '
+            f'missing_before={_roadmap_pdpl_missing_pre} '
+            f'candidate_terms_found={candidate_terms_found} '
+            f'missing_after={_unmet_combined} '
+            f'still_balance_missing={still_missing} '
+            f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            'accepted=False restored=True',
+            flush=True,
+        )
+        if attempt < 2:
+            _strict_lines = []
+            for _ufam in _unmet_combined:
+                _uar, _uen = _pdpl_save_guard_required_terms(_ufam)
+                if _uar or _uen:
+                    _strict_lines.append(
+                        f'- {_ufam}: AR (at least one) '
+                        + '، '.join(_uar)
+                        + '; EN (at least one) '
+                        + ', '.join(_uen))
+                else:
+                    _strict_lines.append(f'- {_ufam}')
+            for _ufam in still_missing:
+                if _ufam in _unmet_combined:
+                    continue
+                _strict_lines.append(
+                    f'- {_ufam} (balance topic): '
+                    + '، '.join(
+                        _DATA_ROADMAP_BALANCE_TOPICS.get(_ufam, ())))
+            ve_current = (
+                ve_base
+                + '\n\nSECOND-PASS STRICT REQUIREMENT (PR-5B.9AA): '
+                'the previous attempt still left the following '
+                'capability families uncovered. You MUST include at '
+                'least one literal AR or EN term from EACH family '
+                'in the roadmap text — substring match, '
+                'case-insensitive for EN, case-sensitive for AR:\n'
+                + '\n'.join(_strict_lines))
+    if not accepted:
         sections['roadmap'] = before_text
         _mark_synth_failed(_synth_status, 'roadmap',
-                           Exception('data_roadmap_balance_empty_repair'))
-        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
-              f'cycle={cycle_no} missing_before={missing} '
-              'missing_after=same accepted=False empty_response '
-              '— restored original',
-              flush=True)
+                           last_err or Exception(
+                               'data_roadmap_balance_unmet '
+                               f'rows={new_rows} '
+                               f'still_missing={still_missing} '
+                               f'pdpl_unmet={candidate_unmet}'))
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'cycle={cycle_no} attempts={attempt} '
+            f'missing_before={_roadmap_pdpl_missing_pre} '
+            f'candidate_terms_found={candidate_terms_found} '
+            f'missing_after={candidate_unmet} '
+            'accepted=False restored=True',
+            flush=True,
+        )
+        print(
+            '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+            f'cycle={cycle_no} attempts={attempt} '
+            f'missing_before={missing} '
+            f'missing_after={still_missing} accepted=False '
+            f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            f'roadmap_pdpl_rights='
+            f'{"data_subject_rights" not in candidate_unmet} '
+            f'roadmap_pdpl_breach='
+            f'{"breach_notification" not in candidate_unmet} '
+            '— restored original',
+            flush=True,
+        )
         return 0
-    sections['roadmap'] = new_text
-    try:
-        new_rows = _count_substantive_roadmap_rows(new_text)
-    except Exception:  # noqa: BLE001
-        new_rows = 0
-    still_missing = (
-        _compute_missing_data_roadmap_balance_topics(
-            new_text,
-            selected_frameworks=selected_fws,
-            lang=lang) or [])
-    if (new_rows >= _RICHNESS_MIN_ROADMAP_ROWS
-            and not still_missing):
-        print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
-              f'cycle={cycle_no} missing_before={missing} '
-              'missing_after=[] accepted=True '
-              f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS}',
-              flush=True)
-        return len(missing)
-    sections['roadmap'] = before_text
-    _mark_synth_failed(_synth_status, 'roadmap', Exception(
-        'data_roadmap_balance_unmet '
-        f'rows={new_rows} still_missing={still_missing}'))
-    print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
-          f'cycle={cycle_no} missing_before={missing} '
-          f'missing_after={still_missing} accepted=False '
-          f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
-          '— restored original',
-          flush=True)
-    return 0
+    return len(missing) or len(_roadmap_pdpl_missing_pre)
 
 
 def converge_strategy_sections(sections, lang, domain, fw_short,
@@ -25853,6 +26105,73 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         # Re-audit after this cycle's repairs.
         post = _audit()
         cycle['after'] = len(post)
+
+        # ── PR-5B.9AA Part C — overwrite guard.
+        # The per-section generic rebuilds above (in particular
+        # ``synthesize_roadmap_depth``) can rebuild the roadmap from
+        # scratch and lose the PDPL DSR / breach-notification content
+        # the convergence-stage balance repair added at the start of
+        # this cycle. If PDPL is selected and either DSR or breach
+        # reappears as missing in the roadmap text, re-route back to
+        # ``_convergence_data_roadmap_balance_repair`` for one more
+        # bounded AI-first attempt. If that fails the balance repair
+        # itself fail-closes via ``_mark_synth_failed`` and the
+        # post-normalization save gate refuses the save.
+        try:
+            _ow_dcode = (
+                normalize_domain(domain or '') or '').strip().lower()
+        except Exception:  # noqa: BLE001
+            _ow_dcode = ''
+        _ow_pdpl_residual = []
+        if _ow_dcode == 'data':
+            try:
+                _ow_resolved = (
+                    _resolve_selected_frameworks(
+                        ctx.get('frameworks') or [],
+                        domain='Data Management') or [])
+            except Exception:  # noqa: BLE001
+                _ow_resolved = []
+            if 'PDPL' in _ow_resolved:
+                try:
+                    _ow_fc = (
+                        _compute_missing_selected_framework_coverage(
+                            sections, ctx.get('frameworks') or [],
+                            domain=domain, lang=lang) or [])
+                except Exception:  # noqa: BLE001
+                    _ow_fc = []
+                _ow_pdpl_residual = sorted({
+                    fam for fw, fam, sk in _ow_fc
+                    if fw == 'PDPL'
+                    and fam in ('data_subject_rights',
+                                'breach_notification')
+                    and sk == 'roadmap'
+                })
+        if _ow_pdpl_residual:
+            print(
+                '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={_it + 1} overwrite_guard '
+                f'roadmap_pdpl_rights='
+                f'{"data_subject_rights" not in _ow_pdpl_residual} '
+                f'roadmap_pdpl_breach='
+                f'{"breach_notification" not in _ow_pdpl_residual} '
+                f'reroute=True residual={_ow_pdpl_residual}',
+                flush=True,
+            )
+            try:
+                _convergence_data_roadmap_balance_repair(
+                    sections, lang, domain, ctx, log, _it + 1)
+            except Exception as _owe:  # noqa: BLE001
+                print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
+                      f'cycle={_it + 1} overwrite_guard_non_fatal: '
+                      f'{_owe}',
+                      flush=True)
+            # Re-audit so the progress accounting below sees the
+            # post-guard state.
+            try:
+                post = _audit()
+                cycle['after'] = len(post)
+            except Exception:  # noqa: BLE001
+                pass
 
         # PR-5B.9Z Part E — Progress accounting & rollback.
         # Reject any cycle whose repairs INCREASED the defect count
