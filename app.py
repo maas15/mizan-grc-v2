@@ -22615,11 +22615,34 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
               "مسؤول البيانات"],
              ["data stewardship", "data ownership", "data steward",
               "data owner"]),
+            # PR-5B.9W — widened AR/EN vocabulary so the validator
+            # accepts every natural Arabic/English phrasing of NDMO's
+            # data-lifecycle obligation (retention / archival / disposal
+            # / deletion / classification-and-storage-and-disposal …).
+            # Detection only — no deterministic content is invented.
             ("data_lifecycle",
-             ["دورة حياة البيانات", "تصنيف البيانات",
-              "الاحتفاظ بالبيانات", "إتلاف البيانات"],
-             ["data lifecycle", "data classification",
-              "data retention", "data disposal"]),
+             ["دورة حياة البيانات",
+              "إدارة دورة حياة البيانات",
+              "تصنيف البيانات",
+              "سياسات الاحتفاظ بالبيانات",
+              "الاحتفاظ بالبيانات",
+              "أرشفة البيانات",
+              "إتلاف البيانات",
+              "حذف البيانات",
+              "الاحتفاظ والأرشفة والإتلاف",
+              "تصنيف وتخزين وأرشفة وإتلاف البيانات",
+              "تصنيف وتخزين وإتلاف البيانات"],
+             ["data lifecycle",
+              "data lifecycle management",
+              "data classification",
+              "data retention",
+              "retention policy",
+              "archival",
+              "archiving",
+              "disposal",
+              "data disposal",
+              "deletion",
+              "data retention and disposal"]),
         ],
         "required_sections": ["pillars", "environment", "gaps", "roadmap",
                                "kpis"],
@@ -22848,15 +22871,22 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
              ["data subject rights", "subject rights",
               "data subject access request",
               "access request", "rectification", "erasure"]),
+            # PR-5B.9W — widened classification vocabulary so the
+            # validator accepts every natural Arabic/English phrasing
+            # of the personal-data-classification obligation.
             ("data_classification_pdpl",
              ["تصنيف البيانات الشخصية", "تصنيف البيانات",
               "تصنيف البيانات الحساسة",
               "تصنيف ومعالجة البيانات الشخصية",
-              "معالجة البيانات الشخصية"],
+              "تصنيف بيانات أصحاب البيانات",
+              "معالجة البيانات الشخصية",
+              "فئات البيانات الشخصية"],
              ["personal data classification",
               "sensitive personal data classification",
               "personal-data classification",
               "personal data handling",
+              "classify personal data",
+              "personal data categories",
               "data classification"]),
             # PR-5B.9U: sibling family — same tokens, distinct id.
             # Several upstream components (e.g. the Data roadmap-
@@ -22869,11 +22899,15 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
              ["تصنيف البيانات الشخصية", "تصنيف البيانات",
               "تصنيف البيانات الحساسة",
               "تصنيف ومعالجة البيانات الشخصية",
-              "معالجة البيانات الشخصية"],
+              "تصنيف بيانات أصحاب البيانات",
+              "معالجة البيانات الشخصية",
+              "فئات البيانات الشخصية"],
              ["personal data classification",
               "sensitive personal data classification",
               "personal-data classification",
               "personal data handling",
+              "classify personal data",
+              "personal data categories",
               "data classification"]),
             ("breach_notification",
              ["الإبلاغ عن الانتهاكات", "إخطار الخروقات",
@@ -22929,6 +22963,64 @@ def _canonicalize_pdpl_family(fw_key, fam_id):
     if fw_key != 'PDPL':
         return fam_id
     return _PDPL_FAMILY_CANONICAL_ALIASES.get(fam_id, fam_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.9W — Generalised selected-framework family canonicalization.
+#
+# Some downstream callers (defect parsers, diagnostic logs, overwrite
+# guards, retry-budget bookkeeping) need a uniform way to ask "what is
+# the canonical capability-family id for this (framework, family) pair?"
+# without having to special-case each framework.
+#
+# The mapping below augments the PDPL-only registry above with explicit
+# NDMO entries so the helper can be called for ANY framework. For PDPL
+# the two classification aliases collapse onto ``personal_data_
+# classification`` (matching ``_canonicalize_pdpl_family``); for NDMO
+# ``data_lifecycle`` (and any future aliases) is the canonical id. Every
+# other framework / family combination is passed through unchanged.
+#
+# Original family ids are never removed from diagnostic logs; the
+# canonicalization is for *dedup / retry-budget / guard targeting*
+# purposes only.
+# ──────────────────────────────────────────────────────────────────────────
+
+_SELECTED_FRAMEWORK_FAMILY_CANONICAL_ALIASES = {
+    'PDPL': {
+        'data_classification_pdpl': 'personal_data_classification',
+        'personal_data_classification': 'personal_data_classification',
+    },
+    'NDMO': {
+        'data_lifecycle': 'data_lifecycle',
+    },
+}
+
+
+def _canonicalize_selected_framework_family(framework, family):
+    """Return the canonical family id for ``(framework, family)``.
+
+    The helper is pure and side-effect-free. Unknown ``framework`` or
+    ``family`` values are passed through unchanged so callers can use
+    the returned id directly in diagnostics / dedup logic without
+    losing information.
+
+    Parameters
+    ----------
+    framework : str
+        Registry key (e.g. ``'PDPL'``, ``'NDMO'``). ``None`` / empty
+        returns the input ``family`` unchanged.
+    family : str
+        Capability family id as emitted by
+        :func:`_compute_missing_selected_framework_coverage` or
+        serialised in ``selected_framework_coverage_missing:<FW>:<fam>``
+        defects.
+    """
+    if not framework or not family:
+        return family
+    fw_map = _SELECTED_FRAMEWORK_FAMILY_CANONICAL_ALIASES.get(framework)
+    if not fw_map:
+        return family
+    return fw_map.get(family, family)
 
 
 def _resolve_selected_frameworks(selected, domain=None):
@@ -40700,15 +40792,23 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 'إدارة دورة حياة البيانات',
                                                 'الاحتفاظ والأرشفة والإتلاف',
                                                 'سياسات الاحتفاظ بالبيانات',
-                                                'تصنيف وتخزين وإتلاف البيانات',
+                                                'الاحتفاظ بالبيانات',
+                                                'أرشفة البيانات',
+                                                'إتلاف البيانات',
+                                                'حذف البيانات',
+                                                'تصنيف وتخزين وأرشفة وإتلاف البيانات',
                                             ],
                                             'en': [
                                                 'data lifecycle',
                                                 'data lifecycle management',
-                                                'retention',
+                                                'data retention',
+                                                'retention policy',
                                                 'archival',
+                                                'archiving',
                                                 'disposal',
-                                                'data retention policy',
+                                                'data disposal',
+                                                'deletion',
+                                                'data retention and disposal',
                                             ],
                                         },
                                         # PDPL families
@@ -40757,10 +40857,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 'تصنيف البيانات الشخصية',
                                                 'تصنيف البيانات الحساسة',
                                                 'تصنيف ومعالجة البيانات الشخصية',
+                                                'تصنيف بيانات أصحاب البيانات',
+                                                'معالجة البيانات الشخصية',
+                                                'فئات البيانات الشخصية',
                                             ],
                                             'en': [
                                                 'personal data classification',
                                                 'sensitive personal data classification',
+                                                'personal data handling',
+                                                'classify personal data',
+                                                'personal data categories',
                                                 'data classification',
                                             ],
                                         },
@@ -40770,10 +40876,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 'تصنيف البيانات الشخصية',
                                                 'تصنيف البيانات الحساسة',
                                                 'تصنيف ومعالجة البيانات الشخصية',
+                                                'تصنيف بيانات أصحاب البيانات',
+                                                'معالجة البيانات الشخصية',
+                                                'فئات البيانات الشخصية',
                                             ],
                                             'en': [
                                                 'personal data classification',
                                                 'sensitive personal data classification',
+                                                'personal data handling',
+                                                'classify personal data',
+                                                'personal data categories',
                                                 'data classification',
                                             ],
                                         },
@@ -40792,7 +40904,12 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         },
                                     }
                                     # Per-section narrative guidance
-                                    # (problem statement Part C).
+                                    # (problem statement Part C / Part D).
+                                    # PR-5B.9W: each section now lists
+                                    # the EXACT required AR phrases that
+                                    # the validator matches as substrings,
+                                    # so the AI repair prompt cannot
+                                    # paraphrase past them.
                                     _DFC_SECTION_GUIDANCE = {
                                         'environment': (
                                             'Environment / Regulatory '
@@ -40806,7 +40923,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'subject rights, personal '
                                             'data classification, and '
                                             'breach notification '
-                                            'obligations.'),
+                                            'obligations. The section '
+                                            'MUST mention all of: '
+                                            'إدارة دورة حياة البيانات، '
+                                            'الاحتفاظ والأرشفة والإتلاف، '
+                                            'تصنيف البيانات الشخصية، '
+                                            'إخطار الخروقات، '
+                                            'حوكمة الخصوصية.'),
                                         'pillars': (
                                             'Pillars MUST include NDMO '
                                             'pillars/initiatives for '
@@ -40821,7 +40944,12 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'initiatives (either '
                                             'embedded in existing pillars '
                                             'or as a dedicated privacy '
-                                            'pillar).'),
+                                            'pillar). The pillars MUST '
+                                            'include explicit initiatives '
+                                            'for: إدارة دورة حياة '
+                                            'البيانات، تصنيف البيانات '
+                                            'الشخصية، حوكمة الخصوصية، '
+                                            'إخطار الخروقات.'),
                                         'gaps': (
                                             'Gaps MUST include explicit '
                                             'rows for missing/weak data '
@@ -40839,7 +40967,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'الموافقات، حقوق صاحب '
                                             'البيانات، تصنيف البيانات '
                                             'الشخصية، إخطار الخروقات '
-                                            '/ الإبلاغ عن الانتهاكات.'),
+                                            '/ الإبلاغ عن الانتهاكات. '
+                                            'In addition, the gaps MUST '
+                                            'include explicit rows '
+                                            'named: ضعف إدارة دورة حياة '
+                                            'البيانات، ضعف أو غياب '
+                                            'تصنيف البيانات الشخصية، '
+                                            'ضعف إخطار الخروقات والإبلاغ '
+                                            'عن الانتهاكات.'),
                                         'roadmap': (
                                             'Roadmap MUST include '
                                             'balanced activities for '
@@ -40861,6 +40996,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'إدارة الموافقات، تفعيل '
                                             'حقوق صاحب البيانات، تصنيف '
                                             'البيانات الشخصية، إخطار '
+                                            'الخروقات والإبلاغ عن '
+                                            'الانتهاكات. The roadmap '
+                                            'MUST also include '
+                                            'activities named: تطبيق '
+                                            'إدارة دورة حياة البيانات، '
+                                            'تطبيق تصنيف البيانات '
+                                            'الشخصية، تفعيل إخطار '
                                             'الخروقات والإبلاغ عن '
                                             'الانتهاكات.'),
                                         'kpis': (
@@ -40885,7 +41027,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'البيانات الشخصية، زمن '
                                             'إخطار الخروقات، نسبة '
                                             'الإبلاغ عن الخروقات في '
-                                            'الوقت المحدد.'),
+                                            'الوقت المحدد. The KPIs '
+                                            'MUST also include: نسبة '
+                                            'الالتزام بسياسات دورة '
+                                            'حياة البيانات.'),
                                         'confidence': (
                                             'Confidence/Risk MUST '
                                             'include risks and success '
@@ -40902,7 +41047,12 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'إدارة الموافقات، حقوق '
                                             'صاحب البيانات، تصنيف '
                                             'البيانات الشخصية، إخطار '
-                                            'الخروقات.'),
+                                            'الخروقات. The risks / '
+                                            'success factors MUST '
+                                            'reference: دورة حياة '
+                                            'البيانات، تصنيف البيانات '
+                                            'الشخصية، إخطار الخروقات، '
+                                            'حوكمة الخصوصية.'),
                                     }
                                     # Group missing families per section
                                     # so ONE AI repair call per section
@@ -40942,7 +41092,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         except Exception:  # noqa: BLE001
                                             _ck_terms = []
                                         _ck_canon = (
-                                            _canonicalize_pdpl_family(
+                                            _canonicalize_selected_framework_family(
                                                 _ck_fw, _ck_fam))
                                         print(
                                             '[DATA-FRAMEWORK-COVERAGE-'
@@ -41383,25 +41533,66 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             sections, _frameworks_raw,
                                             domain=domain, lang=lang,
                                         )) or []
-                                    # Restrict to PDPL classification /
-                                    # breach reappearance (the families
-                                    # the problem statement enumerates
-                                    # as persistent failures).
-                                    _DFC_FINAL_TARGETS = {
-                                        'data_classification_pdpl',
-                                        'personal_data_classification',
-                                        'breach_notification',
+                                    # PR-5B.9V: PDPL classification /
+                                    # breach reappearance (originally).
+                                    # PR-5B.9W: NDMO:data_lifecycle is
+                                    # added here so the final overwrite
+                                    # guard also re-routes the NDMO
+                                    # lifecycle family back through
+                                    # ai_repair_strategy_section when a
+                                    # later pass strips it (the problem
+                                    # statement lists this as a
+                                    # persistent failure alongside the
+                                    # PDPL classification families).
+                                    _DFC_FINAL_TARGETS_BY_FW = {
+                                        'PDPL': {
+                                            'data_classification_pdpl',
+                                            'personal_data_classification',
+                                            'breach_notification',
+                                        },
+                                        'NDMO': {
+                                            'data_lifecycle',
+                                        },
                                     }
+                                    # Back-compat alias kept for tests
+                                    # / external callers expecting the
+                                    # PR-5B.9V flat set name.
+                                    _DFC_FINAL_TARGETS = (
+                                        _DFC_FINAL_TARGETS_BY_FW['PDPL'])
                                     _dfc_final_pdpl = [
                                         (fw, fam, sk) for fw, fam, sk
                                         in _dfc_final_remaining
-                                        if fw == 'PDPL'
-                                        and fam in _DFC_FINAL_TARGETS
+                                        if fw in _DFC_FINAL_TARGETS_BY_FW
+                                        and fam in
+                                        _DFC_FINAL_TARGETS_BY_FW[fw]
                                     ]
                                     _dfc_final_canon = sorted({
-                                        _canonicalize_pdpl_family(fw, fam)
+                                        '{}:{}'.format(
+                                            fw,
+                                            _canonicalize_selected_framework_family(
+                                                fw, fam))
                                         for fw, fam, _ in _dfc_final_pdpl
                                     })
+                                    # PR-5B.9W: log both original and
+                                    # canonical family ids for every
+                                    # remaining defect so operators can
+                                    # trace which raw defect maps to
+                                    # which canonical obligation.
+                                    for _dfgfw, _dfgfam, _dfgsk in (
+                                            _dfc_final_pdpl):
+                                        _dfg_canon = (
+                                            _canonicalize_selected_framework_family(
+                                                _dfgfw, _dfgfam))
+                                        print(
+                                            '[DATA-FRAMEWORK-COVERAGE'
+                                            '-FINAL] '
+                                            f'framework={_dfgfw} '
+                                            f'section={_dfgsk} '
+                                            f'family={_dfgfam} '
+                                            f'canonical_family='
+                                            f'{_dfg_canon}',
+                                            flush=True,
+                                        )
                                     if _dfc_final_pdpl:
                                         # Single retry budget. We have
                                         # already exhausted the 2-attempt
@@ -41444,16 +41635,26 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 if isinstance(
                                                     _final_ctx, dict)
                                                 else False)
-                                            _dfc_final_pdpl_spec = (
-                                                _FRAMEWORK_COVERAGE_REQUIREMENTS
-                                                .get('PDPL', {}))
-                                            _dfc_final_pdpl_caps = {
-                                                fam: (ar, en) for
-                                                (fam, ar, en) in
-                                                (_dfc_final_pdpl_spec
-                                                 .get('capabilities',
-                                                      []) or [])
-                                            }
+                                            # PR-5B.9W: per-framework
+                                            # capability lookup so the
+                                            # final guard can quote
+                                            # NDMO:data_lifecycle tokens
+                                            # in the AI repair prompt
+                                            # (not only PDPL).
+                                            _dfc_final_caps_by_fw = {}
+                                            for _fw_lookup in (
+                                                    _DFC_FINAL_TARGETS_BY_FW):
+                                                _spec = (
+                                                    _FRAMEWORK_COVERAGE_REQUIREMENTS
+                                                    .get(_fw_lookup, {}))
+                                                _dfc_final_caps_by_fw[
+                                                    _fw_lookup] = {
+                                                        fam: (ar, en)
+                                                        for (fam, ar, en)
+                                                        in (_spec.get(
+                                                            'capabilities',
+                                                            []) or [])
+                                                }
                                             for _fk, _miss in (
                                                     _dfc_final_by_sec
                                                     .items()):
@@ -41467,29 +41668,45 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     sections.get(_fk, '')
                                                     or '')
                                                 _dfc_final_lines = []
+                                                _dfc_final_fws_in_sec = (
+                                                    set())
                                                 for _ufw, _ufam in _miss:
-                                                    _ar, _en = (
-                                                        _dfc_final_pdpl_caps
-                                                        .get(_ufam,
-                                                             ((), ())))
+                                                    _dfc_final_fws_in_sec.add(
+                                                        _ufw)
+                                                    _caps = (
+                                                        _dfc_final_caps_by_fw
+                                                        .get(_ufw, {}))
+                                                    _ar, _en = _caps.get(
+                                                        _ufam, ((), ()))
                                                     _ar_join = '، '.join(
                                                         _ar or [])
                                                     _en_join = ', '.join(
                                                         _en or [])
+                                                    _ucanon = (
+                                                        _canonicalize_selected_framework_family(
+                                                            _ufw, _ufam))
                                                     _dfc_final_lines.append(
                                                         f'- {_ufw}:'
-                                                        f'{_ufam} — '
+                                                        f'{_ufam} '
+                                                        f'(canonical='
+                                                        f'{_ucanon}) — '
                                                         'Arabic concepts: '
                                                         f'{_ar_join}; '
                                                         'English '
                                                         'concepts: '
                                                         f'{_en_join}')
+                                                _dfc_final_fw_label = (
+                                                    '/'.join(
+                                                        sorted(
+                                                            _dfc_final_fws_in_sec))
+                                                    or 'PDPL')
                                                 _dfc_final_ve = (
                                                     'FINAL OVERWRITE '
                                                     'GUARD: a later '
                                                     'pass removed '
                                                     'previously-repaired '
-                                                    'PDPL coverage from '
+                                                    f'{_dfc_final_fw_label} '
+                                                    'coverage from '
                                                     f'the {_fk} section. '
                                                     'You MUST restore '
                                                     'at least one '
@@ -41553,7 +41770,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                             'data_framework_'
                                                             'coverage_final_'
                                                             'guard_failed:'
-                                                            'PDPL'))
+                                                            + _dfc_final_fw_label))
                                             # Re-audit after retry.
                                             _post_norm_defects = (
                                                 _final_strategy_audit(
@@ -41577,9 +41794,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             _dfc_final_pdpl2 = [
                                                 (fw, fam) for fw, fam, _
                                                 in _dfc_final_remaining2
-                                                if fw == 'PDPL'
+                                                if fw in
+                                                _DFC_FINAL_TARGETS_BY_FW
                                                 and fam in
-                                                _DFC_FINAL_TARGETS
+                                                _DFC_FINAL_TARGETS_BY_FW[fw]
                                             ]
                                             _dfc_final_will_fail = bool(
                                                 _dfc_final_pdpl2)
