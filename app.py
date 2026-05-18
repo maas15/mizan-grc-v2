@@ -10765,10 +10765,21 @@ def _build_scope_frameworks_block(metadata, selected_fws_keys, lang):
         caps = spec.get('capabilities', []) or []
         if lang == 'ar':
             cap_labels = []
+            _seen_labels = set()
             for fam in caps:
                 # fam = (family_id, ar_kws, en_kws)
                 ar_kws = fam[1] if len(fam) > 1 else []
-                cap_labels.append(ar_kws[0] if ar_kws else fam[0])
+                _lbl = ar_kws[0] if ar_kws else fam[0]
+                # PR-5B.9AB — dedupe capability display labels so
+                # alias families with identical first-keyword (e.g.
+                # PDPL's data_classification_pdpl + personal_data_
+                # classification both leading with "تصنيف البيانات
+                # الشخصية") don't appear twice in scope output.
+                _norm = (_lbl or '').strip()
+                if not _norm or _norm in _seen_labels:
+                    continue
+                _seen_labels.add(_norm)
+                cap_labels.append(_lbl)
             desc = (
                 f"يُعكَس هذا الإطار في الاستراتيجية عبر مجالات: "
                 + '، '.join(cap_labels[:6])
@@ -10778,9 +10789,17 @@ def _build_scope_frameworks_block(metadata, selected_fws_keys, lang):
             )
         else:
             cap_labels = []
+            _seen_labels = set()
             for fam in caps:
                 en_kws = fam[2] if len(fam) > 2 else []
-                cap_labels.append((en_kws[0] if en_kws else fam[0]).title())
+                _lbl = (en_kws[0] if en_kws else fam[0]).title()
+                # PR-5B.9AB — dedupe by case-insensitive normalised
+                # label so aliases collapse to one scope entry.
+                _norm = (_lbl or '').strip().lower()
+                if not _norm or _norm in _seen_labels:
+                    continue
+                _seen_labels.add(_norm)
+                cap_labels.append(_lbl)
             desc = (
                 'Reflected in the strategy through capability areas: '
                 + ', '.join(cap_labels[:6])
@@ -11208,6 +11227,19 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                         return _row_label(r)
         return None
 
+    def _find_match_any(section_keys, ar_kws, en_kws):
+        """PR-5B.9AB — fallback lookup. Try section keys in order;
+        return the first match found. Lets PDPL/NDMO rows fill cells
+        from secondary sections (e.g., roadmap/KPIs/confidence) when
+        the primary section omits the capability. Pure content lookup
+        — never invents text.
+        """
+        for sk in (section_keys or []):
+            hit = _find_match(sk, ar_kws, en_kws)
+            if hit:
+                return hit
+        return None
+
     if lang == 'ar':
         header = ['الإطار المرجعي', 'مجال القدرة / الضابط',
                   'الفجوة المرتبطة', 'المبادرة / النشاط',
@@ -11221,6 +11253,24 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
 
     rows = []
     fws_with_caps = []
+    # PR-5B.9AB — data-scope flag computed early so the per-framework
+    # loop can use fallback section lookups + dedupe classification
+    # family aliases (data_classification_pdpl vs.
+    # personal_data_classification) without affecting other domains.
+    _trace_domain_pre = (domain_code or '').strip().lower()
+    _selected_keys_upper_pre = {str(k).upper()
+                                for k in (selected_fws_keys or [])}
+    _data_scope_pre = (
+        _trace_domain_pre == 'data'
+        or 'NDMO' in _selected_keys_upper_pre
+        or 'PDPL' in _selected_keys_upper_pre
+    )
+    # Canonical family alias map used to dedupe PDPL/NDMO families
+    # whose ids differ but represent the same conceptual capability.
+    try:
+        _family_alias_map = _SELECTED_FRAMEWORK_FAMILY_CANONICAL_ALIASES
+    except NameError:
+        _family_alias_map = {}
     for fw_key in (selected_fws_keys or []):
         spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key)
         if not spec:
@@ -11229,18 +11279,51 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
             continue
         fws_with_caps.append(fw_key)
         fw_display = spec.get('display', fw_key)
+        _seen_canonical_fams = set()
         for fam in spec.get('capabilities', []) or []:
             family_id = fam[0]
+            # PR-5B.9AB — collapse alias families (e.g.
+            # data_classification_pdpl → personal_data_classification)
+            # onto a single canonical id so traceability renders one
+            # row per conceptual capability, matching scope/dedup.
+            canonical_id = (
+                (_family_alias_map.get(fw_key) or {}).get(family_id)
+                or family_id
+            )
+            if _data_scope_pre and canonical_id in _seen_canonical_fams:
+                continue
+            _seen_canonical_fams.add(canonical_id)
             ar_kws = fam[1] if len(fam) > 1 else []
             en_kws = fam[2] if len(fam) > 2 else []
             cap_label = (ar_kws[0] if (lang == 'ar' and ar_kws)
                          else (en_kws[0].title() if en_kws
                                else family_id.replace('_', ' ').title()))
-            gap        = _find_match('gaps',       ar_kws, en_kws) or dash
-            initiative = (_find_match('pillars',   ar_kws, en_kws)
-                          or _find_match('roadmap', ar_kws, en_kws) or dash)
-            kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
-            risk       = _find_match('confidence', ar_kws, en_kws) or dash
+            if _data_scope_pre:
+                # PR-5B.9AB — for Data scope, fall back across
+                # multiple AI-generated sections so PDPL/NDMO rows
+                # can be derived from roadmap/KPIs/confidence/pillars
+                # when the primary section is silent. Pure content
+                # lookup — no row is invented; if all fallbacks miss,
+                # the cell stays as dash and the row is dropped below.
+                gap        = (_find_match_any(
+                                  ['gaps', 'roadmap', 'kpis',
+                                   'pillars', 'confidence'],
+                                  ar_kws, en_kws) or dash)
+                initiative = (_find_match_any(
+                                  ['pillars', 'roadmap', 'gaps',
+                                   'kpis'], ar_kws, en_kws) or dash)
+                kpi        = (_find_match_any(
+                                  ['kpis', 'roadmap', 'confidence'],
+                                  ar_kws, en_kws) or dash)
+                risk       = (_find_match_any(
+                                  ['confidence', 'kpis', 'roadmap'],
+                                  ar_kws, en_kws) or dash)
+            else:
+                gap        = _find_match('gaps',       ar_kws, en_kws) or dash
+                initiative = (_find_match('pillars',   ar_kws, en_kws)
+                              or _find_match('roadmap', ar_kws, en_kws) or dash)
+                kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
+                risk       = _find_match('confidence', ar_kws, en_kws) or dash
             rows.append([fw_display, cap_label, gap, initiative, kpi, risk])
 
     # PR-5B.9B — profile-driven fallback. When no framework-registry
@@ -11342,6 +11425,15 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                     print(
                         '[TRACEABILITY-DIAG] dropped_incomplete_row '
                         f'domain={_trace_domain or "?"} '
+                        f'framework={_fw_lbl!s} capability={_cap_lbl!s}',
+                        flush=True,
+                    )
+                    # PR-5B.9AB — also emit the canonical
+                    # ``skipped_incomplete_row`` diagnostic so QA can
+                    # spot PDPL/NDMO families that could not be
+                    # completed even after fallback section lookups.
+                    print(
+                        '[TRACEABILITY-DIAG] skipped_incomplete_row '
                         f'framework={_fw_lbl!s} capability={_cap_lbl!s}',
                         flush=True,
                     )
@@ -51207,8 +51299,17 @@ def api_generate_pdf():
             except Exception:
                 return s
 
-        def process_arabic_table(text, col_width, font_size=9):
-            """Process Arabic text for table cells with specific column width."""
+        def process_arabic_table(text, col_width, font_size=9,
+                                 font_name=None):
+            """Process Arabic text for table cells with specific column width.
+
+            PR-5B.9AB — ``font_name`` lets callers pass the actual
+            font used to render the cell (regular vs. bold). Bold
+            glyphs are slightly wider, so measuring with the regular
+            font caused the pre-wrap to underestimate header cell
+            widths and trigger ReportLab re-wrap (visible as Arabic
+            mid-word fragments).
+            """
             if text is None:
                 return ''
             if is_arabic and text:
@@ -51222,6 +51323,7 @@ def api_generate_pdf():
 
                     from reportlab.pdfbase.pdfmetrics import stringWidth
                     reshaped = arabic_reshaper.reshape(text)
+                    _wrap_font = font_name or arabic_font_name
 
                     # Guard against None col_width (can happen when table column
                     # count mismatches the col_widths list in edge cases).
@@ -51229,7 +51331,7 @@ def api_generate_pdf():
                         return get_display(reshaped)
 
                     # Check if fits in one line
-                    total_w = stringWidth(reshaped, arabic_font_name, font_size) or 0
+                    total_w = stringWidth(reshaped, _wrap_font, font_size) or 0
                     cell_width = col_width - 16  # subtract padding + safety margin
                     if total_w <= cell_width:
                         return get_display(reshaped)
@@ -51239,10 +51341,10 @@ def api_generate_pdf():
                     lines = []
                     current_line_words = []
                     current_width = 0.0
-                    space_width = stringWidth(' ', arabic_font_name, font_size) or 0.0
+                    space_width = stringWidth(' ', _wrap_font, font_size) or 0.0
                     
                     for word in words:
-                        word_width = stringWidth(word, arabic_font_name, font_size) or 0.0
+                        word_width = stringWidth(word, _wrap_font, font_size) or 0.0
                         test_width = current_width + word_width + (space_width if current_line_words else 0)
                         
                         if test_width > cell_width and current_line_words:
@@ -53381,8 +53483,23 @@ def api_generate_pdf():
                         # "Model Monitoring Officer") can be broken
                         # inside narrow table cells without raising a
                         # ReportLab LayoutError.
-                        splitLongWords=1,
-                        wordWrap='CJK',
+                        # PR-5B.9AB: ``wordWrap='CJK'`` treats every
+                        # glyph (including Arabic letter forms) as a
+                        # potential break opportunity, which produces
+                        # mid-word fragments such as ``وثيق``, ``وير``
+                        # or ``عيين`` inside narrow Arabic table cells
+                        # whenever ReportLab needs to re-wrap a line
+                        # whose measured-vs-rendered width differs.
+                        # For Arabic strategy PDFs the pre-wrap done
+                        # by ``process_arabic_table`` already enforces
+                        # whole-word line breaks and ``_pdf_safe_text``
+                        # never inserts ZWSP into Arabic runs — so we
+                        # disable CJK / split-long-words for Arabic
+                        # cells. English PDFs keep the historical
+                        # CJK + splitLongWords behaviour so Latin
+                        # token wrapping is unchanged.
+                        splitLongWords=0 if is_arabic else 1,
+                        wordWrap=None if is_arabic else 'CJK',
                     )
                     header_cell_style = ParagraphStyle(
                         'HeaderCellStyle', 
@@ -53391,8 +53508,11 @@ def api_generate_pdf():
                         textColor=colors.white,
                         fontName=arabic_font_bold if is_arabic else 'Helvetica-Bold',
                         alignment=TA_RIGHT if is_arabic else TA_LEFT,
-                        splitLongWords=1,
-                        wordWrap='CJK',
+                        # PR-5B.9AB — Arabic header cells also avoid
+                        # CJK wrap so heading words such as ``وثيقة``
+                        # / ``تطوير`` / ``تعيين`` render whole.
+                        splitLongWords=0 if is_arabic else 1,
+                        wordWrap=None if is_arabic else 'CJK',
                     )
                     
                     wrapped_data = []
@@ -53408,7 +53528,28 @@ def api_generate_pdf():
                             # Process Arabic: reshape and per-cell-width bidi
                             if is_arabic and cell_text:
                                 cw = col_widths[col_idx] if col_idx < len(col_widths) else text_width / len(row)
-                                cell_text = process_arabic_table(cell_text, cw, font_size=9) or ''
+                                # PR-5B.9AB — pass the actual cell
+                                # font size (may be 9 / 9.5 / 10pt
+                                # depending on col count) so the
+                                # pre-wrap measurement matches the
+                                # rendered width. Underestimating the
+                                # font caused ReportLab to re-wrap
+                                # narrow Arabic cells and break words
+                                # mid-glyph (``وثيق`` / ``وير`` /
+                                # ``عيين``). Bold header rows use
+                                # ``arabic_font_bold`` whose glyphs
+                                # are slightly wider — we also pass
+                                # the bold font for header rows so
+                                # measurement matches rendering.
+                                _wrap_font = (
+                                    arabic_font_bold if row_idx == 0
+                                    else arabic_font_name
+                                )
+                                cell_text = process_arabic_table(
+                                    cell_text, cw,
+                                    font_size=_cell_font_size,
+                                    font_name=_wrap_font,
+                                ) or ''
                             if row_idx == 0:  # Header row
                                 wrapped_row.append(Paragraph(cell_text, header_cell_style))
                             else:
