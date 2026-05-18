@@ -22892,6 +22892,45 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
 }
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.9V — PDPL family canonicalization
+#
+# ``data_classification_pdpl`` and ``personal_data_classification`` were
+# both added to ``_FRAMEWORK_COVERAGE_REQUIREMENTS['PDPL']`` (PR-5B.9U)
+# with identical Arabic/English keyword vocabularies. A single phrase
+# such as ``تصنيف البيانات الشخصية`` / ``personal data classification``
+# satisfies both family detections simultaneously.
+#
+# Some upstream/downstream callers (defect parsers, diagnostic logs,
+# overwrite-guards) still need to know that the two family ids represent
+# the SAME conceptual obligation. The canonical helper below collapses
+# the two ids onto a single name (``personal_data_classification``) so
+# diagnostics, deduplication, and retry-budget bookkeeping treat them
+# as one. Detection emission (registry) is unchanged so existing
+# defect parsers stay backward-compatible.
+# ──────────────────────────────────────────────────────────────────────────
+
+# fw_key -> {fam_id_alias: canonical_fam_id}. Only PDPL classification
+# is collapsed for now; other families remain 1:1.
+_PDPL_FAMILY_CANONICAL_ALIASES = {
+    'data_classification_pdpl': 'personal_data_classification',
+}
+
+
+def _canonicalize_pdpl_family(fw_key, fam_id):
+    """Collapse PDPL classification family aliases onto one canonical id.
+
+    Returns the canonical family id for the PDPL framework's
+    classification family (``personal_data_classification``) regardless
+    of whether the input id is ``data_classification_pdpl`` or
+    ``personal_data_classification``. Non-PDPL frameworks and other
+    PDPL families are passed through unchanged.
+    """
+    if fw_key != 'PDPL':
+        return fam_id
+    return _PDPL_FAMILY_CANONICAL_ALIASES.get(fam_id, fam_id)
+
+
 def _resolve_selected_frameworks(selected, domain=None):
     """Map a free-form ``selected`` (list[str] or str) onto registry keys.
 
@@ -40844,8 +40883,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             'زمن الاستجابة لطلبات حقوق '
                                             'صاحب البيانات، نسبة تصنيف '
                                             'البيانات الشخصية، زمن '
-                                            'إخطار الخروقات أو نسبة '
-                                            'الإخطار في الوقت المحدد.'),
+                                            'إخطار الخروقات، نسبة '
+                                            'الإبلاغ عن الخروقات في '
+                                            'الوقت المحدد.'),
                                         'confidence': (
                                             'Confidence/Risk MUST '
                                             'include risks and success '
@@ -40873,6 +40913,50 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         _dfc_by_section.setdefault(
                                             _sk, []).append(
                                             (_fw_key, _fam_id))
+                                    # PR-5B.9V: per-family diagnostic
+                                    # CHECK log so operators can verify
+                                    # the parser captured every PDPL
+                                    # family and which canonical
+                                    # obligation it maps to (eg.
+                                    # ``data_classification_pdpl`` ↔
+                                    # ``personal_data_classification``).
+                                    for _ck_fw, _ck_fam, _ck_sk in (
+                                            _dfc_missing):
+                                        try:
+                                            _ck_spec = (
+                                                _FRAMEWORK_COVERAGE_REQUIREMENTS
+                                                .get(_ck_fw, {}))
+                                            _ck_ar = ()
+                                            _ck_en = ()
+                                            for (_cfam, _car, _cen) in (
+                                                    _ck_spec.get(
+                                                        'capabilities',
+                                                        []) or []):
+                                                if _cfam == _ck_fam:
+                                                    _ck_ar = _car
+                                                    _ck_en = _cen
+                                                    break
+                                            _ck_terms = (
+                                                list(_ck_ar)
+                                                + list(_ck_en))
+                                        except Exception:  # noqa: BLE001
+                                            _ck_terms = []
+                                        _ck_canon = (
+                                            _canonicalize_pdpl_family(
+                                                _ck_fw, _ck_fam))
+                                        print(
+                                            '[DATA-FRAMEWORK-COVERAGE-'
+                                            'CHECK] '
+                                            f'framework={_ck_fw} '
+                                            f'section={_ck_sk} '
+                                            f'family={_ck_fam} '
+                                            f'canonical_family='
+                                            f'{_ck_canon} '
+                                            f'matched_terms='
+                                            f'{_ck_terms[:6]} '
+                                            f'missing=True',
+                                            flush=True,
+                                        )
                                     print(
                                         '[DATA-FRAMEWORK-COVERAGE-REPAIR] '
                                         f'missing sections='
@@ -41102,11 +41186,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     print(
                                                         '[DATA-FRAMEWORK-'
                                                         'COVERAGE-REPAIR] '
-                                                        f'section={_sk} '
                                                         f'attempt={_dfc_attempt} '
-                                                        'accepted '
-                                                        'targeted='
-                                                        f'{sorted(_dfc_target_families)}',
+                                                        f'section={_sk} '
+                                                        f'missing_before='
+                                                        f'{sorted(_dfc_target_families)} '
+                                                        f'missing_after=[] '
+                                                        f'accepted=True '
+                                                        f'restored=False',
                                                         flush=True,
                                                     )
                                                     break
@@ -41121,10 +41207,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 print(
                                                     '[DATA-FRAMEWORK-'
                                                     'COVERAGE-REPAIR] '
-                                                    f'section={_sk} '
                                                     f'attempt={_dfc_attempt} '
-                                                    'rejected unmet='
-                                                    f'{sorted(_dfc_unmet)}',
+                                                    f'section={_sk} '
+                                                    f'missing_before='
+                                                    f'{sorted(_dfc_target_families)} '
+                                                    f'missing_after='
+                                                    f'{sorted(_dfc_unmet)} '
+                                                    f'accepted=False '
+                                                    f'restored=True',
                                                     flush=True,
                                                 )
                                                 if _dfc_attempt < 2:
@@ -41255,6 +41345,268 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'defects={_post_norm_defects}',
                                 flush=True,
                             )
+                            # ── PR-5B.9V: [DATA-FRAMEWORK-COVERAGE-FINAL]
+                            # overwrite guard. Re-run selected-framework
+                            # coverage for Data + PDPL after normalization
+                            # to catch any later pass that silently
+                            # removed previously-repaired PDPL coverage.
+                            # If classification or breach notification
+                            # defects reappear AND a retry budget remains,
+                            # route back to DATA-FRAMEWORK-COVERAGE-REPAIR
+                            # (one bounded AI repair attempt per affected
+                            # section). If anything still missing afterward,
+                            # fall through to the unified 422 below
+                            # (fail-closed; no deterministic content).
+                            try:
+                                _dfc_final_dcode = ''
+                                try:
+                                    _dfc_final_dcode = (
+                                        normalize_domain(domain or '')
+                                        or '')
+                                except Exception:  # noqa: BLE001
+                                    _dfc_final_dcode = ''
+                                _dfc_final_resolved = []
+                                if (_dfc_final_dcode.strip().lower()
+                                        == 'data' and _frameworks_raw):
+                                    try:
+                                        _dfc_final_resolved = (
+                                            _resolve_selected_frameworks(
+                                                _frameworks_raw,
+                                                domain='Data Management')
+                                            or [])
+                                    except Exception:  # noqa: BLE001
+                                        _dfc_final_resolved = []
+                                if ('PDPL' in _dfc_final_resolved
+                                        or 'NDMO' in _dfc_final_resolved):
+                                    _dfc_final_remaining = (
+                                        _compute_missing_selected_framework_coverage(
+                                            sections, _frameworks_raw,
+                                            domain=domain, lang=lang,
+                                        )) or []
+                                    # Restrict to PDPL classification /
+                                    # breach reappearance (the families
+                                    # the problem statement enumerates
+                                    # as persistent failures).
+                                    _DFC_FINAL_TARGETS = {
+                                        'data_classification_pdpl',
+                                        'personal_data_classification',
+                                        'breach_notification',
+                                    }
+                                    _dfc_final_pdpl = [
+                                        (fw, fam, sk) for fw, fam, sk
+                                        in _dfc_final_remaining
+                                        if fw == 'PDPL'
+                                        and fam in _DFC_FINAL_TARGETS
+                                    ]
+                                    _dfc_final_canon = sorted({
+                                        _canonicalize_pdpl_family(fw, fam)
+                                        for fw, fam, _ in _dfc_final_pdpl
+                                    })
+                                    if _dfc_final_pdpl:
+                                        # Single retry budget. We have
+                                        # already exhausted the 2-attempt
+                                        # in-pass loop; one more bounded
+                                        # AI attempt per section here.
+                                        _dfc_final_by_sec = {}
+                                        for _fw, _fam, _sk in (
+                                                _dfc_final_pdpl):
+                                            _dfc_final_by_sec.setdefault(
+                                                _sk, []).append(
+                                                (_fw, _fam))
+                                        try:
+                                            _dfc_final_dctx = (
+                                                get_strategy_domain_context(
+                                                    domain))
+                                        except Exception:  # noqa: BLE001
+                                            _dfc_final_dctx = None
+                                        if (_dfc_final_dctx
+                                                is not None):
+                                            try:
+                                                _dfc_final_dctx = dict(
+                                                    _dfc_final_dctx)
+                                                _dfc_final_dctx[
+                                                    'selected_frameworks'
+                                                ] = (
+                                                    list(_frameworks_raw)
+                                                    if isinstance(
+                                                        _frameworks_raw,
+                                                        (list, tuple))
+                                                    else ([
+                                                        str(_frameworks_raw)
+                                                    ] if _frameworks_raw
+                                                          else []))
+                                            except Exception:  # noqa: BLE001
+                                                pass
+                                            _dfc_final_osn = bool(
+                                                _final_ctx.get(
+                                                    'org_structure_is_none',
+                                                    False)
+                                                if isinstance(
+                                                    _final_ctx, dict)
+                                                else False)
+                                            _dfc_final_pdpl_spec = (
+                                                _FRAMEWORK_COVERAGE_REQUIREMENTS
+                                                .get('PDPL', {}))
+                                            _dfc_final_pdpl_caps = {
+                                                fam: (ar, en) for
+                                                (fam, ar, en) in
+                                                (_dfc_final_pdpl_spec
+                                                 .get('capabilities',
+                                                      []) or [])
+                                            }
+                                            for _fk, _miss in (
+                                                    _dfc_final_by_sec
+                                                    .items()):
+                                                if _fk not in (
+                                                        'pillars', 'gaps',
+                                                        'roadmap', 'kpis',
+                                                        'confidence',
+                                                        'environment'):
+                                                    continue
+                                                _dfc_final_before = (
+                                                    sections.get(_fk, '')
+                                                    or '')
+                                                _dfc_final_lines = []
+                                                for _ufw, _ufam in _miss:
+                                                    _ar, _en = (
+                                                        _dfc_final_pdpl_caps
+                                                        .get(_ufam,
+                                                             ((), ())))
+                                                    _ar_join = '، '.join(
+                                                        _ar or [])
+                                                    _en_join = ', '.join(
+                                                        _en or [])
+                                                    _dfc_final_lines.append(
+                                                        f'- {_ufw}:'
+                                                        f'{_ufam} — '
+                                                        'Arabic concepts: '
+                                                        f'{_ar_join}; '
+                                                        'English '
+                                                        'concepts: '
+                                                        f'{_en_join}')
+                                                _dfc_final_ve = (
+                                                    'FINAL OVERWRITE '
+                                                    'GUARD: a later '
+                                                    'pass removed '
+                                                    'previously-repaired '
+                                                    'PDPL coverage from '
+                                                    f'the {_fk} section. '
+                                                    'You MUST restore '
+                                                    'at least one '
+                                                    'literal token per '
+                                                    'family below '
+                                                    '(substring, case-'
+                                                    'insensitive). Do '
+                                                    'NOT remove or '
+                                                    'weaken any other '
+                                                    'existing content '
+                                                    'in the section. '
+                                                    'AI-first only — '
+                                                    'no placeholders, '
+                                                    'no dashy rows.\n'
+                                                    + '\n'.join(
+                                                        _dfc_final_lines)
+                                                )
+                                                _dfc_final_retry_ok = (
+                                                    False)
+                                                try:
+                                                    _dfc_final_new = (
+                                                        ai_repair_strategy_section(
+                                                            section_key=_fk,
+                                                            sections=sections,
+                                                            lang=lang,
+                                                            domain_context=(
+                                                                _dfc_final_dctx),
+                                                            org_name=org_name,
+                                                            sector=_model_sector,
+                                                            maturity=maturity,
+                                                            generation_mode=(
+                                                                _generation_mode),
+                                                            validation_error=(
+                                                                _dfc_final_ve),
+                                                            org_structure_is_none=(
+                                                                _dfc_final_osn),
+                                                        ))
+                                                    if _dfc_final_new and (
+                                                            _dfc_final_new
+                                                            .strip()):
+                                                        sections[_fk] = (
+                                                            _dfc_final_new)
+                                                        _dfc_final_retry_ok = (
+                                                            True)
+                                                except Exception as _dfgfe:
+                                                    print(
+                                                        '[DATA-FRAMEWORK-'
+                                                        'COVERAGE-FINAL] '
+                                                        f'section={_fk} '
+                                                        'retry_failed '
+                                                        f'err={_dfgfe}',
+                                                        flush=True,
+                                                    )
+                                                if not _dfc_final_retry_ok:
+                                                    sections[_fk] = (
+                                                        _dfc_final_before)
+                                                    _mark_synth_failed(
+                                                        _synth_status,
+                                                        _fk,
+                                                        Exception(
+                                                            'data_framework_'
+                                                            'coverage_final_'
+                                                            'guard_failed:'
+                                                            'PDPL'))
+                                            # Re-audit after retry.
+                                            _post_norm_defects = (
+                                                _final_strategy_audit(
+                                                    sections, lang,
+                                                    doc_subtype,
+                                                    synth_status=(
+                                                        _synth_status),
+                                                    selected_frameworks=(
+                                                        _frameworks_raw),
+                                                    domain=domain,
+                                                    org_structure_is_none=(
+                                                        _dfc_final_osn),
+                                                ))
+                                            _dfc_final_remaining2 = (
+                                                _compute_missing_selected_framework_coverage(
+                                                    sections,
+                                                    _frameworks_raw,
+                                                    domain=domain,
+                                                    lang=lang,
+                                                )) or []
+                                            _dfc_final_pdpl2 = [
+                                                (fw, fam) for fw, fam, _
+                                                in _dfc_final_remaining2
+                                                if fw == 'PDPL'
+                                                and fam in
+                                                _DFC_FINAL_TARGETS
+                                            ]
+                                            _dfc_final_will_fail = bool(
+                                                _dfc_final_pdpl2)
+                                            print(
+                                                '[DATA-FRAMEWORK-COVERAGE'
+                                                '-FINAL] '
+                                                f'remaining='
+                                                f'{_dfc_final_pdpl2} '
+                                                f'canonical='
+                                                f'{_dfc_final_canon} '
+                                                f'will_fail='
+                                                f'{_dfc_final_will_fail}',
+                                                flush=True,
+                                            )
+                                    else:
+                                        print(
+                                            '[DATA-FRAMEWORK-COVERAGE-'
+                                            'FINAL] remaining=[] '
+                                            'will_fail=False',
+                                            flush=True,
+                                        )
+                            except Exception as _dfcfge:  # noqa: BLE001
+                                print(
+                                    '[DATA-FRAMEWORK-COVERAGE-FINAL] '
+                                    f'guard_non_fatal: {_dfcfge}',
+                                    flush=True,
+                                )
                             if _post_norm_defects:
                                 _pn_summary_en = '; '.join(
                                     f'{tag} ({sec}) {cnt}/{floor}'
