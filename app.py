@@ -23267,10 +23267,26 @@ def _parse_selected_framework_coverage_defects(defects, domain='data'):
         if not flag.startswith(PREFIX):
             continue
         body = flag[len(PREFIX):]
+        # PR-5B.9Y: tolerate runtime defect string suffixes of the
+        # shapes the post-normalization audit emits when it stringifies
+        # 4-tuples for the operator-facing 422 message, e.g.:
+        #
+        #   selected_framework_coverage_missing:PDPL:breach_notification (roadmap) 0/1
+        #
+        # The ``(section) cnt/floor`` suffix is appended *after* the
+        # last colon-delimited token, so we recover the section label
+        # from the trailing ``(...)`` group before splitting on ``:``.
+        runtime_section = ''
+        body_for_split = body
+        m_runtime = _ts_re.search(
+            r'\s*\(([^()]+)\)\s*\d+\s*/\s*\d+\s*$', body_for_split)
+        if m_runtime:
+            runtime_section = m_runtime.group(1).strip()
+            body_for_split = body_for_split[:m_runtime.start()].rstrip()
         # Tolerate comma-separated multi-family flags emitted by the
         # post-repair fail-closure (``...missing:NDMO:data_quality,
         # PDPL:breach_notification``).
-        for part in body.split(','):
+        for part in body_for_split.split(','):
             tokens = [t.strip() for t in part.split(':') if t.strip()]
             if len(tokens) < 2:
                 continue
@@ -23279,7 +23295,7 @@ def _parse_selected_framework_coverage_defects(defects, domain='data'):
             # Optional 3rd component is a section label.
             tail_section = tokens[2] if len(tokens) >= 3 else ''
             sec_key = _normalize_audit_section_key(
-                tail_section or section)
+                tail_section or runtime_section or section)
             if not sec_key:
                 sec_key = '*'
             fw_bucket = grouped.setdefault(sec_key, {})
@@ -23287,6 +23303,212 @@ def _parse_selected_framework_coverage_defects(defects, domain='data'):
             if fam_id not in fam_list:
                 fam_list.append(fam_id)
     return grouped
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PR-5B.9Y — PDPL save-guard exact-term acceptance vocabulary.
+#
+# The PR-5B.9Y final PDPL save guard requires that any AI repair candidate
+# for the three PDPL families observed to regress at runtime
+# (``data_classification_pdpl``, ``personal_data_classification``,
+# ``breach_notification``) ACTUALLY contain at least one of the exact
+# domain concepts the problem statement enumerates. Generic phrases such
+# as "حماية البيانات الشخصية" or "الامتثال لـ PDPL" must NOT satisfy
+# the gate — those are too broad and were observed in failing strategies
+# whose specific classification / breach-notification obligations were
+# nevertheless absent. AR substrings are matched case-sensitively (Arabic
+# does not case-fold); EN substrings are matched case-insensitively.
+# ──────────────────────────────────────────────────────────────────────────
+
+_PR5B9Y_PDPL_EXACT_TERMS = {
+    # PR-5B.9W canonicalizes ``data_classification_pdpl`` ->
+    # ``personal_data_classification`` so we accept either family id and
+    # share the same vocabulary.
+    'data_classification_pdpl': {
+        'ar': (
+            'تصنيف البيانات الشخصية',
+            'تصنيف البيانات الحساسة',
+            'تصنيف ومعالجة البيانات الشخصية',
+        ),
+        'en': (
+            'personal data classification',
+            'sensitive personal data classification',
+            'personal data handling',
+        ),
+    },
+    'personal_data_classification': {
+        'ar': (
+            'تصنيف البيانات الشخصية',
+            'تصنيف البيانات الحساسة',
+            'تصنيف ومعالجة البيانات الشخصية',
+        ),
+        'en': (
+            'personal data classification',
+            'sensitive personal data classification',
+            'personal data handling',
+        ),
+    },
+    'breach_notification': {
+        'ar': (
+            'إخطار الخروقات',
+            'الإبلاغ عن الانتهاكات',
+            'الإبلاغ عن خرق البيانات',
+        ),
+        'en': (
+            'data breach notification',
+            'breach notification',
+            'breach reporting',
+        ),
+    },
+}
+
+
+def _pdpl_save_guard_required_terms(family_id):
+    """Return ``(ar_terms, en_terms)`` for a PDPL save-guard family.
+
+    Unknown families return empty tuples; callers treat that as
+    "no exact-term gate applies" and fall back to the registry keyword
+    set used by :func:`_compute_missing_selected_framework_coverage`.
+    """
+    spec = _PR5B9Y_PDPL_EXACT_TERMS.get(family_id or '')
+    if not spec:
+        return ((), ())
+    return (tuple(spec.get('ar', ())), tuple(spec.get('en', ())))
+
+
+def _pdpl_save_guard_candidate_satisfies(family_id, candidate_text):
+    """Return True iff ``candidate_text`` contains at least one exact
+    PDPL concept for ``family_id``.
+
+    Used by the PR-5B.9Y FINAL PDPL DATA SAVE GUARD to reject AI repair
+    candidates that mention generic PDPL / personal-data-protection
+    language without the specific classification or breach-notification
+    obligation the problem statement requires.
+    """
+    ar_terms, en_terms = _pdpl_save_guard_required_terms(family_id)
+    if not ar_terms and not en_terms:
+        return False
+    if not candidate_text:
+        return False
+    s = str(candidate_text)
+    s_lower = s.lower()
+    for kw in ar_terms:
+        if kw and kw in s:
+            return True
+    for kw in en_terms:
+        if kw and kw.lower() in s_lower:
+            return True
+    return False
+
+
+def _pdpl_save_guard_terms_found(family_id, candidate_text):
+    """Return the sorted list of exact PDPL concepts present in
+    ``candidate_text`` for diagnostic logging.
+    """
+    ar_terms, en_terms = _pdpl_save_guard_required_terms(family_id)
+    if not candidate_text:
+        return []
+    s = str(candidate_text)
+    s_lower = s.lower()
+    found = []
+    for kw in ar_terms:
+        if kw and kw in s:
+            found.append(kw)
+    for kw in en_terms:
+        if kw and kw.lower() in s_lower:
+            found.append(kw)
+    return sorted(set(found))
+
+
+def _pdpl_save_guard_parse_runtime_residuals(defects):
+    """Parse runtime ``selected_framework_coverage_missing`` defects
+    in any of the shapes the post-normalization 422 path is known to
+    emit and return ``[(fw, family, section), ...]`` filtered to the
+    three PDPL families the PR-5B.9Y guard targets.
+
+    Supported defect entry shapes:
+
+      1. 4-tuple ``(section, "selected_framework_coverage_missing:FW:fam", cnt, floor)``
+         emitted directly by :func:`_final_strategy_audit`.
+      2. 3-tuple ``(fw, family, section)`` already produced by
+         :func:`_compute_missing_selected_framework_coverage`.
+      3. 2-tuple ``(section, "selected_framework_coverage_missing:FW:fam")``.
+      4. Plain string ``selected_framework_coverage_missing:FW:fam``.
+      5. Plain string ``selected_framework_coverage_missing:FW:fam:section``.
+      6. Plain string with display suffix
+         ``selected_framework_coverage_missing:FW:fam (section) cnt/floor``.
+
+    All section labels are normalised via
+    :func:`_normalize_audit_section_key` (so ``kpi``/``indicators`` ->
+    ``kpis``; ``risks``/``csf`` -> ``confidence``; etc.).
+    """
+    _PDPL_TARGETS = {
+        'data_classification_pdpl',
+        'personal_data_classification',
+        'breach_notification',
+    }
+    PREFIX = 'selected_framework_coverage_missing:'
+    out = []
+    seen = set()
+
+    def _emit(fw, fam, sec):
+        sec_key = _normalize_audit_section_key(sec) if sec else ''
+        if not sec_key:
+            sec_key = '*'
+        key = (fw, fam, sec_key)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((fw, fam, sec_key))
+
+    for entry in defects or []:
+        if isinstance(entry, (tuple, list)):
+            # Shape 2: (fw, family, section) — already canonical from
+            # _compute_missing_selected_framework_coverage. Detected
+            # heuristically: 3-tuple whose 2nd element does NOT start
+            # with the audit prefix and whose 1st element is a known
+            # framework id (uppercase token, no spaces).
+            if (len(entry) == 3
+                    and isinstance(entry[0], str)
+                    and isinstance(entry[1], str)
+                    and isinstance(entry[2], str)
+                    and not entry[1].startswith(PREFIX)
+                    and entry[0].strip()
+                    and entry[0].strip() == entry[0].strip().upper()):
+                fw = entry[0].strip()
+                fam = entry[1].strip()
+                sec = entry[2].strip()
+                if fw == 'PDPL' and fam in _PDPL_TARGETS:
+                    _emit(fw, fam, sec)
+                continue
+            # Shapes 1 / 3: (section, flag, ...)
+            section = entry[0] if len(entry) >= 1 else ''
+            flag = entry[1] if len(entry) >= 2 else ''
+        else:
+            section = ''
+            flag = entry
+        if not isinstance(flag, str) or not flag.startswith(PREFIX):
+            continue
+        body = flag[len(PREFIX):]
+        runtime_section = ''
+        body_for_split = body
+        m_runtime = _ts_re.search(
+            r'\s*\(([^()]+)\)\s*\d+\s*/\s*\d+\s*$', body_for_split)
+        if m_runtime:
+            runtime_section = m_runtime.group(1).strip()
+            body_for_split = body_for_split[:m_runtime.start()].rstrip()
+        for part in body_for_split.split(','):
+            tokens = [t.strip() for t in part.split(':') if t.strip()]
+            if len(tokens) < 2:
+                continue
+            fw_key = tokens[0]
+            fam_id = tokens[1]
+            tail_section = tokens[2] if len(tokens) >= 3 else ''
+            if fw_key != 'PDPL' or fam_id not in _PDPL_TARGETS:
+                continue
+            _emit(fw_key, fam_id,
+                  tail_section or runtime_section or section)
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -41868,6 +42090,424 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 print(
                                     '[DATA-FRAMEWORK-COVERAGE-FINAL] '
                                     f'guard_non_fatal: {_dfcfge}',
+                                    flush=True,
+                                )
+                            # ── PR-5B.9Y — FINAL PDPL DATA SAVE GUARD
+                            # (pre-422). Runs BEFORE the generic
+                            # ``selected_framework_coverage_missing``
+                            # 422 below so PDPL classification / breach
+                            # residuals get a final bounded AI repair
+                            # attempt (with exact-term acceptance) and,
+                            # if still missing, emit a structured
+                            # ``pdpl_save_guard_residual`` 422 instead
+                            # of the generic post-normalization
+                            # blocker. Scoped to Data Management +
+                            # PDPL: Cyber / AI / Digital
+                            # Transformation / ERM / NDMO domains are
+                            # untouched. Validators are NOT weakened
+                            # — the guard re-uses
+                            # ``_compute_missing_selected_framework_coverage``
+                            # and an additional exact-term acceptance
+                            # gate. No deterministic content is
+                            # inserted; repair is AI-first and
+                            # rejected candidates restore the prior
+                            # section text and mark synth failed.
+                            try:
+                                _pr5b9y_dcode = ''
+                                try:
+                                    _pr5b9y_dcode = (
+                                        normalize_domain(domain or '')
+                                        or '')
+                                except Exception:  # noqa: BLE001
+                                    _pr5b9y_dcode = ''
+                                _pr5b9y_is_data_pdpl = False
+                                _pr5b9y_resolved = []
+                                if (_pr5b9y_dcode.strip().lower()
+                                        == 'data' and _frameworks_raw):
+                                    try:
+                                        _pr5b9y_resolved = (
+                                            _resolve_selected_frameworks(
+                                                _frameworks_raw,
+                                                domain='Data Management')
+                                            or [])
+                                    except Exception:  # noqa: BLE001
+                                        _pr5b9y_resolved = []
+                                    _pr5b9y_is_data_pdpl = (
+                                        'PDPL' in _pr5b9y_resolved)
+                                if _pr5b9y_is_data_pdpl:
+                                    _pr5b9y_remaining_before = (
+                                        _compute_missing_selected_framework_coverage(
+                                            sections, _frameworks_raw,
+                                            domain=domain, lang=lang,
+                                        )) or []
+                                    # Parse runtime defect strings from
+                                    # the post-normalization audit AND
+                                    # the live coverage check. Either
+                                    # source counts as a PDPL residual.
+                                    _pr5b9y_parsed_from_audit = (
+                                        _pdpl_save_guard_parse_runtime_residuals(
+                                            _post_norm_defects or []))
+                                    _pr5b9y_parsed_from_coverage = (
+                                        _pdpl_save_guard_parse_runtime_residuals(
+                                            _pr5b9y_remaining_before))
+                                    _pr5b9y_residual_set = set()
+                                    for _t in (
+                                            _pr5b9y_parsed_from_audit
+                                            + _pr5b9y_parsed_from_coverage):
+                                        _pr5b9y_residual_set.add(_t)
+                                    _pr5b9y_residual = sorted(
+                                        _pr5b9y_residual_set)
+                                    print(
+                                        '[PDPL-SAVE-GUARD] '
+                                        f'reached=True '
+                                        f'remaining_before='
+                                        f'{_pr5b9y_remaining_before} '
+                                        f'parsed_residual='
+                                        f'{_pr5b9y_residual}',
+                                        flush=True,
+                                    )
+                                    _pr5b9y_repair_attempted = []
+                                    if _pr5b9y_residual:
+                                        # Final bounded AI repair per
+                                        # affected section with the
+                                        # exact-term acceptance gate.
+                                        # The repair candidate MUST
+                                        # contain at least one of the
+                                        # required AR/EN concepts per
+                                        # PDPL family or it is rejected
+                                        # and the prior section text
+                                        # restored.
+                                        _pr5b9y_by_sec = {}
+                                        for _fw, _fam, _sk in (
+                                                _pr5b9y_residual):
+                                            _pr5b9y_by_sec.setdefault(
+                                                _sk, []).append(
+                                                (_fw, _fam))
+                                        try:
+                                            _pr5b9y_dctx = (
+                                                get_strategy_domain_context(
+                                                    domain))
+                                        except Exception:  # noqa: BLE001
+                                            _pr5b9y_dctx = None
+                                        if _pr5b9y_dctx is not None:
+                                            try:
+                                                _pr5b9y_dctx = dict(
+                                                    _pr5b9y_dctx)
+                                                _pr5b9y_dctx[
+                                                    'selected_frameworks'
+                                                ] = (
+                                                    list(_frameworks_raw)
+                                                    if isinstance(
+                                                        _frameworks_raw,
+                                                        (list, tuple))
+                                                    else ([
+                                                        str(_frameworks_raw)
+                                                    ] if _frameworks_raw
+                                                          else []))
+                                            except Exception:  # noqa: BLE001
+                                                pass
+                                        _pr5b9y_osn = bool(
+                                            _final_ctx.get(
+                                                'org_structure_is_none',
+                                                False)
+                                            if isinstance(
+                                                _final_ctx, dict)
+                                            else False)
+                                        for _fk, _miss in sorted(
+                                                _pr5b9y_by_sec.items()):
+                                            if _fk not in (
+                                                    'pillars', 'gaps',
+                                                    'roadmap', 'kpis',
+                                                    'confidence'):
+                                                continue
+                                            if _pr5b9y_dctx is None:
+                                                continue
+                                            _pr5b9y_before = (
+                                                sections.get(_fk, '')
+                                                or '')
+                                            _pr5b9y_lines = []
+                                            _pr5b9y_required_summary = []
+                                            for _ufw, _ufam in _miss:
+                                                _ar_req, _en_req = (
+                                                    _pdpl_save_guard_required_terms(
+                                                        _ufam))
+                                                _ucanon = (
+                                                    _canonicalize_selected_framework_family(
+                                                        _ufw, _ufam))
+                                                _pr5b9y_required_summary.append(
+                                                    {
+                                                        'family': _ufam,
+                                                        'canonical': (
+                                                            _ucanon),
+                                                        'ar_required': (
+                                                            list(_ar_req)),
+                                                        'en_required': (
+                                                            list(_en_req)),
+                                                    })
+                                                _pr5b9y_lines.append(
+                                                    f'- {_ufw}:{_ufam} '
+                                                    f'(canonical='
+                                                    f'{_ucanon}) — '
+                                                    'Arabic exact '
+                                                    'concepts (at '
+                                                    'least one '
+                                                    'required): '
+                                                    + '، '.join(
+                                                        _ar_req or [])
+                                                    + '; English '
+                                                    'exact concepts '
+                                                    '(at least one '
+                                                    'required): '
+                                                    + ', '.join(
+                                                        _en_req or []))
+                                            print(
+                                                '[DATA-FRAMEWORK-COVERAGE'
+                                                '-REPAIR] '
+                                                f'section={_fk} '
+                                                f'required_terms='
+                                                f'{_pr5b9y_required_summary}',
+                                                flush=True,
+                                            )
+                                            _pr5b9y_ve = (
+                                                'PR-5B.9Y FINAL PDPL '
+                                                'DATA SAVE GUARD: the '
+                                                'post-normalization '
+                                                'audit and live '
+                                                'coverage check '
+                                                'still report missing '
+                                                'PDPL coverage in the '
+                                                f'{_fk} section. You '
+                                                'MUST restore at '
+                                                'least one of the '
+                                                'EXACT concepts '
+                                                'listed below per '
+                                                'family (substring, '
+                                                'case-insensitive). '
+                                                'Generic phrases such '
+                                                'as "حماية البيانات '
+                                                'الشخصية" or "PDPL '
+                                                'compliance" do NOT '
+                                                'satisfy this gate. '
+                                                'Do NOT remove or '
+                                                'weaken any other '
+                                                'existing content. '
+                                                'AI-first only — no '
+                                                'placeholders, no '
+                                                'dashy rows.\n'
+                                                + '\n'.join(
+                                                    _pr5b9y_lines))
+                                            _pr5b9y_ok = False
+                                            _pr5b9y_candidate = ''
+                                            try:
+                                                _pr5b9y_candidate = (
+                                                    ai_repair_strategy_section(
+                                                        section_key=_fk,
+                                                        sections=sections,
+                                                        lang=lang,
+                                                        domain_context=(
+                                                            _pr5b9y_dctx),
+                                                        org_name=org_name,
+                                                        sector=_model_sector,
+                                                        maturity=maturity,
+                                                        generation_mode=(
+                                                            _generation_mode),
+                                                        validation_error=(
+                                                            _pr5b9y_ve),
+                                                        org_structure_is_none=(
+                                                            _pr5b9y_osn),
+                                                    )) or ''
+                                            except Exception as _pr5b9yre:
+                                                print(
+                                                    '[PDPL-SAVE-GUARD] '
+                                                    f'section={_fk} '
+                                                    'repair_failed '
+                                                    f'err={_pr5b9yre}',
+                                                    flush=True,
+                                                )
+                                                _pr5b9y_candidate = ''
+                                            if (_pr5b9y_candidate
+                                                    and _pr5b9y_candidate
+                                                    .strip()):
+                                                # Exact-term acceptance
+                                                # gate: every family
+                                                # required in this
+                                                # section must be
+                                                # satisfied by the
+                                                # candidate.
+                                                _pr5b9y_all_ok = True
+                                                _pr5b9y_terms_found = {}
+                                                for _ufw, _ufam in _miss:
+                                                    _found = (
+                                                        _pdpl_save_guard_terms_found(
+                                                            _ufam,
+                                                            _pr5b9y_candidate))
+                                                    _pr5b9y_terms_found[
+                                                        _ufam] = _found
+                                                    if not (
+                                                            _pdpl_save_guard_candidate_satisfies(
+                                                                _ufam,
+                                                                _pr5b9y_candidate)):
+                                                        _pr5b9y_all_ok = (
+                                                            False)
+                                                print(
+                                                    '[DATA-FRAMEWORK-'
+                                                    'COVERAGE-REPAIR] '
+                                                    f'section={_fk} '
+                                                    'candidate_terms_found='
+                                                    f'{_pr5b9y_terms_found} '
+                                                    f'accepted='
+                                                    f'{_pr5b9y_all_ok}',
+                                                    flush=True,
+                                                )
+                                                if _pr5b9y_all_ok:
+                                                    sections[_fk] = (
+                                                        _pr5b9y_candidate)
+                                                    _pr5b9y_ok = True
+                                                else:
+                                                    sections[_fk] = (
+                                                        _pr5b9y_before)
+                                            _pr5b9y_repair_attempted.append({
+                                                'section': _fk,
+                                                'accepted': _pr5b9y_ok,
+                                            })
+                                            if not _pr5b9y_ok:
+                                                sections[_fk] = (
+                                                    _pr5b9y_before)
+                                                _mark_synth_failed(
+                                                    _synth_status,
+                                                    _fk,
+                                                    Exception(
+                                                        'pdpl_save_guard'
+                                                        '_residual:'
+                                                        + ','.join(
+                                                            f'{fw}:{fam}'
+                                                            for fw, fam
+                                                            in _miss)))
+                                        # Re-run coverage + audit so
+                                        # downstream blocks see the
+                                        # repaired sections.
+                                        _pr5b9y_remaining_after = (
+                                            _compute_missing_selected_framework_coverage(
+                                                sections,
+                                                _frameworks_raw,
+                                                domain=domain,
+                                                lang=lang,
+                                            )) or []
+                                        _pr5b9y_residual_after = (
+                                            _pdpl_save_guard_parse_runtime_residuals(
+                                                _pr5b9y_remaining_after))
+                                        try:
+                                            _post_norm_defects = (
+                                                _final_strategy_audit(
+                                                    sections, lang,
+                                                    doc_subtype,
+                                                    synth_status=(
+                                                        _synth_status),
+                                                    selected_frameworks=(
+                                                        _frameworks_raw),
+                                                    domain=domain,
+                                                    org_structure_is_none=(
+                                                        _pr5b9y_osn),
+                                                ))
+                                        except Exception as _pr5b9yae:
+                                            print(
+                                                '[PDPL-SAVE-GUARD] '
+                                                'reaudit_non_fatal: '
+                                                f'{_pr5b9yae}',
+                                                flush=True,
+                                            )
+                                        _pr5b9y_will_422 = bool(
+                                            _pr5b9y_residual_after)
+                                        print(
+                                            '[PDPL-SAVE-GUARD] '
+                                            f'repair_attempted='
+                                            f'{_pr5b9y_repair_attempted} '
+                                            f'remaining_after='
+                                            f'{_pr5b9y_residual_after} '
+                                            f'will_return_422='
+                                            f'{_pr5b9y_will_422}',
+                                            flush=True,
+                                        )
+                                        if _pr5b9y_will_422:
+                                            _pr5b9y_canon = sorted({
+                                                'PDPL:{}'.format(
+                                                    _canonicalize_selected_framework_family(
+                                                        'PDPL', _f))
+                                                for _, _f, _
+                                                in _pr5b9y_residual_after
+                                            })
+                                            _pr5b9y_raw = sorted({
+                                                'PDPL:{}:{}'.format(_f, _s)
+                                                for _, _f, _s
+                                                in _pr5b9y_residual_after
+                                            })
+                                            _pr5b9y_by_sec_out = {}
+                                            for _fw, _fam, _sk in (
+                                                    _pr5b9y_residual_after):
+                                                _pr5b9y_by_sec_out.setdefault(
+                                                    _sk, []).append(_fam)
+                                            _pr5b9y_msg_en = (
+                                                'PDPL Data Management '
+                                                'save guard '
+                                                '(PR-5B.9Y): '
+                                                'personal-data '
+                                                'classification '
+                                                'and/or breach '
+                                                'notification coverage '
+                                                'is still missing '
+                                                'after all repair '
+                                                'passes. Affected: '
+                                                + '; '.join(
+                                                    f'{s}={sorted(set(fams))}'
+                                                    for s, fams
+                                                    in sorted(
+                                                        _pr5b9y_by_sec_out.items()))
+                                                + '. Please regenerate.')
+                                            _pr5b9y_msg_ar = (
+                                                'حارس الحفظ النهائي '
+                                                'للبيانات الشخصية '
+                                                '(PDPL — PR-5B.9Y): لا '
+                                                'تزال تغطية تصنيف '
+                                                'البيانات الشخصية و/أو '
+                                                'إخطار الخروقات / '
+                                                'الإبلاغ عن الانتهاكات '
+                                                'ناقصة بعد جميع '
+                                                'محاولات الإصلاح. '
+                                                'الأقسام المتأثرة: '
+                                                + '؛ '.join(
+                                                    f'{s}={sorted(set(fams))}'
+                                                    for s, fams
+                                                    in sorted(
+                                                        _pr5b9y_by_sec_out.items()))
+                                                + '. يُرجى إعادة التوليد.')
+                                            print(
+                                                '[STRATEGY-GATE] '
+                                                'save_decision=BLOCKED '
+                                                'reason=pdpl_save_'
+                                                'guard_residual_'
+                                                'pr5b9y '
+                                                f'residual='
+                                                f'{_pr5b9y_raw}',
+                                                flush=True,
+                                            )
+                                            return jsonify({
+                                                'success': False,
+                                                'strategy_id': None,
+                                                'error': (
+                                                    _pr5b9y_msg_ar
+                                                    if lang == 'ar'
+                                                    else _pr5b9y_msg_en),
+                                                'pdpl_save_guard_residual': [
+                                                    list(d) for d
+                                                    in _pr5b9y_residual_after
+                                                ],
+                                                'pdpl_save_guard_canonical': (
+                                                    _pr5b9y_canon),
+                                            }), 422
+                            except Exception as _pr5b9ye:  # noqa: BLE001
+                                print(
+                                    '[PDPL-SAVE-GUARD] '
+                                    f'non_fatal: {_pr5b9ye}',
                                     flush=True,
                                 )
                             if _post_norm_defects:
