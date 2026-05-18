@@ -95,8 +95,9 @@ class TestParserCapturesPersistentPdplFamilies(unittest.TestCase):
             ('roadmap',
              'selected_framework_coverage_missing:PDPL:'
              'breach_notification', 0, 1),
-            'selected_framework_coverage_missing:PDPL:'
-            'breach_notification:gaps',
+            ('gaps',
+             'selected_framework_coverage_missing:PDPL:'
+             'breach_notification', 0, 1),
         ]
         grouped = p(defects, domain='data')
         self.assertEqual(
