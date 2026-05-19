@@ -25693,6 +25693,29 @@ def _convergence_data_roadmap_balance_repair(
     coverage re-run + row-count floor) are unchanged; on rejection the
     original roadmap is restored and ``synth_failed:roadmap`` is
     marked exactly as before.
+
+    PR-5B.9AG — accumulates the AI-extracted top-up rows ACROSS both
+    attempts (first-found row wins per family) so partial wins
+    compound. Without accumulation, attempt 2 (driven by the
+    second-pass strict prompt that focuses only on still-uncovered
+    families) would emit rows just for the residual families and the
+    splice into ``before_text`` would lose any families attempt 1 had
+    already supplied, so the all-or-nothing acceptance gate kept
+    rejecting every candidate. Runtime examples that this fix
+    addresses:
+
+      * attempt 1 covers consent_management + data_subject_rights but
+        misses breach_notification → attempt 2 covers breach;
+      * attempt 1 covers personal_data_classification but misses
+        data_subject_rights / breach_notification → attempt 2 covers
+        DSR + breach;
+      * attempt 1 covers breach_notification but misses
+        data_subject_rights → attempt 2 covers DSR.
+
+    Every spliced row remains a verbatim AI-provider substring (no
+    deterministic row insertion). The 2-attempt budget, second-pass
+    strict prompt, and fail-closed ``_mark_synth_failed('roadmap', …)``
+    on final rejection are preserved verbatim.
     """
     if not isinstance(ctx, dict):
         return 0
@@ -25940,6 +25963,19 @@ def _convergence_data_roadmap_balance_repair(
     candidate_unmet = []
     still_missing = []
     new_rows = 0
+    # PR-5B.9AG — accumulate AI-extracted top-up rows across attempts so
+    # partial wins compound. Without this, attempt 2 (driven by the
+    # strict-second-pass prompt that focuses ONLY on still-uncovered
+    # families) would emit rows just for the residual families and the
+    # splice would lose any families attempt 1 had already supplied — so
+    # the all-or-nothing acceptance gate kept rejecting every candidate.
+    # First-found wins per family: once a row containing the required
+    # literal AR/EN terms for a family is extracted, it is preserved
+    # verbatim for the rest of the loop and re-spliced into
+    # ``before_text`` together with any new family rows from later
+    # attempts. Every spliced row remains a verbatim AI-provider
+    # substring (no deterministic row insertion).
+    _accumulated_extracted = {}
     while attempt < 2 and not accepted:
         attempt += 1
         try:
@@ -25994,10 +26030,17 @@ def _convergence_data_roadmap_balance_repair(
                 _topup_unmet_pre, _pdpl_selected))
         _topup_extracted = _extract_data_roadmap_topup_rows(
             new_text, _topup_required_terms)
-        if _topup_extracted:
+        # PR-5B.9AG — fold this attempt's extraction into the running
+        # accumulator (first-found wins per family) so partial wins
+        # from earlier attempts are preserved when later attempts only
+        # cover the residual families.
+        for _fam_new, _row_new in (_topup_extracted or {}).items():
+            if _fam_new not in _accumulated_extracted:
+                _accumulated_extracted[_fam_new] = _row_new
+        if _accumulated_extracted:
             _topup_rows_ordered = [
-                _topup_extracted[f]
-                for f in sorted(_topup_extracted)
+                _accumulated_extracted[f]
+                for f in sorted(_accumulated_extracted)
             ]
             merged_text = _splice_data_roadmap_topup_rows(
                 before_text, _topup_rows_ordered)
@@ -26012,7 +26055,8 @@ def _convergence_data_roadmap_balance_repair(
             '[DATA-ROADMAP-PDPL-COVERAGE] '
             f'cycle={cycle_no} attempt={attempt} mode=topup '
             f'unmet_pre={_topup_unmet_pre} '
-            f'extracted_families={sorted(_topup_extracted)}',
+            f'extracted_families={sorted(_topup_extracted)} '
+            f'accumulated_families={sorted(_accumulated_extracted)}',
             flush=True,
         )
         # Use the spliced text for all downstream checks so the
