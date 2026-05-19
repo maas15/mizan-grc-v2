@@ -11189,6 +11189,77 @@ def _extract_owners_from_content(content_sections, lang):
     return rows
 
 
+# PR-5B.9AH — Traceability-only PDPL keyword augmentation.
+#
+# The PDPL framework registry (``_FRAMEWORK_COVERAGE_REQUIREMENTS``) is
+# the authoritative source of capability detection vocabulary and must
+# not be widened here (changing it would affect validators / repair
+# passes which is out of scope for the traceability-rendering fix).
+#
+# However, real AI-generated Data Management content often phrases
+# consent / breach activities, KPIs and risks with slightly different
+# Arabic wording than the registry vocabulary (e.g. ``سياسات إدارة
+# الموافقات``, ``نظام إدارة الموافقات``, ``الإبلاغ عن اختراقات البيانات``,
+# ``خطة الإبلاغ عن الانتهاكات``).  Without these synonyms the
+# traceability ``_find_match`` lookup returns ``None`` for the
+# consent / breach families and the row is dropped by the data-scope
+# no-dash gate — leaving Part A / Part B incomplete.
+#
+# The map below is consumed ONLY by ``_build_traceability_matrix`` to
+# extend the per-family keyword search when (framework, family) is
+# PDPL consent_management / breach_notification.  It does not affect
+# detection, validation, repair, deduplication, scope, or any other
+# subsystem.
+_TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
+    'consent_management': {
+        'ar': [
+            'سياسات إدارة الموافقات',
+            'سياسة إدارة الموافقات',
+            'نظام إدارة الموافقات',
+            'وضع سياسات إدارة الموافقات',
+            'الموافقات المدارة',
+            'نسبة الموافقات المدارة',
+            'ضعف إدارة الموافقات',
+        ],
+        'en': [
+            'consent management system',
+            'consent policies',
+            'consent policy',
+            'managed consents',
+        ],
+    },
+    'breach_notification': {
+        'ar': [
+            'اختراقات البيانات',
+            'الإبلاغ عن اختراقات البيانات',
+            'نسبة الإبلاغ عن اختراقات البيانات',
+            'خطة الإبلاغ عن الانتهاكات',
+            'إعداد خطة الإبلاغ عن الانتهاكات',
+            'تأخر الإبلاغ عن خروقات البيانات',
+            'عدم الامتثال التنظيمي للإبلاغ',
+        ],
+        'en': [
+            'data breach reporting',
+            'breach reporting plan',
+            'breach notification plan',
+            'breach disclosure',
+        ],
+    },
+}
+
+
+# PR-5B.9AH — Standalone "broken cell" labels that must never appear in
+# rendered traceability rows.  These are short, decontextualised Arabic
+# fragments occasionally produced when an upstream parser strips
+# qualifying tokens (e.g. ``تصنيف`` alone instead of ``تصنيف البيانات
+# الشخصية``).  Rejecting them at the lookup layer keeps Part A / Part B
+# free of meaningless cells without inventing replacement content.
+_TRACEABILITY_BROKEN_LABEL_BLOCKLIST = {
+    'تصنيف', 'الموافقة', 'موافقة', 'الإبلاغ', 'إخطار',
+    'الخصوصية', 'الحقوق', 'الحوكمة',
+}
+
+
 def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                domain_code='cyber'):
     """Build the framework traceability matrix.
@@ -11231,6 +11302,12 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                             # used in a sibling cell — prevents the
                             # initiative / KPI / risk columns from
                             # rendering the exact same phrase.
+                            continue
+                        # PR-5B.9AH — reject standalone broken labels
+                        # (e.g. ``تصنيف`` alone) so the rendered row
+                        # never contains a decontextualised fragment.
+                        if lbl and (lbl.strip()
+                                    in _TRACEABILITY_BROKEN_LABEL_BLOCKLIST):
                             continue
                         return lbl
         return None
@@ -11309,6 +11386,21 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
             _seen_canonical_fams.add(canonical_id)
             ar_kws = fam[1] if len(fam) > 1 else []
             en_kws = fam[2] if len(fam) > 2 else []
+            # PR-5B.9AH — traceability-only keyword augmentation for
+            # PDPL consent_management / breach_notification so the
+            # ``_find_match`` lookup recognises common AI-generated
+            # synonyms (e.g. ``سياسات إدارة الموافقات``, ``الإبلاغ عن
+            # اختراقات البيانات``) and the rows are rendered with
+            # complete cells instead of being dropped by the data-scope
+            # no-dash gate.  Augmentation is local to this function;
+            # the framework registry, validators, repair passes and
+            # scope computation are untouched.
+            if _data_scope_pre and fw_key == 'PDPL':
+                _aug = _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT.get(
+                    canonical_id) or {}
+                if _aug:
+                    ar_kws = list(ar_kws) + list(_aug.get('ar') or [])
+                    en_kws = list(en_kws) + list(_aug.get('en') or [])
             cap_label = (ar_kws[0] if (lang == 'ar' and ar_kws)
                          else (en_kws[0].title() if en_kws
                                else family_id.replace('_', ' ').title()))
