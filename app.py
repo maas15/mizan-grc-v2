@@ -11211,6 +11211,30 @@ def _extract_owners_from_content(content_sections, lang):
 # detection, validation, repair, deduplication, scope, or any other
 # subsystem.
 _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
+    'privacy_governance': {
+        # PR-5B.9AJ — augment privacy_governance with phrasings the AI
+        # commonly emits in the roadmap / KPI / risk sections so the
+        # traceability lookup never misses the PDPL privacy row when
+        # the activity wording includes ``وفق PDPL`` qualifiers.
+        'ar': [
+            'تنفيذ حوكمة الخصوصية وفق PDPL',
+            'تنفيذ حوكمة الخصوصية',
+            'تأسيس حوكمة الخصوصية',
+            'حوكمة الخصوصية وفق PDPL',
+            'الالتزام بحوكمة الخصوصية',
+            'نسبة الالتزام بحوكمة الخصوصية',
+            'مخاطر حوكمة الخصوصية',
+            'ضعف حوكمة الخصوصية',
+            'سياسات حماية البيانات الشخصية',
+        ],
+        'en': [
+            'pdpl privacy governance',
+            'privacy governance program',
+            'privacy compliance',
+            'privacy governance kpi',
+            'privacy governance risk',
+        ],
+    },
     'consent_management': {
         'ar': [
             'سياسات إدارة الموافقات',
@@ -11220,12 +11244,82 @@ _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
             'الموافقات المدارة',
             'نسبة الموافقات المدارة',
             'ضعف إدارة الموافقات',
+            # PR-5B.9AJ — real-PDF wording variations.
+            'إدارة الموافقات وحقوق صاحب البيانات',
+            'تنفيذ سياسات خصوصية البيانات وإدارة الموافقات',
+            'تفعيل إدارة الموافقات',
         ],
         'en': [
             'consent management system',
             'consent policies',
             'consent policy',
             'managed consents',
+            'consent and data subject rights',
+        ],
+    },
+    'data_subject_rights': {
+        # PR-5B.9AJ — augment data_subject_rights with the AI's
+        # typical Arabic phrasings (``تفعيل حقوق صاحب البيانات``,
+        # combined consent+DSR roadmap rows, DSR-handling KPIs, and
+        # DSR non-response risks) so the row never falls through to
+        # dash and gets dropped by the data-scope no-dash gate.
+        'ar': [
+            'تفعيل حقوق صاحب البيانات',
+            'إدارة الموافقات وحقوق صاحب البيانات',
+            'حقوق أصحاب البيانات',
+            'معالجة طلبات حقوق أصحاب البيانات',
+            'نسبة معالجة طلبات حقوق أصحاب البيانات',
+            'طلبات حقوق صاحب البيانات',
+            'ضعف تفعيل حقوق صاحب البيانات',
+            'عدم الاستجابة لحقوق أصحاب البيانات',
+            'الاستجابة لحقوق أصحاب البيانات',
+        ],
+        'en': [
+            'data subject rights handling',
+            'dsr handling',
+            'dsr compliance',
+            'data subject rights response',
+        ],
+    },
+    'personal_data_classification': {
+        # PR-5B.9AJ — augment personal_data_classification with the
+        # AI's typical roadmap / KPI / risk phrasings.  The base
+        # registry keywords already include ``تصنيف البيانات
+        # الشخصية``; these additions handle the ``تنفيذ``/``إدارة``/
+        # ``دقة`` qualifiers commonly emitted in production.
+        'ar': [
+            'تنفيذ تصنيف البيانات الشخصية',
+            'إدارة تصنيف البيانات الشخصية',
+            'دقة تصنيف البيانات الشخصية',
+            'ضعف تصنيف البيانات الشخصية',
+            'إطار تصنيف البيانات الشخصية',
+            'مصفوفة تصنيف البيانات الشخصية',
+            'تطبيق تصنيف البيانات الشخصية',
+        ],
+        'en': [
+            'implement personal data classification',
+            'personal data classification accuracy',
+            'personal data classification framework',
+        ],
+    },
+    # PR-5B.9AJ — sibling alias for personal_data_classification so
+    # ``data_classification_pdpl``-keyed lookups also benefit when
+    # canonicalization does not collapse the family id in callers
+    # outside the Data scope.
+    'data_classification_pdpl': {
+        'ar': [
+            'تنفيذ تصنيف البيانات الشخصية',
+            'إدارة تصنيف البيانات الشخصية',
+            'دقة تصنيف البيانات الشخصية',
+            'ضعف تصنيف البيانات الشخصية',
+            'إطار تصنيف البيانات الشخصية',
+            'مصفوفة تصنيف البيانات الشخصية',
+            'تطبيق تصنيف البيانات الشخصية',
+        ],
+        'en': [
+            'implement personal data classification',
+            'personal data classification accuracy',
+            'personal data classification framework',
         ],
     },
     'breach_notification': {
@@ -11237,12 +11331,21 @@ _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
             'إعداد خطة الإبلاغ عن الانتهاكات',
             'تأخر الإبلاغ عن خروقات البيانات',
             'عدم الامتثال التنظيمي للإبلاغ',
+            # PR-5B.9AJ — real-PDF wording variations.
+            'تنفيذ آليات الإبلاغ عن خروقات البيانات',
+            'آليات الإبلاغ عن خروقات البيانات',
+            'الإبلاغ عن خروقات البيانات',
+            'تنفيذ إخطار الخروقات',
+            'سجل الإبلاغ عن الانتهاكات',
+            'آلية إخطار الخروقات',
         ],
         'en': [
             'data breach reporting',
             'breach reporting plan',
             'breach notification plan',
             'breach disclosure',
+            'breach notification mechanism',
+            'implement breach notification',
         ],
     },
 }
@@ -27339,8 +27442,147 @@ def normalize_final_arabic_sections(sections, lang):
     return counts
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# INLINE DUPLICATE-FAMILY BLOCK COLLAPSE (prompt Part 5)
+# ─────────────────────────────────────────────────────────────────────────
+# PR-5B.9AJ — Data Management DMO/CDO owner normalizer.
+#
+# Real production symptom: the AI sometimes generates a Data Management
+# roadmap row or executive-summary phrase such as
+#   ``إنشاء مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات (DPO)``
+# or
+#   ``Establish the Data Management Office led by the DPO``.
+# That is incorrect — the Data Management Office (DMO) is led by the
+# Chief Data Officer (CDO); the DPO owns PDPL / privacy / consent /
+# data-subject-rights / breach-notification activities only.
+#
+# This helper rewrites ONLY the DMO leader / owner reference (DPO → CDO)
+# in narrative / table content for Data Management strategies.  It is
+# scoped narrowly:
+#   * Domain == 'data'.
+#   * Replacements target phrases that pair DMO-establishment language
+#     with DPO leader language in the SAME phrase / table cell.
+#   * DPO ownership on standalone PDPL / privacy rows is preserved
+#     (no rewrite applied to roadmap rows that do not mention DMO
+#     establishment).
+#
+# Returns a {section_key: count_of_replacements} dict for logging.
+# Idempotent; safe on empty / non-string input.
+# ─────────────────────────────────────────────────────────────────────────
+
+# AR phrase replacements — DMO establishment paired with DPO leader.
+_DATA_DMO_DPO_TO_CDO_AR = [
+    # Inline AR phrases (substring-replace order matters: longest first).
+    ('إنشاء مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات (DPO)',
+     'إنشاء مكتب إدارة البيانات مع تعيين رئيس البيانات (CDO)'),
+    ('إنشاء مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات',
+     'إنشاء مكتب إدارة البيانات مع تعيين رئيس البيانات (CDO)'),
+    ('تأسيس مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات (DPO)',
+     'تأسيس مكتب إدارة البيانات مع تعيين رئيس البيانات (CDO)'),
+    ('تأسيس مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات',
+     'تأسيس مكتب إدارة البيانات مع تعيين رئيس البيانات (CDO)'),
+    ('إنشاء مكتب إدارة البيانات وتعيين مسؤول حماية البيانات (DPO)',
+     'إنشاء مكتب إدارة البيانات وتعيين رئيس البيانات (CDO)'),
+    ('إنشاء مكتب إدارة البيانات وتعيين مسؤول حماية البيانات',
+     'إنشاء مكتب إدارة البيانات وتعيين رئيس البيانات (CDO)'),
+    ('تأسيس مكتب إدارة البيانات وتعيين مسؤول حماية البيانات (DPO)',
+     'تأسيس مكتب إدارة البيانات وتعيين رئيس البيانات (CDO)'),
+    ('تأسيس مكتب إدارة البيانات وتعيين مسؤول حماية البيانات',
+     'تأسيس مكتب إدارة البيانات وتعيين رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات بقيادة مسؤول حماية البيانات (DPO)',
+     'مكتب إدارة البيانات بقيادة رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات بقيادة مسؤول حماية البيانات',
+     'مكتب إدارة البيانات بقيادة رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات يقوده مسؤول حماية البيانات (DPO)',
+     'مكتب إدارة البيانات يقوده رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات يقوده مسؤول حماية البيانات',
+     'مكتب إدارة البيانات يقوده رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات يرأسه مسؤول حماية البيانات (DPO)',
+     'مكتب إدارة البيانات يرأسه رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات يرأسه مسؤول حماية البيانات',
+     'مكتب إدارة البيانات يرأسه رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات برئاسة مسؤول حماية البيانات (DPO)',
+     'مكتب إدارة البيانات برئاسة رئيس البيانات (CDO)'),
+    ('مكتب إدارة البيانات برئاسة مسؤول حماية البيانات',
+     'مكتب إدارة البيانات برئاسة رئيس البيانات (CDO)'),
+]
+
+# EN phrase replacements — DMO establishment paired with DPO leader.
+_DATA_DMO_DPO_TO_CDO_EN = [
+    ('Establish the Data Management Office led by the DPO',
+     'Establish the Data Management Office led by the Chief Data Officer (CDO)'),
+    ('Establish the Data Management Office led by a DPO',
+     'Establish the Data Management Office led by the Chief Data Officer (CDO)'),
+    ('Establish a Data Management Office led by the DPO',
+     'Establish a Data Management Office led by the Chief Data Officer (CDO)'),
+    ('Establish a Data Management Office led by a DPO',
+     'Establish a Data Management Office led by the Chief Data Officer (CDO)'),
+    ('Data Management Office headed by the DPO',
+     'Data Management Office headed by the Chief Data Officer (CDO)'),
+    ('Data Management Office headed by a DPO',
+     'Data Management Office headed by the Chief Data Officer (CDO)'),
+    ('Data Management Office led by the DPO',
+     'Data Management Office led by the Chief Data Officer (CDO)'),
+    ('Data Management Office led by a DPO',
+     'Data Management Office led by the Chief Data Officer (CDO)'),
+    ('DMO led by the DPO',
+     'DMO led by the Chief Data Officer (CDO)'),
+    ('DMO headed by the DPO',
+     'DMO headed by the Chief Data Officer (CDO)'),
+    ('appointing the Data Protection Officer (DPO) as head of the Data Management Office',
+     'appointing the Chief Data Officer (CDO) as head of the Data Management Office'),
+    ('appoint the DPO as head of the Data Management Office',
+     'appoint the Chief Data Officer (CDO) as head of the Data Management Office'),
+    ('appoint a DPO to lead the Data Management Office',
+     'appoint a Chief Data Officer (CDO) to lead the Data Management Office'),
+]
+
+
+def _normalize_data_dmo_cdo_owner(sections, lang, domain):
+    """Rewrite DMO leader references from DPO → CDO in Data strategies.
+
+    Scope: ``domain == 'data'`` only.  Applies to vision, pillars,
+    roadmap, environment, gaps, kpis, confidence sections (i.e. every
+    canonical section the final-audit gate inspects).  Replacements are
+    literal substrings drawn from ``_DATA_DMO_DPO_TO_CDO_AR`` /
+    ``_DATA_DMO_DPO_TO_CDO_EN`` and target ONLY phrases that pair
+    DMO-establishment / DMO-leadership language with DPO leader
+    language.  Standalone DPO references on PDPL / privacy / consent /
+    DSR / breach rows are preserved (those families remain owned by
+    the DPO).
+
+    Returns ``{section_key: count}`` for logging.  Idempotent.
+    """
+    try:
+        _dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _dcode = (domain or '').strip().lower()
+    if _dcode != 'data':
+        return {}
+    if not isinstance(sections, dict):
+        return {}
+    _is_ar = (str(lang or '').lower() == 'ar')
+    pairs = (_DATA_DMO_DPO_TO_CDO_AR if _is_ar
+             else _DATA_DMO_DPO_TO_CDO_EN)
+    counts = {}
+    for key in ('vision', 'pillars', 'environment', 'gaps',
+                'roadmap', 'kpis', 'confidence',
+                'executive_summary'):
+        text = sections.get(key, '') or ''
+        if not text:
+            continue
+        try:
+            new_text = str(text)
+        except Exception:  # noqa: BLE001 — defensive
+            continue
+        n = 0
+        for src, dst in pairs:
+            if src and src in new_text:
+                _occ = new_text.count(src)
+                new_text = new_text.replace(src, dst)
+                n += _occ
+        if n:
+            sections[key] = new_text
+            counts[key] = n
+    return counts
 #
 # Real production symptom: the KPI section (or any canonical section)
 # sometimes contains a SECOND `## N. {canonical title}` heading inside
@@ -40357,6 +40599,32 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _arne:
                         print(f'[STRATEGY-DIAG] final_ar_normalization_failed: '
                               f'{_arne}', flush=True)
+
+                    # ── PR-5B.9AJ: Data DMO/CDO owner normalizer ──
+                    # Rewrite "Data Management Office led by DPO" /
+                    # "إنشاء مكتب إدارة البيانات مع تعيين مسؤول حماية
+                    # البيانات (DPO)" patterns to use the Chief Data
+                    # Officer (CDO) as the DMO leader.  Scoped to the
+                    # Data Management domain only; DPO ownership on
+                    # PDPL / privacy / consent / DSR / breach rows is
+                    # left untouched.
+                    try:
+                        _dmo_norm = _normalize_data_dmo_cdo_owner(
+                            sections, lang, domain)
+                        if _dmo_norm:
+                            print('[STRATEGY-DIAG] '
+                                  f'data_dmo_cdo_normalization={_dmo_norm}',
+                                  flush=True)
+                            _fixed_parts_d = [sections[sk]
+                                              for sk in _section_order_r
+                                              if sections.get(sk)
+                                              and sections[sk].strip()]
+                            if _fixed_parts_d:
+                                content = '\n\n'.join(_fixed_parts_d)
+                    except Exception as _dmoe:
+                        print('[STRATEGY-DIAG] '
+                              f'data_dmo_cdo_normalization_failed: {_dmoe}',
+                              flush=True)
 
                     # ── FINAL DETERMINISTIC REPAIR: vision/SO + confidence/risk ──
                     # Backstop repair pass — runs AFTER all upstream passes
