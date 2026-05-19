@@ -22957,6 +22957,20 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             ("incident_response", ["الاستجابة للحوادث", "الحوادث",
                                     "CSIRT"],
              ["incident response", "incident", "CSIRT"]),
+            # PR-CY2 — vulnerability_management family added so the
+            # validator can emit
+            # ``selected_framework_coverage_missing:ECC:vulnerability_
+            # management`` when the ECC strategy body does not mention
+            # vulnerability/patch management. Detection only — no
+            # deterministic content is inserted anywhere; the AI-first
+            # repair pass uses these keywords to drive coverage.
+            ("vulnerability_management",
+             ["إدارة الثغرات", "تقييم الثغرات", "فحص الثغرات",
+              "معالجة الثغرات", "ترقيع الثغرات",
+              "إدارة التصحيحات"],
+             ["vulnerability management", "vulnerability assessment",
+              "vulnerability scanning", "vulnerability remediation",
+              "patch management", "security patching"]),
         ],
         "required_sections": ["pillars", "environment", "gaps", "roadmap",
                                "kpis", "confidence"],
@@ -23092,6 +23106,36 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
               "critical infrastructure"]),
             ("privileged_access", ["إدارة الوصول المميز", "PAM", "MFA"],
              ["PAM", "privileged access management", "MFA"]),
+            # PR-CY2 — monitoring family added so the validator can emit
+            # ``selected_framework_coverage_missing:CSCC:monitoring`` when
+            # the CSCC strategy body does not mention critical-systems
+            # security monitoring. Detection only.
+            ("monitoring",
+             ["المراقبة الأمنية", "مراقبة الأنظمة الحرجة",
+              "الرصد الأمني", "سجلات المراقبة"],
+             ["security monitoring", "critical systems monitoring",
+              "monitoring logs", "continuous monitoring"]),
+            # PR-CY2 — resilience family added so the validator can emit
+            # ``selected_framework_coverage_missing:CSCC:resilience``
+            # when the CSCC strategy body does not mention cyber
+            # resilience / BCM / DRP. Detection only.
+            ("resilience",
+             ["المرونة السيبرانية", "استمرارية الأعمال",
+              "التعافي من الكوارث", "خطط الاستمرارية",
+              "خطط التعافي"],
+             ["cyber resilience", "resilience", "business continuity",
+              "disaster recovery", "BCM", "DRP"]),
+            # PR-CY2 — incident_response family added so the validator
+            # can emit
+            # ``selected_framework_coverage_missing:CSCC:incident_response``
+            # when the CSCC strategy body does not mention incident
+            # response / CSIRT for critical systems. Detection only.
+            ("incident_response",
+             ["الاستجابة للحوادث", "إدارة الحوادث",
+              "خطة الاستجابة للحوادث", "معالجة الحوادث"],
+             ["incident response", "incident management",
+              "incident response plan", "cyber incident handling",
+              "CSIRT"]),
         ],
         "required_sections": ["pillars", "environment", "gaps", "roadmap",
                                "kpis"],
