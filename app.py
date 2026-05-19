@@ -11248,6 +11248,12 @@ _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
             'إدارة الموافقات وحقوق صاحب البيانات',
             'تنفيذ سياسات خصوصية البيانات وإدارة الموافقات',
             'تفعيل إدارة الموافقات',
+            # PR-5B.9AK — additional real-PDF wording variations.
+            'تنفيذ نظام إدارة الموافقات وتسجيلها',
+            'نظام إدارة الموافقات وتسجيلها',
+            'تسجيل الموافقات',
+            'سجل الموافقات',
+            'سجلات الموافقات',
         ],
         'en': [
             'consent management system',
@@ -11255,6 +11261,8 @@ _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
             'consent policy',
             'managed consents',
             'consent and data subject rights',
+            'consent register',
+            'consent recording',
         ],
     },
     'data_subject_rights': {
@@ -11360,6 +11368,212 @@ _TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT = {
 _TRACEABILITY_BROKEN_LABEL_BLOCKLIST = {
     'تصنيف', 'الموافقة', 'موافقة', 'الإبلاغ', 'إخطار',
     'الخصوصية', 'الحقوق', 'الحوكمة',
+}
+
+
+# PR-5B.9AK — Traceability-only NDMO keyword augmentation.
+#
+# Mirrors ``_TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT`` for the NDMO
+# framework.  Real generated Data Management content frequently phrases
+# stewardship / ownership activities with synonyms that the bare
+# registry vocabulary does not catch (e.g. ``تفعيل أمناء البيانات``,
+# ``تعيين أمناء البيانات``, ``ملاك البيانات``, ``data owner roles``).
+# Without these synonyms the NDMO ``data_stewardship`` row falls
+# through to dash and is dropped by the data-scope no-dash gate, even
+# when the roadmap / gaps / pillars clearly cover stewardship.
+#
+# The map below is consumed ONLY by ``_build_traceability_matrix`` to
+# extend the per-family keyword search when (framework, family) is
+# NDMO.  It does not affect detection, validation, repair,
+# deduplication, scope, or any other subsystem.
+_TRACEABILITY_NDMO_FAMILY_KEYWORD_AUGMENT = {
+    'data_stewardship': {
+        'ar': [
+            'تفعيل أمناء البيانات',
+            'تعيين أمناء البيانات',
+            'تحديد أمناء البيانات',
+            'تسمية أمناء البيانات',
+            'أمناء البيانات',
+            'مشرفو البيانات',
+            'مالكي البيانات',
+            'مالكو البيانات',
+            'ملاك البيانات',
+            'ملكية البيانات',
+            'مسؤول البيانات',
+            'مسؤوليات أمناء البيانات',
+            'أدوار أمناء البيانات',
+            'نسبة تغطية أمناء البيانات',
+            'مخاطر أمناء البيانات',
+            'غياب أمناء البيانات',
+            'ضعف ملكية البيانات',
+        ],
+        'en': [
+            'data stewardship',
+            'data ownership',
+            'data steward',
+            'data stewards',
+            'data owner',
+            'data owners',
+            'data owner roles',
+            'data steward responsibilities',
+            'assign data stewards',
+        ],
+    },
+    'data_governance': {
+        'ar': [
+            'تنفيذ حوكمة البيانات',
+            'تأسيس حوكمة البيانات',
+            'تشكيل لجنة حوكمة البيانات',
+            'نسبة تغطية حوكمة البيانات',
+            'مخاطر حوكمة البيانات',
+            'ضعف حوكمة البيانات',
+        ],
+        'en': [
+            'data governance program',
+            'establish data governance',
+        ],
+    },
+    'data_quality': {
+        'ar': [
+            'إطلاق برنامج إدارة جودة البيانات',
+            'برنامج جودة البيانات',
+            'إدارة جودة البيانات',
+            'نسبة جودة البيانات',
+            'مخاطر جودة البيانات',
+            'ضعف جودة البيانات',
+        ],
+        'en': [
+            'data quality program',
+            'data quality management',
+        ],
+    },
+    'data_catalog': {
+        'ar': [
+            'بناء كتالوج البيانات',
+            'كتالوج البيانات والبيانات الوصفية',
+            'البيانات الوصفية',
+            'نسبة فهرسة البيانات الوصفية',
+            'مخاطر كتالوج البيانات',
+            'غياب كتالوج البيانات',
+        ],
+        'en': [
+            'data catalog',
+            'metadata catalog',
+            'data catalogue',
+        ],
+    },
+    'data_lifecycle': {
+        'ar': [
+            'دورة حياة البيانات والاحتفاظ والإتلاف',
+            'إدارة دورة حياة البيانات',
+            'سياسات الاحتفاظ بالبيانات',
+            'الاحتفاظ والأرشفة والإتلاف',
+            'نسبة الالتزام بدورة حياة البيانات',
+            'مخاطر دورة حياة البيانات',
+            'غياب دورة حياة البيانات',
+        ],
+        'en': [
+            'data lifecycle management',
+            'data retention and disposal',
+        ],
+    },
+}
+
+
+# PR-5B.9AK — Soft KPI/Risk derivation map for Data-scope PDPL+NDMO
+# traceability rows.
+#
+# Real generated Data Management PDFs sometimes cover a capability in
+# the roadmap / gaps / pillars but leave the KPI and/or risk sections
+# silent on that specific family. Under those conditions the previous
+# logic would emit a row with dash placeholders in the KPI / Risk
+# columns, and the data-scope no-dash gate would drop the row entirely
+# — leaving the user's PDPL traceability incomplete even though the
+# strategy DOES address the obligation.
+#
+# This map provides a deterministic, capability-derived KPI and Risk
+# descriptor per (framework, family) that is used ONLY when:
+#   * the row's gap AND initiative columns were successfully resolved
+#     from real generated content (i.e. the capability IS covered), and
+#   * the KPI or Risk lookup did NOT find a distinct phrase in any of
+#     the fallback sections (kpis / roadmap / confidence).
+#
+# It does NOT insert new strategy rows — the row exists because the
+# strategy already covers the capability. It only labels the metric /
+# risk axis for that traceability row using a phrase derived from the
+# capability name itself. The fallback is scoped to PDPL + NDMO so
+# Cyber / AI / DT / ERM traceability is byte-for-byte unchanged.
+_DATA_TRACEABILITY_SOFT_KPI_RISK = {
+    'PDPL': {
+        'privacy_governance': {
+            'ar': ('نسبة الالتزام بحوكمة الخصوصية',
+                   'مخاطر ضعف حوكمة الخصوصية'),
+            'en': ('Privacy governance compliance rate',
+                   'Privacy governance non-compliance risk'),
+        },
+        'consent_management': {
+            'ar': ('نسبة الموافقات المدارة وفق PDPL',
+                   'مخاطر ضعف إدارة الموافقات'),
+            'en': ('Managed consents rate under PDPL',
+                   'Consent management non-compliance risk'),
+        },
+        'data_subject_rights': {
+            'ar': ('نسبة معالجة طلبات حقوق أصحاب البيانات',
+                   'مخاطر عدم الاستجابة لحقوق أصحاب البيانات'),
+            'en': ('Data subject rights request fulfilment rate',
+                   'Data subject rights non-response risk'),
+        },
+        'personal_data_classification': {
+            'ar': ('دقة تصنيف البيانات الشخصية',
+                   'مخاطر ضعف تصنيف البيانات الشخصية'),
+            'en': ('Personal data classification accuracy',
+                   'Personal data classification non-compliance risk'),
+        },
+        'data_classification_pdpl': {
+            'ar': ('دقة تصنيف البيانات الشخصية',
+                   'مخاطر ضعف تصنيف البيانات الشخصية'),
+            'en': ('Personal data classification accuracy',
+                   'Personal data classification non-compliance risk'),
+        },
+        'breach_notification': {
+            'ar': ('نسبة الإبلاغ عن خروقات البيانات في الزمن المحدد',
+                   'مخاطر تأخر الإبلاغ عن خروقات البيانات'),
+            'en': ('On-time data breach notification rate',
+                   'Delayed breach notification regulatory risk'),
+        },
+    },
+    'NDMO': {
+        'data_governance': {
+            'ar': ('نسبة تغطية حوكمة البيانات',
+                   'مخاطر ضعف حوكمة البيانات'),
+            'en': ('Data governance coverage rate',
+                   'Data governance weakness risk'),
+        },
+        'data_quality': {
+            'ar': ('نسبة جودة البيانات',
+                   'مخاطر ضعف جودة البيانات'),
+            'en': ('Data quality rate',
+                   'Data quality weakness risk'),
+        },
+        'data_catalog': {
+            'ar': ('نسبة فهرسة البيانات الوصفية في كتالوج البيانات',
+                   'مخاطر غياب كتالوج البيانات'),
+            'en': ('Metadata catalog coverage rate',
+                   'Missing data catalog risk'),
+        },
+        'data_stewardship': {
+            'ar': ('نسبة تغطية أمناء البيانات وملكية البيانات',
+                   'مخاطر غياب أمناء البيانات وضعف ملكية البيانات'),
+            'en': ('Data stewardship and ownership coverage rate',
+                   'Missing data stewardship and ownership risk'),
+        },
+        'data_lifecycle': {
+            'ar': ('نسبة الالتزام بدورة حياة البيانات',
+                   'مخاطر ضعف دورة حياة البيانات'),
+            'en': ('Data lifecycle compliance rate',
+                   'Data lifecycle weakness risk'),
+        },
+    },
 }
 
 
@@ -11504,6 +11718,21 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                 if _aug:
                     ar_kws = list(ar_kws) + list(_aug.get('ar') or [])
                     en_kws = list(en_kws) + list(_aug.get('en') or [])
+            # PR-5B.9AK — Traceability-only keyword augmentation for
+            # NDMO families.  Mirrors the PDPL block above so the
+            # ``_find_match`` lookup recognises common AI-generated
+            # synonyms (e.g. ``تفعيل أمناء البيانات``, ``ملاك
+            # البيانات``, ``data owner roles``) and the rows render
+            # complete cells instead of being dropped by the
+            # data-scope no-dash gate.  Augmentation is local to this
+            # function; the framework registry, validators, repair
+            # passes and scope computation are untouched.
+            if _data_scope_pre and fw_key == 'NDMO':
+                _aug_n = _TRACEABILITY_NDMO_FAMILY_KEYWORD_AUGMENT.get(
+                    canonical_id) or {}
+                if _aug_n:
+                    ar_kws = list(ar_kws) + list(_aug_n.get('ar') or [])
+                    en_kws = list(en_kws) + list(_aug_n.get('en') or [])
             cap_label = (ar_kws[0] if (lang == 'ar' and ar_kws)
                          else (en_kws[0].title() if en_kws
                                else family_id.replace('_', ' ').title()))
@@ -11540,6 +11769,34 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                   ['confidence', 'kpis', 'roadmap'],
                                   ar_kws, en_kws,
                                   exclude=[initiative, kpi]) or dash)
+                # PR-5B.9AK — Soft KPI/Risk derivation for Data-scope
+                # PDPL + NDMO rows.  When the strategy clearly covers
+                # the capability (gap AND initiative resolved to real
+                # generated content) but the KPI / Risk sections are
+                # silent on this specific family, derive a capability-
+                # scoped descriptor from ``_DATA_TRACEABILITY_SOFT_KPI_
+                # RISK`` instead of leaving a dash that would cause the
+                # data-scope no-dash gate to drop the whole row.  No
+                # new strategy row is invented — the row exists because
+                # gap+initiative are real; this only fills the metric /
+                # risk axis with a deterministic, capability-derived
+                # label.  Scoped to PDPL + NDMO so Cyber/AI/DT/ERM are
+                # byte-for-byte unchanged.
+                if (gap != dash and initiative != dash
+                        and (kpi == dash or risk == dash)):
+                    _soft = (_DATA_TRACEABILITY_SOFT_KPI_RISK
+                             .get(fw_key, {}) or {}).get(canonical_id) or {}
+                    _soft_lang = _soft.get(
+                        'ar' if lang == 'ar' else 'en')
+                    if _soft_lang:
+                        _soft_kpi, _soft_risk = _soft_lang
+                        if (kpi == dash and _soft_kpi
+                                and _soft_kpi != initiative):
+                            kpi = _soft_kpi
+                        if (risk == dash and _soft_risk
+                                and _soft_risk != initiative
+                                and _soft_risk != kpi):
+                            risk = _soft_risk
             else:
                 gap        = _find_match('gaps',       ar_kws, en_kws) or dash
                 initiative = (_find_match('pillars',   ar_kws, en_kws)
@@ -12103,6 +12360,31 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
     fws_keys = _resolve_selected_frameworks(_explicit_input, domain or None)
     content_sections = sections if isinstance(sections, dict) else \
         _split_strategy_sections_by_h2(content or '')
+    # PR-5B.9AK — belt-and-suspenders DMO/CDO owner normalization
+    # before the document model consumes ``content_sections``.  The
+    # generation pipeline already calls ``_normalize_data_dmo_cdo_
+    # owner`` after final-audit, but re-export / cached-content paths
+    # bypass that hook and would otherwise render
+    # ``إنشاء مكتب إدارة البيانات مع تعيين مسؤول حماية البيانات (DPO)``
+    # verbatim into the executive summary / vision / roadmap blocks
+    # of the PDF or DOCX.  Idempotent and scoped to ``domain == 'data'``
+    # so other domains are byte-for-byte unchanged.
+    if isinstance(content_sections, dict):
+        try:
+            _dmo_norm_doc = _normalize_data_dmo_cdo_owner(
+                content_sections, lang_n, domain)
+            if _dmo_norm_doc:
+                print(
+                    '[EXPORT-DIAG] data_dmo_cdo_normalization_doc='
+                    f'{_dmo_norm_doc}',
+                    flush=True,
+                )
+        except Exception as _dmo_doc_e:  # noqa: BLE001 — defensive
+            print(
+                '[EXPORT-DIAG] data_dmo_cdo_normalization_doc_failed: '
+                f'{_dmo_doc_e}',
+                flush=True,
+            )
     # PR-5B.8S — inference fallback. When no explicit frameworks were
     # passed (or the explicit list resolved to nothing), and the strategy
     # body clearly mentions specific frameworks (ECC NCA / TCC NCA / …),
