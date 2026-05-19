@@ -23544,6 +23544,31 @@ _PR5B9Y_PDPL_EXACT_TERMS = {
             'access request',
             'rectification',
             'erasure',
+            'deletion request',
+        ),
+    },
+    # PR-5B.9AD — consent_management added to the PDPL save guard so
+    # the runtime residual ``selected_framework_coverage_missing:PDPL:
+    # consent_management (roadmap) 0/1`` receives the same final
+    # bounded AI repair attempt + exact-term acceptance gate as DSR /
+    # breach-notification. Without this entry the convergence-stage
+    # acceptance gate and the post-normalization PR-5B.9Y save guard
+    # skipped consent residuals and the generic 422 fired with no
+    # further repair attempt, leaving the runtime trace
+    # ``selected_framework_coverage_missing:PDPL:consent_management,
+    # data_subject_rights (roadmap) 0/1`` persistent.
+    'consent_management': {
+        'ar': (
+            'إدارة الموافقات',
+            'سجل الموافقات',
+            'الموافقة الصريحة',
+            'موافقات أصحاب البيانات',
+        ),
+        'en': (
+            'consent management',
+            'consent register',
+            'explicit consent',
+            'consent records',
         ),
     },
 }
@@ -23635,6 +23660,12 @@ def _pdpl_save_guard_parse_runtime_residuals(defects):
         # PR-5B.9AA — DSR also drains through the save guard so the
         # runtime residual gets a final bounded repair attempt.
         'data_subject_rights',
+        # PR-5B.9AD — consent_management drains through the save guard
+        # so the runtime residual
+        # ``selected_framework_coverage_missing:PDPL:consent_management
+        # (roadmap) 0/1`` also receives a final bounded repair attempt
+        # with an exact-term acceptance gate.
+        'consent_management',
     }
     PREFIX = 'selected_framework_coverage_missing:'
     out = []
@@ -25543,13 +25574,17 @@ def _convergence_data_roadmap_balance_repair(
     _roadmap_pdpl_missing_pre = sorted({
         fam for fw, fam, sk in _pdpl_pre
         if fw == 'PDPL'
-        and fam in ('data_subject_rights', 'breach_notification')
+        and fam in ('consent_management',
+                    'data_subject_rights',
+                    'breach_notification')
         and sk == 'roadmap'
     })
     if not missing and not _roadmap_pdpl_missing_pre:
         return 0
     print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
           f'cycle={cycle_no} missing_before={missing} '
+          f'roadmap_pdpl_consent='
+          f'{"consent_management" in _roadmap_pdpl_missing_pre} '
           f'roadmap_pdpl_rights='
           f'{"data_subject_rights" in _roadmap_pdpl_missing_pre} '
           f'roadmap_pdpl_breach='
@@ -25610,22 +25645,27 @@ def _convergence_data_roadmap_balance_repair(
     _pdpl_selected = 'PDPL' in _resolved_fw_for_pdpl
     _pdpl_contract_block = ''
     if _pdpl_selected:
+        _cns_ar, _cns_en = _pdpl_save_guard_required_terms(
+            'consent_management')
         _dsr_ar, _dsr_en = _pdpl_save_guard_required_terms(
             'data_subject_rights')
         _brn_ar, _brn_en = _pdpl_save_guard_required_terms(
             'breach_notification')
         _pdpl_contract_block = (
             '\n\nPR-5B.9AA — PDPL ROADMAP CONTRACT (mandatory when '
-            'PDPL is among the selected frameworks). The roadmap '
-            'MUST include the following five distinct activities, '
-            'each as a separate row with explicit Owner, Timeframe, '
-            'and Deliverable/Output columns:\n'
-            '  1. إدارة الموافقات وحقوق أصحاب البيانات '
-            '(Consent management and data subject rights).\n'
+            'PDPL is among the selected frameworks) — PR-5B.9AD '
+            'extends to consent_management. The roadmap MUST include '
+            'the following distinct activities, each as a separate '
+            'row with explicit Owner, Timeframe, and '
+            'Deliverable/Output columns:\n'
+            '  1. إدارة الموافقات وسجل الموافقات والموافقة الصريحة '
+            '(Consent management: consent register and explicit '
+            'consent for data subjects).\n'
             '  2. تفعيل آلية حقوق صاحب البيانات بما يشمل: '
-            'حق الوصول، حق التصحيح، حق الحذف '
+            'حق الوصول، حق التصحيح، حق الحذف، طلبات أصحاب البيانات '
             '(Operationalize data subject rights mechanism: '
-            'access request, rectification, erasure).\n'
+            'access request, rectification, erasure, deletion '
+            'request).\n'
             '  3. تفعيل إخطار الخروقات والإبلاغ عن الانتهاكات '
             '(Operationalize breach notification and reporting).\n'
             '  4. قياس زمن إخطار الخروقات والالتزام بالمهل '
@@ -25636,18 +25676,23 @@ def _convergence_data_roadmap_balance_repair(
             'EXACT ARABIC TERMS that MUST appear literally in the '
             'roadmap text (at least one per family — substring '
             'match, case-sensitive for Arabic):\n'
+            '  - consent_management: '
+            + '، '.join(_cns_ar) + '\n'
             '  - data_subject_rights: '
             + '، '.join(_dsr_ar) + '\n'
             '  - breach_notification: '
             + '، '.join(_brn_ar) + '\n'
             'EXACT ENGLISH TERMS (substring, case-insensitive):\n'
+            '  - consent_management: '
+            + ', '.join(_cns_en) + '\n'
             '  - data_subject_rights: '
             + ', '.join(_dsr_en) + '\n'
             '  - breach_notification: '
             + ', '.join(_brn_en) + '\n'
             'Generic phrases such as "حماية البيانات الشخصية" or '
-            '"PDPL compliance" do NOT satisfy DSR or breach '
-            'notification — the literal terms above are required.')
+            '"PDPL compliance" do NOT satisfy consent_management, '
+            'DSR or breach notification — the literal terms above '
+            'are required.')
     named = ', '.join(label_map.get(f, f) for f in missing) or (
         'PDPL data subject rights and breach notification')
     ve_base = (
@@ -25679,7 +25724,9 @@ def _convergence_data_roadmap_balance_repair(
         unmet = []
         if not _pdpl_selected:
             return terms, unmet
-        for fam in ('data_subject_rights', 'breach_notification'):
+        for fam in ('consent_management',
+                    'data_subject_rights',
+                    'breach_notification'):
             found = _pdpl_save_guard_terms_found(fam, text)
             terms[fam] = found
             if not _pdpl_save_guard_candidate_satisfies(fam, text):
@@ -25759,7 +25806,9 @@ def _convergence_data_roadmap_balance_repair(
         _roadmap_pdpl_missing_post = sorted({
             fam for fw, fam, sk in _pdpl_post
             if fw == 'PDPL'
-            and fam in ('data_subject_rights', 'breach_notification')
+            and fam in ('consent_management',
+                        'data_subject_rights',
+                        'breach_notification')
             and sk == 'roadmap'
         })
         # Merge both signals — either the direct exact-term check or
@@ -25779,12 +25828,28 @@ def _convergence_data_roadmap_balance_repair(
                 f'missing_after=[] accepted=True restored=False',
                 flush=True,
             )
+            # PR-5B.9AD — dedicated consent/rights diagnostic so the
+            # runtime trace surfaces the consent_management +
+            # data_subject_rights acceptance for ops review.
+            print(
+                '[DATA-ROADMAP-PDPL-CONSENT-RIGHTS] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={_roadmap_pdpl_missing_pre} '
+                'candidate_terms_found={'
+                f'"consent_management": '
+                f'{candidate_terms_found.get("consent_management", [])}, '
+                f'"data_subject_rights": '
+                f'{candidate_terms_found.get("data_subject_rights", [])}'
+                '} missing_after=[] accepted=True restored=False',
+                flush=True,
+            )
             print(
                 '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
                 f'cycle={cycle_no} attempt={attempt} '
                 f'missing_before={missing} missing_after=[] '
                 f'accepted=True '
                 f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+                f'roadmap_pdpl_consent=True '
                 f'roadmap_pdpl_rights=True '
                 f'roadmap_pdpl_breach=True',
                 flush=True,
@@ -25801,6 +25866,20 @@ def _convergence_data_roadmap_balance_repair(
             f'missing_after={_unmet_combined} '
             f'still_balance_missing={still_missing} '
             f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            'accepted=False restored=True',
+            flush=True,
+        )
+        # PR-5B.9AD — dedicated consent/rights diagnostic on rejection.
+        print(
+            '[DATA-ROADMAP-PDPL-CONSENT-RIGHTS] '
+            f'cycle={cycle_no} attempt={attempt} '
+            f'missing_before={_roadmap_pdpl_missing_pre} '
+            'candidate_terms_found={'
+            f'"consent_management": '
+            f'{candidate_terms_found.get("consent_management", [])}, '
+            f'"data_subject_rights": '
+            f'{candidate_terms_found.get("data_subject_rights", [])}'
+            f'}} missing_after={_unmet_combined} '
             'accepted=False restored=True',
             flush=True,
         )
@@ -25849,12 +25928,28 @@ def _convergence_data_roadmap_balance_repair(
             'accepted=False restored=True',
             flush=True,
         )
+        # PR-5B.9AD — dedicated consent/rights final fail-closed log.
+        print(
+            '[DATA-ROADMAP-PDPL-CONSENT-RIGHTS] '
+            f'cycle={cycle_no} attempts={attempt} '
+            f'missing_before={_roadmap_pdpl_missing_pre} '
+            'candidate_terms_found={'
+            f'"consent_management": '
+            f'{candidate_terms_found.get("consent_management", [])}, '
+            f'"data_subject_rights": '
+            f'{candidate_terms_found.get("data_subject_rights", [])}'
+            f'}} missing_after={candidate_unmet} '
+            'accepted=False restored=True',
+            flush=True,
+        )
         print(
             '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
             f'cycle={cycle_no} attempts={attempt} '
             f'missing_before={missing} '
             f'missing_after={still_missing} accepted=False '
             f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            f'roadmap_pdpl_consent='
+            f'{"consent_management" not in candidate_unmet} '
             f'roadmap_pdpl_rights='
             f'{"data_subject_rights" not in candidate_unmet} '
             f'roadmap_pdpl_breach='
@@ -26286,7 +26381,8 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 _ow_pdpl_residual = sorted({
                     fam for fw, fam, sk in _ow_fc
                     if fw == 'PDPL'
-                    and fam in ('data_subject_rights',
+                    and fam in ('consent_management',
+                                'data_subject_rights',
                                 'breach_notification')
                     and sk == 'roadmap'
                 })
@@ -26294,6 +26390,8 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             print(
                 '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
                 f'cycle={_it + 1} overwrite_guard '
+                f'roadmap_pdpl_consent='
+                f'{"consent_management" not in _ow_pdpl_residual} '
                 f'roadmap_pdpl_rights='
                 f'{"data_subject_rights" not in _ow_pdpl_residual} '
                 f'roadmap_pdpl_breach='
@@ -43720,6 +43818,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     'data_classification_pdpl',
                                     'personal_data_classification',
                                     'breach_notification',
+                                    # PR-5B.9AD — consent_management and
+                                    # data_subject_rights surface the
+                                    # PDPL roadmap residual so the
+                                    # DATA-PDPL-SAVE-GUARD flags them
+                                    # before the generic 422.
+                                    'consent_management',
+                                    'data_subject_rights',
                                 }
                                 _PR5B9X_SECTIONS = (
                                     'pillars', 'gaps', 'roadmap',
