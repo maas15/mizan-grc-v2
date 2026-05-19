@@ -23042,36 +23042,56 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
         # strategy rows are inserted; the broader keyword list lets the
         # existing AI content satisfy the lookup.
         "capabilities": [
-            ("data_classification", ["تصنيف البيانات", "تصنيف",
+            ("data_classification", ["تصنيف البيانات",
+                                       "تصنيف البيانات الحساسة",
+                                       "تصنيف الأصول البيانية",
+                                       "تصنيف ومعالجة البيانات",
+                                       "تصنيف",
                                        "تصنيف المعلومات",
                                        "مستوى التصنيف",
                                        "حماية البيانات"],
-             ["data classification", "classification",
+             ["data classification",
+              "sensitive data classification",
+              "information classification",
+              "data asset classification",
+              "classification",
               "classify data", "data categorization",
               "data protection"]),
             ("encryption", ["التشفير", "تشفير البيانات",
+                             "تشفير البيانات أثناء النقل والتخزين",
                              "تشفير المعلومات",
                              "تشفير الاتصالات",
                              "تشفير عند التخزين",
                              "تشفير عند النقل"],
-             ["encryption", "cryptography", "data encryption",
+             ["encryption", "data encryption",
+              "encryption at rest", "encryption in transit",
+              "cryptography",
               "encrypt", "at rest encryption", "in transit encryption"]),
             ("dlp", ["DLP", "منع تسرب البيانات",
+                      "ضوابط منع فقدان البيانات",
                       "منع فقدان البيانات",
                       "تسرب البيانات",
                       "منع التسريب"],
-             ["DLP", "data loss prevention", "data leakage prevention",
+             ["DLP", "data loss prevention",
+              "loss prevention controls",
+              "data leakage prevention",
               "data exfiltration prevention"]),
             # PR-5B.9M — sensitive data handling family. Required so
             # DCC strategies that emphasise sensitive data lifecycle
             # (collection / use / sharing / disposal) surface a
             # traceability row instead of an all-dash entry.
             ("sensitive_data_handling",
-             ["البيانات الحساسة", "معالجة البيانات الحساسة",
+             ["البيانات الحساسة",
+              "معالجة البيانات الحساسة",
+              "تداول البيانات الحساسة",
+              "ضوابط التعامل مع البيانات الحساسة",
               "تداول البيانات", "التعامل مع البيانات",
               "دورة حياة البيانات", "مشاركة البيانات",
               "إتلاف البيانات"],
-             ["sensitive data", "sensitive data handling",
+             ["sensitive data handling",
+              "sensitive data processing",
+              "handling sensitive data",
+              "sensitive data",
               "data handling", "data lifecycle",
               "data sharing", "data disposal",
               "secure data handling"]),
@@ -23081,11 +23101,18 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
             # البيانات" mention against DCC even when no narrow
             # classification/encryption/DLP wording is present.
             ("data_protection",
-             ["حماية البيانات", "ضوابط حماية البيانات",
+             ["حماية البيانات",
+              "حماية البيانات الحساسة",
+              "ضوابط حماية البيانات",
+              "حماية البيانات أثناء النقل والتخزين",
               "ضوابط الأمن السيبراني للبيانات",
               "أمن البيانات",
               "السرية والسلامة والتوافر للبيانات"],
-             ["data protection", "data protection controls",
+             ["data protection",
+              "sensitive data protection",
+              "data security controls",
+              "protection of data at rest and in transit",
+              "data protection controls",
               "data cybersecurity", "data cybersecurity controls",
               "data security", "data confidentiality integrity"]),
         ],
@@ -23674,6 +23701,25 @@ _SELECTED_FRAMEWORK_FAMILY_CANONICAL_ALIASES = {
     },
     'NDMO': {
         'data_lifecycle': 'data_lifecycle',
+    },
+    # PR-CY3 — Cyber DCC family canonicalization. Aliases collapse the
+    # free-form family ids emitted by defect parsers / diagnostic logs
+    # / repair-prompt vocabularies onto the canonical registry ids in
+    # ``_FRAMEWORK_COVERAGE_REQUIREMENTS['DCC']`` so the convergence-
+    # stage Cyber framework coverage repair, the
+    # ``[CYBER-FRAMEWORK-COVERAGE-CHECK]`` diagnostics, and the
+    # ``_compute_missing_selected_framework_coverage`` re-run targeting
+    # all agree on a single id per obligation. PDPL / NDMO mappings
+    # above are deliberately untouched.
+    'DCC': {
+        'data_classification': 'data_classification',
+        'classification': 'data_classification',
+        'data_protection': 'data_protection',
+        'sensitive_data_protection': 'data_protection',
+        'sensitive_data_handling': 'sensitive_data_handling',
+        'encryption': 'encryption',
+        'dlp': 'dlp',
+        'data_loss_prevention': 'dlp',
     },
 }
 
@@ -26156,6 +26202,509 @@ def _convergence_data_framework_coverage_repair(
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# PR-CY3 — Convergence-stage Cyber Security framework coverage repair
+# helpers (DCC / ECC / CSCC / TCC).
+#
+# Runtime diagnosis (problem statement): after PR-CY2 the ECC/CSCC/DCC
+# capability registries are complete, so the validator now correctly
+# emits ``selected_framework_coverage_missing:DCC:data_classification``
+# (and ``...:DCC:data_protection``) for Cyber strategies that fail to
+# cite DCC obligations. However Cyber Security had no in-loop framework
+# coverage repair equivalent to the Data Management
+# ``_convergence_data_framework_coverage_repair``: the generic late
+# ``FW-COVERAGE-REPAIR`` pass runs AFTER convergence has already
+# rejected the request with ``reason=convergence_failed``.
+#
+# These helpers mirror the Data Management ones (PR-5B.9Z) but target
+# Cyber frameworks only. They:
+#   * trigger only on ``domain == 'cyber'``
+#   * trigger only when at least one selected Cyber framework has a
+#     ``selected_framework_coverage_missing`` defect
+#   * parse defects by framework / family / section
+#   * delegate to ``ai_repair_strategy_section`` (AI-first)
+#   * re-run ``_compute_missing_selected_framework_coverage`` after
+#     each candidate and accept ONLY if the targeted (fw, family)
+#     pairs are no longer missing
+#   * roll back the candidate (and any partial-progress side-effects
+#     on other families) when the candidate fails to reduce or worsens
+#     defects
+#   * fail closed via ``_mark_synth_failed`` on repeated failure (no
+#     deterministic strategy rows are ever inserted; the validator is
+#     not weakened; the final audit still runs).
+#
+# Section vocabulary mirrors the DCC capability registry
+# (``_FRAMEWORK_COVERAGE_REQUIREMENTS['DCC']``) so the AI prompt names
+# exactly the AR/EN tokens the validator accepts as substring matches.
+# ECC / CSCC / TCC families piggy-back on this same vocabulary so the
+# convergence repair can also handle the PR-CY2 ECC vulnerability-
+# management and CSCC monitoring / resilience / incident-response
+# defects when they appear alongside DCC defects.
+# ────────────────────────────────────────────────────────────────────────────
+
+_CONV_CYBERFW_FAMILY_TOKENS = {
+    # ── DCC families (problem statement Part B). The token lists are
+    # the literal AR/EN phrases the validator
+    # (``_FRAMEWORK_COVERAGE_REQUIREMENTS['DCC']``) accepts as
+    # substring matches; they are intentionally kept in lock-step
+    # with the registry so the repair prompt names exactly what the
+    # post-repair re-audit will look for.
+    ('DCC', 'data_classification'): {
+        'ar': ['تصنيف البيانات',
+               'تصنيف البيانات الحساسة',
+               'تصنيف الأصول البيانية',
+               'تصنيف ومعالجة البيانات'],
+        'en': ['data classification',
+               'sensitive data classification',
+               'information classification',
+               'data asset classification'],
+    },
+    ('DCC', 'data_protection'): {
+        'ar': ['حماية البيانات',
+               'حماية البيانات الحساسة',
+               'ضوابط حماية البيانات',
+               'حماية البيانات أثناء النقل والتخزين'],
+        'en': ['data protection',
+               'sensitive data protection',
+               'data security controls',
+               'protection of data at rest and in transit'],
+    },
+    ('DCC', 'sensitive_data_handling'): {
+        'ar': ['معالجة البيانات الحساسة',
+               'تداول البيانات الحساسة',
+               'ضوابط التعامل مع البيانات الحساسة'],
+        'en': ['sensitive data handling',
+               'sensitive data processing',
+               'handling sensitive data'],
+    },
+    ('DCC', 'encryption'): {
+        'ar': ['التشفير',
+               'تشفير البيانات',
+               'تشفير البيانات أثناء النقل والتخزين'],
+        'en': ['encryption', 'data encryption',
+               'encryption at rest', 'encryption in transit'],
+    },
+    ('DCC', 'dlp'): {
+        'ar': ['منع تسرب البيانات', 'DLP',
+               'ضوابط منع فقدان البيانات'],
+        'en': ['data loss prevention', 'DLP',
+               'loss prevention controls'],
+    },
+    # ── ECC families (PR-CY2 registry additions). Vocabulary mirrors
+    # the existing ECC capability lists so the repair prompt stays
+    # in sync with the validator. The repair is only intended to be
+    # invoked when an ECC family is part of the defect set; absent
+    # defects no prompt content is generated for the family.
+    ('ECC', 'governance'): {
+        'ar': ['حوكمة الأمن السيبراني', 'سياسات الأمن السيبراني',
+               'لجنة الأمن السيبراني'],
+        'en': ['cybersecurity governance', 'security governance',
+               'cybersecurity policy', 'security committee'],
+    },
+    ('ECC', 'asset_management'): {
+        'ar': ['إدارة الأصول', 'سجل الأصول', 'تصنيف الأصول'],
+        'en': ['asset management', 'asset inventory',
+               'asset classification'],
+    },
+    ('ECC', 'identity_access_management'): {
+        'ar': ['إدارة الهوية والوصول', 'IAM', 'MFA'],
+        'en': ['identity and access management', 'IAM', 'MFA'],
+    },
+    ('ECC', 'vulnerability_management'): {
+        'ar': ['إدارة الثغرات', 'فحص الثغرات', 'إدارة التحديثات',
+               'الترقيع الأمني'],
+        'en': ['vulnerability management', 'vulnerability scanning',
+               'patch management'],
+    },
+    # ── CSCC families (PR-CY2 registry additions).
+    ('CSCC', 'critical_assets'): {
+        'ar': ['الأنظمة الحساسة', 'الأصول الحرجة',
+               'البنية التحتية الحرجة'],
+        'en': ['critical systems', 'critical assets',
+               'critical infrastructure'],
+    },
+    ('CSCC', 'privileged_access'): {
+        'ar': ['إدارة الوصول المميز', 'PAM', 'MFA'],
+        'en': ['PAM', 'privileged access management', 'MFA'],
+    },
+    ('CSCC', 'monitoring'): {
+        'ar': ['المراقبة المستمرة', 'مركز العمليات الأمنية',
+               'SIEM', 'SOC'],
+        'en': ['continuous monitoring', 'security operations center',
+               'SIEM', 'SOC'],
+    },
+    ('CSCC', 'resilience'): {
+        'ar': ['الصمود السيبراني', 'استمرارية الأعمال',
+               'التعافي من الكوارث'],
+        'en': ['cyber resilience', 'business continuity',
+               'disaster recovery'],
+    },
+    ('CSCC', 'incident_response'): {
+        'ar': ['الاستجابة للحوادث', 'إدارة الحوادث السيبرانية'],
+        'en': ['incident response', 'incident management'],
+    },
+    # ── TCC families (telecom; vocabulary mirrors the TCC registry).
+    ('TCC', 'telecom_security'): {
+        'ar': ['أمن الاتصالات', 'حماية شبكات الاتصالات'],
+        'en': ['telecom security', 'telecommunications security'],
+    },
+    ('TCC', 'network_segregation'): {
+        'ar': ['تجزئة الشبكة', 'فصل الشبكات'],
+        'en': ['network segregation', 'network segmentation'],
+    },
+    ('TCC', 'data_residency'): {
+        'ar': ['توطين البيانات', 'سيادة البيانات'],
+        'en': ['data residency', 'data localization'],
+    },
+}
+
+
+_CONV_CYBERFW_SECTION_GUIDANCE = {
+    'environment': (
+        'Environment / Regulatory Context MUST explicitly describe the '
+        'NCA DCC obligations around data classification, data '
+        'protection, encryption, DLP, and sensitive data handling — '
+        'naming the Arabic and English capability terms verbatim '
+        '(e.g. "تصنيف البيانات / data classification", "حماية '
+        'البيانات / data protection", "التشفير / encryption", '
+        '"منع تسرب البيانات / data loss prevention", "معالجة '
+        'البيانات الحساسة / sensitive data handling"). When ECC / '
+        'CSCC / TCC are also selected, retain their governance / '
+        'critical-asset / monitoring / resilience / incident-response '
+        '/ telecom obligations alongside DCC.'),
+    'pillars': (
+        'Pillars MUST include explicit strategic initiatives for '
+        'data classification, data protection, encryption, and DLP '
+        'aligned with NCA DCC. Each initiative must name the literal '
+        'capability term in Arabic AND English so the validator can '
+        'match the family. Preserve existing ECC / CSCC / TCC '
+        'pillars; do NOT remove governance, identity, monitoring, '
+        'resilience, or incident-response pillars.'),
+    'gaps': (
+        'Gaps MUST include explicit rows for missing or weak data '
+        'classification, data protection, encryption, DLP, and '
+        'sensitive data handling as required by NCA DCC. Each gap '
+        'row must name the capability term in Arabic and English so '
+        'the validator can match the family substring.'),
+    'roadmap': (
+        'Roadmap MUST include implementation activities for data '
+        'classification, encryption, DLP, sensitive data handling, '
+        'and data protection — each as a distinct, substantive '
+        'roadmap row with Owner, Timeframe, and Deliverable that '
+        'names the literal AR/EN DCC capability term so the validator '
+        'can match it.'),
+    'kpis': (
+        'KPIs MUST include measurable KPIs/KRIs for data '
+        'classification coverage, encryption coverage, DLP incidents, '
+        'and sensitive data handling compliance — each KPI row must '
+        'name the relevant NCA DCC capability term in Arabic AND '
+        'English so the validator can match the family.'),
+    'confidence': (
+        'Confidence / Risk MUST include risks and success factors '
+        'for data protection, sensitive data handling, encryption, '
+        'and DLP — naming the literal NCA DCC capability terms in '
+        'Arabic and English.'),
+}
+
+
+def _convergence_cyber_framework_coverage_repair(
+        sections, lang, domain, ctx, log, cycle_no):
+    """PR-CY3 Part A — convergence-stage Cyber framework coverage repair.
+
+    Runs INSIDE ``converge_strategy_sections`` BEFORE the generic
+    per-section synth rebuilds. Returns the number of (fw, family)
+    pairs successfully covered by this pass (informational — the
+    caller re-audits to decide progress).
+
+    Triggers only when ``domain`` resolves to ``'cyber'`` and at
+    least one selected Cyber framework has
+    ``selected_framework_coverage_missing`` defects. Mirrors the
+    Data Management equivalent (PR-5B.9Z) but targets the Cyber
+    framework registry (DCC / ECC / CSCC / TCC). AI-first; on
+    RepairError, empty response, or a candidate that still leaves a
+    section's targeted families uncovered after two attempts, the
+    original section text is restored and ``synth_failed:<section>``
+    is marked in ``log['synth_status']`` so the surrounding
+    convergence loop fail-closes (no deterministic rows are ever
+    inserted).
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    selected_fws = ctx.get('frameworks') or []
+    if not selected_fws:
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return 0
+    try:
+        resolved_fw = (
+            _resolve_selected_frameworks(
+                selected_fws, domain='Cyber Security') or [])
+    except Exception:  # noqa: BLE001
+        resolved_fw = []
+    _cyber_fw_keys = {'DCC', 'ECC', 'CSCC', 'TCC'}
+    if not (_cyber_fw_keys & set(resolved_fw)):
+        return 0
+    try:
+        missing = _compute_missing_selected_framework_coverage(
+            sections, selected_fws, domain=domain, lang=lang) or []
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+              f'cycle={cycle_no} compute_missing_failed err={_e}',
+              flush=True)
+        return 0
+    missing = [(fw, fam, sk) for fw, fam, sk in missing
+               if fw in _cyber_fw_keys]
+    if not missing:
+        return 0
+    # PR-CY3 Part D — per-family CHECK diagnostic for traceability.
+    for fw, fam, sk in missing:
+        toks = _CONV_CYBERFW_FAMILY_TOKENS.get((fw, fam), {})
+        ar_terms = ', '.join(toks.get('ar', []))
+        en_terms = ', '.join(toks.get('en', []))
+        print(
+            '[CYBER-FRAMEWORK-COVERAGE-CHECK] '
+            f'framework={fw} section={sk} family={fam} '
+            f'matched_terms=[] missing=True '
+            f'expected_ar=[{ar_terms}] expected_en=[{en_terms}]',
+            flush=True,
+        )
+    by_section = {}
+    for fw, fam, sk in missing:
+        by_section.setdefault(sk, []).append((fw, fam))
+    print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+          f'cycle={cycle_no} missing_sections={list(by_section.keys())} '
+          f'count={len(missing)} frameworks={resolved_fw}',
+          flush=True)
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+              f'cycle={cycle_no} domain_context_failed err={_e}',
+              flush=True)
+        return 0
+    if dctx is None:
+        return 0
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws) if isinstance(selected_fws, (list, tuple))
+            else [str(selected_fws)])
+    except Exception:  # noqa: BLE001
+        pass
+    _allowed = {'environment', 'pillars', 'gaps', 'roadmap', 'kpis',
+                'confidence'}
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+    osn = bool(ctx.get('org_structure_is_none', False))
+    accepted_count = 0
+    for sk, miss_list in by_section.items():
+        if sk not in _allowed:
+            continue
+        before_text = sections.get(sk, '') or ''
+        # Canonicalize family ids when tracking the target set so
+        # candidate re-audits (which may emit either alias) line up
+        # with the prompt targets.
+        target_families = {
+            (fw, _canonicalize_selected_framework_family(fw, fam))
+            for fw, fam in miss_list
+        }
+        family_lines = []
+        seen_fl = set()
+        for fw, fam in miss_list:
+            canon = _canonicalize_selected_framework_family(fw, fam)
+            key = (fw, canon)
+            if key in seen_fl:
+                continue
+            seen_fl.add(key)
+            toks = (_CONV_CYBERFW_FAMILY_TOKENS.get((fw, canon))
+                    or _CONV_CYBERFW_FAMILY_TOKENS.get((fw, fam)))
+            if not toks:
+                family_lines.append(f'- {fw}:{canon}')
+                continue
+            ar_join = '، '.join(toks.get('ar', []))
+            en_join = ', '.join(toks.get('en', []))
+            family_lines.append(
+                f'- {fw}:{canon} — Arabic concepts: {ar_join}; '
+                f'English concepts: {en_join}')
+        guide = _CONV_CYBERFW_SECTION_GUIDANCE.get(sk, '')
+        ve_base = (
+            'Selected-framework coverage is missing for the Cyber '
+            f'Security {sk} section. The following NCA '
+            'DCC/ECC/CSCC/TCC capability families are not covered '
+            'anywhere in the strategy and MUST be added to this '
+            'section using the literal Arabic/English concept '
+            'vocabulary shown below (do NOT paraphrase the named '
+            'concepts — they are matched as substrings by the '
+            'validator):\n'
+            + '\n'.join(family_lines)
+            + ('\n\n' + guide if guide else '')
+            + ' Preserve every existing row, pillar, KPI, gap, and '
+            'risk already in the section; do not remove or weaken any '
+            'other content. Do not invent frameworks that are not in '
+            'the selected list. AI-first only — no placeholders, no '
+            'dashy rows.'
+        )
+        attempt = 0
+        accepted = False
+        unmet = set()
+        last_err = None
+        ve_current = ve_base
+        while attempt < 2 and not accepted:
+            attempt += 1
+            try:
+                new_text = ai_repair_strategy_section(
+                    section_key=sk,
+                    sections=sections,
+                    lang=lang,
+                    domain_context=dctx,
+                    org_name=org_name,
+                    sector=sector,
+                    maturity=maturity,
+                    generation_mode=gen_mode,
+                    validation_error=ve_current,
+                    org_structure_is_none=osn,
+                )
+            except RepairError as _re:
+                last_err = _re
+                print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} repair_failed err={_re}',
+                      flush=True)
+                break
+            except Exception as _re2:  # noqa: BLE001
+                last_err = _re2
+                print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} repair_unexpected err={_re2}',
+                      flush=True)
+                break
+            if not (new_text and new_text.strip()):
+                last_err = Exception('empty_repair')
+                print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                      f'cycle={cycle_no} section={sk} '
+                      f'attempt={attempt} empty_response',
+                      flush=True)
+                break
+            sections[sk] = new_text
+            still_missing = (
+                _compute_missing_selected_framework_coverage(
+                    sections, selected_fws, domain=domain,
+                    lang=lang) or [])
+            still_targets = {
+                (fw,
+                 _canonicalize_selected_framework_family(fw, fam))
+                for fw, fam, _ in still_missing
+                if fw in _cyber_fw_keys
+            }
+            # PR-CY3 acceptance gate: candidate accepted only when
+            # none of THIS section's targeted families remain missing
+            # AND the global Cyber defect count for the targeted
+            # families did not increase. Rejecting on increase
+            # protects previously-repaired sections from regressions
+            # introduced by this candidate.
+            before_targets = {
+                (fw,
+                 _canonicalize_selected_framework_family(fw, fam))
+                for fw, fam in miss_list
+            }
+            unmet = before_targets & still_targets
+            # Increase detection: ANY new (fw, canonical_family)
+            # absent before this attempt but present now.
+            try:
+                cycle_before_missing = (
+                    _compute_missing_selected_framework_coverage(
+                        {**sections, sk: before_text}, selected_fws,
+                        domain=domain, lang=lang) or [])
+            except Exception:  # noqa: BLE001
+                cycle_before_missing = []
+            cycle_before_targets = {
+                (fw,
+                 _canonicalize_selected_framework_family(fw, fam))
+                for fw, fam, _ in cycle_before_missing
+                if fw in _cyber_fw_keys
+            }
+            new_defects = still_targets - cycle_before_targets
+            if (not unmet) and (not new_defects):
+                accepted = True
+                accepted_count += len(target_families)
+                print(
+                    '[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                    f'cycle={cycle_no} section={sk} '
+                    f'attempt={attempt} framework=DCC '
+                    f'missing_before={sorted(target_families)} '
+                    'missing_after=[] candidate_len='
+                    f'{len(new_text)} accepted=True restored=False',
+                    flush=True,
+                )
+                break
+            # Roll back the rejected candidate so the next attempt
+            # starts from the original section text. Logs reason for
+            # rejection (unmet vs. defect increase).
+            sections[sk] = before_text
+            reject_reason = ('increased' if new_defects else 'unmet')
+            print(
+                '[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                f'cycle={cycle_no} section={sk} '
+                f'attempt={attempt} framework=DCC '
+                f'missing_before={sorted(target_families)} '
+                f'missing_after={sorted(unmet)} '
+                f'new_defects={sorted(new_defects)} '
+                f'reject_reason={reject_reason} '
+                f'candidate_len={len(new_text)} '
+                'accepted=False restored=True',
+                flush=True,
+            )
+            if attempt < 2:
+                unmet_lines = []
+                for ufw, ufam in sorted(unmet | new_defects):
+                    utoks = (
+                        _CONV_CYBERFW_FAMILY_TOKENS.get((ufw, ufam))
+                        or {})
+                    if not utoks:
+                        unmet_lines.append(f'- {ufw}:{ufam}')
+                        continue
+                    uar = '، '.join(utoks.get('ar', []))
+                    uen = ', '.join(utoks.get('en', []))
+                    unmet_lines.append(
+                        f'- {ufw}:{ufam} — Arabic concepts: {uar}; '
+                        f'English concepts: {uen}')
+                ve_current = (
+                    ve_base
+                    + '\n\nSECOND-PASS STRICT REQUIREMENT: the '
+                    'previous attempt still left (or newly broke) the '
+                    'following capability families uncovered. You '
+                    'MUST include at least one literal token from '
+                    'EACH family\'s vocabulary in this section '
+                    '(substring, case-insensitive match) AND must NOT '
+                    'remove tokens for any previously-covered '
+                    'family:\n'
+                    + '\n'.join(unmet_lines)
+                )
+        if not accepted:
+            sections[sk] = before_text
+            fc_err = last_err or Exception(
+                'selected_framework_coverage_missing:'
+                + ','.join(f'{fw}:{fam}'
+                          for fw, fam in sorted(unmet)))
+            _mark_synth_failed(_synth_status, sk, fc_err)
+            print(
+                '[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                f'cycle={cycle_no} section={sk} framework=DCC '
+                f'fail_closed attempts={attempt} '
+                f'unmet={sorted(unmet)} '
+                '— restored original',
+                flush=True,
+            )
+    return accepted_count
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # PR-5B.9AF — Data roadmap balance repair: AI-generated TOP-UP rows
 #
 # Runtime evidence prior to this change showed the convergence-stage
@@ -27085,6 +27634,25 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         except Exception as _conv_dfcxe:  # noqa: BLE001
             print('[CONVERGENCE-DATA-FRAMEWORK-COVERAGE-REPAIR] '
                   f'cycle={_it + 1} non-fatal: {_conv_dfcxe}',
+                  flush=True)
+        # PR-CY3 — Convergence-stage Cyber Security framework coverage
+        # repair. No-op for non-Cyber domains and for Cyber without
+        # DCC/ECC/CSCC/TCC selected. AI-first, fail-closed via
+        # log['synth_status'] when the AI cannot produce a satisfying
+        # candidate within two attempts. Runs BEFORE the generic
+        # per-section synth rebuilds so DCC content (data
+        # classification / data protection / encryption / DLP /
+        # sensitive data handling) added here is not overwritten by
+        # the subsequent holistic rebuilds.
+        try:
+            _conv_cyfc_n = _convergence_cyber_framework_coverage_repair(
+                sections, lang, domain, ctx, log, _it + 1)
+            if _conv_cyfc_n:
+                cycle['repairs'].append(
+                    f'conv_cyber_fw_coverage:{_conv_cyfc_n}')
+        except Exception as _conv_cyfcxe:  # noqa: BLE001
+            print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
+                  f'cycle={_it + 1} non-fatal: {_conv_cyfcxe}',
                   flush=True)
         try:
             _conv_bal_n = _convergence_data_roadmap_balance_repair(
