@@ -25571,16 +25571,28 @@ def _convergence_data_roadmap_balance_repair(
                 domain=domain, lang=lang) or [])
     except Exception:  # noqa: BLE001
         _pdpl_pre = []
+    # PR-5B.9AE — personal_data_classification (and its alias
+    # ``data_classification_pdpl``) is now included in the PDPL
+    # roadmap residual filter. Without this entry the runtime
+    # residual ``selected_framework_coverage_missing:PDPL:
+    # personal_data_classification (roadmap) 0/1`` drained to the
+    # generic 422 because the convergence-stage balance repair only
+    # accepted DSR / consent / breach residuals as triggers.
     _roadmap_pdpl_missing_pre = sorted({
         fam for fw, fam, sk in _pdpl_pre
         if fw == 'PDPL'
         and fam in ('consent_management',
                     'data_subject_rights',
-                    'breach_notification')
+                    'breach_notification',
+                    'personal_data_classification',
+                    'data_classification_pdpl')
         and sk == 'roadmap'
     })
     if not missing and not _roadmap_pdpl_missing_pre:
         return 0
+    _pre_has_classification = bool(
+        {'personal_data_classification', 'data_classification_pdpl'}
+        & set(_roadmap_pdpl_missing_pre))
     print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
           f'cycle={cycle_no} missing_before={missing} '
           f'roadmap_pdpl_consent='
@@ -25589,6 +25601,8 @@ def _convergence_data_roadmap_balance_repair(
           f'{"data_subject_rights" in _roadmap_pdpl_missing_pre} '
           f'roadmap_pdpl_breach='
           f'{"breach_notification" in _roadmap_pdpl_missing_pre} '
+          f'roadmap_pdpl_classification='
+          f'{_pre_has_classification} '
           f'frameworks={list(selected_fws)}',
           flush=True)
     try:
@@ -25651,10 +25665,17 @@ def _convergence_data_roadmap_balance_repair(
             'data_subject_rights')
         _brn_ar, _brn_en = _pdpl_save_guard_required_terms(
             'breach_notification')
+        # PR-5B.9AE — personal_data_classification exact terms surfaced
+        # in the prompt so the AI cannot satisfy the contract with
+        # generic "حماية البيانات الشخصية" / "PDPL compliance"
+        # phrasing. The acceptance gate enforces the same vocabulary.
+        _pdc_ar, _pdc_en = _pdpl_save_guard_required_terms(
+            'personal_data_classification')
         _pdpl_contract_block = (
             '\n\nPR-5B.9AA — PDPL ROADMAP CONTRACT (mandatory when '
             'PDPL is among the selected frameworks) — PR-5B.9AD '
-            'extends to consent_management. The roadmap MUST include '
+            'extends to consent_management; PR-5B.9AE extends to '
+            'personal_data_classification. The roadmap MUST include '
             'the following distinct activities, each as a separate '
             'row with explicit Owner, Timeframe, and '
             'Deliverable/Output columns:\n'
@@ -25667,12 +25688,16 @@ def _convergence_data_roadmap_balance_repair(
             'access request, rectification, erasure, deletion '
             'request).\n'
             '  3. تفعيل إخطار الخروقات والإبلاغ عن الانتهاكات '
-            '(Operationalize breach notification and reporting).\n'
+            '(Operationalize breach notification and reporting). '
+            'Owner: مسؤول حماية البيانات. '
+            'Output: آلية إخطار الخروقات وسجل الإبلاغ عن الانتهاكات.\n'
             '  4. قياس زمن إخطار الخروقات والالتزام بالمهل '
             'التنظيمية (Measure breach-notification timing and '
             'compliance with regulatory deadlines).\n'
-            '  5. تصنيف البيانات الشخصية وربطها بضوابط PDPL '
-            '(Classify personal data and link to PDPL controls).\n'
+            '  5. تطبيق تصنيف البيانات الشخصية وربطه بضوابط PDPL '
+            '(Apply personal data classification and link to PDPL '
+            'controls). Owner: مسؤول حماية البيانات / لجنة حوكمة '
+            'البيانات. Output: إطار تصنيف البيانات الشخصية معتمد.\n'
             'EXACT ARABIC TERMS that MUST appear literally in the '
             'roadmap text (at least one per family — substring '
             'match, case-sensitive for Arabic):\n'
@@ -25682,6 +25707,8 @@ def _convergence_data_roadmap_balance_repair(
             + '، '.join(_dsr_ar) + '\n'
             '  - breach_notification: '
             + '، '.join(_brn_ar) + '\n'
+            '  - personal_data_classification: '
+            + '، '.join(_pdc_ar) + '\n'
             'EXACT ENGLISH TERMS (substring, case-insensitive):\n'
             '  - consent_management: '
             + ', '.join(_cns_en) + '\n'
@@ -25689,9 +25716,12 @@ def _convergence_data_roadmap_balance_repair(
             + ', '.join(_dsr_en) + '\n'
             '  - breach_notification: '
             + ', '.join(_brn_en) + '\n'
-            'Generic phrases such as "حماية البيانات الشخصية" or '
-            '"PDPL compliance" do NOT satisfy consent_management, '
-            'DSR or breach notification — the literal terms above '
+            '  - personal_data_classification: '
+            + ', '.join(_pdc_en) + '\n'
+            'Generic phrases such as "حماية البيانات الشخصية", '
+            '"PDPL compliance", or "الامتثال لـ PDPL" do NOT satisfy '
+            'consent_management, DSR, breach notification, or '
+            'personal-data classification — the literal terms above '
             'are required.')
     named = ', '.join(label_map.get(f, f) for f in missing) or (
         'PDPL data subject rights and breach notification')
@@ -25719,14 +25749,22 @@ def _convergence_data_roadmap_balance_repair(
 
     def _candidate_pdpl_status(text):
         """Return (terms_found_dict, unmet_families) for the PDPL DSR /
-        breach acceptance gate against ``text``."""
+        breach / classification acceptance gate against ``text``.
+
+        PR-5B.9AE — ``personal_data_classification`` is now part of
+        the candidate acceptance gate (alongside consent_management,
+        data_subject_rights, breach_notification) so the convergence
+        balance repair rejects candidates that satisfy generic privacy
+        wording but miss the literal classification vocabulary.
+        """
         terms = {}
         unmet = []
         if not _pdpl_selected:
             return terms, unmet
         for fam in ('consent_management',
                     'data_subject_rights',
-                    'breach_notification'):
+                    'breach_notification',
+                    'personal_data_classification'):
             found = _pdpl_save_guard_terms_found(fam, text)
             terms[fam] = found
             if not _pdpl_save_guard_candidate_satisfies(fam, text):
@@ -25808,7 +25846,9 @@ def _convergence_data_roadmap_balance_repair(
             if fw == 'PDPL'
             and fam in ('consent_management',
                         'data_subject_rights',
-                        'breach_notification')
+                        'breach_notification',
+                        'personal_data_classification',
+                        'data_classification_pdpl')
             and sk == 'roadmap'
         })
         # Merge both signals — either the direct exact-term check or
@@ -25843,6 +25883,32 @@ def _convergence_data_roadmap_balance_repair(
                 '} missing_after=[] accepted=True restored=False',
                 flush=True,
             )
+            # PR-5B.9AE — dedicated per-family classification + breach
+            # diagnostic in the problem-statement format so the runtime
+            # trace surfaces the personal_data_classification and
+            # breach_notification acceptance for ops review.
+            _pdc_req_ar, _pdc_req_en = _pdpl_save_guard_required_terms(
+                'personal_data_classification')
+            _brn_req_ar, _brn_req_en = _pdpl_save_guard_required_terms(
+                'breach_notification')
+            print(
+                '[DATA-ROADMAP-PDPL-COVERAGE] '
+                f'family=personal_data_classification '
+                f'required_terms={list(_pdc_req_ar) + list(_pdc_req_en)} '
+                f'candidate_terms_found='
+                f'{candidate_terms_found.get("personal_data_classification", [])} '
+                f'missing_after=[] accepted=True',
+                flush=True,
+            )
+            print(
+                '[DATA-ROADMAP-PDPL-COVERAGE] '
+                f'family=breach_notification '
+                f'required_terms={list(_brn_req_ar) + list(_brn_req_en)} '
+                f'candidate_terms_found='
+                f'{candidate_terms_found.get("breach_notification", [])} '
+                f'missing_after=[] accepted=True',
+                flush=True,
+            )
             print(
                 '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
                 f'cycle={cycle_no} attempt={attempt} '
@@ -25851,7 +25917,8 @@ def _convergence_data_roadmap_balance_repair(
                 f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
                 f'roadmap_pdpl_consent=True '
                 f'roadmap_pdpl_rights=True '
-                f'roadmap_pdpl_breach=True',
+                f'roadmap_pdpl_breach=True '
+                f'roadmap_pdpl_classification=True',
                 flush=True,
             )
             break
@@ -25881,6 +25948,34 @@ def _convergence_data_roadmap_balance_repair(
             f'{candidate_terms_found.get("data_subject_rights", [])}'
             f'}} missing_after={_unmet_combined} '
             'accepted=False restored=True',
+            flush=True,
+        )
+        # PR-5B.9AE — dedicated per-family classification + breach
+        # rejection diagnostic.
+        _pdc_req_ar, _pdc_req_en = _pdpl_save_guard_required_terms(
+            'personal_data_classification')
+        _brn_req_ar, _brn_req_en = _pdpl_save_guard_required_terms(
+            'breach_notification')
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'family=personal_data_classification '
+            f'required_terms={list(_pdc_req_ar) + list(_pdc_req_en)} '
+            f'candidate_terms_found='
+            f'{candidate_terms_found.get("personal_data_classification", [])} '
+            f'missing_after='
+            f'{"personal_data_classification" in _unmet_combined} '
+            f'accepted=False',
+            flush=True,
+        )
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'family=breach_notification '
+            f'required_terms={list(_brn_req_ar) + list(_brn_req_en)} '
+            f'candidate_terms_found='
+            f'{candidate_terms_found.get("breach_notification", [])} '
+            f'missing_after='
+            f'{"breach_notification" in _unmet_combined} '
+            f'accepted=False',
             flush=True,
         )
         if attempt < 2:
@@ -25942,6 +26037,36 @@ def _convergence_data_roadmap_balance_repair(
             'accepted=False restored=True',
             flush=True,
         )
+        # PR-5B.9AE — dedicated per-family classification + breach
+        # final fail-closed diagnostic.
+        _pdc_req_ar, _pdc_req_en = _pdpl_save_guard_required_terms(
+            'personal_data_classification')
+        _brn_req_ar, _brn_req_en = _pdpl_save_guard_required_terms(
+            'breach_notification')
+        _final_unmet = set(candidate_unmet)
+        _final_unmet_pre = set(_roadmap_pdpl_missing_pre)
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'family=personal_data_classification '
+            f'required_terms={list(_pdc_req_ar) + list(_pdc_req_en)} '
+            f'candidate_terms_found='
+            f'{candidate_terms_found.get("personal_data_classification", [])} '
+            f'missing_after='
+            f'{("personal_data_classification" in _final_unmet) or ("personal_data_classification" in _final_unmet_pre) or ("data_classification_pdpl" in _final_unmet_pre)} '
+            f'accepted=False',
+            flush=True,
+        )
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'family=breach_notification '
+            f'required_terms={list(_brn_req_ar) + list(_brn_req_en)} '
+            f'candidate_terms_found='
+            f'{candidate_terms_found.get("breach_notification", [])} '
+            f'missing_after='
+            f'{("breach_notification" in _final_unmet) or ("breach_notification" in _final_unmet_pre)} '
+            f'accepted=False',
+            flush=True,
+        )
         print(
             '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
             f'cycle={cycle_no} attempts={attempt} '
@@ -25954,6 +26079,8 @@ def _convergence_data_roadmap_balance_repair(
             f'{"data_subject_rights" not in candidate_unmet} '
             f'roadmap_pdpl_breach='
             f'{"breach_notification" not in candidate_unmet} '
+            f'roadmap_pdpl_classification='
+            f'{"personal_data_classification" not in candidate_unmet} '
             '— restored original',
             flush=True,
         )
@@ -26383,10 +26510,15 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     if fw == 'PDPL'
                     and fam in ('consent_management',
                                 'data_subject_rights',
-                                'breach_notification')
+                                'breach_notification',
+                                'personal_data_classification',
+                                'data_classification_pdpl')
                     and sk == 'roadmap'
                 })
         if _ow_pdpl_residual:
+            _ow_has_classification = bool(
+                {'personal_data_classification',
+                 'data_classification_pdpl'} & set(_ow_pdpl_residual))
             print(
                 '[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
                 f'cycle={_it + 1} overwrite_guard '
@@ -26396,6 +26528,8 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 f'{"data_subject_rights" not in _ow_pdpl_residual} '
                 f'roadmap_pdpl_breach='
                 f'{"breach_notification" not in _ow_pdpl_residual} '
+                f'roadmap_pdpl_classification='
+                f'{not _ow_has_classification} '
                 f'reroute=True residual={_ow_pdpl_residual}',
                 flush=True,
             )
