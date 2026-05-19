@@ -24317,8 +24317,12 @@ def _build_vision_composite_repair_contract(
     if compliance_missing:
         fw_display = []
         for _fwk in compliance_missing:
-            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
-            fw_display.append(_spec.get('display', _fwk))
+            # PR-J0 — for AR Data Vision repair, NDMO uses Arabic
+            # canonical wording so the prompt does not seed the AI
+            # with the English long-name that the template-residue
+            # check would later reject.
+            fw_display.append(
+                _framework_repair_display_label(_fwk, lang))
         clauses.append(
             '(C) Include ONE explicit Strategic Objective row whose '
             'subject is achieving compliance with the selected '
@@ -24328,8 +24332,8 @@ def _build_vision_composite_repair_contract(
     elif selected_frameworks:
         fw_display = []
         for _fwk in (selected_frameworks or []):
-            _spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
-            fw_display.append(_spec.get('display', _fwk))
+            fw_display.append(
+                _framework_repair_display_label(_fwk, lang))
         clauses.append(
             '(C) Preserve the existing Strategic Objective row that '
             'commits to compliance with the selected frameworks: '
@@ -24529,6 +24533,100 @@ _VISION_TEMPLATE_RESIDUE_LABEL_RE = _ts_re.compile(
     r'(Objective|Framework|Target|Reason|Timeframe|Justification|Indicator)'
     r'\s*[:=]\s*<',
 )
+
+
+# ── PR-J0: Arabic Data NDMO vision repair — canonical Arabic labels ────────
+# Runtime root cause: the registry display value for NDMO is the English
+# string "NDMO Data Management Framework". When the AR Vision repair
+# prompt interpolated that English label into the validation_error /
+# compliance clause, the AI obeyed the prompt and emitted the English
+# label inside the Arabic Vision body. ``_vision_template_residue_hits``
+# then rejected the candidate as
+# ``vision_contains_en_template_residue:NDMO Data Governance Framework``
+# (the related EN long-name that also routinely leaks). The fix is two-
+# pronged:
+#   1. Use the Arabic canonical wording in the AR repair prompts so the
+#      AI is not seeded with English framework long-names in the first
+#      place. ``_framework_repair_display_label`` returns the Arabic
+#      canonical form for NDMO when ``lang=='ar'`` and otherwise falls
+#      back to the registry display (preserving Cyber / AI / DT / ERM
+#      behaviour byte-for-byte).
+#   2. Pre-validation normalization for Data + Arabic candidates only —
+#      replace the two known NDMO English long-names with their Arabic
+#      canonical equivalents *before* ``_validate_vision_contract`` runs.
+#      This is intentionally scoped to ``domain=='data'`` AND
+#      ``lang=='ar'`` AND the two literal NDMO labels so the global
+#      template-residue detection is NOT weakened — any other EN
+#      framework long-name (e.g. SDAIA, ECC) in an AR Vision is still
+#      rejected exactly as before.
+#
+# AI-first: no deterministic objective rows are inserted; no validator
+# threshold is reduced; the repair contract still demands a real AI
+# repair of the row.
+_NDMO_AR_VISION_REPAIR_LABEL = (
+    'إطار حوكمة وإدارة البيانات الوطني NDMO')
+
+# Mapping applied ONLY when domain=='data' AND lang=='ar'. Replaces the
+# two NDMO English long-names that historically leaked into AR Vision
+# candidates. Keys are the EXACT English residue strings (matched in the
+# global ``_AR_TEMPLATE_RESIDUE_MAP`` as well), values are the Arabic
+# canonical wording from the PR-J0 specification.
+_DATA_AR_VISION_FRAMEWORK_LABEL_MAP = {
+    'NDMO Data Governance Framework':
+        'إطار حوكمة وإدارة البيانات الوطني NDMO',
+    'NDMO Data Management Framework':
+        'إطار إدارة البيانات الوطني NDMO',
+}
+
+
+def _framework_repair_display_label(fw_key, lang):
+    """Return the framework label to interpolate into a vision repair
+    prompt.
+
+    For ``NDMO`` with ``lang=='ar'`` returns the Arabic canonical
+    wording (``إطار حوكمة وإدارة البيانات الوطني NDMO``) so the prompt
+    cannot seed the AI with the English long-name that the template-
+    residue check would later reject.
+
+    For every other ``(fw_key, lang)`` combination returns
+    ``_FRAMEWORK_COVERAGE_REQUIREMENTS[fw_key]['display']`` (or
+    ``fw_key`` itself when the registry entry is missing) — preserving
+    Cyber / AI / DT / ERM repair-prompt behaviour byte-for-byte.
+    """
+    is_ar = (str(lang or '').lower() == 'ar')
+    if is_ar and fw_key == 'NDMO':
+        return _NDMO_AR_VISION_REPAIR_LABEL
+    spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key, {})
+    return spec.get('display', fw_key)
+
+
+def _normalize_data_ar_vision_framework_labels(text):
+    """Replace the known NDMO English long-names with Arabic canonical
+    wording in a Data Management AR Vision candidate.
+
+    Scoped intentionally narrow:
+      * Only the two literal NDMO labels listed in
+        ``_DATA_AR_VISION_FRAMEWORK_LABEL_MAP``.
+      * Caller is responsible for restricting invocation to
+        ``domain=='data'`` AND ``lang=='ar'`` candidates.
+
+    Returns a ``(normalized_text, replacements_count)`` tuple. Safe to
+    call on empty / non-string input — returns ``(input, 0)``. Never
+    raises.
+    """
+    if not text:
+        return text, 0
+    try:
+        out = str(text)
+    except Exception:  # noqa: BLE001 — defensive
+        return text, 0
+    n = 0
+    for en, ar in _DATA_AR_VISION_FRAMEWORK_LABEL_MAP.items():
+        if en and en in out:
+            occ = out.count(en)
+            out = out.replace(en, ar)
+            n += occ
+    return out, n
 
 
 def _vision_template_residue_hits(vision_text, lang=None):
@@ -24810,6 +24908,30 @@ def _assign_vision_if_valid_or_restore(
                 original_vision or '')
         except Exception:  # noqa: BLE001 — defensive
             original_valid_rows = 0
+    # ── PR-J0 — Data + Arabic vision pre-validation normalization.
+    # Replace the two known NDMO English long-names with Arabic
+    # canonical wording BEFORE running ``_validate_vision_contract``.
+    # Scoped to ``domain=='data'`` AND ``lang=='ar'`` AND the two
+    # literal NDMO labels so the global template-residue detection is
+    # NOT weakened — any other EN framework long-name in an AR Vision
+    # is still rejected exactly as before.
+    try:
+        _norm_dcode = (
+            normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _norm_dcode = ''
+    if (_norm_dcode == 'data'
+            and str(lang or '').lower() == 'ar'
+            and candidate_vision):
+        _norm_text, _norm_n = (
+            _normalize_data_ar_vision_framework_labels(candidate_vision))
+        if _norm_n:
+            print(
+                '[VISION-DATA-AR-NDMO-NORMALIZE] '
+                f'replacements={_norm_n} label={repair_label}',
+                flush=True,
+            )
+            candidate_vision = _norm_text
     report = _validate_vision_contract(
         candidate_vision or '',
         domain=domain,
@@ -27066,6 +27188,15 @@ _AR_TEMPLATE_RESIDUE_MAP = {
     # Framework long-names (mirrored from FRAMEWORK_AR_TRANSLATIONS)
     'NDMO Data Governance Framework':
         'إطار حوكمة البيانات - مكتب إدارة البيانات الوطنية (NDMO)',
+    # PR-J0 — also map the registry display long-name so AR exports
+    # never carry the bare English label. AR Data Vision repair runs a
+    # narrower pre-validation normalization (see
+    # ``_normalize_data_ar_vision_framework_labels``) that uses the
+    # canonical PR-J0 Arabic wording; this map entry is the
+    # belt-and-suspenders post-synthesis cleanup applied by
+    # ``normalize_final_arabic_sections`` for every AR strategy.
+    'NDMO Data Management Framework':
+        'إطار إدارة البيانات الوطني NDMO',
     'SDAIA AI Ethics Framework':
         'إطار أخلاقيات الذكاء الاصطناعي - سدايا (SDAIA)',
     # Common cell-content residues
@@ -40697,11 +40828,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                             if _fw_obj_missing:
                                 _fw_display_names = []
                                 for _fwk in _fw_obj_missing:
-                                    _spec = (
-                                        _FRAMEWORK_COVERAGE_REQUIREMENTS
-                                        .get(_fwk, {}))
+                                    # PR-J0 — AR Data NDMO uses Arabic
+                                    # canonical wording so the prompt
+                                    # does not seed the AI with the
+                                    # English long-name.
                                     _fw_display_names.append(
-                                        _spec.get('display', _fwk))
+                                        _framework_repair_display_label(
+                                            _fwk, lang))
                                 _ve_msg = (
                                     'Vision/Objectives must include an '
                                     'explicit objective to achieve '
