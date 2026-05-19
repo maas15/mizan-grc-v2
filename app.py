@@ -25512,6 +25512,152 @@ def _convergence_data_framework_coverage_repair(
     return accepted_count
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# PR-5B.9AF — Data roadmap balance repair: AI-generated TOP-UP rows
+#
+# Runtime evidence prior to this change showed the convergence-stage
+# Data Management roadmap balance repair repeatedly failing because the
+# AI was asked to regenerate the ENTIRE roadmap. Each regeneration kept
+# *some* of the required literal AR/EN family terms but dropped others
+# (sometimes ``consent_management`` was present but ``breach_notification``
+# was missing; sometimes ``data_subject_rights`` but not
+# ``consent_management``; etc.). The all-or-nothing acceptance gate
+# rejected every candidate and restored the original roadmap, so the
+# ``data_roadmap_balance_missing`` defect persisted.
+#
+# The fix below switches the repair to AI-generated TOP-UP ROWS that
+# the host system splices into the EXISTING roadmap text. Previously
+# covered families cannot regress because their rows are preserved
+# verbatim; the AI only has to produce one new row per still-uncovered
+# family. No deterministic row content is ever inserted — every spliced
+# row is a verbatim substring of the AI provider's response.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+# Column-header tokens used to skip header rows when extracting top-up
+# rows from the AI's roadmap response. Mirrors the header tokens
+# recognised by ``_count_substantive_roadmap_rows``.
+_DATA_ROADMAP_TOPUP_HEADER_TOKENS = (
+    'النشاط', 'Activity', 'المسؤول', 'Owner', 'الإطار',
+    'Timeline', 'Timeframe', 'Phase', 'Step',
+    'Deliverable', 'المخرج', 'المرحلة', 'الخطوة',
+    'الجدول الزمني',
+)
+
+
+def _data_roadmap_topup_required_terms_map(unmet_families, pdpl_selected):
+    """Map ``family_id -> list of literal AR/EN terms`` that the host
+    system accepts as substring matches for that family.
+
+    For PDPL families the PR-5B.9Y exact-term registry is used
+    (``_pdpl_save_guard_required_terms``); for general balance topics
+    the ``_DATA_ROADMAP_BALANCE_TOPICS`` token list is used. Both
+    sources are merged with PDPL exact terms first so the AR
+    case-sensitive matches take precedence.
+    """
+    out = {}
+    for fam in unmet_families or ():
+        toks = []
+        if pdpl_selected:
+            try:
+                ar, en = _pdpl_save_guard_required_terms(fam)
+            except Exception:  # noqa: BLE001 — defensive
+                ar, en = (), ()
+            for t in list(ar) + list(en):
+                if t and t not in toks:
+                    toks.append(t)
+        try:
+            bal = _DATA_ROADMAP_BALANCE_TOPICS.get(fam, ()) or ()
+        except Exception:  # noqa: BLE001
+            bal = ()
+        for t in bal:
+            if t and t not in toks:
+                toks.append(t)
+        out[fam] = toks
+    return out
+
+
+def _extract_data_roadmap_topup_rows(ai_text, required_terms_map):
+    """Pick AT MOST ONE markdown pipe-row per family from ``ai_text``.
+
+    A row is eligible only when it contains at least one literal
+    required term for the family it is matched against. Arabic terms
+    (text containing any character in the Arabic Unicode block) match
+    case-sensitively; English terms match case-insensitively. Header
+    rows (≥ 2 column-name tokens) and Markdown separator rows are
+    skipped. Returns ``{family_id: row_line}`` (only families that
+    matched a row).
+    """
+    if not (ai_text and required_terms_map):
+        return {}
+    found = {}
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    for ln in str(ai_text).split('\n'):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if not (s.startswith('|') and s.endswith('|')):
+            continue
+        if sep_re.match(s):
+            continue
+        # Header heuristic: 2+ column-name tokens in the row → header.
+        if sum(1 for t in _DATA_ROADMAP_TOPUP_HEADER_TOKENS
+               if t in s) >= 2:
+            continue
+        s_lc = s.lower()
+        for fam, terms in required_terms_map.items():
+            if fam in found:
+                continue
+            for term in terms or ():
+                t = (term or '').strip()
+                if not t:
+                    continue
+                # Arabic substring (case-sensitive) vs English
+                # substring (case-insensitive).
+                if _ts_re.search(r'[\u0600-\u06FF]', t):
+                    if t in s:
+                        found[fam] = s
+                        break
+                else:
+                    if t.lower() in s_lc:
+                        found[fam] = s
+                        break
+    return found
+
+
+def _splice_data_roadmap_topup_rows(original_text, new_row_lines):
+    """Insert ``new_row_lines`` immediately after the LAST existing
+    roadmap table data row in ``original_text``.
+
+    Every existing line in ``original_text`` is preserved verbatim
+    (this is the PR-5B.9AF guarantee that previously-covered families
+    cannot regress). ``new_row_lines`` is expected to contain
+    AI-emitted Markdown pipe-rows (one per missing family) — no
+    deterministic content is generated by this helper.
+    """
+    if not new_row_lines:
+        return original_text or ''
+    text = original_text or ''
+    lines = text.split('\n')
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    last_tbl_idx = -1
+    for idx, ln in enumerate(lines):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if (s.startswith('|') and s.endswith('|')
+                and not sep_re.match(s)):
+            last_tbl_idx = idx
+    if last_tbl_idx < 0:
+        # No existing table — append rows at the end. The Data roadmap
+        # balance repair is only invoked when the roadmap section
+        # already exists (the framework-coverage repair runs first), so
+        # this branch is mainly defensive.
+        joined = '\n'.join(new_row_lines)
+        return (text.rstrip() + ('\n' if text.strip() else '')
+                + joined + '\n').lstrip('\n')
+    return '\n'.join(
+        lines[:last_tbl_idx + 1]
+        + list(new_row_lines)
+        + lines[last_tbl_idx + 1:])
+
+
 def _convergence_data_roadmap_balance_repair(
         sections, lang, domain, ctx, log, cycle_no):
     """PR-5B.9Z Part D — convergence-stage Data Management roadmap
@@ -25533,6 +25679,20 @@ def _convergence_data_roadmap_balance_repair(
     accepting. Rejected candidates trigger a second stricter attempt;
     a second failure restores the original roadmap and marks
     ``synth_failed:roadmap``.
+
+    PR-5B.9AF — switches the repair from full-roadmap regeneration to
+    AI-generated TOP-UP ROWS spliced into the original roadmap text.
+    The AI's response is parsed by ``_extract_data_roadmap_topup_rows``
+    which picks AT MOST ONE markdown pipe-row per still-uncovered
+    family (by literal AR/EN term match), and
+    ``_splice_data_roadmap_topup_rows`` inserts those rows after the
+    last existing roadmap table row. Every previously-covered row is
+    preserved verbatim, eliminating the prior failure mode where each
+    regeneration kept some required terms but dropped others. The
+    acceptance gates (balance topics + PDPL exact terms + framework
+    coverage re-run + row-count floor) are unchanged; on rejection the
+    original roadmap is restored and ``synth_failed:roadmap`` is
+    marked exactly as before.
     """
     if not isinstance(ctx, dict):
         return 0
@@ -25819,6 +25979,45 @@ def _convergence_data_roadmap_balance_repair(
                   flush=True)
             break
         sections['roadmap'] = new_text
+        # PR-5B.9AF — Top-up rows mode. Instead of accepting the AI's
+        # full-roadmap regeneration verbatim (which historically lost
+        # some required AR/EN family terms each call, causing every
+        # candidate to be rejected), extract ONLY new rows from the AI
+        # response that contain at least one literal required term per
+        # still-uncovered family, then splice them into the ORIGINAL
+        # roadmap text. Every previously-covered row is preserved
+        # verbatim so satisfied families cannot regress.
+        _topup_unmet_pre = sorted(
+            set(missing) | set(_roadmap_pdpl_missing_pre))
+        _topup_required_terms = (
+            _data_roadmap_topup_required_terms_map(
+                _topup_unmet_pre, _pdpl_selected))
+        _topup_extracted = _extract_data_roadmap_topup_rows(
+            new_text, _topup_required_terms)
+        if _topup_extracted:
+            _topup_rows_ordered = [
+                _topup_extracted[f]
+                for f in sorted(_topup_extracted)
+            ]
+            merged_text = _splice_data_roadmap_topup_rows(
+                before_text, _topup_rows_ordered)
+        else:
+            # AI response yielded no rows containing any required
+            # term — keep the original roadmap so the acceptance gate
+            # registers the candidate as still-missing and the second
+            # attempt (or fail-closed path) fires.
+            merged_text = before_text
+        sections['roadmap'] = merged_text
+        print(
+            '[DATA-ROADMAP-PDPL-COVERAGE] '
+            f'cycle={cycle_no} attempt={attempt} mode=topup '
+            f'unmet_pre={_topup_unmet_pre} '
+            f'extracted_families={sorted(_topup_extracted)}',
+            flush=True,
+        )
+        # Use the spliced text for all downstream checks so the
+        # acceptance gates see preserved-prior-rows + AI top-up rows.
+        new_text = merged_text
         try:
             new_rows = _count_substantive_roadmap_rows(new_text)
         except Exception:  # noqa: BLE001
