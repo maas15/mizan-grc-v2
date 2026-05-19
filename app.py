@@ -11577,6 +11577,218 @@ _DATA_TRACEABILITY_SOFT_KPI_RISK = {
 }
 
 
+# PR-CY4 — Traceability-only DCC keyword augmentation.
+#
+# Mirrors ``_TRACEABILITY_PDPL_FAMILY_KEYWORD_AUGMENT`` /
+# ``_TRACEABILITY_NDMO_FAMILY_KEYWORD_AUGMENT`` for the NCA DCC framework
+# when used in a Cyber Security strategy (ECC + DCC scope).  Real
+# generated Cyber + DCC content phrases classification / encryption /
+# DLP / sensitive-data handling / data-protection initiatives, KPIs and
+# risks with synonyms that the bare registry vocabulary does not catch
+# (e.g. ``تنفيذ ضوابط تصنيف البيانات ومعالجة البيانات الحساسة``,
+# ``نسبة تصنيف البيانات الحساسة``, ``اختراق البيانات أو سوء تصنيف
+# البيانات الحساسة``).  Without these synonyms the DCC rows fall through
+# to dash placeholders and are dropped at PDF render time by the
+# universal no-dash gate in ``_pro_render_traceability`` — leaving the
+# Cyber Security PDF without DCC traceability even though the strategy
+# scope/vision/roadmap/KPIs already cover DCC.
+#
+# The map below is consumed ONLY by ``_build_traceability_matrix`` to
+# extend the per-family keyword search when (framework, family) is DCC.
+# It does not affect detection, validation, repair, deduplication,
+# scope, glossary, or any other subsystem.
+_TRACEABILITY_DCC_FAMILY_KEYWORD_AUGMENT = {
+    'data_classification': {
+        'ar': [
+            'تصنيف البيانات',
+            'تصنيف البيانات الحساسة',
+            'تصنيف الأصول البيانية',
+            'تنفيذ ضوابط تصنيف البيانات',
+            'تنفيذ ضوابط تصنيف البيانات ومعالجة البيانات الحساسة',
+            'ضوابط تصنيف البيانات',
+            'نسبة تصنيف البيانات الحساسة',
+            'دقة تصنيف البيانات',
+            'اختراق البيانات أو سوء تصنيف البيانات الحساسة',
+            'سوء تصنيف البيانات',
+        ],
+        'en': [
+            'data classification',
+            'sensitive data classification',
+            'data asset classification',
+            'data classification controls',
+            'sensitive data classification rate',
+        ],
+    },
+    'encryption': {
+        'ar': [
+            'التشفير',
+            'تشفير البيانات',
+            'حماية البيانات أثناء النقل والتخزين',
+            'تطبيق ضوابط التشفير',
+            'تطبيق ضوابط التشفير ومنع فقدان البيانات DLP',
+            'ضوابط التشفير',
+            'سياسات التشفير',
+            'نسبة الامتثال لسياسات التشفير',
+            'تسرب البيانات أثناء النقل أو التخزين',
+        ],
+        'en': [
+            'encryption',
+            'data encryption',
+            'encryption at rest',
+            'encryption in transit',
+            'encryption policy compliance',
+        ],
+    },
+    'dlp': {
+        'ar': [
+            'منع تسرب البيانات',
+            'منع فقدان البيانات',
+            'DLP',
+            'ضوابط منع فقدان البيانات',
+            'ضوابط منع فقدان البيانات DLP',
+            'تطبيق ضوابط منع فقدان البيانات DLP',
+            'عدد حوادث تسرب البيانات',
+            'مؤشرات منع التسرب',
+            'فقدان البيانات الحساسة',
+        ],
+        'en': [
+            'data loss prevention',
+            'loss prevention controls',
+            'DLP',
+            'dlp incidents',
+            'dlp indicators',
+        ],
+    },
+    'sensitive_data_handling': {
+        'ar': [
+            'معالجة البيانات الحساسة',
+            'التعامل مع البيانات الحساسة',
+            'تداول البيانات الحساسة',
+            'معالجة البيانات الحساسة وفق الضوابط',
+            'نسبة الأصول الحساسة المصنفة',
+            'نسبة الأصول الحساسة المصنفة أو المحمية',
+            'إفشاء غير مصرح للبيانات الحساسة',
+        ],
+        'en': [
+            'sensitive data handling',
+            'sensitive data processing',
+            'classified or protected sensitive assets',
+        ],
+    },
+    'data_protection': {
+        'ar': [
+            'حماية البيانات',
+            'حماية البيانات الحساسة',
+            'ضوابط حماية البيانات',
+            'حماية البيانات الحساسة أثناء النقل والتخزين',
+            'نسبة الأصول المشفرة',
+            'نسبة الأصول المشفرة أو المحمية',
+            'اختراق البيانات أو ضعف حماية البيانات',
+            'ضعف حماية البيانات',
+        ],
+        'en': [
+            'data protection',
+            'sensitive data protection',
+            'data security controls',
+            'encrypted or protected assets',
+        ],
+    },
+}
+
+
+# PR-CY4 — Soft KPI/Risk derivation map for Cyber-scope DCC traceability
+# rows.
+#
+# Real generated Cyber Security PDFs sometimes cover a DCC capability in
+# the roadmap / gaps / pillars (e.g. ``تنفيذ ضوابط تصنيف البيانات
+# ومعالجة البيانات الحساسة``) but leave the KPIs / confidence sections
+# without an exact-phrase match for that specific family.  Under those
+# conditions the previous logic would emit a row with dash placeholders
+# in the KPI / Risk columns and the universal no-dash gate at PDF render
+# time (`_pro_render_traceability`) would drop the row entirely — leaving
+# the user's DCC traceability silent even though the strategy DOES
+# address the obligation.
+#
+# This map provides a deterministic, capability-derived KPI and Risk
+# descriptor per (framework, family) that is used ONLY when:
+#   * the row's gap AND initiative columns were successfully resolved
+#     from real generated content (i.e. the capability IS covered), and
+#   * the KPI or Risk lookup did NOT find a distinct phrase in any of
+#     the fallback sections (kpis / roadmap / confidence).
+#
+# It does NOT insert new strategy rows — the row exists because the
+# strategy already covers the capability.  It only labels the metric /
+# risk axis for that traceability row using a capability-derived phrase.
+# Scoped to (domain=cyber, framework=DCC) so ECC / TCC / CSCC and the
+# Data / AI / DT / ERM domains are byte-for-byte unchanged.
+_CYBER_TRACEABILITY_SOFT_KPI_RISK = {
+    'DCC': {
+        'data_classification': {
+            'ar': ('نسبة تصنيف البيانات الحساسة',
+                   'اختراق البيانات أو سوء تصنيف البيانات الحساسة'),
+            'en': ('Sensitive data classification rate',
+                   'Data breach or sensitive data misclassification risk'),
+        },
+        'encryption': {
+            'ar': ('نسبة الامتثال لسياسات التشفير',
+                   'تسرب البيانات أثناء النقل أو التخزين'),
+            'en': ('Encryption policy compliance rate',
+                   'Data leakage in transit or at rest risk'),
+        },
+        'dlp': {
+            'ar': ('عدد حوادث تسرب البيانات أو مؤشرات منع التسرب',
+                   'فقدان البيانات الحساسة'),
+            'en': ('Data leakage incidents / DLP prevention indicators',
+                   'Sensitive data loss risk'),
+        },
+        'sensitive_data_handling': {
+            'ar': ('نسبة الأصول الحساسة المصنفة أو المحمية',
+                   'إفشاء غير مصرح للبيانات الحساسة'),
+            'en': ('Classified or protected sensitive assets rate',
+                   'Unauthorized sensitive data disclosure risk'),
+        },
+        'data_protection': {
+            'ar': ('نسبة الأصول المشفرة أو المحمية',
+                   'اختراق البيانات أو ضعف حماية البيانات'),
+            'en': ('Encrypted or protected assets rate',
+                   'Data breach or weak data protection risk'),
+        },
+    },
+}
+
+
+# PR-CY4 — Cyber DCC capability labels for the traceability Capability
+# column.  The DCC registry's first AR keyword for the ``dlp`` family is
+# the acronym ``DLP``, which makes the rendered Arabic Capability cell
+# look like a bare Latin token.  This map provides a more descriptive
+# Arabic / English label per DCC family for the traceability Capability
+# column when (domain=cyber, framework=DCC).  Lookup-only — does not
+# affect the keyword search, registry, validators, repair passes, or
+# scope.
+_CYBER_DCC_CAP_LABELS = {
+    'data_classification': {
+        'ar': 'تصنيف البيانات',
+        'en': 'Data Classification',
+    },
+    'encryption': {
+        'ar': 'التشفير',
+        'en': 'Encryption',
+    },
+    'dlp': {
+        'ar': 'منع تسرب البيانات / DLP',
+        'en': 'Data Loss Prevention (DLP)',
+    },
+    'sensitive_data_handling': {
+        'ar': 'معالجة البيانات الحساسة',
+        'en': 'Sensitive Data Handling',
+    },
+    'data_protection': {
+        'ar': 'حماية البيانات',
+        'en': 'Data Protection',
+    },
+}
+
+
 def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                domain_code='cyber'):
     """Build the framework traceability matrix.
@@ -11798,11 +12010,105 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                 and _soft_risk != kpi):
                             risk = _soft_risk
             else:
-                gap        = _find_match('gaps',       ar_kws, en_kws) or dash
-                initiative = (_find_match('pillars',   ar_kws, en_kws)
-                              or _find_match('roadmap', ar_kws, en_kws) or dash)
-                kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
-                risk       = _find_match('confidence', ar_kws, en_kws) or dash
+                # PR-CY4 — Cyber DCC traceability render fix.
+                # When domain=cyber and fw_key=DCC, the simple
+                # per-section ``_find_match`` often misses real DCC
+                # initiatives / KPIs / risks because the AI commonly
+                # phrases them in a different section than the narrow
+                # lookup (e.g. the DCC classification KPI lives only in
+                # ``kpis`` while the lookup also wants a match in the
+                # primary section).  When any of (gap, init, kpi, risk)
+                # is left as a dash, the universal no-dash gate in
+                # ``_pro_render_traceability`` drops the whole DCC row
+                # at PDF render time — so the user's Cyber Security PDF
+                # ends up with ECC rows only even though scope, vision,
+                # roadmap, KPIs and glossary all cover DCC.
+                #
+                # Mirror the Data-scope (PDPL/NDMO) approach used above:
+                #   * augment the per-family keyword list with the
+                #     ``_TRACEABILITY_DCC_FAMILY_KEYWORD_AUGMENT``
+                #     synonyms commonly emitted by the AI in production,
+                #   * fall back across multiple sections so the row's
+                #     gap / initiative / KPI / risk can each be sourced
+                #     from the section that actually contains them,
+                #   * apply a deterministic, capability-derived soft
+                #     KPI / Risk descriptor from
+                #     ``_CYBER_TRACEABILITY_SOFT_KPI_RISK`` ONLY when
+                #     gap+initiative were resolved from real content
+                #     but the KPI / Risk lookup found nothing — this
+                #     never invents a new strategy row, it only labels
+                #     the metric / risk axis for a row that already
+                #     exists because the strategy covers it.
+                #
+                # Strictly scoped to (cyber, DCC): ECC / TCC / CSCC and
+                # the AI / DT / ERM / Data domains keep their existing
+                # ``_find_match`` per-section behaviour byte-for-byte.
+                _cyber_dcc_scope = (
+                    _trace_domain_pre == 'cyber' and fw_key == 'DCC'
+                )
+                if _cyber_dcc_scope:
+                    _aug_dcc = (
+                        _TRACEABILITY_DCC_FAMILY_KEYWORD_AUGMENT
+                        .get(canonical_id) or {}
+                    )
+                    if _aug_dcc:
+                        ar_kws = list(ar_kws) + list(_aug_dcc.get('ar') or [])
+                        en_kws = list(en_kws) + list(_aug_dcc.get('en') or [])
+                    # Override the cap label with a descriptive
+                    # Arabic / English phrase so the Capability column
+                    # never renders as a bare Latin acronym (``DLP``).
+                    _cap_override = (
+                        _CYBER_DCC_CAP_LABELS.get(canonical_id) or {}
+                    )
+                    if _cap_override:
+                        cap_label = (
+                            _cap_override.get(
+                                'ar' if lang == 'ar' else 'en')
+                            or cap_label
+                        )
+                    gap        = (_find_match_any(
+                                      ['gaps', 'roadmap', 'kpis',
+                                       'pillars', 'confidence'],
+                                      ar_kws, en_kws) or dash)
+                    initiative = (_find_match_any(
+                                      ['roadmap', 'pillars', 'gaps',
+                                       'kpis'], ar_kws, en_kws) or dash)
+                    kpi        = (_find_match_any(
+                                      ['kpis', 'roadmap', 'confidence'],
+                                      ar_kws, en_kws,
+                                      exclude=[initiative]) or dash)
+                    risk       = (_find_match_any(
+                                      ['confidence', 'kpis', 'roadmap'],
+                                      ar_kws, en_kws,
+                                      exclude=[initiative, kpi]) or dash)
+                    # PR-CY4 Part C — soft KPI/Risk derivation scoped
+                    # to (cyber, DCC).  Only fills the metric / risk
+                    # axis when the row's gap AND initiative already
+                    # exist from real generated content but the KPI or
+                    # Risk lookup did not find a distinct phrase.  No
+                    # new strategy row is inserted.
+                    if (gap != dash and initiative != dash
+                            and (kpi == dash or risk == dash)):
+                        _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
+                                 .get(fw_key, {}) or {}).get(
+                                     canonical_id) or {}
+                        _soft_lang = _soft.get(
+                            'ar' if lang == 'ar' else 'en')
+                        if _soft_lang:
+                            _soft_kpi, _soft_risk = _soft_lang
+                            if (kpi == dash and _soft_kpi
+                                    and _soft_kpi != initiative):
+                                kpi = _soft_kpi
+                            if (risk == dash and _soft_risk
+                                    and _soft_risk != initiative
+                                    and _soft_risk != kpi):
+                                risk = _soft_risk
+                else:
+                    gap        = _find_match('gaps',       ar_kws, en_kws) or dash
+                    initiative = (_find_match('pillars',   ar_kws, en_kws)
+                                  or _find_match('roadmap', ar_kws, en_kws) or dash)
+                    kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
+                    risk       = _find_match('confidence', ar_kws, en_kws) or dash
             rows.append([fw_display, cap_label, gap, initiative, kpi, risk])
 
     # PR-5B.9B — profile-driven fallback. When no framework-registry
