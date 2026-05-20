@@ -28994,6 +28994,46 @@ def _convergence_cyber_roadmap_balance_repair(
         'NOT insert dash placeholders. Do NOT invent frameworks that '
         'are not in the selected list.'
     )
+    # PR-CY9 Part A — When ``data_classification`` is among the
+    # missing DCC families, the bundled prompt is augmented with a
+    # LITERAL single-family contract block that requires at least one
+    # of the exact classification terms in the activity cell and
+    # explicitly forbids substituting protection / sensitive-handling /
+    # DLP / encryption wording (those satisfy OTHER DCC families, not
+    # ``data_classification``). Runtime evidence after PR-CY8 showed
+    # the AI returned rows that satisfied other DCC families but
+    # ``terms_found=[]`` for ``data_classification``; this addendum
+    # raises the prompt specificity without weakening the validator.
+    if 'data_classification' in missing:
+        ve_base += (
+            '\n\nSTRICT FAMILY=data_classification CONTRACT (PR-CY9): '
+            'Produce ONE roadmap row dedicated to DATA CLASSIFICATION. '
+            'The activity cell MUST literally include AT LEAST ONE of '
+            'the following exact phrases (do not paraphrase, do not '
+            'translate, do not drop diacritics):\n'
+            '  - تصنيف البيانات\n'
+            '  - تصنيف البيانات الحساسة\n'
+            '  - تصنيف المعلومات\n'
+            '  - تصنيف الأصول البيانية\n'
+            '  - data classification\n'
+            '  - sensitive data classification\n'
+            '  - information classification\n'
+            '  - data asset classification\n'
+            'Each row MUST also include Owner, Timeframe, and an '
+            'Output/Deliverable cell. Preferred examples (use any '
+            'one verbatim, or compose another row that still '
+            'includes at least one of the literal terms above):\n'
+            '  * تنفيذ تصنيف البيانات وتصنيف البيانات الحساسة وفق '
+            'ضوابط DCC\n'
+            '  * تطوير إطار تصنيف المعلومات والأصول البيانية\n'
+            '  * تطبيق تصنيف البيانات وربطه بضوابط حماية البيانات\n'
+            'REJECT rows that ONLY contain: حماية البيانات / '
+            'معالجة البيانات الحساسة / DLP / التشفير / encryption / '
+            'data protection / sensitive data handling — those '
+            'wordings satisfy OTHER DCC families (data_protection, '
+            'sensitive_data_handling, dlp, encryption) and DO NOT '
+            'satisfy data_classification.'
+        )
     attempt = 0
     accepted = False
     last_err = None
@@ -29101,6 +29141,30 @@ def _convergence_cyber_roadmap_balance_repair(
                 f'accepted={bool(_row)}',
                 flush=True,
             )
+            # PR-CY9 Part C — runtime diagnostic for rejected
+            # ``data_classification`` candidates. Emits a SHORT (≤300
+            # char) preview of the AI response so operators can see
+            # whether the model returned classification wording at all
+            # (vs. only protection / sensitive-handling rows). The
+            # preview is whitespace-collapsed and length-capped; no
+            # secrets are emitted because ``ai_repair_strategy_section``
+            # never returns request headers or API keys.
+            if _fam == 'data_classification' and not _row:
+                try:
+                    _cand_str = str(new_text or '')
+                    _cand_preview = _ts_re.sub(
+                        r'\s+', ' ', _cand_str).strip()[:300]
+                except Exception:  # noqa: BLE001 — defensive
+                    _cand_preview = ''
+                print(
+                    '[CYBER-ROADMAP-TOPUP-FAMILY] '
+                    'family=data_classification '
+                    f'attempt={attempt} '
+                    f'candidate_preview={_cand_preview!r} '
+                    f'terms_found={_terms} '
+                    f'accepted={bool(_row)}',
+                    flush=True,
+                )
         new_text = merged_text
         try:
             new_rows = _count_substantive_roadmap_rows(new_text)
@@ -29169,6 +29233,30 @@ def _convergence_cyber_roadmap_balance_repair(
                 'roadmap text — substring match, case-insensitive '
                 'for EN, case-sensitive for AR:\n'
                 + '\n'.join(_strict_lines))
+            # PR-CY9 Part B — ultra-strict single-family addendum
+            # when ``data_classification`` is STILL missing after
+            # attempt 1. Forces ONE roadmap row whose activity text
+            # literally contains the phrase ``تصنيف البيانات`` (the
+            # canonical Arabic exact term) and explicitly forbids
+            # substituting protection / sensitive-handling wording.
+            # Acceptance: the splice happens via the existing
+            # ``_extract_data_roadmap_topup_rows`` path (literal
+            # substring match for ``تصنيف البيانات``); no validator
+            # is weakened.
+            if 'data_classification' in (still_missing or ()):
+                ve_current += (
+                    '\n\nULTRA-STRICT SECOND-PASS FOR '
+                    'family=data_classification (PR-CY9): '
+                    'أنتج صفاً واحداً فقط لخارطة الطريق. يجب أن '
+                    'يحتوي نص النشاط حرفياً على عبارة: '
+                    'تصنيف البيانات. لا تستخدم فقط حماية البيانات '
+                    'أو معالجة البيانات الحساسة. The row MUST be a '
+                    'pipe-delimited Markdown table row with Owner, '
+                    'Timeframe, and Output/Deliverable columns. '
+                    'If you cannot include the literal phrase '
+                    '"تصنيف البيانات" in the activity, the entire '
+                    'response will be rejected.'
+                )
     if not accepted:
         # PR-CY7 — preserve accumulated partial rows even when overall
         # repair fails. Fail-closed only for the truly unresolved
@@ -29205,6 +29293,341 @@ def _convergence_cyber_roadmap_balance_repair(
         )
         return 0
     return len(missing)
+
+
+# ── PR-CY9 Part D — Targeted Cyber specialized-function objective top-up ─
+# Runtime evidence (cyber + ECC + DCC, AR, org_structure_is_none=True)
+# after PR-CY8 shows the generic VISION-OBLIGATIONS-REPAIR pass keeps
+# emitting ``objectives:4->4`` while the final blocker
+# ``specialized_function_objective_missing:cyber`` remains. The
+# composite repair contract asks for many things at once (canonical
+# heading, ≥ N rows, framework compliance row, specialized-function
+# row, no template markers, timeframes, etc.); the AI sometimes
+# satisfies the row count without producing a SO row that carries
+# BOTH an establishment phrase (``إنشاء/تأسيس إدارة|وظيفة الأمن
+# السيبراني``) AND a leadership phrase (``CISO`` / ``لجنة حوكمة
+# الأمن السيبراني`` / ``الأدوار والمسؤوليات`` / ``خطوط الرفع``) in
+# the SAME row, which is what
+# ``_compute_missing_specialized_function_objective`` requires for
+# Cyber (dual-requirement mode introduced in PR-CY8).
+#
+# This pass runs AFTER VISION-OBLIGATIONS-REPAIR and BEFORE the post-
+# normalization re-audit. It is AI-first only — no deterministic
+# objective row is inserted. The AI is asked to emit an additional
+# objective row using the preferred Arabic phrasing
+# ``إنشاء إدارة الأمن السيبراني بقيادة CISO وتفعيل لجنة حوكمة الأمن
+# السيبراني وتحديد الأدوار والمسؤوليات وخطوط الرفع``. If the
+# returned vision still trips the dual-requirement detector, OR if
+# the AI used the forbidden wording ``مكتب CISO`` / ``CISO office``,
+# the pass retries ONCE with an even stricter prompt and finally
+# fail-closes via ``_mark_synth_failed('vision', ...)``.
+def _cyber_vision_specialized_objective_topup_contract(
+        existing_vision_text, attempt, contains_bad_office=False):
+    """Return the Arabic+English contract text for the PR-CY9 Part D
+    targeted top-up. Centralised so the prompt copy is reproducible
+    from tests."""
+    base = (
+        'الالتزام المركب لقسم الرؤية/الأهداف الاستراتيجية لمجال '
+        'الأمن السيبراني: حافظ على جميع صفوف الأهداف الاستراتيجية '
+        'الحالية حرفياً، وأضف صفاً واحداً إضافياً فقط (NOT a '
+        'replacement) إلى جدول الأهداف الاستراتيجية بحيث يحقق '
+        'الشرطين معاً في الخلية ذاتها: '
+        '(1) عبارة إنشاء/تأسيس مثل: '
+        '"إنشاء إدارة الأمن السيبراني" أو '
+        '"تأسيس وظيفة الأمن السيبراني" أو '
+        '"إنشاء وظيفة الأمن السيبراني" أو '
+        '"إدارة متخصصة للأمن السيبراني"، و'
+        '(2) عبارة قيادة/حوكمة مثل: '
+        '"CISO" أو "رئيس الأمن السيبراني" أو '
+        '"لجنة حوكمة الأمن السيبراني" أو '
+        '"الأدوار والمسؤوليات" أو "خطوط الرفع". '
+        'الصياغة المفضلة (يمكن استخدامها حرفياً): '
+        '"إنشاء إدارة الأمن السيبراني بقيادة CISO وتفعيل لجنة '
+        'حوكمة الأمن السيبراني وتحديد الأدوار والمسؤوليات وخطوط '
+        'الرفع". '
+        'ممنوع منعاً باتاً استخدام عبارة "مكتب CISO" أو '
+        '"CISO office" — هذه الصياغة مرفوضة وستُعاد المحاولة. '
+        'كذلك لا يكفي "تعيين CISO" منفرداً دون عبارة الإنشاء/'
+        'التأسيس. حافظ على جميع الصفوف الحالية، لا تُسقط أي صف '
+        'موجود، ولا تستبدل صف الامتثال للأطر بهذا الصف؛ كلاهما '
+        'صف منفصل في نفس الجدول. أعد توليد قسم الرؤية كاملاً مع '
+        'العنوان وفقرة الرؤية والجدول الكامل لكي يبقى الناتج '
+        'صالحاً.\n\n'
+        'English summary: preserve EVERY existing Strategic '
+        'Objective row verbatim and add ONE additional row whose '
+        'Objective/Target/Justification cells contain BOTH an '
+        'establishment phrase (establish/dedicated Cybersecurity '
+        'Department/Function led by CISO) AND a leadership/'
+        'governance phrase (CISO, Cybersecurity Governance '
+        'Committee, roles & responsibilities, reporting lines). '
+        'Do NOT write "CISO office" / "مكتب CISO" — that wording '
+        'will be rejected. A bare "appoint CISO" / "تعيين CISO" '
+        'alone is NOT sufficient.'
+    )
+    if attempt and int(attempt) > 1:
+        base = (
+            f'(A) إعادة محاولة رقم {int(attempt)} — الناتج السابق '
+            'لم يستوفِ الشرط المركب.\n\n' + base)
+    if contains_bad_office:
+        base += (
+            '\n\nFORBIDDEN WORDING DETECTED IN PREVIOUS ATTEMPT: '
+            'احتوى الناتج السابق على "مكتب CISO" / "CISO office". '
+            'استبدلها بـ "إدارة الأمن السيبراني بقيادة CISO" أو '
+            '"وظيفة الأمن السيبراني بقيادة CISO".'
+        )
+    return base
+
+
+def _convergence_cyber_specialized_objective_topup_repair(
+        sections, lang, domain, ctx, log):
+    """PR-CY9 Part D — targeted AI-first top-up that resolves a
+    persistent ``specialized_function_objective_missing:cyber`` defect
+    when the broader VISION-OBLIGATIONS-REPAIR pass has finished but
+    the dual-requirement detector still fires.
+
+    Strictly scoped to ``domain='cyber'`` AND
+    ``org_structure_is_none=True``. No-op when the specialized-function
+    detector already returns False. AI-first: bounded retry x2;
+    rejected candidates restore the prior vision text and the final
+    failure marks ``synth_failed:vision`` so the post-normalization
+    audit fails closed.
+
+    Returns the number of repair attempts that succeeded (0 if the
+    pass was a no-op or fail-closed).
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return 0
+    osn = bool(ctx.get('org_structure_is_none', False))
+    if not osn:
+        return 0
+    try:
+        sf_missing = _compute_missing_specialized_function_objective(
+            sections, domain, lang=lang, org_structure_is_none=True)
+    except Exception:  # noqa: BLE001 — defensive
+        sf_missing = True
+    if not sf_missing:
+        return 0
+    before_text = sections.get('vision', '') or ''
+    try:
+        before_rows = count_valid_objective_rows(before_text)
+    except Exception:  # noqa: BLE001
+        before_rows = 0
+    # PR-CY9 Part E — diagnostic before the repair attempts so log
+    # scrapers see the actual phase=before snapshot regardless of
+    # whether the AI repair succeeds. The detector's own diagnostic
+    # (emitted from ``_compute_missing_specialized_function_objective``)
+    # provides has_establishment_phrase / has_leadership_phrase /
+    # contains_bad_ciso_office for the candidate text; this line adds
+    # the surrounding phase + row-count context.
+    print(
+        '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+        'phase=topup_before '
+        f'rows_before={before_rows} '
+        f'rows_after={before_rows} '
+        f'specialized_missing_before={bool(sf_missing)} '
+        'accepted=False',
+        flush=True,
+    )
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print(
+            '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+            f'phase=topup_domain_context_failed err={_e}',
+            flush=True,
+        )
+        return 0
+    if dctx is None:
+        return 0
+    selected_fws = ctx.get('frameworks') or []
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws) if isinstance(selected_fws,
+                                             (list, tuple))
+            else ([str(selected_fws)] if selected_fws else []))
+    except Exception:  # noqa: BLE001
+        pass
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+
+    MAX_ATTEMPTS = 2
+    accepted = False
+    last_err = None
+    contains_bad_office_prev = False
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        ve_msg = _cyber_vision_specialized_objective_topup_contract(
+            existing_vision_text=before_text,
+            attempt=attempt,
+            contains_bad_office=contains_bad_office_prev,
+        )
+        try:
+            cand = ai_repair_strategy_section(
+                section_key='vision',
+                sections=sections,
+                lang=lang,
+                domain_context=dctx,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=gen_mode,
+                validation_error=ve_msg,
+                org_structure_is_none=True,
+            )
+        except RepairError as _re:
+            last_err = _re
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                f'phase=topup_repair_failed attempt={attempt} '
+                f'err={_re}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        except Exception as _re2:  # noqa: BLE001
+            last_err = _re2
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                f'phase=topup_repair_unexpected attempt={attempt} '
+                f'err={_re2}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        if not (cand and cand.strip()):
+            last_err = Exception('empty_repair_response')
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                f'phase=topup_empty_response attempt={attempt}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            # Final attempt — fail-closed via synth_failed:vision so
+            # the post-normalization audit blocks the save.
+            _mark_synth_failed(_synth_status, 'vision', last_err)
+            break
+        cand_lc = cand.lower()
+        bad_office_in_cand = (
+            ('مكتب CISO' in cand) or ('ciso office' in cand_lc))
+        is_final = (attempt == MAX_ATTEMPTS)
+        try:
+            report = _assign_vision_if_valid_or_restore(
+                sections, cand, before_text,
+                domain=domain,
+                selected_frameworks=selected_fws,
+                org_structure_is_none=True,
+                generation_mode=gen_mode,
+                lang=lang,
+                synth_status=_synth_status if is_final else None,
+                original_valid_rows=before_rows,
+                repair_label='cyber-vision-specialized-objective-'
+                              f'topup-attempt-{attempt}',
+            )
+        except Exception as _ave:  # noqa: BLE001 — defensive
+            last_err = _ave
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                f'phase=topup_assign_unexpected attempt={attempt} '
+                f'err={_ave}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        after_text = sections.get('vision', '') or ''
+        try:
+            after_rows = count_valid_objective_rows(after_text)
+        except Exception:  # noqa: BLE001
+            after_rows = before_rows
+        try:
+            sf_missing_after = (
+                _compute_missing_specialized_function_objective(
+                    sections, domain, lang=lang,
+                    org_structure_is_none=True))
+        except Exception:  # noqa: BLE001
+            sf_missing_after = True
+        assign_allowed = bool(report.get('assign_allowed'))
+        cand_assigned = (sections.get('vision', '') == cand)
+        # PR-CY9: when the AI candidate contains the forbidden
+        # ``مكتب CISO`` / ``CISO office`` wording, force a retry —
+        # whether or not the contract validator already rejected the
+        # candidate for some other reason. This both surfaces the
+        # ``phase=topup_rejected_bad_office`` diagnostic and primes
+        # the next attempt's contract with the explicit
+        # ``FORBIDDEN WORDING DETECTED`` addendum.
+        if bad_office_in_cand:
+            if cand_assigned:
+                sections['vision'] = before_text
+            assign_allowed = False
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                f'phase=topup_rejected_bad_office attempt={attempt} '
+                f'rows_before={before_rows} rows_after={before_rows} '
+                'contains_bad_ciso_office=True accepted=False '
+                '— restored original vision',
+                flush=True,
+            )
+            after_text = before_text
+            after_rows = before_rows
+            try:
+                sf_missing_after = (
+                    _compute_missing_specialized_function_objective(
+                        sections, domain, lang=lang,
+                        org_structure_is_none=True))
+            except Exception:  # noqa: BLE001
+                sf_missing_after = True
+            contains_bad_office_prev = True
+            if is_final:
+                _mark_synth_failed(
+                    _synth_status, 'vision',
+                    Exception(
+                        'cyber_specialized_objective_bad_ciso_office'))
+        else:
+            contains_bad_office_prev = False
+        ok = bool(assign_allowed and not sf_missing_after)
+        print(
+            '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+            f'phase=topup_attempt_{attempt} '
+            f'rows_before={before_rows} '
+            f'rows_after={after_rows} '
+            f'specialized_missing_after={bool(sf_missing_after)} '
+            f'contains_bad_ciso_office={bool(bad_office_in_cand)} '
+            f'assign_allowed={assign_allowed} '
+            f'accepted={ok}',
+            flush=True,
+        )
+        if ok:
+            accepted = True
+            break
+        if sections.get('vision', '') != before_text:
+            sections['vision'] = before_text
+        if attempt >= MAX_ATTEMPTS:
+            _mark_synth_failed(
+                _synth_status, 'vision',
+                last_err or Exception(
+                    'cyber_specialized_objective_topup_unmet'))
+            break
+    print(
+        '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+        'phase=topup_done '
+        f'accepted={accepted} '
+        f'attempts={MAX_ATTEMPTS}',
+        flush=True,
+    )
+    return 1 if accepted else 0
+
 
 
 def converge_strategy_sections(sections, lang, domain, fw_short,
@@ -44489,6 +44912,38 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'non-fatal: {_voxe}',
                                 flush=True,
                             )
+
+                    # ── PR-CY9 Part D — Targeted Cyber specialized-
+                    # function objective top-up. Runs ONLY when
+                    # VISION-OBLIGATIONS-REPAIR has finished and the
+                    # dual-requirement detector still fires for
+                    # ``cyber`` (org_structure_is_none=True). No-op
+                    # for other domains, for Cyber without
+                    # org_structure_is_none=True, and when the
+                    # specialized-function detector already passes.
+                    # AI-first; bounded retry x2; fail-closed via
+                    # ``synth_failed:vision`` on persistent failure.
+                    if doc_subtype != 'board':
+                        try:
+                            _cy_dcode = (
+                                normalize_domain(domain or '') or ''
+                            ).strip().lower()
+                        except Exception:  # noqa: BLE001
+                            _cy_dcode = ''
+                        if _cy_dcode == 'cyber':
+                            try:
+                                _convergence_cyber_specialized_objective_topup_repair(
+                                    sections, lang, domain,
+                                    ctx=_final_ctx,
+                                    log={'synth_status': _synth_status},
+                                )
+                            except Exception as _csoxe:  # noqa: BLE001
+                                print(
+                                    '[CYBER-VISION-SPECIALIZED-'
+                                    'OBJECTIVE] '
+                                    f'non-fatal: {_csoxe}',
+                                    flush=True,
+                                )
 
                     # ── PR-5B.9K: Pillars governance/structure repair ────
                     # When ``org_structure_is_none=True`` the Strategic
