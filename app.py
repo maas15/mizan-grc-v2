@@ -29378,6 +29378,231 @@ def _cyber_vision_specialized_objective_topup_contract(
     return base
 
 
+# ── PR-CY11 — Row-preserving Cyber vision objective top-up helpers ──────
+# After PR-CY9/PR-CY10 the targeted top-up still failed in production
+# because ``ai_repair_strategy_section('vision', ...)`` was being asked
+# to regenerate the FULL Vision section while preserving every existing
+# objective row. When the AI returned a candidate whose objective rows
+# split the establishment phrase and the leadership phrase across two
+# rows, the PR-CY8 dual-requirement detector still failed and the
+# generic VISION-OBLIGATIONS-REPAIR pass (or a later generic vision
+# repair) sometimes overwrote the targeted-top-up's spliced row.
+#
+# These helpers add a strict ROW-SPLICE fallback path: when the
+# AI-regenerated full vision does not clear the defect, we extract ONE
+# qualifying markdown pipe-row (BOTH establishment + leadership phrases
+# in the SAME row, NO ``مكتب CISO``) from the AI response and splice
+# it into the ORIGINAL vision text — guaranteeing every existing valid
+# objective row is preserved verbatim and exactly ONE new row is added.
+# No deterministic objective row is ever generated: the row content
+# comes from the AI response or the pass fails closed.
+_CYBER_SO_ESTABLISHMENT_PHRASES_AR = (
+    'إنشاء إدارة الأمن السيبراني',
+    'تأسيس إدارة الأمن السيبراني',
+    'إنشاء إدارة متخصصة للأمن السيبراني',
+    'إدارة متخصصة للأمن السيبراني',
+    'إنشاء الإدارة المتخصصة للأمن السيبراني',
+    'الإدارة المتخصصة للأمن السيبراني',
+    'تأسيس وظيفة الأمن السيبراني',
+    'إنشاء وظيفة الأمن السيبراني',
+    'إدارة الأمن السيبراني بقيادة',
+    'وظيفة الأمن السيبراني بقيادة',
+)
+_CYBER_SO_ESTABLISHMENT_PHRASES_EN = (
+    'establish a dedicated cybersecurity',
+    'establish the cybersecurity department',
+    'establish a cybersecurity department',
+    'cybersecurity department led by',
+    'cybersecurity function led by',
+    'establish a cybersecurity function',
+    'establish the cybersecurity function',
+    'cybersecurity operating model',
+    'dedicated cybersecurity management',
+)
+_CYBER_SO_LEADERSHIP_PHRASES_AR = (
+    'CISO',
+    'رئيس الأمن السيبراني',
+    'لجنة حوكمة الأمن السيبراني',
+    'الأدوار والمسؤوليات',
+    'خطوط الرفع',
+)
+_CYBER_SO_LEADERSHIP_PHRASES_EN = (
+    'CISO',
+    'chief information security officer',
+    'cybersecurity governance committee',
+    'roles and responsibilities',
+    'reporting lines',
+)
+
+
+def _cyber_vision_objective_row_diagnostic(row_blob):
+    """Return a structured dict of presence flags for a single
+    objective row blob (Objective + Target + Justification cells
+    concatenated). Used by the PR-CY11 ``[CYBER-VISION-SPECIALIZED-
+    OBJECTIVE]`` diagnostic so log readers can see which half of the
+    dual requirement is missing or whether the forbidden ``مكتب CISO``
+    wording was present.
+    """
+    blob = str(row_blob or '')
+    blob_lc = blob.lower()
+    has_est = (
+        any((t and t in blob)
+            for t in _CYBER_SO_ESTABLISHMENT_PHRASES_AR)
+        or any((t and t.lower() in blob_lc)
+               for t in _CYBER_SO_ESTABLISHMENT_PHRASES_EN))
+    has_lead = (
+        any((t and t in blob)
+            for t in _CYBER_SO_LEADERSHIP_PHRASES_AR)
+        or any((t and t.lower() in blob_lc)
+               for t in _CYBER_SO_LEADERSHIP_PHRASES_EN))
+    has_committee = (
+        ('لجنة حوكمة الأمن السيبراني' in blob)
+        or ('cybersecurity governance committee' in blob_lc))
+    has_roles_reporting = (
+        ('الأدوار والمسؤوليات' in blob)
+        or ('خطوط الرفع' in blob)
+        or ('roles and responsibilities' in blob_lc)
+        or ('reporting lines' in blob_lc))
+    contains_bad_office = (
+        ('مكتب CISO' in blob) or ('ciso office' in blob_lc))
+    # Preview: first 80 chars of the blob, with newlines collapsed —
+    # exposed in the diagnostic so the operator can see what row was
+    # actually evaluated.
+    preview = ' '.join(blob.split())[:80]
+    return {
+        'has_establishment_phrase': bool(has_est),
+        'has_leadership_phrase': bool(has_lead),
+        'has_governance_committee': bool(has_committee),
+        'has_roles_reporting': bool(has_roles_reporting),
+        'contains_bad_ciso_office': bool(contains_bad_office),
+        'row_preview': preview,
+    }
+
+
+def _extract_cyber_vision_objective_topup_row(ai_text):
+    """PR-CY11 — Pick AT MOST ONE markdown pipe-row from ``ai_text``
+    that satisfies BOTH the cyber establishment requirement AND a
+    leadership/governance requirement IN THE SAME ROW, and does NOT
+    contain the forbidden ``مكتب CISO`` / ``CISO office`` wording.
+
+    Header rows (≥ 2 column-name tokens such as ``Objective`` /
+    ``الهدف``) and Markdown separator rows are skipped. Returns the
+    full original row line (stripped) or ``''`` if no qualifying row
+    is found. The helper never inserts deterministic content — when
+    nothing qualifies it returns an empty string so the caller can
+    fail closed.
+    """
+    if not ai_text:
+        return ''
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    # Column-name tokens used to skip header rows.
+    header_tokens = (
+        '#', 'Objective', 'Target', 'Justification', 'Timeframe',
+        'الهدف', 'المقياس', 'المبرر', 'الإطار', 'الهدف الاستراتيجي',
+        'الأهداف',
+    )
+    for ln in str(ai_text).split('\n'):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if not (s.startswith('|') and s.endswith('|')):
+            continue
+        if sep_re.match(s):
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if not cells:
+            continue
+        # Header heuristic: 2+ column-name tokens in the row → header.
+        if sum(1 for t in header_tokens
+               if any(t in (c or '') for c in cells)) >= 2:
+            continue
+        # Build the concatenated Objective + Target + Justification
+        # blob (same shape the detector uses: cells 1..3).
+        if len(cells) < 4:
+            continue
+        blob_parts = []
+        for i in (1, 2, 3):
+            if i < len(cells):
+                blob_parts.append(cells[i] or '')
+        blob = ' '.join(blob_parts)
+        diag = _cyber_vision_objective_row_diagnostic(blob)
+        if diag['contains_bad_ciso_office']:
+            continue
+        if (diag['has_establishment_phrase']
+                and diag['has_leadership_phrase']):
+            return s
+    return ''
+
+
+def _splice_cyber_vision_objective_topup_row(
+        original_vision_text, new_row_line):
+    """PR-CY11 — Insert ``new_row_line`` immediately after the LAST
+    existing Strategic Objectives data row in ``original_vision_text``.
+
+    The objective row's leading ``# | …`` index is renumbered to
+    ``last_index + 1`` (or ``len(existing_rows) + 1`` when no numeric
+    index is detected) so the spliced row remains schema-valid for
+    ``count_valid_objective_rows``. Every other byte of
+    ``original_vision_text`` is preserved verbatim — this is the PR-CY11
+    guarantee that no existing objective row is dropped or rewritten
+    by the splice.
+    """
+    if not (original_vision_text and new_row_line):
+        return original_vision_text or ''
+    text = original_vision_text
+    lines = text.split('\n')
+    hdr_re = _ts_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+        r'|الأهداف)\s*\|',
+        _ts_re.IGNORECASE,
+    )
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    last_data_idx = -1
+    in_tbl = False
+    last_num = 0
+    n_data = 0
+    for idx, ln in enumerate(lines):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if not in_tbl:
+            if hdr_re.match(s):
+                in_tbl = True
+            continue
+        if not (s.startswith('|') and s.endswith('|')):
+            if not s:
+                continue
+            # table ended
+            break
+        if sep_re.match(s):
+            continue
+        last_data_idx = idx
+        n_data += 1
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if cells:
+            try:
+                _n = int(cells[0].rstrip('.'))
+                if _n > last_num:
+                    last_num = _n
+            except (ValueError, IndexError):
+                pass
+    if last_data_idx < 0:
+        # No existing objectives table — refuse to splice. Returning
+        # the original text causes the caller to fall back to the
+        # whole-vision replacement path; we never insert a
+        # deterministic objectives table.
+        return original_vision_text
+    # Renumber the AI row's index so the spliced row stays
+    # schema-valid for count_valid_objective_rows.
+    new_row = new_row_line.strip()
+    if new_row.startswith('|'):
+        parts = new_row.split('|')
+        if len(parts) >= 2:
+            new_num = (last_num if last_num > 0 else n_data) + 1
+            parts[1] = f' {new_num} '
+            new_row = '|'.join(parts)
+    return '\n'.join(
+        lines[:last_data_idx + 1]
+        + [new_row]
+        + lines[last_data_idx + 1:])
+
+
 def _convergence_cyber_specialized_objective_topup_repair(
         sections, lang, domain, ctx, log):
     """PR-CY9 Part D — targeted AI-first top-up that resolves a
@@ -29521,6 +29746,46 @@ def _convergence_cyber_specialized_objective_topup_repair(
         cand_lc = cand.lower()
         bad_office_in_cand = (
             ('مكتب CISO' in cand) or ('ciso office' in cand_lc))
+        # PR-CY11 — emit candidate-phase diagnostic with the
+        # structured per-row flags computed from the AI response.
+        # This runs BEFORE the full-vision assign attempt so the log
+        # always shows what wording the AI returned, regardless of
+        # whether the candidate ends up accepted, spliced, or
+        # rejected.
+        _cy11_extracted_row = (
+            _extract_cyber_vision_objective_topup_row(cand))
+        if _cy11_extracted_row:
+            _cy11_blob_parts = []
+            try:
+                _cy11_cells = [
+                    c.strip()
+                    for c in _cy11_extracted_row.split('|')[1:-1]]
+                for _i in (1, 2, 3):
+                    if _i < len(_cy11_cells):
+                        _cy11_blob_parts.append(_cy11_cells[_i] or '')
+            except (ValueError, IndexError):
+                _cy11_blob_parts = [_cy11_extracted_row]
+            _cy11_blob = ' '.join(_cy11_blob_parts)
+        else:
+            _cy11_blob = cand
+        _cy11_diag = _cyber_vision_objective_row_diagnostic(_cy11_blob)
+        print(
+            '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+            f'phase=candidate attempt={attempt} '
+            f'rows_before={before_rows} '
+            f'has_establishment_phrase='
+            f'{_cy11_diag["has_establishment_phrase"]} '
+            f'has_leadership_phrase='
+            f'{_cy11_diag["has_leadership_phrase"]} '
+            f'has_governance_committee='
+            f'{_cy11_diag["has_governance_committee"]} '
+            f'has_roles_reporting='
+            f'{_cy11_diag["has_roles_reporting"]} '
+            f'contains_bad_ciso_office={bool(bad_office_in_cand)} '
+            f'row_preview={_cy11_diag["row_preview"]!r} '
+            'accepted=False',
+            flush=True,
+        )
         is_final = (attempt == MAX_ATTEMPTS)
         try:
             report = _assign_vision_if_valid_or_restore(
@@ -29608,7 +29873,138 @@ def _convergence_cyber_specialized_objective_topup_repair(
             f'accepted={ok}',
             flush=True,
         )
+        # PR-CY11 — Row-preserving fallback. When the full-vision
+        # candidate was rejected (validator failure OR the dual-
+        # requirement detector still fires) AND the AI response
+        # contained no forbidden ``مكتب CISO`` wording AND we were
+        # able to extract a single qualifying objective row from the
+        # AI response, splice that row into the ORIGINAL vision text
+        # and re-validate. This guarantees every existing valid
+        # objective row is preserved verbatim (the original Vision is
+        # the base text we splice into) while still satisfying the
+        # cyber dual-requirement detector with a single new row. No
+        # deterministic objective row is generated: the row content
+        # comes from ``_cy11_extracted_row`` which is empty when no
+        # AI-emitted row qualifies.
+        if (not ok
+                and not bad_office_in_cand
+                and _cy11_extracted_row):
+            try:
+                _cy11_spliced = (
+                    _splice_cyber_vision_objective_topup_row(
+                        before_text, _cy11_extracted_row))
+            except Exception:  # noqa: BLE001 — defensive
+                _cy11_spliced = ''
+            if (_cy11_spliced
+                    and _cy11_spliced != before_text):
+                try:
+                    splice_report = (
+                        _assign_vision_if_valid_or_restore(
+                            sections, _cy11_spliced, before_text,
+                            domain=domain,
+                            selected_frameworks=selected_fws,
+                            org_structure_is_none=True,
+                            generation_mode=gen_mode,
+                            lang=lang,
+                            synth_status=(
+                                _synth_status if is_final else None),
+                            original_valid_rows=before_rows,
+                            repair_label=(
+                                'cyber-vision-specialized-objective-'
+                                f'topup-splice-attempt-{attempt}'),
+                        ))
+                except Exception as _spe:  # noqa: BLE001
+                    splice_report = {'assign_allowed': False}
+                    last_err = _spe
+                splice_assign_allowed = bool(
+                    splice_report.get('assign_allowed'))
+                try:
+                    splice_after_rows = (
+                        count_valid_objective_rows(
+                            sections.get('vision', '') or ''))
+                except Exception:  # noqa: BLE001
+                    splice_after_rows = before_rows
+                try:
+                    splice_sf_missing = (
+                        _compute_missing_specialized_function_objective(
+                            sections, domain, lang=lang,
+                            org_structure_is_none=True))
+                except Exception:  # noqa: BLE001
+                    splice_sf_missing = True
+                splice_ok = bool(
+                    splice_assign_allowed and not splice_sf_missing
+                    and splice_after_rows >= before_rows)
+                print(
+                    '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                    f'phase=topup_splice_attempt_{attempt} '
+                    f'rows_before={before_rows} '
+                    f'rows_after={splice_after_rows} '
+                    f'specialized_missing_after='
+                    f'{bool(splice_sf_missing)} '
+                    f'assign_allowed={splice_assign_allowed} '
+                    f'accepted={splice_ok}',
+                    flush=True,
+                )
+                if splice_ok:
+                    ok = True
+                    after_text = sections.get('vision', '') or ''
+                    after_rows = splice_after_rows
+                    sf_missing_after = splice_sf_missing
+                    assign_allowed = splice_assign_allowed
+                else:
+                    # Restore base text so the next iteration starts
+                    # from the original (no partial state leakage).
+                    if sections.get('vision', '') != before_text:
+                        sections['vision'] = before_text
         if ok:
+            # PR-CY11 — accepted-phase diagnostic mirrors the
+            # candidate diagnostic so log readers can confirm the
+            # row that was actually committed to the Vision section.
+            try:
+                _acc_after = sections.get('vision', '') or ''
+                _acc_hdr = _ts_re.compile(
+                    r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
+                    r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+                    _ts_re.IGNORECASE,
+                )
+                _acc_blob = ''
+                for _cells in _ts_table_rows(_acc_after, _acc_hdr):
+                    if len(_cells) < 4:
+                        continue
+                    _parts = [
+                        str(_cells[_i] or '')
+                        for _i in (1, 2, 3) if _i < len(_cells)
+                    ]
+                    _b = ' '.join(_parts)
+                    _d = _cyber_vision_objective_row_diagnostic(_b)
+                    if (_d['has_establishment_phrase']
+                            and _d['has_leadership_phrase']
+                            and not _d['contains_bad_ciso_office']):
+                        _acc_blob = _b
+                        break
+                _acc_diag = (
+                    _cyber_vision_objective_row_diagnostic(_acc_blob))
+                print(
+                    '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                    f'phase=accepted attempt={attempt} '
+                    f'rows_before={before_rows} '
+                    f'rows_after={after_rows} '
+                    f'has_establishment_phrase='
+                    f'{_acc_diag["has_establishment_phrase"]} '
+                    f'has_leadership_phrase='
+                    f'{_acc_diag["has_leadership_phrase"]} '
+                    f'has_governance_committee='
+                    f'{_acc_diag["has_governance_committee"]} '
+                    f'has_roles_reporting='
+                    f'{_acc_diag["has_roles_reporting"]} '
+                    f'contains_bad_ciso_office='
+                    f'{_acc_diag["contains_bad_ciso_office"]} '
+                    f'row_preview={_acc_diag["row_preview"]!r} '
+                    'accepted=True',
+                    flush=True,
+                )
+            except Exception:  # noqa: BLE001 — diagnostic only
+                pass
             accepted = True
             break
         if sections.get('vision', '') != before_text:
@@ -47792,6 +48188,114 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 print(
                                     '[PDPL-SAVE-GUARD] '
                                     f'non_fatal: {_pr5b9ye}',
+                                    flush=True,
+                                )
+                            # ── PR-CY11 — FINAL Cyber specialized-
+                            # function objective post-normalization
+                            # guard. Runs immediately BEFORE the
+                            # unified post-normalization 422 below.
+                            # When ``specialized_function_objective_
+                            # missing:cyber`` reappears in the post-
+                            # normalization defect set, re-invoke the
+                            # targeted top-up one last time (AI-first;
+                            # bounded retry already enforced inside
+                            # the helper). If the top-up clears the
+                            # defect we re-run ``_final_strategy_
+                            # audit`` so ``_post_norm_defects``
+                            # reflects the corrected state before the
+                            # 422 emission below. No deterministic
+                            # objective row is inserted; on persistent
+                            # failure the top-up marks ``synth_failed:
+                            # vision`` and the 422 below fires as
+                            # designed. Strictly Cyber-scoped — Data /
+                            # AI / DT / ERM are not exercised.
+                            try:
+                                _cy11_dcode = ''
+                                try:
+                                    _cy11_dcode = (
+                                        normalize_domain(domain or '')
+                                        or '').strip().lower()
+                                except Exception:  # noqa: BLE001
+                                    _cy11_dcode = ''
+                                _cy11_has_defect = bool(
+                                    _post_norm_defects and any(
+                                        isinstance(d, (list, tuple))
+                                        and len(d) >= 2
+                                        and str(d[1]).startswith(
+                                            'specialized_function_'
+                                            'objective_missing:')
+                                        and str(d[1]).endswith(
+                                            ':cyber')
+                                        for d in _post_norm_defects))
+                                _cy11_org_none = bool(
+                                    _final_ctx.get(
+                                        'org_structure_is_none',
+                                        False)
+                                    if isinstance(_final_ctx, dict)
+                                    else False)
+                                if (_cy11_dcode == 'cyber'
+                                        and _cy11_has_defect
+                                        and _cy11_org_none):
+                                    print(
+                                        '[CYBER-VISION-SPECIALIZED-'
+                                        'OBJECTIVE] '
+                                        'phase=post_normalization_'
+                                        'guard_fired '
+                                        f'defects_before='
+                                        f'{_post_norm_defects}',
+                                        flush=True,
+                                    )
+                                    try:
+                                        _convergence_cyber_specialized_objective_topup_repair(
+                                            sections, lang, domain,
+                                            ctx=_final_ctx,
+                                            log={
+                                                'synth_status':
+                                                _synth_status},
+                                        )
+                                    except Exception as _cy11e:  # noqa: BLE001
+                                        print(
+                                            '[CYBER-VISION-'
+                                            'SPECIALIZED-OBJECTIVE] '
+                                            'phase=post_normalization'
+                                            '_guard_failed '
+                                            f'err={_cy11e}',
+                                            flush=True,
+                                        )
+                                    # Re-audit so the 422 below sees
+                                    # the corrected defect set.
+                                    try:
+                                        _post_norm_defects = (
+                                            _final_strategy_audit(
+                                                sections, lang,
+                                                doc_subtype,
+                                                synth_status=_synth_status,
+                                                selected_frameworks=_frameworks_raw,
+                                                domain=domain,
+                                                org_structure_is_none=_cy11_org_none,
+                                            ))
+                                    except Exception as _cy11re:  # noqa: BLE001
+                                        print(
+                                            '[CYBER-VISION-'
+                                            'SPECIALIZED-OBJECTIVE] '
+                                            'phase=post_normalization'
+                                            '_guard_reaudit_failed '
+                                            f'err={_cy11re}',
+                                            flush=True,
+                                        )
+                                    print(
+                                        '[CYBER-VISION-SPECIALIZED-'
+                                        'OBJECTIVE] '
+                                        'phase=post_normalization '
+                                        f'defects_after='
+                                        f'{_post_norm_defects}',
+                                        flush=True,
+                                    )
+                            except Exception as _cy11ne:  # noqa: BLE001
+                                print(
+                                    '[CYBER-VISION-SPECIALIZED-'
+                                    f'OBJECTIVE] non_fatal: '
+                                    f'{_cy11ne}',
                                     flush=True,
                                 )
                             if _post_norm_defects:
