@@ -11844,6 +11844,42 @@ _CYBER_TRACEABILITY_SOFT_INITIATIVE = {
                   'vulnerability assessment',
         },
     },
+    # PR-CY6 — Soft Initiative derivation map for Cyber-scope DCC
+    # traceability rows.  Production Cyber + DCC strategies often emit
+    # a single generic roadmap row (e.g. ``تطبيق تقنيات التشفير ومنع
+    # فقدان البيانات (DLP)``) that the per-section lookup matches for
+    # every DCC family — leaving each DCC traceability row with the
+    # SAME initiative phrase and weakening traceability quality.  This
+    # map provides a deterministic, capability-derived initiative phrase
+    # per DCC family per the PR-CY6 problem-statement preferred mapping
+    # so each rendered DCC row maps to a distinct initiative aligned
+    # with the family scope.  Does NOT insert new strategy rows — the
+    # row exists because the DCC framework was selected and the family
+    # is part of the DCC scope; this only labels the initiative axis.
+    # Scoped to (domain=cyber, framework=DCC).
+    'DCC': {
+        'data_classification': {
+            'ar': 'تنفيذ تصنيف البيانات / تصنيف البيانات الحساسة',
+            'en': 'Implement data classification / sensitive data '
+                  'classification',
+        },
+        'encryption': {
+            'ar': 'تطبيق ضوابط التشفير',
+            'en': 'Apply encryption controls',
+        },
+        'dlp': {
+            'ar': 'تطبيق DLP / منع تسرب البيانات',
+            'en': 'Implement DLP / data loss prevention',
+        },
+        'sensitive_data_handling': {
+            'ar': 'معالجة البيانات الحساسة وفق الضوابط',
+            'en': 'Sensitive data handling per controls',
+        },
+        'data_protection': {
+            'ar': 'حماية البيانات أثناء النقل والتخزين',
+            'en': 'Protect data at rest and in transit',
+        },
+    },
 }
 
 
@@ -12353,28 +12389,70 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                       ['confidence', 'kpis', 'roadmap'],
                                       ar_kws, en_kws,
                                       exclude=[initiative, kpi]) or dash)
+                    # PR-CY6 — soft Initiative derivation scoped to
+                    # (cyber, DCC).  Production DCC strategies often
+                    # emit a single generic roadmap row (e.g.
+                    # ``تطبيق تقنيات التشفير ومنع فقدان البيانات
+                    # (DLP)``) that the per-section lookup matches for
+                    # every DCC family — leaving each DCC traceability
+                    # row with the SAME initiative phrase and weakening
+                    # traceability quality.  Prefer a family-coherent
+                    # soft initiative from
+                    # ``_CYBER_TRACEABILITY_SOFT_INITIATIVE['DCC']``
+                    # whenever it is defined, so each rendered DCC row
+                    # maps to a distinct, family-specific initiative.
+                    # Does NOT insert any new strategy row — the row
+                    # exists because the DCC framework was selected
+                    # and the family is part of the DCC scope.
+                    _si = (_CYBER_TRACEABILITY_SOFT_INITIATIVE
+                           .get(fw_key, {}) or {}).get(
+                               canonical_id) or {}
+                    _si_val = _si.get(
+                        'ar' if lang == 'ar' else 'en')
+                    if _si_val and (
+                            initiative == dash
+                            or initiative != _si_val):
+                        # Override the per-section lookup result with
+                        # the family-coherent soft initiative.  This
+                        # eliminates duplicate-phrase Part B rows
+                        # while keeping ECC traceability untouched.
+                        initiative = _si_val
+                        # Re-resolve KPI / Risk excluding the new
+                        # initiative so they do not echo it.
+                        kpi    = (_find_match_any(
+                                      ['kpis', 'roadmap', 'confidence'],
+                                      ar_kws, en_kws,
+                                      exclude=[initiative]) or dash)
+                        risk   = (_find_match_any(
+                                      ['confidence', 'kpis', 'roadmap'],
+                                      ar_kws, en_kws,
+                                      exclude=[initiative, kpi]) or dash)
                     # PR-CY4 Part C — soft KPI/Risk derivation scoped
-                    # to (cyber, DCC).  Only fills the metric / risk
-                    # axis when the row's gap AND initiative already
-                    # exist from real generated content but the KPI or
-                    # Risk lookup did not find a distinct phrase.  No
-                    # new strategy row is inserted.
-                    if (gap != dash and initiative != dash
-                            and (kpi == dash or risk == dash)):
-                        _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
-                                 .get(fw_key, {}) or {}).get(
-                                     canonical_id) or {}
-                        _soft_lang = _soft.get(
-                            'ar' if lang == 'ar' else 'en')
-                        if _soft_lang:
-                            _soft_kpi, _soft_risk = _soft_lang
-                            if (kpi == dash and _soft_kpi
-                                    and _soft_kpi != initiative):
-                                kpi = _soft_kpi
-                            if (risk == dash and _soft_risk
-                                    and _soft_risk != initiative
-                                    and _soft_risk != kpi):
-                                risk = _soft_risk
+                    # to (cyber, DCC).  Originally only fired when the
+                    # cell was a dash; PR-CY6 widens this: when the
+                    # DCC soft KPI/Risk entry is defined for the
+                    # family, ALWAYS prefer the family-coherent soft
+                    # phrase over the lookup result. Real Cyber + DCC
+                    # KPI / Risk sections frequently share vocabulary
+                    # across families (e.g. ``البيانات الحساسة``
+                    # appears in classification / sensitive-handling /
+                    # protection rows) so the per-section lookup leaks
+                    # one family's KPI / Risk text into a sibling
+                    # family's row. Preferring the soft phrase keeps
+                    # each DCC row family-coherent and distinct
+                    # without inserting any new strategy row.
+                    _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
+                             .get(fw_key, {}) or {}).get(
+                                 canonical_id) or {}
+                    _soft_lang = _soft.get(
+                        'ar' if lang == 'ar' else 'en')
+                    if _soft_lang and gap != dash and initiative != dash:
+                        _soft_kpi, _soft_risk = _soft_lang
+                        if _soft_kpi and _soft_kpi != initiative:
+                            kpi = _soft_kpi
+                        if (_soft_risk and _soft_risk != initiative
+                                and _soft_risk != kpi):
+                            risk = _soft_risk
                 else:
                     # PR-CY5 — Cyber ECC traceability render fix.
                     # Mirrors the (cyber, DCC) branch above for the
@@ -21405,6 +21483,205 @@ def _compute_missing_data_roadmap_balance_topics(
     return missing
 
 
+# ── PR-CY6: Cyber Security roadmap balance enforcement ───────────────────
+# Mirrors the Data Management pattern above for the Cyber domain. When
+# Cyber + ECC and/or DCC is selected, the roadmap must include explicit
+# implementation activities for the ECC governance, identity, monitoring,
+# incident-response, and vulnerability-management families AND the DCC
+# classification, encryption, DLP, sensitive-data handling, and data-
+# protection families. Production runtime evidence: the roadmap passed
+# generation (CISO-setup + DCC convergence repair) but ended up with
+# only a thin set of operational activities (IAM / SOC / CSIRT / VM)
+# missing ECC CISO-department / governance-committee setup AND every
+# DCC family. The audit emission below surfaces a
+# ``cyber_roadmap_balance_missing:fam1,...`` defect that the AI-first
+# convergence repair pass reacts to (no deterministic rows ever
+# inserted). Strictly scoped to (cyber, ECC|DCC) — other Cyber
+# frameworks (CSCC / TCC), other domains (Data / AI / DT / ERM), and
+# Cyber selections without ECC/DCC are not affected.
+_CYBER_ROADMAP_BALANCE_TOPICS = {
+    # ── ECC operational families (problem statement Part A items 1–6).
+    'ciso_department': (
+        'إدارة الأمن السيبراني',
+        'إنشاء إدارة الأمن السيبراني',
+        'تأسيس إدارة الأمن السيبراني',
+        'تعيين CISO',
+        'تعيين رئيس الأمن السيبراني',
+        'CISO',
+        'cybersecurity department',
+        'establish cybersecurity department',
+        'appoint CISO', 'appoint a CISO',
+        'cybersecurity head', 'chief information security officer',
+    ),
+    'governance_committee': (
+        'لجنة حوكمة الأمن السيبراني',
+        'تشكيل لجنة حوكمة الأمن السيبراني',
+        'لجنة الأمن السيبراني',
+        'تأسيس لجنة حوكمة الأمن السيبراني',
+        'cybersecurity governance committee',
+        'security governance committee',
+        'cybersecurity committee',
+        'establish a cybersecurity governance committee',
+    ),
+    'iam': (
+        'إدارة الهوية والوصول',
+        'تنفيذ إدارة الهوية والوصول',
+        'تنفيذ IAM',
+        'IAM',
+        'تطبيق MFA',
+        'تفعيل MFA',
+        'MFA',
+        'المصادقة متعددة العوامل',
+        'إدارة الوصول المميز',
+        'تطبيق PAM',
+        'PAM',
+        'identity and access management',
+        'iam', 'mfa', 'pam',
+        'multi-factor authentication',
+        'privileged access management',
+    ),
+    'soc_siem': (
+        'مركز العمليات الأمنية',
+        'تأسيس مركز العمليات الأمنية',
+        'تأسيس SOC',
+        'SOC',
+        'تفعيل SIEM',
+        'SIEM',
+        'تأسيس SOC وتفعيل SIEM',
+        'security operations center', 'soc',
+        'siem', 'security information and event management',
+    ),
+    'csirt_incident': (
+        'CSIRT',
+        'تطوير CSIRT',
+        'فريق الاستجابة للحوادث',
+        'الاستجابة للحوادث',
+        'خطة الاستجابة للحوادث',
+        'إدارة الحوادث',
+        'احتواء الحوادث',
+        'csirt', 'incident response',
+        'incident response plan', 'incident management',
+        'incident handling', 'cyber incident response team',
+    ),
+    'vulnerability_management': (
+        'إدارة الثغرات',
+        'إدارة الثغرات الأمنية',
+        'إدارة الثغرات الأمنية والتصحيحات',
+        'فحص الثغرات',
+        'تقييم الثغرات',
+        'إدارة التحديثات',
+        'الترقيع الأمني',
+        'vulnerability management',
+        'vulnerability scanning', 'vulnerability assessment',
+        'patch management', 'security patching',
+    ),
+    # ── DCC operational families (problem statement Part A items 7–11).
+    'dcc_data_classification': (
+        'تصنيف البيانات',
+        'تصنيف البيانات الحساسة',
+        'تنفيذ تصنيف البيانات',
+        'تصنيف الأصول البيانية',
+        'data classification',
+        'sensitive data classification',
+        'information classification',
+        'data asset classification',
+    ),
+    'dcc_encryption': (
+        'التشفير',
+        'تشفير البيانات',
+        'تطبيق ضوابط التشفير',
+        'ضوابط التشفير',
+        'تطبيق التشفير',
+        'encryption', 'data encryption', 'encryption controls',
+        'apply encryption', 'encryption at rest',
+        'encryption in transit',
+    ),
+    'dcc_dlp': (
+        'DLP',
+        'تطبيق DLP',
+        'منع تسرب البيانات',
+        'منع فقدان البيانات',
+        'ضوابط منع فقدان البيانات',
+        'dlp', 'data loss prevention',
+        'data leak prevention', 'loss prevention controls',
+    ),
+    'dcc_sensitive_handling': (
+        'معالجة البيانات الحساسة',
+        'التعامل مع البيانات الحساسة',
+        'تداول البيانات الحساسة',
+        'ضوابط التعامل مع البيانات الحساسة',
+        'sensitive data handling',
+        'sensitive data processing',
+        'handling sensitive data',
+    ),
+    'dcc_data_protection': (
+        'حماية البيانات',
+        'حماية البيانات أثناء النقل',
+        'حماية البيانات أثناء التخزين',
+        'حماية البيانات أثناء النقل والتخزين',
+        'data protection',
+        'protection of data at rest',
+        'protection of data in transit',
+        'protect data at rest and in transit',
+    ),
+}
+
+
+# Which balance topics each Cyber framework requires. ECC selection
+# requires the six ECC families; DCC selection requires the five DCC
+# families. Selecting both yields the union (eleven families).
+_CYBER_ROADMAP_BALANCE_BY_FRAMEWORK = {
+    'ECC': ('ciso_department', 'governance_committee', 'iam',
+            'soc_siem', 'csirt_incident', 'vulnerability_management'),
+    'DCC': ('dcc_data_classification', 'dcc_encryption', 'dcc_dlp',
+            'dcc_sensitive_handling', 'dcc_data_protection'),
+}
+
+
+def _compute_missing_cyber_roadmap_balance_topics(
+        roadmap_text, selected_frameworks, lang='en'):
+    """Return the list of Cyber roadmap balance-topic family keys
+    missing from ``roadmap_text``.
+
+    Mirrors ``_compute_missing_data_roadmap_balance_topics`` for the
+    Cyber domain. Detection only — no deterministic content is
+    inserted by this helper. Callers must guard to ``domain='cyber'``;
+    the helper does not inspect the domain on its own.
+
+    Resolution rules:
+      * ECC in the selection → require the six ECC families.
+      * DCC in the selection → require the five DCC families.
+      * Other Cyber frameworks (CSCC / TCC) currently contribute no
+        balance families (their obligations are covered by the
+        existing convergence-cyber-framework-coverage repair).
+    """
+    try:
+        resolved = _resolve_selected_frameworks(
+            selected_frameworks, domain='Cyber Security')
+    except Exception:  # noqa: BLE001 — defensive
+        resolved = []
+    required = []
+    seen = set()
+    for fw_key in resolved or []:
+        for fam in _CYBER_ROADMAP_BALANCE_BY_FRAMEWORK.get(fw_key, ()):
+            if fam not in seen:
+                seen.add(fam)
+                required.append(fam)
+    if not required:
+        return []
+    text = roadmap_text or ''
+    if not text.strip():
+        return list(required)
+    text_lc = text.lower()
+    missing = []
+    for fam in required:
+        tokens = _CYBER_ROADMAP_BALANCE_TOPICS.get(fam, ())
+        if not any((t.lower() in text_lc) or (t in text)
+                   for t in tokens):
+            missing.append(fam)
+    return missing
+
+
 # ── PR-5B.9K: pillars-section governance/structure requirement ────────────
 # When ``org_structure_is_none=True``, the **Strategic Pillars** section
 # MUST include — as the FIRST pillar — a domain-specific governance,
@@ -26532,6 +26809,34 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                     0,
                     1,
                 ))
+        # PR-CY6 — Cyber Security roadmap balance. When the domain is
+        # Cyber and ECC and/or DCC was selected, the roadmap must
+        # cover ECC operational families (CISO setup, governance
+        # committee, IAM/MFA/PAM, SOC/SIEM, CSIRT/IR, vulnerability
+        # management) and DCC families (classification, encryption,
+        # DLP, sensitive-data handling, data protection) in addition
+        # to whatever is already required. Detection only — repair is
+        # AI-first via the convergence-cyber-roadmap-balance pass. No
+        # deterministic content injected here.
+        try:
+            _dcode_cbal = normalize_domain(domain or '')
+        except Exception:  # noqa: BLE001 — defensive
+            _dcode_cbal = ''
+        if (_dcode_cbal or '').strip().lower() == 'cyber':
+            _missing_cbal = (
+                _compute_missing_cyber_roadmap_balance_topics(
+                    sections.get('roadmap', '') or '',
+                    selected_frameworks=selected_frameworks,
+                    lang=lang,
+                ))
+            if _missing_cbal:
+                defects.append((
+                    'roadmap',
+                    'cyber_roadmap_balance_missing:'
+                    + ','.join(_missing_cbal),
+                    0,
+                    1,
+                ))
     except Exception as _fwe:
         # Audit must never abort generation. Log and continue.
         print(f'[FW-COVERAGE-AUDIT] non-fatal: {_fwe}', flush=True)
@@ -28249,6 +28554,320 @@ def _convergence_data_roadmap_balance_repair(
     return len(missing) or len(_roadmap_pdpl_missing_pre)
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# PR-CY6 — Convergence-stage Cyber Security roadmap balance repair
+#
+# Production runtime evidence: when Cyber + ECC + DCC is generated, the
+# CISO-setup, governance-committee, classification, encryption, DLP,
+# sensitive-data handling, and data-protection activities frequently
+# fail to appear as explicit roadmap rows even after the existing
+# ROADMAP-GOVERNANCE-SETUP-REPAIR and PR-CY3 framework-coverage repairs.
+# This convergence-stage repair mirrors the Data Management pattern
+# (``_convergence_data_roadmap_balance_repair``) for the Cyber domain:
+# AI-first top-up rows + splice into the existing roadmap, fail-closed
+# via ``_mark_synth_failed('roadmap', …)`` when the AI cannot satisfy
+# the balance contract within two bounded attempts. No deterministic
+# rows are inserted — every spliced row is a verbatim AI-provider
+# substring. The host system's existing reaudit gates re-validate the
+# balance after merge.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+_CYBER_ROADMAP_BALANCE_FAMILY_LABELS = {
+    'ciso_department':
+        'Cybersecurity department + CISO appointment / '
+        'إنشاء إدارة الأمن السيبراني وتعيين CISO',
+    'governance_committee':
+        'Cybersecurity governance committee / '
+        'تشكيل لجنة حوكمة الأمن السيبراني',
+    'iam':
+        'IAM / MFA / PAM implementation / '
+        'تنفيذ IAM / MFA / PAM',
+    'soc_siem':
+        'SOC establishment and SIEM activation / '
+        'تأسيس SOC وتفعيل SIEM',
+    'csirt_incident':
+        'CSIRT development and incident response plan / '
+        'تطوير CSIRT وخطة الاستجابة للحوادث',
+    'vulnerability_management':
+        'Vulnerability management and patching / '
+        'إدارة الثغرات الأمنية والتصحيحات',
+    'dcc_data_classification':
+        'Data classification implementation / '
+        'تنفيذ تصنيف البيانات',
+    'dcc_encryption':
+        'Encryption controls / '
+        'تطبيق ضوابط التشفير',
+    'dcc_dlp':
+        'DLP / data loss prevention / '
+        'تطبيق DLP / منع تسرب البيانات',
+    'dcc_sensitive_handling':
+        'Sensitive data handling / '
+        'معالجة البيانات الحساسة',
+    'dcc_data_protection':
+        'Data protection at rest and in transit / '
+        'حماية البيانات أثناء النقل والتخزين',
+}
+
+
+def _convergence_cyber_roadmap_balance_repair(
+        sections, lang, domain, ctx, log, cycle_no):
+    """PR-CY6 Part A — convergence-stage Cyber roadmap balance repair.
+
+    Mirrors ``_convergence_data_roadmap_balance_repair``. AI-first
+    top-up rows + splice into the existing roadmap, fail-closed via
+    ``_mark_synth_failed('roadmap', …)`` on bounded-retry failure.
+    No-op for non-Cyber domains and for Cyber without ECC or DCC
+    selected. Emits ``[CYBER-ROADMAP-BALANCE-REPAIR]`` diagnostics in
+    the problem-statement format (cycle / missing_before / topup_family
+    / terms_found / accepted / missing_after).
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    selected_fws = ctx.get('frameworks') or []
+    if not selected_fws:
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001
+        dcode = ''
+    if dcode != 'cyber':
+        return 0
+    try:
+        resolved_fw = (
+            _resolve_selected_frameworks(
+                selected_fws, domain='Cyber Security') or [])
+    except Exception:  # noqa: BLE001
+        resolved_fw = []
+    if not ({'ECC', 'DCC'} & set(resolved_fw)):
+        return 0
+    before_text = sections.get('roadmap', '') or ''
+    try:
+        missing = _compute_missing_cyber_roadmap_balance_topics(
+            before_text,
+            selected_frameworks=selected_fws,
+            lang=lang) or []
+    except Exception as _e:  # noqa: BLE001
+        print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} compute_missing_failed err={_e}',
+              flush=True)
+        return 0
+    if not missing:
+        return 0
+    print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+          f'cycle={cycle_no} missing_before={missing} '
+          f'frameworks={list(resolved_fw)}',
+          flush=True)
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+              f'cycle={cycle_no} domain_context_failed err={_e}',
+              flush=True)
+        return 0
+    if dctx is None:
+        return 0
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws) if isinstance(selected_fws, (list, tuple))
+            else [str(selected_fws)])
+    except Exception:  # noqa: BLE001
+        pass
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+    osn = bool(ctx.get('org_structure_is_none', False))
+
+    def _topup_terms_map(unmet_families):
+        out = {}
+        for fam in unmet_families or ():
+            toks = list(_CYBER_ROADMAP_BALANCE_TOPICS.get(fam, ()) or ())
+            out[fam] = toks
+        return out
+
+    named_lines = [
+        f'  - {fam}: '
+        + _CYBER_ROADMAP_BALANCE_FAMILY_LABELS.get(fam, fam)
+        + ' — required terms (at least one literal AR or EN): '
+        + '، '.join(_CYBER_ROADMAP_BALANCE_TOPICS.get(fam, ()))
+        for fam in missing
+    ]
+    ve_base = (
+        'Cyber Security roadmap is missing required ECC / DCC balance '
+        'activities for the selected framework(s) '
+        + ', '.join(str(f) for f in selected_fws)
+        + '. Add ONE distinct, substantive roadmap row per missing '
+        'capability family below, with explicit Owner, Timeframe, and '
+        'Deliverable columns. Preserve EVERY existing roadmap row '
+        '(office / CISO / governance / IAM / SOC / CSIRT / VM '
+        'activities already present must remain verbatim). Each new '
+        'row must literally include at least one of the listed AR or '
+        'EN terms for its family so the validator can match the '
+        'family substring (case-insensitive for English, '
+        'case-sensitive for Arabic):\n'
+        + '\n'.join(named_lines)
+        + '\n\nDo NOT remove, rename, or shorten any existing row. Do '
+        'NOT insert dash placeholders. Do NOT invent frameworks that '
+        'are not in the selected list.'
+    )
+    attempt = 0
+    accepted = False
+    last_err = None
+    ve_current = ve_base
+    new_text = ''
+    still_missing = []
+    new_rows = 0
+    # Accumulate AI-extracted top-up rows across attempts so partial
+    # wins compound (mirrors PR-5B.9AG).
+    _accumulated_extracted = {}
+    while attempt < 2 and not accepted:
+        attempt += 1
+        try:
+            new_text = ai_repair_strategy_section(
+                section_key='roadmap',
+                sections=sections,
+                lang=lang,
+                domain_context=dctx,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=gen_mode,
+                validation_error=ve_current,
+                org_structure_is_none=osn,
+            )
+        except RepairError as _re:
+            last_err = _re
+            print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} repair_failed '
+                  f'err={_re}',
+                  flush=True)
+            break
+        except Exception as _re2:  # noqa: BLE001
+            last_err = _re2
+            print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} repair_unexpected '
+                  f'err={_re2}',
+                  flush=True)
+            break
+        if not (new_text and new_text.strip()):
+            last_err = Exception('cyber_roadmap_balance_empty_repair')
+            print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} attempt={attempt} '
+                  f'missing_before={missing} empty_response',
+                  flush=True)
+            break
+        sections['roadmap'] = new_text
+        # Top-up rows mode (PR-5B.9AF pattern reused for Cyber).
+        _topup_unmet_pre = sorted(set(missing))
+        _topup_required_terms = _topup_terms_map(_topup_unmet_pre)
+        _topup_extracted = _extract_data_roadmap_topup_rows(
+            new_text, _topup_required_terms)
+        for _fam_new, _row_new in (_topup_extracted or {}).items():
+            if _fam_new not in _accumulated_extracted:
+                _accumulated_extracted[_fam_new] = _row_new
+        if _accumulated_extracted:
+            _topup_rows_ordered = [
+                _accumulated_extracted[f]
+                for f in sorted(_accumulated_extracted)
+            ]
+            merged_text = _splice_data_roadmap_topup_rows(
+                before_text, _topup_rows_ordered)
+        else:
+            merged_text = before_text
+        sections['roadmap'] = merged_text
+        # Per-family diagnostic (problem statement format) for every
+        # missing family in this attempt.
+        for _fam in _topup_unmet_pre:
+            _row = _accumulated_extracted.get(_fam, '')
+            _terms = [t for t in (
+                _topup_required_terms.get(_fam, []) or [])
+                if t and (t in _row or t.lower() in _row.lower())]
+            print(
+                '[CYBER-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'topup_family={_fam} '
+                f'terms_found={_terms} '
+                f'accepted={bool(_row)}',
+                flush=True,
+            )
+        new_text = merged_text
+        try:
+            new_rows = _count_substantive_roadmap_rows(new_text)
+        except Exception:  # noqa: BLE001
+            new_rows = 0
+        still_missing = (
+            _compute_missing_cyber_roadmap_balance_topics(
+                new_text,
+                selected_frameworks=selected_fws,
+                lang=lang) or [])
+        if (new_rows >= _RICHNESS_MIN_ROADMAP_ROWS
+                and not still_missing):
+            accepted = True
+            print(
+                '[CYBER-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={missing} '
+                f'missing_after=[] accepted=True '
+                f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS}',
+                flush=True,
+            )
+            break
+        # Rejected — restore original and sharpen the prompt with the
+        # residual families for the next attempt.
+        sections['roadmap'] = before_text
+        print(
+            '[CYBER-ROADMAP-BALANCE-REPAIR] '
+            f'cycle={cycle_no} attempt={attempt} '
+            f'missing_before={missing} '
+            f'missing_after={still_missing} '
+            f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            'accepted=False restored=True',
+            flush=True,
+        )
+        if attempt < 2:
+            _strict_lines = []
+            for _ufam in still_missing:
+                _strict_lines.append(
+                    '- '
+                    + _CYBER_ROADMAP_BALANCE_FAMILY_LABELS.get(_ufam,
+                                                                _ufam)
+                    + ' — required terms (at least one): '
+                    + '، '.join(
+                        _CYBER_ROADMAP_BALANCE_TOPICS.get(_ufam, ())))
+            ve_current = (
+                ve_base
+                + '\n\nSECOND-PASS STRICT REQUIREMENT (PR-CY6): the '
+                'previous attempt still left the following capability '
+                'families uncovered. You MUST include at least one '
+                'literal AR or EN term from EACH family in the '
+                'roadmap text — substring match, case-insensitive '
+                'for EN, case-sensitive for AR:\n'
+                + '\n'.join(_strict_lines))
+    if not accepted:
+        sections['roadmap'] = before_text
+        _mark_synth_failed(_synth_status, 'roadmap',
+                           last_err or Exception(
+                               'cyber_roadmap_balance_unmet '
+                               f'rows={new_rows} '
+                               f'still_missing={still_missing}'))
+        print(
+            '[CYBER-ROADMAP-BALANCE-REPAIR] '
+            f'cycle={cycle_no} attempts={attempt} '
+            f'missing_before={missing} '
+            f'missing_after={still_missing} accepted=False '
+            f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+            '— restored original',
+            flush=True,
+        )
+        return 0
+    return len(missing)
+
+
 def converge_strategy_sections(sections, lang, domain, fw_short,
                                ctx=None, doc_subtype=None,
                                max_iter=3):
@@ -28389,6 +29008,22 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         except Exception as _conv_balxe:  # noqa: BLE001
             print('[CONVERGENCE-DATA-ROADMAP-BALANCE-REPAIR] '
                   f'cycle={_it + 1} non-fatal: {_conv_balxe}',
+                  flush=True)
+        # PR-CY6 — Convergence-stage Cyber Security roadmap balance
+        # repair. No-op for non-Cyber domains and for Cyber without
+        # ECC or DCC selected. AI-first top-up + splice; fail-closed
+        # via log['synth_status'] when the AI cannot produce a
+        # satisfying candidate within two attempts.
+        try:
+            _conv_cyb_bal_n = (
+                _convergence_cyber_roadmap_balance_repair(
+                    sections, lang, domain, ctx, log, _it + 1))
+            if _conv_cyb_bal_n:
+                cycle['repairs'].append(
+                    f'conv_cyber_roadmap_balance:{_conv_cyb_bal_n}')
+        except Exception as _conv_cyb_balxe:  # noqa: BLE001
+            print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={_it + 1} non-fatal: {_conv_cyb_balxe}',
                   flush=True)
         # Recompute failing keys after the convergence-stage Data
         # repairs so the generic per-section synth rebuilds below

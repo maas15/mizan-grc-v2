@@ -552,10 +552,14 @@ class ValidatorsAndAuthUntouchedTests(unittest.TestCase):
         soft = getattr(
             _APP, '_CYBER_TRACEABILITY_SOFT_INITIATIVE', None)
         self.assertIsInstance(soft, dict)
+        # PR-CY6 extends the soft-initiative map to (cyber, DCC) for
+        # distinct DCC Part B mappings; (cyber, ECC) entries remain
+        # byte-for-byte unchanged. The map MUST still be scoped to
+        # Cyber-framework keys only — never to Data / AI / DT / ERM.
         self.assertTrue(
-            set(soft.keys()).issubset({'ECC'}),
-            'Soft initiative map must be ECC-scoped only (other '
-            'frameworks unchanged)')
+            set(soft.keys()).issubset({'ECC', 'DCC'}),
+            'Soft initiative map must be Cyber-framework-scoped '
+            '(ECC and/or DCC) only')
         for fam in ('governance', 'identity_access', 'monitoring',
                     'incident_response', 'vulnerability_management'):
             self.assertIn(fam, soft['ECC'])
