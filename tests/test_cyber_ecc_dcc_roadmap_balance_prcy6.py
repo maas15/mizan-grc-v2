@@ -118,19 +118,22 @@ class TestCyberRoadmapBalanceHelper(unittest.TestCase):
     def test_empty_roadmap_missing_iam(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             '', ['ECC'], lang='ar')
-        self.assertIn('iam', miss)
+        # PR-CY7 — canonical id is ``identity_access``.
+        self.assertIn('identity_access', miss)
 
     @_skip_if_no_app
     def test_empty_roadmap_missing_soc_siem(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             '', ['ECC'], lang='ar')
-        self.assertIn('soc_siem', miss)
+        # PR-CY7 — canonical id is ``monitoring``.
+        self.assertIn('monitoring', miss)
 
     @_skip_if_no_app
     def test_empty_roadmap_missing_csirt_incident(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             '', ['ECC'], lang='ar')
-        self.assertIn('csirt_incident', miss)
+        # PR-CY7 — canonical id is ``incident_response``.
+        self.assertIn('incident_response', miss)
 
     @_skip_if_no_app
     def test_empty_roadmap_missing_vulnerability_management(self):
@@ -142,31 +145,36 @@ class TestCyberRoadmapBalanceHelper(unittest.TestCase):
     def test_thin_ops_roadmap_missing_dcc_data_classification(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC', 'DCC'], lang='ar')
-        self.assertIn('dcc_data_classification', miss)
+        # PR-CY7 — canonical id is ``data_classification``.
+        self.assertIn('data_classification', miss)
 
     @_skip_if_no_app
     def test_thin_ops_roadmap_missing_dcc_encryption(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC', 'DCC'], lang='ar')
-        self.assertIn('dcc_encryption', miss)
+        # PR-CY7 — canonical id is ``encryption``.
+        self.assertIn('encryption', miss)
 
     @_skip_if_no_app
     def test_thin_ops_roadmap_missing_dcc_dlp(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC', 'DCC'], lang='ar')
-        self.assertIn('dcc_dlp', miss)
+        # PR-CY7 — canonical id is ``dlp``.
+        self.assertIn('dlp', miss)
 
     @_skip_if_no_app
     def test_thin_ops_roadmap_missing_dcc_sensitive_handling(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC', 'DCC'], lang='ar')
-        self.assertIn('dcc_sensitive_handling', miss)
+        # PR-CY7 — canonical id is ``sensitive_data_handling``.
+        self.assertIn('sensitive_data_handling', miss)
 
     @_skip_if_no_app
     def test_thin_ops_roadmap_missing_dcc_data_protection(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC', 'DCC'], lang='ar')
-        self.assertIn('dcc_data_protection', miss)
+        # PR-CY7 — canonical id is ``data_protection``.
+        self.assertIn('data_protection', miss)
 
     @_skip_if_no_app
     def test_balanced_roadmap_emits_no_defect(self):
@@ -179,10 +187,10 @@ class TestCyberRoadmapBalanceHelper(unittest.TestCase):
     def test_ecc_only_selection_does_not_require_dcc_families(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['ECC'], lang='ar')
-        # DCC families must not appear in the missing set for ECC-only
-        for dcc_fam in ('dcc_data_classification', 'dcc_encryption',
-                        'dcc_dlp', 'dcc_sensitive_handling',
-                        'dcc_data_protection'):
+        # PR-CY7 — canonical DCC family ids.
+        for dcc_fam in ('data_classification', 'encryption',
+                        'dlp', 'sensitive_data_handling',
+                        'data_protection'):
             self.assertNotIn(dcc_fam, miss,
                              f'ECC-only must not require {dcc_fam}')
 
@@ -190,8 +198,10 @@ class TestCyberRoadmapBalanceHelper(unittest.TestCase):
     def test_dcc_only_selection_does_not_require_ecc_families(self):
         miss = _APP._compute_missing_cyber_roadmap_balance_topics(
             _THIN_OPS_ROADMAP_AR, ['DCC'], lang='ar')
+        # PR-CY7 — canonical ECC family ids.
         for ecc_fam in ('ciso_department', 'governance_committee',
-                        'iam', 'soc_siem', 'csirt_incident',
+                        'identity_access', 'monitoring',
+                        'incident_response',
                         'vulnerability_management'):
             self.assertNotIn(ecc_fam, miss,
                              f'DCC-only must not require {ecc_fam}')
@@ -224,7 +234,8 @@ class TestCyberRoadmapBalanceAuditWiring(unittest.TestCase):
         self.assertEqual(len(bal), 1,
                          f'expected one balance defect, got {tags}')
         self.assertIn('ciso_department', bal[0])
-        self.assertIn('dcc_data_classification', bal[0])
+        # PR-CY7 — canonical id (was ``dcc_data_classification``).
+        self.assertIn('data_classification', bal[0])
 
     @_skip_if_no_app
     def test_audit_no_balance_defect_for_balanced_roadmap(self):
@@ -348,8 +359,9 @@ class TestCyberRoadmapTopupSplicePreservation(unittest.TestCase):
                 merged, ['ECC', 'DCC'], lang='ar'))
         self.assertIn('ciso_department', miss_before)
         self.assertNotIn('ciso_department', miss_after)
-        self.assertIn('dcc_data_classification', miss_before)
-        self.assertNotIn('dcc_data_classification', miss_after)
+        # PR-CY7 — canonical id (was ``dcc_data_classification``).
+        self.assertIn('data_classification', miss_before)
+        self.assertNotIn('data_classification', miss_after)
 
 
 class TestNoDeterministicRowsInserted(unittest.TestCase):

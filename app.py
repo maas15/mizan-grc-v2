@@ -21513,17 +21513,22 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'appoint CISO', 'appoint a CISO',
         'cybersecurity head', 'chief information security officer',
     ),
+    # PR-CY7 — strengthened governance committee terms (Part C).
     'governance_committee': (
         'لجنة حوكمة الأمن السيبراني',
         'تشكيل لجنة حوكمة الأمن السيبراني',
-        'لجنة الأمن السيبراني',
         'تأسيس لجنة حوكمة الأمن السيبراني',
+        'ميثاق لجنة حوكمة الأمن السيبراني',
+        'اجتماعات لجنة حوكمة الأمن السيبراني',
+        'لجنة الأمن السيبراني',
         'cybersecurity governance committee',
-        'security governance committee',
+        'cyber governance committee',
         'cybersecurity committee',
+        'security governance committee',
         'establish a cybersecurity governance committee',
     ),
-    'iam': (
+    # PR-CY7 — renamed iam → identity_access (canonical).
+    'identity_access': (
         'إدارة الهوية والوصول',
         'تنفيذ إدارة الهوية والوصول',
         'تنفيذ IAM',
@@ -21540,7 +21545,8 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'multi-factor authentication',
         'privileged access management',
     ),
-    'soc_siem': (
+    # PR-CY7 — renamed soc_siem → monitoring (canonical).
+    'monitoring': (
         'مركز العمليات الأمنية',
         'تأسيس مركز العمليات الأمنية',
         'تأسيس SOC',
@@ -21548,10 +21554,13 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'تفعيل SIEM',
         'SIEM',
         'تأسيس SOC وتفعيل SIEM',
+        'المراقبة الأمنية',
         'security operations center', 'soc',
         'siem', 'security information and event management',
+        'security monitoring',
     ),
-    'csirt_incident': (
+    # PR-CY7 — renamed csirt_incident → incident_response (canonical).
+    'incident_response': (
         'CSIRT',
         'تطوير CSIRT',
         'فريق الاستجابة للحوادث',
@@ -21575,18 +21584,20 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'vulnerability scanning', 'vulnerability assessment',
         'patch management', 'security patching',
     ),
-    # ── DCC operational families (problem statement Part A items 7–11).
-    'dcc_data_classification': (
+    # ── DCC operational families (canonical ids after PR-CY7).
+    # PR-CY7 Part C — strengthened data_classification exact terms.
+    'data_classification': (
         'تصنيف البيانات',
         'تصنيف البيانات الحساسة',
         'تنفيذ تصنيف البيانات',
         'تصنيف الأصول البيانية',
+        'تصنيف ومعالجة البيانات',
         'data classification',
         'sensitive data classification',
         'information classification',
         'data asset classification',
     ),
-    'dcc_encryption': (
+    'encryption': (
         'التشفير',
         'تشفير البيانات',
         'تطبيق ضوابط التشفير',
@@ -21596,7 +21607,7 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'apply encryption', 'encryption at rest',
         'encryption in transit',
     ),
-    'dcc_dlp': (
+    'dlp': (
         'DLP',
         'تطبيق DLP',
         'منع تسرب البيانات',
@@ -21605,7 +21616,8 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'dlp', 'data loss prevention',
         'data leak prevention', 'loss prevention controls',
     ),
-    'dcc_sensitive_handling': (
+    # PR-CY7 Part C — strengthened sensitive_data_handling exact terms.
+    'sensitive_data_handling': (
         'معالجة البيانات الحساسة',
         'التعامل مع البيانات الحساسة',
         'تداول البيانات الحساسة',
@@ -21614,14 +21626,20 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
         'sensitive data processing',
         'handling sensitive data',
     ),
-    'dcc_data_protection': (
+    # PR-CY7 Part C — strengthened data_protection exact terms.
+    'data_protection': (
         'حماية البيانات',
+        'حماية البيانات الحساسة',
         'حماية البيانات أثناء النقل',
         'حماية البيانات أثناء التخزين',
         'حماية البيانات أثناء النقل والتخزين',
+        'ضوابط حماية البيانات',
         'data protection',
+        'sensitive data protection',
+        'data security controls',
         'protection of data at rest',
         'protection of data in transit',
+        'protection of data at rest and in transit',
         'protect data at rest and in transit',
     ),
 }
@@ -21630,12 +21648,97 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
 # Which balance topics each Cyber framework requires. ECC selection
 # requires the six ECC families; DCC selection requires the five DCC
 # families. Selecting both yields the union (eleven families).
+# PR-CY7 — keys are canonical family ids.
 _CYBER_ROADMAP_BALANCE_BY_FRAMEWORK = {
-    'ECC': ('ciso_department', 'governance_committee', 'iam',
-            'soc_siem', 'csirt_incident', 'vulnerability_management'),
-    'DCC': ('dcc_data_classification', 'dcc_encryption', 'dcc_dlp',
-            'dcc_sensitive_handling', 'dcc_data_protection'),
+    'ECC': ('ciso_department', 'governance_committee', 'identity_access',
+            'monitoring', 'incident_response', 'vulnerability_management'),
+    'DCC': ('data_classification', 'encryption', 'dlp',
+            'sensitive_data_handling', 'data_protection'),
 }
+
+
+# PR-CY7 Part A — canonicalize Cyber roadmap family identifiers across
+# detection, defect emission, top-up requested families, top-up
+# extraction, acceptance checks, and diagnostics. Accepts both the
+# canonical ids and the legacy/aliased forms (the production runtime
+# previously emitted ``dcc_data_classification`` / ``dcc_sensitive_handling``
+# / ``dcc_data_protection`` / ``iam`` / ``soc_siem`` / ``csirt_incident``;
+# extractors may also produce ``cyber_governance_committee``,
+# ``data_loss_prevention``, ``soc_siem``, ``csirt``). All variants
+# resolve to ONE canonical id so the repair contract, prompt, splice,
+# and audit speak with one voice.
+_CYBER_ROADMAP_FAMILY_CANONICAL_ALIASES = {
+    # DCC family aliases.
+    'DCC': {
+        'dcc_data_classification': 'data_classification',
+        'data_classification': 'data_classification',
+        'classification': 'data_classification',
+        'dcc_sensitive_handling': 'sensitive_data_handling',
+        'sensitive_data_handling': 'sensitive_data_handling',
+        'sensitive_handling': 'sensitive_data_handling',
+        'dcc_data_protection': 'data_protection',
+        'data_protection': 'data_protection',
+        'sensitive_data_protection': 'data_protection',
+        'dcc_encryption': 'encryption',
+        'encryption': 'encryption',
+        'dcc_dlp': 'dlp',
+        'data_loss_prevention': 'dlp',
+        'dlp': 'dlp',
+    },
+    # ECC family aliases.
+    'ECC': {
+        'governance_committee': 'governance_committee',
+        'cyber_governance_committee': 'governance_committee',
+        'cybersecurity_governance_committee': 'governance_committee',
+        'ciso_department': 'ciso_department',
+        'cybersecurity_department': 'ciso_department',
+        'identity_access': 'identity_access',
+        'iam': 'identity_access',
+        'identity_and_access_management': 'identity_access',
+        'monitoring': 'monitoring',
+        'soc_siem': 'monitoring',
+        'soc': 'monitoring',
+        'siem': 'monitoring',
+        'security_monitoring': 'monitoring',
+        'incident_response': 'incident_response',
+        'csirt': 'incident_response',
+        'csirt_incident': 'incident_response',
+        'cyber_incident_response': 'incident_response',
+        'vulnerability_management': 'vulnerability_management',
+        'vuln_management': 'vulnerability_management',
+    },
+}
+
+
+def _canonicalize_cyber_roadmap_family(framework, family):
+    """PR-CY7 — return the canonical Cyber roadmap family id.
+
+    ``framework`` is the upper-case framework key ('ECC' / 'DCC') used
+    for alias lookup. When ``framework`` is omitted, both ECC and DCC
+    alias maps are consulted (ECC first). Unknown families are
+    returned unchanged so future framework keys can use any id without
+    silently being mapped to an unrelated canonical.
+    """
+    if not family:
+        return family
+    fam = str(family).strip().lower()
+    if not fam:
+        return family
+    fws = []
+    if framework:
+        fws.append(str(framework).strip().upper())
+    else:
+        fws.extend(('ECC', 'DCC'))
+    for fw in fws:
+        amap = _CYBER_ROADMAP_FAMILY_CANONICAL_ALIASES.get(fw, {})
+        if fam in amap:
+            return amap[fam]
+    # Fallback — scan every alias map so callers without a framework
+    # context still benefit from canonicalization.
+    for amap in _CYBER_ROADMAP_FAMILY_CANONICAL_ALIASES.values():
+        if fam in amap:
+            return amap[fam]
+    return family
 
 
 def _compute_missing_cyber_roadmap_balance_topics(
@@ -21664,9 +21767,13 @@ def _compute_missing_cyber_roadmap_balance_topics(
     seen = set()
     for fw_key in resolved or []:
         for fam in _CYBER_ROADMAP_BALANCE_BY_FRAMEWORK.get(fw_key, ()):
-            if fam not in seen:
-                seen.add(fam)
-                required.append(fam)
+            # PR-CY7 — canonicalize requested family ids so legacy
+            # aliases (dcc_*, iam, soc_siem, csirt_incident, …) cannot
+            # leak into defect emission / top-up requested families.
+            cfam = _canonicalize_cyber_roadmap_family(fw_key, fam) or fam
+            if cfam not in seen:
+                seen.add(cfam)
+                required.append(cfam)
     if not required:
         return []
     text = roadmap_text or ''
@@ -25499,12 +25606,37 @@ def _compute_missing_compliance_objective(
 # row that ``_compute_missing_compliance_objective`` enforces.
 _DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS = {
     'cyber': {
-        'ar': ('إنشاء إدارة الأمن السيبراني', 'تأسيس إدارة الأمن السيبراني',
-               'إدارة متخصصة للأمن السيبراني', 'تعيين رئيس الأمن السيبراني',
-               'تعيين CISO'),
-        'en': ('establish a dedicated cybersecurity', 'cybersecurity department',
-               'establish a cybersecurity', 'appoint a ciso',
-               'establish ciso', 'cybersecurity governance committee'),
+        # PR-CY7 Part D — require explicit establishment of the
+        # cybersecurity function / department / governance committee.
+        # Bare ``CISO`` / ``appoint a CISO`` / ``cybersecurity
+        # governance committee`` (alone) used to satisfy this gate;
+        # they are now removed so the detector fails-closed unless
+        # the objective row actually establishes the department,
+        # function, or governance committee.
+        'ar': (
+            'إنشاء إدارة الأمن السيبراني',
+            'تأسيس إدارة الأمن السيبراني',
+            'إنشاء إدارة متخصصة للأمن السيبراني',
+            'إدارة متخصصة للأمن السيبراني',
+            'تأسيس وظيفة الأمن السيبراني',
+            'إنشاء وظيفة الأمن السيبراني',
+            'وظيفة الأمن السيبراني',
+            'إدارة الأمن السيبراني بقيادة CISO',
+            'وظيفة الأمن السيبراني بقيادة CISO',
+            'تعيين رئيس الأمن السيبراني',
+            'تشكيل لجنة حوكمة الأمن السيبراني',
+            'نموذج تشغيل الأمن السيبراني',
+        ),
+        'en': (
+            'establish a dedicated cybersecurity',
+            'establish the cybersecurity department',
+            'establish a cybersecurity department',
+            'cybersecurity department led by',
+            'cybersecurity function led by',
+            'establish a cybersecurity function',
+            'establish the cybersecurity function',
+            'cybersecurity operating model',
+        ),
     },
     'data': {
         'ar': ('إنشاء مكتب إدارة البيانات', 'تأسيس مكتب إدارة البيانات',
@@ -25835,10 +25967,20 @@ def _build_vision_composite_repair_contract(
     # Domain-specific specialized-function descriptor used inside the
     # prompt clause "(S) include ONE additional row …".
     _spec_descriptor = {
-        'cyber': ('a dedicated Cybersecurity Department / Cybersecurity '
-                  'governance committee and appointing a CISO',
-                  'إنشاء الإدارة المتخصصة للأمن السيبراني '
-                  '(دائرة/مكتب/لجنة) وتعيين رئيس الأمن السيبراني (CISO)'),
+        'cyber': (
+            # PR-CY7 Part D — require establishing the cybersecurity
+            # function/department under CISO leadership (NOT a bare
+            # "CISO office"). Wording mirrors the detector tokens and
+            # the AR ``_normalize_cyber_ar_ciso_wording`` target.
+            'a dedicated Cybersecurity Department / Cybersecurity '
+            'function led by the CISO, and forming the Cybersecurity '
+            'Governance Committee (do NOT write "CISO office"; use '
+            '"cybersecurity department led by the CISO")',
+            'إنشاء إدارة الأمن السيبراني بقيادة رئيس الأمن السيبراني '
+            '(CISO) وتشكيل لجنة حوكمة الأمن السيبراني '
+            '(لا تستخدم عبارة "مكتب CISO"؛ استخدم '
+            '"إدارة الأمن السيبراني بقيادة CISO" أو '
+            '"وظيفة الأمن السيبراني بقيادة CISO")'),
         'data':  ('a Data Management Office / Data Governance Committee '
                   'and appointing a Chief Data Officer (CDO)',
                   'إنشاء مكتب إدارة البيانات / لجنة حوكمة البيانات '
@@ -28580,31 +28722,33 @@ _CYBER_ROADMAP_BALANCE_FAMILY_LABELS = {
     'governance_committee':
         'Cybersecurity governance committee / '
         'تشكيل لجنة حوكمة الأمن السيبراني',
-    'iam':
+    # PR-CY7 — canonical keys (renamed from iam / soc_siem / csirt_incident).
+    'identity_access':
         'IAM / MFA / PAM implementation / '
         'تنفيذ IAM / MFA / PAM',
-    'soc_siem':
+    'monitoring':
         'SOC establishment and SIEM activation / '
         'تأسيس SOC وتفعيل SIEM',
-    'csirt_incident':
+    'incident_response':
         'CSIRT development and incident response plan / '
         'تطوير CSIRT وخطة الاستجابة للحوادث',
     'vulnerability_management':
         'Vulnerability management and patching / '
         'إدارة الثغرات الأمنية والتصحيحات',
-    'dcc_data_classification':
+    # PR-CY7 — DCC canonical keys (renamed from dcc_*).
+    'data_classification':
         'Data classification implementation / '
         'تنفيذ تصنيف البيانات',
-    'dcc_encryption':
+    'encryption':
         'Encryption controls / '
         'تطبيق ضوابط التشفير',
-    'dcc_dlp':
+    'dlp':
         'DLP / data loss prevention / '
         'تطبيق DLP / منع تسرب البيانات',
-    'dcc_sensitive_handling':
+    'sensitive_data_handling':
         'Sensitive data handling / '
         'معالجة البيانات الحساسة',
-    'dcc_data_protection':
+    'data_protection':
         'Data protection at rest and in transit / '
         'حماية البيانات أثناء النقل والتخزين',
 }
@@ -28762,7 +28906,8 @@ def _convergence_cyber_roadmap_balance_repair(
                   flush=True)
             break
         sections['roadmap'] = new_text
-        # Top-up rows mode (PR-5B.9AF pattern reused for Cyber).
+        # Top-up rows mode (PR-5B.9AF pattern reused for Cyber; PR-CY7
+        # adds per-family diagnostic + cross-attempt accumulation).
         _topup_unmet_pre = sorted(set(missing))
         _topup_required_terms = _topup_terms_map(_topup_unmet_pre)
         _topup_extracted = _extract_data_roadmap_topup_rows(
@@ -28780,13 +28925,37 @@ def _convergence_cyber_roadmap_balance_repair(
         else:
             merged_text = before_text
         sections['roadmap'] = merged_text
-        # Per-family diagnostic (problem statement format) for every
-        # missing family in this attempt.
-        for _fam in _topup_unmet_pre:
+        # PR-CY7 Part B — per-family diagnostic in problem-statement
+        # format. Recompute the still-missing family set after EACH
+        # family decision so the diagnostic for the next family in
+        # this attempt reflects accumulated progress.
+        _ord_missing = list(_topup_unmet_pre)
+        for _fam in _ord_missing:
             _row = _accumulated_extracted.get(_fam, '')
             _terms = [t for t in (
                 _topup_required_terms.get(_fam, []) or [])
                 if t and (t in _row or t.lower() in _row.lower())]
+            try:
+                _missing_after_fam = (
+                    _compute_missing_cyber_roadmap_balance_topics(
+                        merged_text,
+                        selected_frameworks=selected_fws,
+                        lang=lang) or [])
+            except Exception:  # noqa: BLE001 — defensive
+                _missing_after_fam = list(_ord_missing)
+            print(
+                '[CYBER-ROADMAP-TOPUP-FAMILY] '
+                f'family={_fam} '
+                f'canonical_family={_fam} '
+                f'attempt={attempt} '
+                f'terms_found={_terms} '
+                f'accepted={bool(_row)} '
+                f'accumulated_families={sorted(_accumulated_extracted)} '
+                f'missing_after_family={_missing_after_fam}',
+                flush=True,
+            )
+            # Keep the older diagnostic tag as well for backwards
+            # compat with any log scraper that already keys off it.
             print(
                 '[CYBER-ROADMAP-BALANCE-REPAIR] '
                 f'cycle={cycle_no} attempt={attempt} '
@@ -28817,18 +28986,33 @@ def _convergence_cyber_roadmap_balance_repair(
                 flush=True,
             )
             break
-        # Rejected — restore original and sharpen the prompt with the
-        # residual families for the next attempt.
-        sections['roadmap'] = before_text
-        print(
-            '[CYBER-ROADMAP-BALANCE-REPAIR] '
-            f'cycle={cycle_no} attempt={attempt} '
-            f'missing_before={missing} '
-            f'missing_after={still_missing} '
-            f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
-            'accepted=False restored=True',
-            flush=True,
-        )
+        # PR-CY7 — accumulated top-up rows that DID land must not be
+        # thrown away just because OTHER families are still missing.
+        # Mirror Data PR-5B.9AG: keep the partial splice so a later
+        # attempt only has to cover the residual families.
+        if _accumulated_extracted:
+            sections['roadmap'] = merged_text
+            print(
+                '[CYBER-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={missing} '
+                f'missing_after={still_missing} '
+                f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+                f'accepted=False kept_accumulated='
+                f'{sorted(_accumulated_extracted)}',
+                flush=True,
+            )
+        else:
+            sections['roadmap'] = before_text
+            print(
+                '[CYBER-ROADMAP-BALANCE-REPAIR] '
+                f'cycle={cycle_no} attempt={attempt} '
+                f'missing_before={missing} '
+                f'missing_after={still_missing} '
+                f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
+                'accepted=False restored=True',
+                flush=True,
+            )
         if attempt < 2:
             _strict_lines = []
             for _ufam in still_missing:
@@ -28841,7 +29025,7 @@ def _convergence_cyber_roadmap_balance_repair(
                         _CYBER_ROADMAP_BALANCE_TOPICS.get(_ufam, ())))
             ve_current = (
                 ve_base
-                + '\n\nSECOND-PASS STRICT REQUIREMENT (PR-CY6): the '
+                + '\n\nSECOND-PASS STRICT REQUIREMENT (PR-CY7): the '
                 'previous attempt still left the following capability '
                 'families uncovered. You MUST include at least one '
                 'literal AR or EN term from EACH family in the '
@@ -28849,7 +29033,23 @@ def _convergence_cyber_roadmap_balance_repair(
                 'for EN, case-sensitive for AR:\n'
                 + '\n'.join(_strict_lines))
     if not accepted:
-        sections['roadmap'] = before_text
+        # PR-CY7 — preserve accumulated partial rows even when overall
+        # repair fails. Fail-closed only for the truly unresolved
+        # families. Mirrors Data PR-5B.9AG: do NOT restore the entire
+        # original roadmap if some family rows were successfully
+        # produced.
+        if _accumulated_extracted:
+            _final_rows_ordered = [
+                _accumulated_extracted[f]
+                for f in sorted(_accumulated_extracted)
+            ]
+            sections['roadmap'] = _splice_data_roadmap_topup_rows(
+                before_text, _final_rows_ordered)
+            _kept_note = (
+                f'kept_accumulated={sorted(_accumulated_extracted)} ')
+        else:
+            sections['roadmap'] = before_text
+            _kept_note = ''
         _mark_synth_failed(_synth_status, 'roadmap',
                            last_err or Exception(
                                'cyber_roadmap_balance_unmet '
@@ -28861,7 +29061,9 @@ def _convergence_cyber_roadmap_balance_repair(
             f'missing_before={missing} '
             f'missing_after={still_missing} accepted=False '
             f'rows={new_rows}/{_RICHNESS_MIN_ROADMAP_ROWS} '
-            '— restored original',
+            + _kept_note
+            + ('— preserved accumulated' if _accumulated_extracted
+               else '— restored original'),
             flush=True,
         )
         return 0
