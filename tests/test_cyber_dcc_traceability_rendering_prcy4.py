@@ -543,9 +543,18 @@ class ValidatorsNotWeakenedTests(unittest.TestCase):
     def test_soft_map_scoped_to_dcc_only(self):
         soft = getattr(_APP, '_CYBER_TRACEABILITY_SOFT_KPI_RISK', None)
         self.assertIsInstance(soft, dict)
-        self.assertEqual(set(soft.keys()), {'DCC'},
-                         'Cyber soft KPI/Risk derivation must be scoped '
-                         'to DCC only')
+        # PR-CY5 — the soft map was widened from {DCC} to {DCC, ECC}
+        # so the (cyber, ECC) traceability branch can fill the metric /
+        # risk axis with a family-coherent phrase when the KPI / risk
+        # sections are silent on a specific ECC family.  The map MUST
+        # still be scoped to cyber frameworks only — never to PDPL /
+        # NDMO / SDAIA / ISO 31000 / any non-cyber framework.
+        self.assertTrue(set(soft.keys()).issubset({'DCC', 'ECC'}),
+                        'Cyber soft KPI/Risk derivation must be scoped '
+                        'to cyber frameworks (DCC, ECC) only; got '
+                        f'{sorted(soft.keys())}')
+        self.assertIn('DCC', soft,
+                      'PR-CY4 DCC soft map must remain present')
         # Must cover all 5 DCC families described in PR-CY4 Part B.
         for fam in ('data_classification', 'encryption', 'dlp',
                     'sensitive_data_handling', 'data_protection'):

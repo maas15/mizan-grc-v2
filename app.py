@@ -11754,6 +11754,278 @@ _CYBER_TRACEABILITY_SOFT_KPI_RISK = {
                    'Data breach or weak data protection risk'),
         },
     },
+    # PR-CY5 — Soft KPI/Risk derivation for Cyber-scope ECC traceability
+    # rows.  Real generated Cyber Security PDFs cover each ECC family
+    # (governance / identity / SOC / incident_response / vulnerability
+    # management) somewhere in the strategy, but the KPI / Risk sections
+    # don't always carry a phrase that the simple per-family
+    # ``_find_match`` lookup recognises (e.g. the ECC IR row's KPI lives
+    # only in ``confidence`` while the IR vocabulary partly overlaps with
+    # SOC text).  Mirrors the existing DCC entry above.  Used ONLY when
+    # gap+initiative are already real and the KPI / Risk lookup found no
+    # distinct family-specific phrase — never invents new strategy rows,
+    # only labels the metric / risk axis with a capability-derived,
+    # coherent phrase per the PR-CY5 problem-statement preferred mapping.
+    'ECC': {
+        'governance': {
+            'ar': ('نسبة الامتثال لمتطلبات الحوكمة وتقارير الحوكمة',
+                   'ضعف حوكمة الأمن السيبراني أو ضعف التحكم في الوصول'),
+            'en': ('Cybersecurity governance compliance rate / '
+                   'governance reporting',
+                   'Weak cybersecurity governance or weak access control'),
+        },
+        'identity_access': {
+            'ar': ('نسبة تطبيق MFA ونسبة الامتثال لسياسات التحكم في الوصول',
+                   'ضعف التحكم في الوصول أو الوصول غير المصرح'),
+            'en': ('MFA adoption rate / access-control policy compliance',
+                   'Weak access control or unauthorized access'),
+        },
+        'monitoring': {
+            'ar': ('فعالية الرصد والاستجابة وزمن الكشف عن الحوادث',
+                   'ضعف الرصد والاستجابة الأمنية'),
+            'en': ('Monitoring and response effectiveness / '
+                   'incident detection time',
+                   'Weak security monitoring and response'),
+        },
+        'incident_response': {
+            'ar': ('وقت الاستجابة للحوادث',
+                   'تأخر الاستجابة للحوادث أو ضعف احتواء الحوادث'),
+            'en': ('Incident response time',
+                   'Delayed incident response or weak incident containment'),
+        },
+        'vulnerability_management': {
+            'ar': ('فعالية إدارة الثغرات ومعدل اكتشاف الثغرات',
+                   'استغلال الثغرات الأمنية'),
+            'en': ('Vulnerability management effectiveness / '
+                   'vulnerability detection rate',
+                   'Exploitation of security vulnerabilities'),
+        },
+    },
+}
+
+
+# PR-CY5 — Soft initiative derivation map for Cyber-scope ECC
+# traceability rows.  When the ECC strategy clearly covers a family in
+# gaps / KPIs / confidence but the pillars / roadmap text doesn't carry
+# an exact-phrase match for the initiative, this provides a
+# deterministic, capability-derived initiative phrase per the PR-CY5
+# problem statement preferred mapping so the row is coherent (initiative
+# stays inside the family scope) and is never dropped by the no-dash
+# gate.  Does NOT invent new strategy rows — the row exists because the
+# ECC framework was selected and the capability is covered elsewhere in
+# the strategy; this only labels the initiative axis with a family-
+# scoped phrase that aligns with what is already in the document.
+# Scoped to (domain=cyber, framework=ECC).
+_CYBER_TRACEABILITY_SOFT_INITIATIVE = {
+    'ECC': {
+        'governance': {
+            'ar': ('تأسيس لجنة حوكمة الأمن السيبراني وإنشاء إدارة '
+                   'الأمن السيبراني'),
+            'en': ('Establish a cybersecurity governance committee and '
+                   'cybersecurity department'),
+        },
+        'identity_access': {
+            'ar': 'تنفيذ إدارة الهوية والوصول (IAM) وتفعيل MFA و PAM',
+            'en': 'Implement IAM with MFA and PAM',
+        },
+        'monitoring': {
+            'ar': 'تأسيس مركز العمليات الأمنية (SOC) وتفعيل SIEM',
+            'en': 'Establish a Security Operations Center (SOC) and '
+                  'activate SIEM',
+        },
+        'incident_response': {
+            'ar': 'تطوير نظام الاستجابة للحوادث وتشكيل فريق CSIRT',
+            'en': 'Develop the incident response capability and form a '
+                  'CSIRT team',
+        },
+        'vulnerability_management': {
+            'ar': 'تنفيذ عملية إدارة الثغرات وتقييم الثغرات بشكل دوري',
+            'en': 'Implement vulnerability management and periodic '
+                  'vulnerability assessment',
+        },
+    },
+}
+
+
+# PR-CY5 — Traceability-only ECC keyword augmentation.
+#
+# Mirrors ``_TRACEABILITY_DCC_FAMILY_KEYWORD_AUGMENT`` for the NCA ECC
+# framework.  Real generated Cyber + ECC content phrases the same
+# capability with synonyms that the bare registry vocabulary does not
+# catch (e.g. ``خطة الاستجابة للحوادث``, ``فريق الاستجابة للحوادث``,
+# ``إدارة الحوادث``, ``احتواء الحوادث``, ``معالجة الحوادث``,
+# ``incident management``, ``incident handling``).  Without these
+# synonyms ECC ``incident_response`` (and similar tightly-scoped
+# families) fall through to dash placeholders and are dropped at PDF
+# render time by the universal no-dash gate in
+# ``_pro_render_traceability`` — leaving the ECC traceability silent on
+# CSIRT / incident-response even though the strategy clearly addresses
+# the obligation.  Strictly scoped to (cyber, ECC) so the registry,
+# validators, repair passes and scope computation are untouched.
+_TRACEABILITY_ECC_FAMILY_KEYWORD_AUGMENT = {
+    'governance': {
+        'ar': [
+            'حوكمة الأمن السيبراني',
+            'إدارة الأمن السيبراني',
+            'إنشاء إدارة الأمن السيبراني',
+            'تأسيس حوكمة الأمن السيبراني',
+            'لجنة حوكمة الأمن السيبراني',
+            'تأسيس لجنة حوكمة الأمن السيبراني',
+            'سياسات الأمن السيبراني',
+            'تقارير الحوكمة',
+            'نسبة الامتثال',
+            'ضعف الحوكمة',
+            'ضعف حوكمة الأمن السيبراني',
+        ],
+        'en': [
+            'cybersecurity governance',
+            'cybersecurity department',
+            'governance committee',
+            'cybersecurity governance committee',
+            'cybersecurity policies',
+            'governance compliance',
+            'governance reporting',
+            'weak governance',
+        ],
+    },
+    'identity_access': {
+        'ar': [
+            'إدارة الهوية والوصول',
+            'تنفيذ إدارة الهوية',
+            'تنفيذ IAM',
+            'تطبيق MFA',
+            'تفعيل MFA',
+            'المصادقة متعددة العوامل',
+            'إدارة الوصول المميز',
+            'تطبيق PAM',
+            'نسبة تطبيق MFA',
+            'سياسات التحكم في الوصول',
+            'نسبة الامتثال لسياسات التحكم في الوصول',
+            'الوصول غير المصرح',
+            'ضعف التحكم في الوصول',
+        ],
+        'en': [
+            'identity and access management',
+            'MFA adoption',
+            'multi-factor authentication',
+            'privileged access management',
+            'access control policy',
+            'access control compliance',
+            'unauthorized access',
+            'weak access control',
+        ],
+    },
+    'monitoring': {
+        'ar': [
+            'مركز العمليات الأمنية',
+            'تأسيس مركز العمليات الأمنية',
+            'تأسيس SOC',
+            'تفعيل SIEM',
+            'الرصد الأمني',
+            'الرصد والاستجابة',
+            'زمن الكشف',
+            'فعالية الاستجابة للحوادث',
+            'ضعف الرصد والاستجابة',
+        ],
+        'en': [
+            'security operations center',
+            'establish a soc',
+            'enable siem',
+            'security monitoring',
+            'monitoring and response',
+            'detection time',
+            'weak monitoring',
+        ],
+    },
+    'incident_response': {
+        # PR-CY5 — accepted source phrases for incident-response
+        # detection from the problem statement.  These widen the
+        # per-section ``_find_match`` lookup so the ECC IR row is
+        # rendered whenever the AI-generated strategy contains any
+        # incident-response / CSIRT phrasing in gaps / roadmap / KPIs /
+        # confidence (commonly observed AR/EN variants below).
+        'ar': [
+            'الاستجابة للحوادث',
+            'إدارة الحوادث',
+            'خطة الاستجابة للحوادث',
+            'فريق الاستجابة للحوادث',
+            'تشكيل فريق الاستجابة للحوادث',
+            'تطوير نظام الاستجابة للحوادث',
+            'CSIRT',
+            'تشكيل CSIRT',
+            'احتواء الحوادث',
+            'معالجة الحوادث',
+            'وقت الاستجابة للحوادث',
+            'زمن الاستجابة للحوادث',
+            'تأخر الاستجابة للحوادث',
+            'ضعف احتواء الحوادث',
+        ],
+        'en': [
+            'incident response',
+            'incident management',
+            'incident response plan',
+            'cyber incident response',
+            'CSIRT',
+            'incident handling',
+            'incident containment',
+            'incident response time',
+            'delayed incident response',
+        ],
+    },
+    'vulnerability_management': {
+        'ar': [
+            'إدارة الثغرات',
+            'تنفيذ إدارة الثغرات',
+            'تنفيذ عملية إدارة الثغرات',
+            'تقييم الثغرات',
+            'فحص الثغرات',
+            'معالجة الثغرات',
+            'ترقيع الثغرات',
+            'إدارة التصحيحات',
+            'معدل اكتشاف الثغرات',
+            'فعالية إدارة الثغرات',
+            'استغلال الثغرات',
+            'استغلال الثغرات الأمنية',
+        ],
+        'en': [
+            'vulnerability management',
+            'vulnerability assessment',
+            'vulnerability scanning',
+            'vulnerability remediation',
+            'patch management',
+            'vulnerability detection rate',
+            'exploitation of vulnerabilities',
+        ],
+    },
+}
+
+
+# PR-CY5 — Cyber ECC capability labels for the traceability Capability
+# column.  Mirrors ``_CYBER_DCC_CAP_LABELS`` so the rendered Arabic
+# Capability cell is a descriptive phrase per family (instead of a bare
+# acronym such as ``SIEM`` or ``IAM``).  Lookup-only — does not affect
+# the keyword search, registry, validators, repair passes, or scope.
+_CYBER_ECC_CAP_LABELS = {
+    'governance': {
+        'ar': 'حوكمة الأمن السيبراني',
+        'en': 'Cybersecurity Governance',
+    },
+    'identity_access': {
+        'ar': 'إدارة الهوية والوصول',
+        'en': 'Identity & Access Management',
+    },
+    'monitoring': {
+        'ar': 'الرصد الأمني (SOC / SIEM)',
+        'en': 'Security Monitoring (SOC / SIEM)',
+    },
+    'incident_response': {
+        'ar': 'الاستجابة للحوادث',
+        'en': 'Incident Response',
+    },
+    'vulnerability_management': {
+        'ar': 'إدارة الثغرات',
+        'en': 'Vulnerability Management',
+    },
 }
 
 
@@ -12104,11 +12376,137 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                     and _soft_risk != kpi):
                                 risk = _soft_risk
                 else:
-                    gap        = _find_match('gaps',       ar_kws, en_kws) or dash
-                    initiative = (_find_match('pillars',   ar_kws, en_kws)
-                                  or _find_match('roadmap', ar_kws, en_kws) or dash)
-                    kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
-                    risk       = _find_match('confidence', ar_kws, en_kws) or dash
+                    # PR-CY5 — Cyber ECC traceability render fix.
+                    # Mirrors the (cyber, DCC) branch above for the
+                    # (cyber, ECC) scope.  Real generated ECC strategies
+                    # consistently address incident_response / CSIRT in
+                    # vision / gaps / roadmap / KPIs / confidence, but
+                    # the simple per-section ``_find_match`` (gaps for
+                    # gap, pillars→roadmap for initiative, kpis for
+                    # KPI, confidence for risk) often misses one of
+                    # those cells because the section the AI used does
+                    # not happen to be the one the lookup checked.  The
+                    # universal no-dash gate at PDF render time then
+                    # drops the whole ECC IR row even though the
+                    # strategy clearly covers IR.
+                    #
+                    # Mirror the Data-scope / Cyber-DCC approach:
+                    #   * augment per-family keywords from
+                    #     ``_TRACEABILITY_ECC_FAMILY_KEYWORD_AUGMENT``
+                    #     (CSIRT, خطة الاستجابة للحوادث, إدارة الحوادث,
+                    #     احتواء الحوادث, MFA, PAM, SOC, SIEM, إدارة
+                    #     الثغرات, تقييم الثغرات, etc.),
+                    #   * fall back across multiple sections so each
+                    #     cell can be sourced from the section that
+                    #     actually contains it,
+                    #   * exclude already-chosen cell labels from KPI /
+                    #     Risk lookups so the IAM row's KPI cannot
+                    #     leak SOC / incident text from a different
+                    #     family's row,
+                    #   * apply a deterministic, capability-derived
+                    #     soft Initiative / KPI / Risk descriptor from
+                    #     ``_CYBER_TRACEABILITY_SOFT_INITIATIVE`` and
+                    #     ``_CYBER_TRACEABILITY_SOFT_KPI_RISK['ECC']``
+                    #     ONLY when the row's gap (or a sibling cell)
+                    #     was resolved from real generated content but
+                    #     a specific axis lookup found no distinct
+                    #     phrase — never invents a new strategy row,
+                    #     only labels the axis for a row that already
+                    #     exists because the ECC framework was selected
+                    #     and the family is part of the ECC scope.
+                    #
+                    # Strictly scoped to (cyber, ECC): TCC / CSCC and
+                    # the AI / DT / ERM / Data domains keep their
+                    # existing ``_find_match`` per-section behaviour
+                    # byte-for-byte.
+                    _cyber_ecc_scope = (
+                        _trace_domain_pre == 'cyber' and fw_key == 'ECC'
+                    )
+                    if _cyber_ecc_scope:
+                        _aug_ecc = (
+                            _TRACEABILITY_ECC_FAMILY_KEYWORD_AUGMENT
+                            .get(canonical_id) or {}
+                        )
+                        if _aug_ecc:
+                            ar_kws = list(ar_kws) + list(
+                                _aug_ecc.get('ar') or [])
+                            en_kws = list(en_kws) + list(
+                                _aug_ecc.get('en') or [])
+                        # Override the cap label with a descriptive
+                        # phrase so the Capability column never renders
+                        # as a bare Latin acronym (``SIEM`` / ``IAM``).
+                        _cap_override = (
+                            _CYBER_ECC_CAP_LABELS.get(canonical_id) or {}
+                        )
+                        if _cap_override:
+                            cap_label = (
+                                _cap_override.get(
+                                    'ar' if lang == 'ar' else 'en')
+                                or cap_label
+                            )
+                        gap        = (_find_match_any(
+                                          ['gaps', 'roadmap', 'kpis',
+                                           'pillars', 'confidence'],
+                                          ar_kws, en_kws) or dash)
+                        initiative = (_find_match_any(
+                                          ['roadmap', 'pillars', 'gaps',
+                                           'kpis'], ar_kws, en_kws) or dash)
+                        kpi        = (_find_match_any(
+                                          ['kpis', 'roadmap', 'confidence'],
+                                          ar_kws, en_kws,
+                                          exclude=[initiative]) or dash)
+                        risk       = (_find_match_any(
+                                          ['confidence', 'kpis', 'roadmap'],
+                                          ar_kws, en_kws,
+                                          exclude=[initiative, kpi]) or dash)
+                        # PR-CY5 — soft Initiative derivation scoped to
+                        # (cyber, ECC).  Fills the Initiative axis with
+                        # a family-coherent phrase ONLY when the row's
+                        # gap (or a sibling KPI/Risk lookup) already
+                        # exists from real generated content but the
+                        # pillars / roadmap text didn't carry an exact
+                        # phrase the lookup recognised.  Keeps Part B
+                        # cells coherent: IAM stays IAM/MFA/PAM, IR
+                        # stays CSIRT, SOC stays SIEM, etc.  Does NOT
+                        # insert any new strategy row.
+                        if (initiative == dash and
+                                (gap != dash or kpi != dash or risk != dash)):
+                            _si = (_CYBER_TRACEABILITY_SOFT_INITIATIVE
+                                   .get(fw_key, {}) or {}).get(
+                                       canonical_id) or {}
+                            _si_val = _si.get(
+                                'ar' if lang == 'ar' else 'en')
+                            if _si_val:
+                                initiative = _si_val
+                        # PR-CY5 — soft KPI/Risk derivation scoped to
+                        # (cyber, ECC).  Only fills the metric / risk
+                        # axis when the row's gap AND initiative are
+                        # real but the KPI or Risk lookup did not find
+                        # a distinct, family-coherent phrase.  Prevents
+                        # IAM rows being labelled with SOC / incident
+                        # KPI text drawn from an unrelated family row.
+                        if (gap != dash and initiative != dash
+                                and (kpi == dash or risk == dash)):
+                            _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
+                                     .get(fw_key, {}) or {}).get(
+                                         canonical_id) or {}
+                            _soft_lang = _soft.get(
+                                'ar' if lang == 'ar' else 'en')
+                            if _soft_lang:
+                                _soft_kpi, _soft_risk = _soft_lang
+                                if (kpi == dash and _soft_kpi
+                                        and _soft_kpi != initiative):
+                                    kpi = _soft_kpi
+                                if (risk == dash and _soft_risk
+                                        and _soft_risk != initiative
+                                        and _soft_risk != kpi):
+                                    risk = _soft_risk
+                    else:
+                        gap        = _find_match('gaps',       ar_kws, en_kws) or dash
+                        initiative = (_find_match('pillars',   ar_kws, en_kws)
+                                      or _find_match('roadmap', ar_kws, en_kws) or dash)
+                        kpi        = _find_match('kpis',       ar_kws, en_kws) or dash
+                        risk       = _find_match('confidence', ar_kws, en_kws) or dash
             rows.append([fw_display, cap_label, gap, initiative, kpi, risk])
 
     # PR-5B.9B — profile-driven fallback. When no framework-registry
@@ -12689,6 +13087,28 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
             print(
                 '[EXPORT-DIAG] data_dmo_cdo_normalization_doc_failed: '
                 f'{_dmo_doc_e}',
+                flush=True,
+            )
+        # PR-CY5 — Cyber CISO wording normalizer (export-time hook).
+        # Rewrites bad ``مكتب CISO`` / ``إنشاء مكتب CISO متخصص`` phrases
+        # to professional CISO wording (``إدارة الأمن السيبراني بقيادة
+        # CISO``) before the document model consumes
+        # ``content_sections``.  Scoped to ``domain == 'cyber'`` so
+        # other domains are byte-for-byte unchanged.  Legitimate CISO
+        # role references are preserved.
+        try:
+            _ciso_norm_doc = _normalize_cyber_ar_ciso_wording(
+                content_sections, lang_n, domain)
+            if _ciso_norm_doc:
+                print(
+                    '[EXPORT-DIAG] cyber_ciso_wording_normalization_doc='
+                    f'{_ciso_norm_doc}',
+                    flush=True,
+                )
+        except Exception as _ciso_doc_e:  # noqa: BLE001 — defensive
+            print(
+                '[EXPORT-DIAG] cyber_ciso_wording_normalization_doc_failed: '
+                f'{_ciso_doc_e}',
                 flush=True,
             )
     # PR-5B.8S — inference fallback. When no explicit frameworks were
@@ -28783,6 +29203,120 @@ def _normalize_data_dmo_cdo_owner(sections, lang, domain):
             sections[key] = new_text
             counts[key] = n
     return counts
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PR-CY5 — Cyber Security CISO wording normalizer.
+#
+# Real production symptom: the AI sometimes generates the executive
+# summary / vision / roadmap with phrases such as
+#   ``إنشاء مكتب CISO متخصص``
+# or simply ``مكتب CISO``.  This is professionally incorrect — CISO is
+# a role, not a standalone office.  Correct wording per the PR-CY5
+# problem statement is:
+#   * ``إنشاء إدارة الأمن السيبراني بقيادة CISO``
+#   * ``تأسيس وظيفة الأمن السيبراني وتعيين CISO``
+#   * ``إنشاء إدارة الأمن السيبراني بقيادة رئيس الأمن السيبراني CISO``
+#
+# This helper rewrites ONLY the bad ``مكتب CISO`` / ``إنشاء مكتب CISO``
+# constructions in narrative / table content for Cyber Security
+# strategies.  It is scoped narrowly:
+#   * Domain == 'cyber'.
+#   * Replacements target phrases that pair ``مكتب`` (office) with
+#     ``CISO`` as if CISO were a standalone office.
+#   * Legitimate references to the CISO role itself (``تعيين CISO``,
+#     ``دور CISO``, ``CISO يقود``, ``led by the CISO``) are preserved.
+#
+# Returns ``{section_key: count_of_replacements}`` for logging.
+# Idempotent; safe on empty / non-string input.
+# ─────────────────────────────────────────────────────────────────────────
+
+# AR phrase replacements — longest match first so the more specific
+# ``إنشاء مكتب CISO متخصص`` / ``إنشاء مكتب CISO`` patterns are rewritten
+# before the shorter ``مكتب CISO`` fallback.
+_CYBER_CISO_WORDING_AR = [
+    ('إنشاء مكتب CISO متخصص',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب CISO متخصص',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('إنشاء مكتب CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب CISO',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب CISO متخصص',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب CISO',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+]
+
+# EN phrase replacements — same intent on the English side.
+_CYBER_CISO_WORDING_EN = [
+    ('Establish a dedicated CISO office',
+     'Establish a cybersecurity department led by the CISO'),
+    ('Establish a dedicated ciso office',
+     'Establish a cybersecurity department led by the CISO'),
+    ('Establish the CISO office',
+     'Establish the cybersecurity department led by the CISO'),
+    ('Establish a CISO office',
+     'Establish a cybersecurity department led by the CISO'),
+    ('dedicated CISO office',
+     'cybersecurity department led by the CISO'),
+    ('CISO office',
+     'cybersecurity department led by the CISO'),
+]
+
+
+def _normalize_cyber_ar_ciso_wording(sections, lang, domain):
+    """Rewrite bad ``مكتب CISO`` wording → professional CISO wording.
+
+    Scope: ``domain == 'cyber'`` only.  Applies to vision, pillars,
+    roadmap, environment, gaps, kpis, confidence and executive_summary
+    sections (i.e. every canonical section the final-audit gate
+    inspects).  Replacements are literal substrings drawn from
+    ``_CYBER_CISO_WORDING_AR`` / ``_CYBER_CISO_WORDING_EN`` and target
+    ONLY phrases that pair ``مكتب`` (office) with ``CISO`` as if CISO
+    were a standalone office.  Legitimate CISO role references (e.g.
+    ``تعيين CISO``, ``دور CISO``, ``CISO``, ``led by the CISO``) are
+    preserved.
+
+    Returns ``{section_key: count}`` for logging.  Idempotent.
+    """
+    try:
+        _dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _dcode = (domain or '').strip().lower()
+    if _dcode != 'cyber':
+        return {}
+    if not isinstance(sections, dict):
+        return {}
+    _is_ar = (str(lang or '').lower() == 'ar')
+    pairs = (_CYBER_CISO_WORDING_AR if _is_ar
+             else _CYBER_CISO_WORDING_EN)
+    counts = {}
+    for key in ('vision', 'pillars', 'environment', 'gaps',
+                'roadmap', 'kpis', 'confidence',
+                'executive_summary'):
+        text = sections.get(key, '') or ''
+        if not text:
+            continue
+        try:
+            new_text = str(text)
+        except Exception:  # noqa: BLE001 — defensive
+            continue
+        n = 0
+        for src, dst in pairs:
+            if src and src in new_text:
+                _occ = new_text.count(src)
+                new_text = new_text.replace(src, dst)
+                n += _occ
+        if n:
+            sections[key] = new_text
+            counts[key] = n
+    return counts
 #
 # Real production symptom: the KPI section (or any canonical section)
 # sometimes contains a SECOND `## N. {canonical title}` heading inside
@@ -35710,7 +36244,7 @@ def api_generate_strategy():
 محظور: "إطار الحوكمة"، "برنامج تقييم المخاطر"، "بناء القدرات"، "سياسة الحوكمة المعتمدة"، "سجل المخاطر وخطط المعالجة"، "مصفوفة الكفاءات وسجلات الشهادات"، "تطوير السياسات"، "برنامج التوعية"، "إدارة مخاطر الأطراف الثالثة"
 بدلاً من ذلك استخدم أسماء تُشير إلى:
 (أ) نطاق {frameworks_ar} المحدد أو الضابط (مثال: "منظومة المراقبة في إطار ECC النطاق 2" وليس "مراقبة أمنية")
-(ب) الفجوة المحددة التي تُعالجها (مثال: "إنشاء مكتب CISO وسلطة الحوكمة" وليس "إطار الحوكمة")
+(ب) الفجوة المحددة التي تُعالجها (مثال: "إنشاء إدارة الأمن السيبراني بقيادة CISO وسلطة الحوكمة" وليس "إطار الحوكمة")
 (ج) التقنية الموجودة فعلاً حيثما كانت معروفة
 كل اسم مبادرة يجب أن يكون محدداً بما يكفي لتمييزه عن أي وثيقة أخرى لمنظمة مختلفة."""
             
@@ -41824,6 +42358,33 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _dmoe:
                         print('[STRATEGY-DIAG] '
                               f'data_dmo_cdo_normalization_failed: {_dmoe}',
+                              flush=True)
+
+                    # ── PR-CY5: Cyber CISO wording normalizer ──
+                    # Rewrite bad ``مكتب CISO`` / ``إنشاء مكتب CISO
+                    # متخصص`` patterns to professional CISO wording
+                    # (``إدارة الأمن السيبراني بقيادة CISO``).  Scoped
+                    # to the Cyber Security domain only; legitimate
+                    # CISO role references (``تعيين CISO``, ``دور
+                    # CISO``, ``led by the CISO``) are preserved.
+                    try:
+                        _ciso_norm = _normalize_cyber_ar_ciso_wording(
+                            sections, lang, domain)
+                        if _ciso_norm:
+                            print('[STRATEGY-DIAG] '
+                                  f'cyber_ciso_wording_normalization='
+                                  f'{_ciso_norm}',
+                                  flush=True)
+                            _fixed_parts_c = [sections[sk]
+                                              for sk in _section_order_r
+                                              if sections.get(sk)
+                                              and sections[sk].strip()]
+                            if _fixed_parts_c:
+                                content = '\n\n'.join(_fixed_parts_c)
+                    except Exception as _cisoe:
+                        print('[STRATEGY-DIAG] '
+                              f'cyber_ciso_wording_normalization_failed: '
+                              f'{_cisoe}',
                               flush=True)
 
                     # ── FINAL DETERMINISTIC REPAIR: vision/SO + confidence/risk ──
