@@ -21586,12 +21586,20 @@ _CYBER_ROADMAP_BALANCE_TOPICS = {
     ),
     # ── DCC operational families (canonical ids after PR-CY7).
     # PR-CY7 Part C — strengthened data_classification exact terms.
+    # PR-CY8 — added Arabic ``تصنيف المعلومات`` so the runtime DCC
+    # top-up extractor accepts the AR equivalent of the existing EN
+    # ``information classification`` exact term. Without it the AI
+    # frequently writes ``تصنيف المعلومات`` as the natural Arabic
+    # phrasing and the balance audit reports
+    # ``cyber_roadmap_balance_missing:data_classification`` even
+    # though the row contains substantive classification wording.
     'data_classification': (
         'تصنيف البيانات',
         'تصنيف البيانات الحساسة',
         'تنفيذ تصنيف البيانات',
         'تصنيف الأصول البيانية',
         'تصنيف ومعالجة البيانات',
+        'تصنيف المعلومات',
         'data classification',
         'sensitive data classification',
         'information classification',
@@ -21673,6 +21681,12 @@ _CYBER_ROADMAP_FAMILY_CANONICAL_ALIASES = {
         'dcc_data_classification': 'data_classification',
         'data_classification': 'data_classification',
         'classification': 'data_classification',
+        # PR-CY8 — accept ``information_classification`` so legacy /
+        # alternate runtime emitters that key the family off the
+        # English ``information classification`` capability collapse to
+        # the same canonical id as ``data_classification`` /
+        # ``dcc_data_classification`` / ``classification``.
+        'information_classification': 'data_classification',
         'dcc_sensitive_handling': 'sensitive_data_handling',
         'sensitive_data_handling': 'sensitive_data_handling',
         'sensitive_handling': 'sensitive_data_handling',
@@ -25613,6 +25627,68 @@ _DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS = {
         # they are now removed so the detector fails-closed unless
         # the objective row actually establishes the department,
         # function, or governance committee.
+        #
+        # PR-CY8 — split into ``establishment_*`` (department /
+        # function / dedicated cybersecurity management) and
+        # ``leadership_*`` (CISO / cybersecurity head / governance
+        # committee / roles & responsibilities / reporting lines)
+        # token groups. The detector now requires BOTH groups to be
+        # present in the SAME objective row (Objective + Target +
+        # Justification cells) so weak phrasings like ``تعيين CISO``
+        # alone, ``مكتب CISO`` alone, or a bare ``لجنة حوكمة الأمن
+        # السيبراني`` (without establishing the function) no longer
+        # clear the ``specialized_function_objective_missing:cyber``
+        # gate. Strong phrasings such as ``إنشاء إدارة الأمن
+        # السيبراني وتعيين CISO`` and ``تأسيس وظيفة الأمن السيبراني
+        # بقيادة CISO`` continue to pass because they cover both
+        # halves of the dual requirement in one row.
+        'establishment_ar': (
+            'إنشاء إدارة الأمن السيبراني',
+            'تأسيس إدارة الأمن السيبراني',
+            'إنشاء إدارة متخصصة للأمن السيبراني',
+            'إدارة متخصصة للأمن السيبراني',
+            # PR-CY8 — tolerate AR definite-article morphology
+            # (``إنشاء الإدارة المتخصصة``) which is the grammatically
+            # natural form many AI outputs and existing test fixtures
+            # use for the same establishment concept.
+            'إنشاء الإدارة المتخصصة للأمن السيبراني',
+            'الإدارة المتخصصة للأمن السيبراني',
+            'تأسيس وظيفة الأمن السيبراني',
+            'إنشاء وظيفة الأمن السيبراني',
+            'إدارة الأمن السيبراني بقيادة',
+            'وظيفة الأمن السيبراني بقيادة',
+        ),
+        'establishment_en': (
+            'establish a dedicated cybersecurity',
+            'establish the cybersecurity department',
+            'establish a cybersecurity department',
+            'cybersecurity department led by',
+            'cybersecurity function led by',
+            'establish a cybersecurity function',
+            'establish the cybersecurity function',
+            'cybersecurity operating model',
+            'dedicated cybersecurity management',
+        ),
+        'leadership_ar': (
+            'CISO',
+            'رئيس الأمن السيبراني',
+            'لجنة حوكمة الأمن السيبراني',
+            'الأدوار والمسؤوليات',
+            'خطوط الرفع',
+        ),
+        'leadership_en': (
+            'CISO',
+            'chief information security officer',
+            'cybersecurity governance committee',
+            'roles and responsibilities',
+            'reporting lines',
+        ),
+        # ── Backwards-compat ``ar`` / ``en`` keys retained so any
+        # external caller that introspects the registry by the
+        # original key names continues to read a non-empty token
+        # list. The detector ignores these when the
+        # ``establishment_*`` keys are present (dual-requirement
+        # mode).
         'ar': (
             'إنشاء إدارة الأمن السيبراني',
             'تأسيس إدارة الأمن السيبراني',
@@ -25620,10 +25696,8 @@ _DOMAIN_SPECIALIZED_FUNCTION_OBJECTIVE_TOKENS = {
             'إدارة متخصصة للأمن السيبراني',
             'تأسيس وظيفة الأمن السيبراني',
             'إنشاء وظيفة الأمن السيبراني',
-            'وظيفة الأمن السيبراني',
             'إدارة الأمن السيبراني بقيادة CISO',
             'وظيفة الأمن السيبراني بقيادة CISO',
-            'تعيين رئيس الأمن السيبراني',
             'تشكيل لجنة حوكمة الأمن السيبراني',
             'نموذج تشغيل الأمن السيبراني',
         ),
@@ -25734,6 +25808,69 @@ def _compute_missing_specialized_function_objective(
         _ts_re.IGNORECASE,
     )
     rows = list(_ts_table_rows(vision_text, hdr))
+
+    # PR-CY8 — dual-requirement mode: when the registry entry exposes
+    # ``establishment_*`` token groups (currently cyber only), an
+    # objective row must contain BOTH an establishment phrase AND a
+    # leadership/governance phrase to clear the gate. Weak phrasings
+    # such as ``تعيين CISO``, ``مكتب CISO``, or a bare governance
+    # committee no longer pass. All other domains keep their legacy
+    # single-list semantics so Data / AI / DT / ERM behaviour is
+    # unchanged.
+    dual_mode = (
+        bool(tokens.get('establishment_ar'))
+        or bool(tokens.get('establishment_en'))
+    )
+    if dual_mode:
+        est_ar = tokens.get('establishment_ar', ()) or ()
+        est_en = tokens.get('establishment_en', ()) or ()
+        lead_ar = tokens.get('leadership_ar', ()) or ()
+        lead_en = tokens.get('leadership_en', ()) or ()
+        any_est_overall = False
+        any_lead_overall = False
+        bad_office_overall = False
+        accepted_row_blob = ''
+        for cells in rows:
+            if len(cells) < 4:
+                continue
+            parts = []
+            for i in (1, 2, 3):
+                if i < len(cells):
+                    parts.append(str(cells[i] or ''))
+            blob = ' '.join(parts)
+            blob_lc = blob.lower()
+            has_est = any((t and t in blob) for t in est_ar) or \
+                any((t and t.lower() in blob_lc) for t in est_en)
+            has_lead = any((t and t in blob) for t in lead_ar) or \
+                any((t and t.lower() in blob_lc) for t in lead_en)
+            if has_est:
+                any_est_overall = True
+            if has_lead:
+                any_lead_overall = True
+            if ('مكتب CISO' in blob) or ('ciso office' in blob_lc):
+                bad_office_overall = True
+            if has_est and has_lead:
+                accepted_row_blob = blob
+                break
+        accepted = bool(accepted_row_blob)
+        # PR-CY8 — fail-closed diagnostic for Cyber only (per problem
+        # statement Required Diagnostics).
+        if code == 'cyber':
+            try:
+                print(
+                    '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                    f'candidate_len={len(vision_text)} '
+                    f'rows={len(rows)} '
+                    f'has_establishment_phrase={any_est_overall} '
+                    f'has_leadership_phrase={any_lead_overall} '
+                    f'contains_bad_ciso_office={bad_office_overall} '
+                    f'accepted={accepted}',
+                    flush=True,
+                )
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+        return not accepted
+
     ar_tokens = tokens.get('ar', ())
     en_tokens = tokens.get('en', ())
     for cells in rows:
