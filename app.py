@@ -127,14 +127,43 @@ def fail_background_task(task_id, error):
 # Invariant the operator must preserve: provider call timeout strictly less
 # than the idle stall threshold. Default 180, clamped to a safe range
 # [60, 1800]; any invalid env value falls back to 180.
+#
+# PR-CY15: default raised from 180 → 900 because a single Anthropic
+# strategy-section repair call can legitimately run close to the
+# AI_CALL_TIMEOUT_SECONDS provider cap (~240s) and the full strategy
+# pipeline performs multiple sequential AI repair passes. The previous
+# default caused the poll endpoint to force_terminal an actively-working
+# task while it was still in the middle of a successful Anthropic call,
+# losing the eventually-saved strategy. The clamp upper bound is widened
+# to 3600 to allow operators to extend it further if needed; the lower
+# bound stays at 60 so misconfiguration cannot disable the safety net.
 try:
-    IDLE_THRESHOLD_SECONDS = int(os.getenv('IDLE_THRESHOLD_SECONDS', '180') or '180')
+    IDLE_THRESHOLD_SECONDS = int(os.getenv('IDLE_THRESHOLD_SECONDS', '900') or '900')
 except (TypeError, ValueError):
-    IDLE_THRESHOLD_SECONDS = 180
+    IDLE_THRESHOLD_SECONDS = 900
 if IDLE_THRESHOLD_SECONDS < 60:
     IDLE_THRESHOLD_SECONDS = 60
-elif IDLE_THRESHOLD_SECONDS > 1800:
-    IDLE_THRESHOLD_SECONDS = 1800
+elif IDLE_THRESHOLD_SECONDS > 3600:
+    IDLE_THRESHOLD_SECONDS = 3600
+
+# PR-CY15 Part C: absolute max wall-clock runtime for a strategy task.
+# Even when the heartbeat reports ``in_ai_call=True`` the poll endpoint
+# will force_terminal once the elapsed-since-created exceeds this cap so
+# a genuinely runaway worker cannot pin a task in 'pending' forever.
+# Default 1800s (30 min) — long enough for the worst-case Anthropic +
+# OpenAI fallback sequence with multiple section repairs but bounded so
+# the frontend eventually surfaces an error instead of polling forever.
+try:
+    STRATEGY_TASK_MAX_SECONDS = int(
+        os.getenv('STRATEGY_TASK_MAX_SECONDS', '1800') or '1800')
+except (TypeError, ValueError):
+    STRATEGY_TASK_MAX_SECONDS = 1800
+if STRATEGY_TASK_MAX_SECONDS < IDLE_THRESHOLD_SECONDS:
+    # Absolute cap must be >= idle threshold; otherwise the cap would
+    # fire before the idle detector ever could.
+    STRATEGY_TASK_MAX_SECONDS = IDLE_THRESHOLD_SECONDS
+elif STRATEGY_TASK_MAX_SECONDS > 7200:
+    STRATEGY_TASK_MAX_SECONDS = 7200
 
 
 def _parse_db_timestamp(ts):
@@ -226,6 +255,169 @@ def _bump_stage(stage):
         pass
 
 
+def _strategy_heartbeat_update(task_id, *, stage=None, substage=None,
+                                in_ai_call=None):
+    """PR-CY15 Part A — write an active-AI-call heartbeat to the task row.
+
+    Records a fresh ``updated_at`` timestamp (the canonical
+    ``last_update_at`` for the stall detector) plus optional ``stage``,
+    ``substage`` and ``in_ai_call`` flag so the poll endpoint can tell
+    the difference between a truly stuck task and one that is actively
+    waiting on a long-running AI provider call.
+
+    MUST NEVER raise: tolerates pre-migration DBs (substage / in_ai_call
+    columns missing) by dynamically composing the UPDATE from whichever
+    columns actually exist. Emits a single
+    ``[STRATEGY-ASYNC] heartbeat`` log line so operators can correlate
+    heartbeats with provider calls in the runtime logs.
+
+    No-ops on falsy ``task_id`` so the helper is safe to call from any
+    code path regardless of whether a background task is in flight.
+    """
+    if not task_id:
+        return
+    # Sanitize stage / substage to single-line ≤ 80 chars so the log
+    # format and DB column never blow up on stray newlines / huge values.
+    def _clean(v):
+        if v is None:
+            return None
+        try:
+            s = str(v).replace('\n', ' ').replace('\r', ' ').strip()
+        except Exception:
+            return None
+        if len(s) > 80:
+            s = s[:80]
+        return s
+    stage_str = _clean(stage)
+    substage_str = _clean(substage)
+    if in_ai_call is None:
+        in_ai_flag = None
+    else:
+        in_ai_flag = 1 if in_ai_call else 0
+    try:
+        with closing(get_db_direct()) as conn:
+            try:
+                cols = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(background_tasks)").fetchall()}
+            except Exception:
+                cols = set()
+            assignments = ['updated_at = CURRENT_TIMESTAMP']
+            params = []
+            if stage_str is not None and 'stage' in cols:
+                assignments.append('stage = ?')
+                params.append(stage_str)
+            if substage_str is not None and 'substage' in cols:
+                assignments.append('substage = ?')
+                params.append(substage_str)
+            if in_ai_flag is not None and 'in_ai_call' in cols:
+                assignments.append('in_ai_call = ?')
+                params.append(in_ai_flag)
+            params.append(task_id)
+            try:
+                conn.execute(
+                    'UPDATE background_tasks SET '
+                    + ', '.join(assignments)
+                    + ' WHERE task_id = ?',
+                    tuple(params)
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                # Pre-migration DB: fall back to legacy stage-only update
+                # so the heartbeat at least refreshes updated_at.
+                try:
+                    conn.execute(
+                        'UPDATE background_tasks SET '
+                        'updated_at = CURRENT_TIMESTAMP '
+                        'WHERE task_id = ?',
+                        (task_id,)
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[STRATEGY-ASYNC] heartbeat_db_error task={task_id[:8]} "
+              f"err={e}", flush=True)
+    try:
+        print(
+            f"[STRATEGY-ASYNC] heartbeat task={task_id[:8]} "
+            f"stage={stage_str!r} substage={substage_str!r} "
+            f"in_ai_call={bool(in_ai_flag) if in_ai_flag is not None else None}",
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _strategy_heartbeat_begin_ai_call(provider=None, model=None,
+                                        section=None):
+    """PR-CY15 Part A — heartbeat helper invoked immediately BEFORE every
+    AI provider call in the strategy pipeline.
+
+    Resolves the active background task id off Flask ``g`` (no-op if
+    called outside a strategy worker context, e.g. synchronous callers
+    or tests), composes a substage descriptor from the
+    provider/model/section hints, and writes
+    ``stage='ai_provider_call'`` + ``in_ai_call=True`` + a fresh
+    ``updated_at``. Returns the resolved task_id (may be falsy) so
+    callers can pair it with a matching ``_strategy_heartbeat_end_ai_call``
+    in a try/finally.
+    """
+    try:
+        from flask import g as _g
+        _tid = getattr(_g, '_strategy_task_id', None)
+    except Exception:
+        _tid = None
+    if not _tid:
+        return None
+    parts = []
+    if provider:
+        parts.append(str(provider))
+    if model:
+        parts.append(str(model))
+    if section:
+        parts.append(str(section))
+    substage = '/'.join(parts) if parts else None
+    try:
+        _strategy_heartbeat_update(
+            _tid,
+            stage='ai_provider_call',
+            substage=substage,
+            in_ai_call=True,
+        )
+    except Exception:
+        pass
+    return _tid
+
+
+def _strategy_heartbeat_end_ai_call(next_stage=None, *, task_id=None):
+    """PR-CY15 Part A — heartbeat helper invoked immediately AFTER every
+    AI provider call (success or failure) in the strategy pipeline.
+
+    Clears ``in_ai_call`` and refreshes ``updated_at`` so the stall
+    detector can re-evaluate the task on its normal idle threshold.
+    ``next_stage`` lets the caller advance the stage marker (defaults
+    to ``'ai_provider_call_done'`` so a missed follow-up bump still
+    reflects that the AI call has concluded).
+    """
+    if not task_id:
+        try:
+            from flask import g as _g
+            task_id = getattr(_g, '_strategy_task_id', None)
+        except Exception:
+            task_id = None
+    if not task_id:
+        return
+    try:
+        _strategy_heartbeat_update(
+            task_id,
+            stage=next_stage or 'ai_provider_call_done',
+            substage=None,
+            in_ai_call=False,
+        )
+    except Exception:
+        pass
+
+
 def get_background_task(task_id):
     """Get task status from database.
 
@@ -234,24 +426,37 @@ def get_background_task(task_id):
     PR-5B.8B migration hasn't run yet (e.g. the column-add failed at
     startup on an exotic DB), falls back to the legacy SELECT so the
     endpoint keeps working.
+
+    PR-CY15: also returns ``substage`` and ``in_ai_call`` (defaults to
+    0/False on pre-migration DBs) so the stall detector can distinguish
+    an actively-running AI provider call from a truly stuck task.
     """
     try:
         with closing(get_db_direct()) as conn:
             try:
                 task = conn.execute(
                     'SELECT task_id, user_id, status, result, error, '
-                    'callback_domain, stage, updated_at, created_at '
+                    'callback_domain, stage, substage, in_ai_call, '
+                    'updated_at, created_at '
                     'FROM background_tasks WHERE task_id = ?',
                     (task_id,)
                 ).fetchone()
             except sqlite3.OperationalError:
-                # Pre-migration DB: stage/updated_at columns missing.
-                task = conn.execute(
-                    'SELECT task_id, user_id, status, result, error, '
-                    'callback_domain, created_at '
-                    'FROM background_tasks WHERE task_id = ?',
-                    (task_id,)
-                ).fetchone()
+                try:
+                    task = conn.execute(
+                        'SELECT task_id, user_id, status, result, error, '
+                        'callback_domain, stage, updated_at, created_at '
+                        'FROM background_tasks WHERE task_id = ?',
+                        (task_id,)
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    # Pre-migration DB: stage/updated_at columns missing.
+                    task = conn.execute(
+                        'SELECT task_id, user_id, status, result, error, '
+                        'callback_domain, created_at '
+                        'FROM background_tasks WHERE task_id = ?',
+                        (task_id,)
+                    ).fetchone()
             return task
     except Exception as e:
         print(f"Task get error: {e}", flush=True)
@@ -368,7 +573,8 @@ def delete_background_task(task_id):
         pass
 
 
-def ensure_strategy_task_terminal_state(task_id, error_message=None):
+def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
+                                          force_terminal_context=None):
     """Safety net: guarantee a background task is in a TERMINAL state (done
     or error). If the task is still 'pending' when this is called — which
     happens if complete_background_task / fail_background_task itself
@@ -377,6 +583,12 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None):
 
     Returns True if a transition was performed, False if the task was
     already terminal or doesn't exist.
+
+    PR-CY15 Part E: ``force_terminal_context`` is an optional dict of
+    diagnostic fields (``reason``, ``stage``, ``substage``,
+    ``in_ai_call``, ``idle_s``, ``elapsed_s``) that are emitted on the
+    ``[STRATEGY-ASYNC] force_terminal`` log line so operators can see at
+    a glance WHY a task was force-terminated.
     """
     try:
         with closing(get_db_direct()) as conn:
@@ -400,8 +612,21 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None):
                 ('error', msg, task_id, status)
             )
             conn.commit()
-            print(f"[STRATEGY-ASYNC] force_terminal task={task_id[:8]} "
-                  f"from={status!r} reason={msg!r}", flush=True)
+            ctx = force_terminal_context or {}
+            try:
+                print(
+                    f"[STRATEGY-ASYNC] force_terminal task={task_id[:8]} "
+                    f"from={status!r} reason={msg!r} "
+                    f"stage={ctx.get('stage')!r} "
+                    f"substage={ctx.get('substage')!r} "
+                    f"in_ai_call={ctx.get('in_ai_call')} "
+                    f"idle_s={ctx.get('idle_s')} "
+                    f"elapsed_s={ctx.get('elapsed_s')}",
+                    flush=True,
+                )
+            except Exception:
+                print(f"[STRATEGY-ASYNC] force_terminal task={task_id[:8]} "
+                      f"from={status!r} reason={msg!r}", flush=True)
             return True
     except Exception as e:
         print(f"[STRATEGY-ASYNC] force_terminal error: {e}", flush=True)
@@ -1132,12 +1357,16 @@ def init_db():
             callback_domain TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP,
-            stage TEXT
+            stage TEXT,
+            substage TEXT,
+            in_ai_call INTEGER DEFAULT 0
         )
     ''')
     # PR-5B.8B Section A: guarded migration for pre-existing DBs that
     # were created before stage/updated_at columns existed. ALTER TABLE
     # ADD COLUMN is idempotent only via PRAGMA inspection on SQLite.
+    # PR-CY15: also adds substage / in_ai_call so the heartbeat helper
+    # can record active AI provider calls without crashing on legacy DBs.
     try:
         _bg_cols = {row[1] for row in cursor.execute(
             "PRAGMA table_info(background_tasks)").fetchall()}
@@ -1147,6 +1376,13 @@ def init_db():
         if 'stage' not in _bg_cols:
             cursor.execute(
                 "ALTER TABLE background_tasks ADD COLUMN stage TEXT")
+        if 'substage' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks ADD COLUMN substage TEXT")
+        if 'in_ai_call' not in _bg_cols:
+            cursor.execute(
+                "ALTER TABLE background_tasks "
+                "ADD COLUMN in_ai_call INTEGER DEFAULT 0")
     except Exception as _bg_mig_err:
         print(f"[STRATEGY-ASYNC] background_tasks migration skipped: "
               f"{_bg_mig_err}", flush=True)
@@ -14813,6 +15049,11 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
 
     result = None
     try:
+        # PR-CY15 Part A: heartbeat BEFORE the provider call.
+        _strategy_heartbeat_begin_ai_call(
+            provider=provider,
+            section=content_type,
+        )
         if provider == 'anthropic':
             result = _generate_anthropic(system_prompt, prompt, language)
         elif provider == 'openai':
@@ -14835,6 +15076,13 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
         _initial_failed = True
     else:
         _initial_failed = False
+    finally:
+        # PR-CY15 Part A: heartbeat AFTER the provider call (success or
+        # failure) — clears in_ai_call so the stall detector can resume
+        # treating idle_s as a real signal.
+        _strategy_heartbeat_end_ai_call(
+            next_stage='ai_provider_call_done',
+        )
     if _initial_failed:
         # Try fallback providers in size-aware priority order
         for fallback in _fallback_order:
@@ -14851,6 +15099,11 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
                 _attempted_providers.append(fallback)
                 try:
                     print(f"[AI] Trying fallback provider: {fallback}", flush=True)
+                    # PR-CY15 Part A: heartbeat for fallback provider call.
+                    _strategy_heartbeat_begin_ai_call(
+                        provider=fallback,
+                        section=content_type,
+                    )
                     if fallback == 'anthropic':
                         result = _generate_anthropic(system_prompt, prompt, language)
                     elif fallback == 'openai':
@@ -14871,6 +15124,12 @@ def generate_ai_content(prompt, language='en', task_type='generate', content_typ
                 except Exception as e2:
                     _provider_errors[fallback] = str(e2)
                     print(f"[AI] Fallback {fallback} failed: {e2}", flush=True)
+                finally:
+                    # PR-CY15 Part A: matching post-call heartbeat for
+                    # the fallback call (success or failure).
+                    _strategy_heartbeat_end_ai_call(
+                        next_stage='ai_provider_call_done',
+                    )
             else:
                 # PR-5B.8D: surface skipped fallback providers in the log so
                 # operators can tell at a glance when the chain has effectively
@@ -17882,6 +18141,9 @@ def api_strategy_status(task_id):
     # defensively and fall back to None instead of KeyError-ing the poll.
     _task_keys = task.keys() if hasattr(task, 'keys') else []
     _stage_val = task['stage'] if 'stage' in _task_keys else None
+    _substage_val = task['substage'] if 'substage' in _task_keys else None
+    _in_ai_call_raw = task['in_ai_call'] if 'in_ai_call' in _task_keys else None
+    _in_ai_call_bool = bool(_in_ai_call_raw) if _in_ai_call_raw is not None else False
     _updated_at_val = task['updated_at'] if 'updated_at' in _task_keys else None
     _created_at_val = task['created_at'] if 'created_at' in _task_keys else None
     # PR-5B.8B Section C (heartbeat/stall): compute wall-clock telemetry.
@@ -17907,22 +18169,74 @@ def api_strategy_status(task_id):
             _idle_s = max(0, int((_now_utc - _idle_basis).total_seconds()))
         except Exception:
             _idle_s = None
-    # PR-5B.8B Section C (heartbeat/stall): if a non-terminal task has
-    # gone idle for longer than IDLE_THRESHOLD_SECONDS, force it to
-    # 'error' so the frontend stops polling and renders a real message.
-    # Uses ensure_strategy_task_terminal_state which atomically guards
-    # the UPDATE on status (no transition if the worker just flipped it
-    # to done/error in the same millisecond). After the transition we
-    # re-read the row so the response reflects the new status + error.
-    if (status in ('pending', 'running')
-            and _idle_s is not None
-            and _idle_s > IDLE_THRESHOLD_SECONDS):
-        _stall_msg = f"Generation stalled: no progress for {_idle_s}s"
+    # PR-CY15 Part B + E: stall detection now distinguishes a truly stuck
+    # task from one actively running an AI provider call. Three cases:
+    #
+    #   1. Absolute max runtime exceeded (elapsed_s > STRATEGY_TASK_MAX_SECONDS)
+    #      → force_terminal regardless of in_ai_call. This is the only
+    #        way an active AI call can be killed.
+    #   2. Idle threshold exceeded AND in_ai_call=False → force_terminal
+    #      (the legacy stall path).
+    #   3. Idle threshold exceeded BUT in_ai_call=True → DO NOT
+    #      force_terminal; surface a pending+warning envelope instead so
+    #      the frontend can render "still running, long AI repair step".
+    #
+    # The [STRATEGY-STALL-CHECK] diagnostic is emitted on every poll so
+    # operators can see exactly what the detector decided and why.
+    _will_force_terminal = False
+    _force_reason = None
+    _long_running_warning = False
+    if status in ('pending', 'running'):
+        _idle_exceeded = (_idle_s is not None
+                          and _idle_s > IDLE_THRESHOLD_SECONDS)
+        _max_exceeded = (_elapsed_s is not None
+                         and _elapsed_s > STRATEGY_TASK_MAX_SECONDS)
+        if _max_exceeded:
+            _will_force_terminal = True
+            _force_reason = (
+                f"Generation exceeded absolute max runtime "
+                f"({_elapsed_s}s > {STRATEGY_TASK_MAX_SECONDS}s)"
+            )
+        elif _idle_exceeded and not _in_ai_call_bool:
+            _will_force_terminal = True
+            _force_reason = f"Generation stalled: no progress for {_idle_s}s"
+        elif _idle_exceeded and _in_ai_call_bool:
+            # Active AI call — do NOT force_terminal on idle alone. Mark
+            # the response with a warning so the frontend can show the
+            # long-AI-repair message instead of pretending nothing is
+            # happening.
+            _long_running_warning = True
+        try:
+            print(
+                f"[STRATEGY-STALL-CHECK] task={task_id[:8]} "
+                f"idle_s={_idle_s} threshold={IDLE_THRESHOLD_SECONDS} "
+                f"elapsed_s={_elapsed_s} max={STRATEGY_TASK_MAX_SECONDS} "
+                f"in_ai_call={_in_ai_call_bool} "
+                f"stage={_stage_val!r} substage={_substage_val!r} "
+                f"will_force_terminal={_will_force_terminal}",
+                flush=True,
+            )
+        except Exception:
+            pass
+    if _will_force_terminal:
         print(f"[STRATEGY-ASYNC] stall_detected task={task_id[:8]} "
-              f"idle_s={_idle_s} threshold={IDLE_THRESHOLD_SECONDS}",
+              f"idle_s={_idle_s} threshold={IDLE_THRESHOLD_SECONDS} "
+              f"elapsed_s={_elapsed_s} max={STRATEGY_TASK_MAX_SECONDS} "
+              f"in_ai_call={_in_ai_call_bool}",
               flush=True)
         try:
-            ensure_strategy_task_terminal_state(task_id, error_message=_stall_msg)
+            ensure_strategy_task_terminal_state(
+                task_id,
+                error_message=_force_reason,
+                force_terminal_context={
+                    'reason': _force_reason,
+                    'stage': _stage_val,
+                    'substage': _substage_val,
+                    'in_ai_call': _in_ai_call_bool,
+                    'idle_s': _idle_s,
+                    'elapsed_s': _elapsed_s,
+                },
+            )
         except Exception as _ste:
             print(f"[STRATEGY-ASYNC] stall_terminal_error task="
                   f"{task_id[:8]} err={_ste!r}", flush=True)
@@ -17941,9 +18255,11 @@ def api_strategy_status(task_id):
         """
         if isinstance(payload, dict):
             payload.setdefault('stage', _stage_val)
+            payload.setdefault('substage', _substage_val)
             payload.setdefault('updated_at', _updated_at_val)
             payload.setdefault('elapsed_s', _elapsed_s)
             payload.setdefault('idle_s', _idle_s)
+            payload.setdefault('in_ai_call', _in_ai_call_bool)
         return payload
     if status == 'done':
         # ── Unpack compact task envelope ──────────────────────────────────────
@@ -18017,7 +18333,8 @@ def api_strategy_status(task_id):
         print(f"[STRATEGY-STATUS] returning_error task={task_id[:8]} "
               f"error={_err_payload!r}", flush=True)
         return jsonify(_with_progress({'status': 'error', 'error': _err_payload}))
-    print(f"[STRATEGY-STATUS] returning_pending task={task_id[:8]}",
+    print(f"[STRATEGY-STATUS] returning_pending task={task_id[:8]} "
+          f"in_ai_call={_in_ai_call_bool} warning={_long_running_warning}",
           flush=True)
     # PR-CY12 Part A — frontend contract for an active task: also expose
     # ``pending=True``, ``elapsed_seconds`` (snake-case alias of
@@ -18026,10 +18343,28 @@ def api_strategy_status(task_id):
     # having to special-case ``status==='pending'`` plus an additional
     # field name. Existing ``status`` / ``stage`` / ``elapsed_s`` are
     # preserved untouched for back-compat.
+    #
+    # PR-CY15 Part D: when the task has crossed the idle threshold while
+    # an AI provider call is still in flight, surface ``warning=True``
+    # and a more specific message so the UI can render
+    # "long AI repair step in progress" instead of the generic
+    # "still running" copy.
+    if _long_running_warning:
+        return jsonify(_with_progress({
+            'status': 'pending',
+            'pending': True,
+            'elapsed_seconds': _elapsed_s,
+            'warning': True,
+            'message': (
+                'Generation is still running; '
+                'long AI repair step in progress'
+            ),
+        }))
     return jsonify(_with_progress({
         'status': 'pending',
         'pending': True,
         'elapsed_seconds': _elapsed_s,
+        'warning': False,
         'message': 'Generation is still running',
     }))
 
@@ -18082,7 +18417,10 @@ def api_strategy_latest():
                 # pre-migration DB or an unparseable created_at falls back
                 # to ``None`` and the frontend formats accordingly.
                 _pending_stage = None
+                _pending_substage = None
+                _pending_in_ai_call = False
                 _pending_elapsed_s = None
+                _pending_idle_s = None
                 _pending_status = None
                 try:
                     _ptask = get_background_task(_active_tid)
@@ -18093,13 +18431,26 @@ def api_strategy_latest():
                     _pending_stage = (
                         _ptask['stage'] if 'stage' in _pkeys else None
                     )
+                    _pending_substage = (
+                        _ptask['substage'] if 'substage' in _pkeys else None
+                    )
+                    _p_in_ai_raw = (
+                        _ptask['in_ai_call'] if 'in_ai_call' in _pkeys else None
+                    )
+                    _pending_in_ai_call = (
+                        bool(_p_in_ai_raw) if _p_in_ai_raw is not None else False
+                    )
                     _pending_status = (
                         _ptask['status'] if 'status' in _pkeys else None
                     )
                     _p_created_raw = (
                         _ptask['created_at'] if 'created_at' in _pkeys else None
                     )
+                    _p_updated_raw = (
+                        _ptask['updated_at'] if 'updated_at' in _pkeys else None
+                    )
                     _p_created_dt = _parse_db_timestamp(_p_created_raw)
+                    _p_updated_dt = _parse_db_timestamp(_p_updated_raw)
                     if _p_created_dt is not None:
                         try:
                             from datetime import datetime as _dt_pn
@@ -18110,18 +18461,72 @@ def api_strategy_latest():
                             )
                         except Exception:  # noqa: BLE001
                             _pending_elapsed_s = None
+                    _p_idle_basis = _p_updated_dt or _p_created_dt
+                    if _p_idle_basis is not None:
+                        try:
+                            from datetime import datetime as _dt_pn2
+                            _pending_idle_s = max(
+                                0,
+                                int((_dt_pn2.utcnow() - _p_idle_basis)
+                                    .total_seconds()),
+                            )
+                        except Exception:  # noqa: BLE001
+                            _pending_idle_s = None
+                # PR-CY15 Part D — emit warning when the task has crossed
+                # the idle threshold while an AI call is still in flight,
+                # so the recovery path matches the polling path.
+                _pending_warning = bool(
+                    _pending_in_ai_call
+                    and _pending_idle_s is not None
+                    and _pending_idle_s > IDLE_THRESHOLD_SECONDS
+                )
+                if _pending_warning:
+                    print(f"[STRATEGY-ASYNC] latest_recoverable_pending "
+                          f"user={session['user_id']} domain={domain!r} "
+                          f"task={_active_tid[:8]} "
+                          f"stage={_pending_stage!r} "
+                          f"substage={_pending_substage!r} "
+                          f"in_ai_call={_pending_in_ai_call} "
+                          f"elapsed_seconds={_pending_elapsed_s} "
+                          f"idle_s={_pending_idle_s} "
+                          f"warning=True", flush=True)
+                    return jsonify({
+                        'success': False,
+                        'pending': True,
+                        'task_id': _active_tid,
+                        'task_status': _pending_status,
+                        'stage': _pending_stage,
+                        'substage': _pending_substage,
+                        'in_ai_call': _pending_in_ai_call,
+                        'elapsed_seconds': _pending_elapsed_s,
+                        'idle_s': _pending_idle_s,
+                        'warning': True,
+                        'message': (
+                            'Generation is still running; '
+                            'long AI repair step in progress'
+                        ),
+                        'attempts': attempts,
+                    })
                 print(f"[STRATEGY-ASYNC] latest_recoverable_pending "
                       f"user={session['user_id']} domain={domain!r} "
                       f"task={_active_tid[:8]} "
                       f"stage={_pending_stage!r} "
-                      f"elapsed_seconds={_pending_elapsed_s}", flush=True)
+                      f"substage={_pending_substage!r} "
+                      f"in_ai_call={_pending_in_ai_call} "
+                      f"elapsed_seconds={_pending_elapsed_s} "
+                      f"idle_s={_pending_idle_s} "
+                      f"warning=False", flush=True)
                 return jsonify({
                     'success': False,
                     'pending': True,
                     'task_id': _active_tid,
                     'task_status': _pending_status,
                     'stage': _pending_stage,
+                    'substage': _pending_substage,
+                    'in_ai_call': _pending_in_ai_call,
                     'elapsed_seconds': _pending_elapsed_s,
+                    'idle_s': _pending_idle_s,
+                    'warning': False,
                     'message': 'Generation is still running',
                     'attempts': attempts,
                 })
