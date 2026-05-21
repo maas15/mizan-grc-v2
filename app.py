@@ -26488,7 +26488,7 @@ def _compute_missing_specialized_function_objective(
                 any_est_overall = True
             if has_lead:
                 any_lead_overall = True
-            if ('مكتب CISO' in blob) or ('ciso office' in blob_lc):
+            if _cyber_blob_contains_bad_ciso_office(blob):
                 bad_office_overall = True
             if has_est and has_lead:
                 accepted_row_blob = blob
@@ -27493,6 +27493,26 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     defects = []
     if doc_subtype == 'board':
         return defects
+    # PR-CY16 — normalize Arabic CISO-office variants in the Cyber
+    # Vision section BEFORE the audit inspects it. Strictly scoped to
+    # ``domain == 'cyber'`` (no-op for every other domain); only mutates
+    # the existing vision text — never adds a new objective row, never
+    # weakens any validator. This guarantees the audit's
+    # ``_compute_missing_specialized_function_objective`` /
+    # ``_validate_vision_contract`` calls always evaluate the
+    # normalized wording so a bad CISO-office phrasing rewritten to
+    # ``إدارة الأمن السيبراني بقيادة CISO`` no longer trips
+    # ``specialized_function_objective_missing:cyber``.
+    try:
+        _fa_dcode = (
+            normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _fa_dcode = ''
+    if _fa_dcode == 'cyber' and isinstance(sections, dict):
+        try:
+            _normalize_cyber_ar_ciso_wording(sections, lang, domain)
+        except Exception:  # noqa: BLE001 — defensive
+            pass
     # Strategic Objectives
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -29996,12 +30016,23 @@ def _cyber_vision_specialized_objective_topup_contract(
         '"CISO" أو "رئيس الأمن السيبراني" أو '
         '"لجنة حوكمة الأمن السيبراني" أو '
         '"الأدوار والمسؤوليات" أو "خطوط الرفع". '
-        'الصياغة المفضلة (يمكن استخدامها حرفياً): '
-        '"إنشاء إدارة الأمن السيبراني بقيادة CISO وتفعيل لجنة '
-        'حوكمة الأمن السيبراني وتحديد الأدوار والمسؤوليات وخطوط '
-        'الرفع". '
-        'ممنوع منعاً باتاً استخدام عبارة "مكتب CISO" أو '
-        '"CISO office" — هذه الصياغة مرفوضة وستُعاد المحاولة. '
+        'الصياغة المطلوبة بالضبط (يجب استخدام إحدى هاتين '
+        'الصيغتين حرفياً): '
+        '"إنشاء إدارة الأمن السيبراني بقيادة CISO" أو '
+        '"تأسيس إدارة الأمن السيبراني بقيادة CISO". '
+        'يُسمح بالتمديد مثل: "إنشاء إدارة الأمن السيبراني بقيادة '
+        'CISO وتفعيل لجنة حوكمة الأمن السيبراني وتحديد الأدوار '
+        'والمسؤوليات وخطوط الرفع". '
+        'ممنوع منعاً باتاً استخدام أيٍّ من الصياغات التالية '
+        '(ستُرفض المحاولة فوراً): '
+        '"مكتب CISO"، '
+        '"مكتب رئيس أمن المعلومات"، '
+        '"مكتب رئيس الأمن السيبراني"، '
+        '"مكتب الرئيس التنفيذي لأمن المعلومات"، '
+        '"مكتب مسؤول أمن المعلومات"، '
+        '"مكتب مدير أمن المعلومات"، '
+        '"CISO office"، '
+        '"Chief Information Security Officer office". '
         'كذلك لا يكفي "تعيين CISO" منفرداً دون عبارة الإنشاء/'
         'التأسيس. حافظ على جميع الصفوف الحالية، لا تُسقط أي صف '
         'موجود، ولا تستبدل صف الامتثال للأطر بهذا الصف؛ كلاهما '
@@ -30015,9 +30046,19 @@ def _cyber_vision_specialized_objective_topup_contract(
         'Department/Function led by CISO) AND a leadership/'
         'governance phrase (CISO, Cybersecurity Governance '
         'Committee, roles & responsibilities, reporting lines). '
-        'Do NOT write "CISO office" / "مكتب CISO" — that wording '
-        'will be rejected. A bare "appoint CISO" / "تعيين CISO" '
-        'alone is NOT sufficient.'
+        'REQUIRED EXACT STRUCTURE — use one of: '
+        '"إنشاء إدارة الأمن السيبراني بقيادة CISO" or '
+        '"تأسيس إدارة الأمن السيبراني بقيادة CISO". '
+        'STRICTLY FORBIDDEN wording (will be rejected): '
+        '"مكتب CISO", "مكتب رئيس أمن المعلومات", '
+        '"مكتب رئيس الأمن السيبراني", '
+        '"مكتب الرئيس التنفيذي لأمن المعلومات", '
+        '"مكتب مسؤول أمن المعلومات", '
+        '"مكتب مدير أمن المعلومات", '
+        '"CISO office", '
+        '"Chief Information Security Officer office". '
+        'A bare "appoint CISO" / "تعيين CISO" alone is NOT '
+        'sufficient.'
     )
     if attempt and int(attempt) > 1:
         base = (
@@ -30118,8 +30159,7 @@ def _cyber_vision_objective_row_diagnostic(row_blob):
         or ('خطوط الرفع' in blob)
         or ('roles and responsibilities' in blob_lc)
         or ('reporting lines' in blob_lc))
-    contains_bad_office = (
-        ('مكتب CISO' in blob) or ('ciso office' in blob_lc))
+    contains_bad_office = _cyber_blob_contains_bad_ciso_office(blob)
     # Preview: first 80 chars of the blob, with newlines collapsed —
     # exposed in the diagnostic so the operator can see what row was
     # actually evaluated.
@@ -31777,9 +31817,100 @@ def _normalize_data_dmo_cdo_owner(sections, lang, domain):
 # ─────────────────────────────────────────────────────────────────────────
 
 # AR phrase replacements — longest match first so the more specific
-# ``إنشاء مكتب CISO متخصص`` / ``إنشاء مكتب CISO`` patterns are rewritten
-# before the shorter ``مكتب CISO`` fallback.
+# ``إنشاء مكتب رئيس أمن المعلومات CISO`` / ``إنشاء مكتب CISO متخصص`` /
+# ``إنشاء مكتب CISO`` patterns are rewritten before the shorter
+# ``مكتب CISO`` / ``مكتب رئيس أمن المعلومات`` fallbacks.
+#
+# PR-CY16 — adds extended Arabic CISO-office variants observed in
+# production runs:
+#   * ``مكتب رئيس أمن المعلومات [CISO]``
+#   * ``مكتب رئيس الأمن السيبراني [CISO]``
+#   * ``مكتب الرئيس التنفيذي لأمن المعلومات``
+#   * ``مكتب مسؤول أمن المعلومات``
+#   * ``مكتب مدير أمن المعلومات``
+# combined with the existing verb prefixes
+# ``إنشاء`` / ``تأسيس`` / ``بناء`` / ``استحداث``.
+#
+# Legitimate CISO role references — ``تعيين CISO``, ``دور CISO``,
+# ``مسؤوليات CISO``, ``رئيس الأمن السيبراني`` (without ``مكتب``) — are
+# NEVER rewritten because every entry below requires the literal token
+# ``مكتب`` to be present.
 _CYBER_CISO_WORDING_AR = [
+    # ── Long verb-prefixed forms with the explicit CISO suffix.
+    ('إنشاء مكتب رئيس أمن المعلومات CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب رئيس أمن المعلومات CISO',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب رئيس أمن المعلومات CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب رئيس أمن المعلومات CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('إنشاء مكتب رئيس الأمن السيبراني CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب رئيس الأمن السيبراني CISO',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب رئيس الأمن السيبراني CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب رئيس الأمن السيبراني CISO',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    # ── Long verb-prefixed forms WITHOUT the trailing CISO suffix.
+    ('إنشاء مكتب رئيس أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب رئيس أمن المعلومات',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب رئيس أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب رئيس أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('إنشاء مكتب رئيس الأمن السيبراني',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب رئيس الأمن السيبراني',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب رئيس الأمن السيبراني',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب رئيس الأمن السيبراني',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    # ── Other verb-prefixed office variants.
+    ('إنشاء مكتب الرئيس التنفيذي لأمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب الرئيس التنفيذي لأمن المعلومات',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب الرئيس التنفيذي لأمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب الرئيس التنفيذي لأمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('إنشاء مكتب مسؤول أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب مسؤول أمن المعلومات',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب مسؤول أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب مسؤول أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('إنشاء مكتب مدير أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('تأسيس مكتب مدير أمن المعلومات',
+     'تأسيس إدارة الأمن السيبراني بقيادة CISO'),
+    ('بناء مكتب مدير أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    ('استحداث مكتب مدير أمن المعلومات',
+     'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
+    # ── Bare ``مكتب …`` forms (no leading verb).
+    ('مكتب رئيس أمن المعلومات CISO',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب رئيس الأمن السيبراني CISO',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب رئيس أمن المعلومات',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب رئيس الأمن السيبراني',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب الرئيس التنفيذي لأمن المعلومات',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب مسؤول أمن المعلومات',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    ('مكتب مدير أمن المعلومات',
+     'إدارة الأمن السيبراني بقيادة CISO'),
+    # ── Original PR-CY5 ``مكتب CISO`` family (kept verbatim).
     ('إنشاء مكتب CISO متخصص',
      'إنشاء إدارة الأمن السيبراني بقيادة CISO'),
     ('تأسيس مكتب CISO متخصص',
@@ -31799,7 +31930,18 @@ _CYBER_CISO_WORDING_AR = [
 ]
 
 # EN phrase replacements — same intent on the English side.
+# PR-CY16 also normalizes the explicit "Chief Information Security
+# Officer office" wording so the EN bad-office detector below matches
+# every variant the AR list rewrites.
 _CYBER_CISO_WORDING_EN = [
+    ('Establish a dedicated Chief Information Security Officer office',
+     'Establish a cybersecurity department led by the CISO'),
+    ('Establish the Chief Information Security Officer office',
+     'Establish the cybersecurity department led by the CISO'),
+    ('Establish a Chief Information Security Officer office',
+     'Establish a cybersecurity department led by the CISO'),
+    ('Chief Information Security Officer office',
+     'cybersecurity department led by the CISO'),
     ('Establish a dedicated CISO office',
      'Establish a cybersecurity department led by the CISO'),
     ('Establish a dedicated ciso office',
@@ -31813,6 +31955,47 @@ _CYBER_CISO_WORDING_EN = [
     ('CISO office',
      'cybersecurity department led by the CISO'),
 ]
+
+
+# PR-CY16 — Shared bad-office detector. Used by every Cyber vision
+# specialized-objective gate so all variants surface the same
+# ``contains_bad_ciso_office=True`` signal regardless of which call
+# path inspects the row blob.
+_CYBER_BAD_OFFICE_PHRASES_AR = (
+    'مكتب CISO',
+    'مكتب رئيس أمن المعلومات',
+    'مكتب رئيس الأمن السيبراني',
+    'مكتب الرئيس التنفيذي لأمن المعلومات',
+    'مكتب مسؤول أمن المعلومات',
+    'مكتب مدير أمن المعلومات',
+)
+_CYBER_BAD_OFFICE_PHRASES_EN = (
+    'ciso office',
+    'chief information security officer office',
+)
+
+
+def _cyber_blob_contains_bad_ciso_office(blob):
+    """PR-CY16 — Return True when ``blob`` contains any forbidden
+    ``office of the CISO``-style wording (Arabic or English). Centralised
+    so ``_cyber_vision_objective_row_diagnostic``,
+    ``_compute_missing_specialized_function_objective`` and
+    ``_extract_cyber_vision_objective_topup_row`` share one detector.
+    """
+    if not blob:
+        return False
+    try:
+        blob_s = str(blob)
+    except Exception:  # noqa: BLE001 — defensive
+        return False
+    blob_lc = blob_s.lower()
+    for p in _CYBER_BAD_OFFICE_PHRASES_AR:
+        if p and p in blob_s:
+            return True
+    for p in _CYBER_BAD_OFFICE_PHRASES_EN:
+        if p and p in blob_lc:
+            return True
+    return False
 
 
 def _normalize_cyber_ar_ciso_wording(sections, lang, domain):
@@ -48203,6 +48386,32 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 )
                             except Exception:  # noqa: BLE001 — diagnostic only
                                 pass
+                            # PR-CY16 — normalize Arabic CISO-office
+                            # variants in the Cyber Vision section
+                            # immediately BEFORE the post-normalization
+                            # final audit. Strictly Cyber-scoped (no-op
+                            # for any other domain) and only mutates
+                            # existing vision text; never adds a row.
+                            try:
+                                _cy16_pre_audit = (
+                                    _normalize_cyber_ar_ciso_wording(
+                                        sections, lang, domain))
+                                if _cy16_pre_audit:
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        'cyber_ciso_wording_normalization='
+                                        f'{_cy16_pre_audit} '
+                                        'phase=before_post_normalization_audit',
+                                        flush=True,
+                                    )
+                            except Exception as _cy16e:  # noqa: BLE001
+                                print(
+                                    '[STRATEGY-DIAG] '
+                                    'cyber_ciso_wording_normalization_failed: '
+                                    f'{_cy16e} '
+                                    'phase=before_post_normalization_audit',
+                                    flush=True,
+                                )
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status,
@@ -49076,6 +49285,73 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'{_cy11ne}',
                                     flush=True,
                                 )
+                            # PR-CY16 — final Cyber CISO-office wording
+                            # normalization immediately BEFORE the
+                            # unified 422 below. If the PR-CY11 post-
+                            # normalization guard's repair candidate
+                            # used a still-bad office variant, mutate
+                            # it now and re-run the audit so the gate
+                            # sees the corrected text. Strictly Cyber-
+                            # scoped; never adds a new objective row.
+                            try:
+                                _cy16_dcode = (
+                                    normalize_domain(domain or '')
+                                    or '').strip().lower()
+                            except Exception:  # noqa: BLE001
+                                _cy16_dcode = ''
+                            if _cy16_dcode == 'cyber':
+                                try:
+                                    _cy16_pre422 = (
+                                        _normalize_cyber_ar_ciso_wording(
+                                            sections, lang, domain))
+                                    if _cy16_pre422:
+                                        print(
+                                            '[STRATEGY-DIAG] '
+                                            'cyber_ciso_wording_normalization='
+                                            f'{_cy16_pre422} '
+                                            'phase=before_unified_422',
+                                            flush=True,
+                                        )
+                                        try:
+                                            _post_norm_defects = (
+                                                _final_strategy_audit(
+                                                    sections, lang,
+                                                    doc_subtype,
+                                                    synth_status=_synth_status,
+                                                    selected_frameworks=_frameworks_raw,
+                                                    domain=domain,
+                                                    org_structure_is_none=bool(
+                                                        _final_ctx.get(
+                                                            'org_structure_is_none',
+                                                            False)
+                                                        if isinstance(
+                                                            _final_ctx, dict)
+                                                        else False
+                                                    ),
+                                                ))
+                                            print(
+                                                '[STRATEGY-DIAG] '
+                                                'post_normalization_audit '
+                                                'phase=after_pre422_normalization '
+                                                f'defects={_post_norm_defects}',
+                                                flush=True,
+                                            )
+                                        except Exception as _cy16re:  # noqa: BLE001
+                                            print(
+                                                '[STRATEGY-DIAG] '
+                                                'post_normalization_audit_'
+                                                f'reaudit_failed: {_cy16re} '
+                                                'phase=after_pre422_normalization',
+                                                flush=True,
+                                            )
+                                except Exception as _cy16fe:  # noqa: BLE001
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        'cyber_ciso_wording_normalization_failed: '
+                                        f'{_cy16fe} '
+                                        'phase=before_unified_422',
+                                        flush=True,
+                                    )
                             if _post_norm_defects:
                                 _pn_summary_en = '; '.join(
                                     f'{tag} ({sec}) {cnt}/{floor}'
