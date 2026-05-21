@@ -257,6 +257,38 @@ def get_background_task(task_id):
         print(f"Task get error: {e}", flush=True)
         return None
 
+def _strategy_domain_canonical(raw):
+    """PR-CY13 — Return the canonical strategy-domain code for ``raw`` or
+    ``None`` if unrecognised.
+
+    Unlike ``normalize_domain`` this does NOT silently default to
+    ``'cyber'`` when the input is missing/unknown — the strategy task
+    lifecycle (find_active_strategy_task / ensure_latest_strategy_recoverable)
+    needs to distinguish "this row is for the cyber domain" from
+    "this row's domain is not recognised", so an unknown stored value
+    can never be coerced into matching every lookup.
+
+    Accepts every variant in ``_DOMAIN_CODE_MAP`` (English display name,
+    Arabic display name, short code, slug, ``cybersecurity`` alias, and
+    case-insensitive forms of all of the above). For example all of
+    ``Cyber Security``, ``الأمن السيبراني``, ``cyber``, ``cybersecurity``,
+    ``cyber_security`` collapse to ``'cyber'``.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    code = _DOMAIN_CODE_MAP.get(s) or _DOMAIN_CODE_MAP.get(s.lower())
+    if code:
+        return code
+    lower = s.lower()
+    for key, val in _DOMAIN_CODE_MAP.items():
+        if key.lower() == lower:
+            return val
+    return None
+
+
 def find_active_strategy_task(user_id, domain):
     """PR-CY12 Part A — return the task_id of the most recently created
     background_tasks row for ``user_id`` + ``callback_domain`` that is
@@ -267,21 +299,59 @@ def find_active_strategy_task(user_id, domain):
     instead of spawning a duplicate concurrent generation, and by
     ``api_strategy_latest`` to distinguish "no strategy yet because
     generation is still running" from "no strategy at all".
+
+    PR-CY13 — domain is normalized via ``_strategy_domain_canonical`` so
+    equivalent variants resolve to the same active task. The frontend
+    may call ``/api/strategy/latest?domain=الأمن السيبراني`` while
+    ``create_background_task`` stored ``callback_domain='Cyber Security'``
+    (or vice versa); both must match. Equivalence classes:
+
+      * ``Cyber Security`` ≡ ``الأمن السيبراني`` ≡ ``cyber`` ≡ ``cybersecurity`` ≡ ``cyber_security``
+      * ``Data Management`` ≡ ``إدارة البيانات`` ≡ ``data`` ≡ ``data_management``
+      * ``Artificial Intelligence`` ≡ ``الذكاء الاصطناعي`` ≡ ``ai`` ≡ ``artificial_intelligence``
+      * ``Digital Transformation`` ≡ ``التحول الرقمي`` ≡ ``dt`` ≡ ``digital_transformation``
+      * ``Enterprise Risk Management`` ≡ ``إدارة المخاطر المؤسسية`` ≡ ``erm`` ≡ ``enterprise_risk_management``
+      * ``Global Standards`` ≡ ``المعايير العالمية`` ≡ ``global`` ≡ ``global_standards``
+
+    If the input domain is unrecognised the function falls back to a
+    strict equality lookup so legacy callers don't silently match
+    unrelated rows.
     """
     if not user_id or not domain:
         return None
+    target_code = _strategy_domain_canonical(domain)
     try:
         with closing(get_db_direct()) as conn:
-            row = conn.execute(
-                'SELECT task_id FROM background_tasks '
-                'WHERE user_id = ? AND callback_domain = ? '
+            if target_code is None:
+                # Unknown domain variant — preserve historical strict
+                # equality behaviour so we never coerce an unrelated row
+                # into a match.
+                row = conn.execute(
+                    'SELECT task_id FROM background_tasks '
+                    'WHERE user_id = ? AND callback_domain = ? '
+                    "AND status IN ('pending', 'running') "
+                    'ORDER BY created_at DESC LIMIT 1',
+                    (user_id, domain)
+                ).fetchone()
+                if not row:
+                    return None
+                return row['task_id'] if hasattr(row, 'keys') else row[0]
+            # Canonical match: pull all non-terminal tasks for this user
+            # ordered by recency, then filter by normalized domain code
+            # in Python so EN/AR/slug/code variants collapse to the same
+            # equivalence class.
+            rows = conn.execute(
+                'SELECT task_id, callback_domain FROM background_tasks '
+                'WHERE user_id = ? '
                 "AND status IN ('pending', 'running') "
-                'ORDER BY created_at DESC LIMIT 1',
-                (user_id, domain)
-            ).fetchone()
-            if not row:
-                return None
-            return row['task_id'] if hasattr(row, 'keys') else row[0]
+                'ORDER BY created_at DESC',
+                (user_id,)
+            ).fetchall()
+            for r in rows:
+                cb = r['callback_domain'] if hasattr(r, 'keys') else r[1]
+                if _strategy_domain_canonical(cb) == target_code:
+                    return r['task_id'] if hasattr(r, 'keys') else r[0]
+            return None
     except Exception as e:
         print(f"[STRATEGY-ASYNC] find_active_strategy_task error: {e}",
               flush=True)
@@ -345,19 +415,51 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
 
     Returns (row_dict_or_None, attempts_used). Each attempt is a fresh
     SELECT against strategies ORDER BY created_at DESC LIMIT 1.
+
+    PR-CY13 — domain is normalized via ``_strategy_domain_canonical``
+    so a strategy saved with ``domain='Cyber Security'`` is also
+    recoverable when the frontend calls
+    ``/api/strategy/latest?domain=الأمن السيبراني`` (and vice versa).
+    Same equivalence classes documented on ``find_active_strategy_task``.
+    Unknown domain variants fall back to strict equality so legacy
+    callers don't silently match unrelated rows.
     """
     import time as _time_lsr
+    target_code = _strategy_domain_canonical(domain)
     last_row = None
     for attempt in range(1, max_retries + 1):
         try:
             with closing(get_db_direct()) as conn:
-                row = conn.execute(
-                    'SELECT id, sections_json, content_json, content, '
-                    'domain, language, document_title, created_at '
-                    'FROM strategies WHERE user_id = ? AND domain = ? '
-                    'ORDER BY created_at DESC LIMIT 1',
-                    (user_id, domain)
-                ).fetchone()
+                if target_code is None:
+                    # Strict match for unrecognised domain variants.
+                    row = conn.execute(
+                        'SELECT id, sections_json, content_json, content, '
+                        'domain, language, document_title, created_at '
+                        'FROM strategies WHERE user_id = ? AND domain = ? '
+                        'ORDER BY created_at DESC LIMIT 1',
+                        (user_id, domain)
+                    ).fetchone()
+                else:
+                    # Canonical match: pull recent rows for this user and
+                    # pick the first whose stored domain normalizes to
+                    # the same code. We cap at a reasonable LIMIT so a
+                    # user with thousands of strategies doesn't slow the
+                    # recovery path; ORDER BY created_at DESC ensures we
+                    # see the most recent saves first.
+                    candidates = conn.execute(
+                        'SELECT id, sections_json, content_json, content, '
+                        'domain, language, document_title, created_at '
+                        'FROM strategies WHERE user_id = ? '
+                        'ORDER BY created_at DESC LIMIT 50',
+                        (user_id,)
+                    ).fetchall()
+                    row = None
+                    for cand in candidates:
+                        cd = (cand['domain']
+                              if hasattr(cand, 'keys') else cand[4])
+                        if _strategy_domain_canonical(cd) == target_code:
+                            row = cand
+                            break
             if row:
                 print(f"[STRATEGY-ASYNC] latest_recoverable_hit "
                       f"user={user_id} domain={domain!r} attempt={attempt} "
@@ -3412,6 +3514,13 @@ _DOMAIN_CODE_MAP: dict = {
     "Cyber Security": "cyber",        "cyber security": "cyber",
     "الأمن السيبراني": "cyber",       "cyber": "cyber",
     "cyber_security": "cyber",
+    # PR-CY13 — additional accepted variants surfaced by the strategy
+    # task lifecycle (frontend may send `cybersecurity` or `CyberSecurity`
+    # via legacy clients; canonicalize them to the same code so
+    # find_active_strategy_task / ensure_latest_strategy_recoverable
+    # don't 404 while a task is still running).
+    "Cybersecurity": "cyber",         "cybersecurity": "cyber",
+    "CyberSecurity": "cyber",
     # Data Management
     "Data Management": "data",        "data management": "data",
     "إدارة البيانات": "data",          "data": "data",
