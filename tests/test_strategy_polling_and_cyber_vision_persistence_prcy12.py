@@ -130,22 +130,27 @@ def test_duplicate_strategy_request_reuses_active_task():
 
 
 def test_frontend_timeout_message_when_backend_still_running():
-    """Test 4 — frontend recovery surfaces the new "still running" toast
-    when the backend response carries pending=true."""
+    """Test 4 — frontend recovery surfaces a persistent banner when the
+    backend response carries pending=true.
+
+    PR-CY14 superseded the previous transient "check My Documents" toast
+    with a persistent banner that exposes stage + elapsed seconds and a
+    visible "تحديث الحالة" / "Refresh status" button. The runtime
+    evidence in PR-CY14 showed users misreading the legacy toast as
+    confirmation that the document was already saved (it was not — the
+    backend was still running). The pending path must therefore neither
+    direct the user to My Documents nor rely solely on a 3-second toast.
+    """
     html = _read(DOMAIN_HTML)
     assert 'd.pending === true' in html, (
         'recovery flow must detect the pending envelope'
     )
-    # New EN message.
-    assert (
-        'Generation is still running. Please wait or check My Documents.'
-        in html
-    )
-    # New AR message.
-    assert (
-        'لا يزال الإنشاء قيد التشغيل. يُرجى الانتظار أو مراجعة وثائقي.'
-        in html
-    )
+    # PR-CY14 — banner helper drives the pending UX.
+    assert 'renderStrategyPendingBanner(' in html
+    # New EN message inside the banner.
+    assert 'Generation is still running. Current stage:' in html
+    # New AR message inside the banner.
+    assert 'لا يزال التوليد جارياً. المرحلة الحالية:' in html
     # The legacy "انتهت مهلة الإنشاء" message must still exist as the
     # genuine-timeout branch — we don't want to fully delete it.
     assert 'انتهت مهلة الإنشاء' in html

@@ -1564,6 +1564,112 @@ function _onStrategyResult(result){
   hideLoading();
 }
 
+/* PR-CY14 — persistent pending banner used by the strategy recovery
+   path. Shown when /api/strategy/latest returns ``{pending:true,...}``,
+   meaning the background task is still running and no document has
+   been written yet. The banner displays the current stage + elapsed
+   seconds returned by the backend and exposes a "تحديث الحالة" /
+   "Refresh status" button that re-polls /api/strategy-status/<task_id>
+   using the same task_id. We do NOT direct the user to My Documents
+   while pending — the document does not exist there until the task
+   completes.
+
+   Idempotent: subsequent calls update the existing banner in-place. */
+function renderStrategyPendingBanner(taskId, stage, elapsedSeconds){
+  if(!taskId){return;}
+  var stageTxt = (stage===null||stage===undefined||stage==='') ?
+                 (isRtl?'غير معروفة':'unknown') : String(stage);
+  var elapsedTxt = (typeof elapsedSeconds === 'number' && elapsedSeconds>=0) ?
+                   String(elapsedSeconds) : (isRtl?'غير معروفة':'unknown');
+  var banner = document.getElementById('strategy-pending-banner');
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'strategy-pending-banner';
+    banner.setAttribute('role','status');
+    banner.setAttribute('aria-live','polite');
+    banner.style.cssText = 'position:fixed;top:80px;left:50%;'+
+      'transform:translateX(-50%);z-index:9999;max-width:560px;width:90%;'+
+      'padding:14px 18px;border-radius:10px;background:linear-gradient('+
+      '135deg,#667eea,#764ba2);color:#fff;box-shadow:0 6px 24px '+
+      'rgba(0,0,0,.25);font-size:14px;line-height:1.5;'+
+      'display:flex;flex-direction:column;gap:10px;';
+    banner.innerHTML =
+      '<div id="strategy-pending-banner-msg"></div>'+
+      '<div style="display:flex;gap:8px;align-items:center;">'+
+        '<button type="button" id="strategy-pending-banner-refresh" '+
+          'style="background:#fff;color:#333;border:0;border-radius:6px;'+
+          'padding:6px 14px;font-weight:600;cursor:pointer;">'+
+          (isRtl?'تحديث الحالة':'Refresh status')+'</button>'+
+        '<span id="strategy-pending-banner-status" style="opacity:.85;'+
+          'font-size:12px;"></span>'+
+      '</div>';
+    document.body.appendChild(banner);
+  }
+  banner.dataset.taskId = taskId;
+  var msg = isRtl
+    ? ('لا يزال التوليد جارياً. المرحلة الحالية: '+stageTxt+
+       '. الوقت المنقضي: '+elapsedTxt+' ثانية.')
+    : ('Generation is still running. Current stage: '+stageTxt+
+       '. Elapsed: '+elapsedTxt+' seconds.');
+  var msgEl = document.getElementById('strategy-pending-banner-msg');
+  if(msgEl){msgEl.textContent = msg;}
+  var btn = document.getElementById('strategy-pending-banner-refresh');
+  if(btn && !btn._wired){
+    btn._wired = true;
+    btn.addEventListener('click', function(){
+      var tid = banner.dataset.taskId;
+      if(!tid){return;}
+      var statusEl = document.getElementById('strategy-pending-banner-status');
+      if(statusEl){statusEl.textContent = isRtl?'جارٍ التحديث...':'Refreshing...';}
+      btn.disabled = true;
+      fetch('/api/strategy-status/'+tid)
+        .then(function(r){return r.json().catch(function(){return null;});})
+        .then(function(s){
+          btn.disabled = false;
+          if(statusEl){statusEl.textContent = '';}
+          if(!s){
+            if(statusEl){statusEl.textContent = isRtl?'تعذّر التحديث':'Refresh failed';}
+            return;
+          }
+          if(s.status === 'done'){
+            var _r = s.result || {};
+            if(_r && _r.success === false){
+              hideStrategyPendingBanner();
+              Toast.error((isRtl?'خطأ: ':'Error: ')+(_r.error||'Unknown'));
+              return;
+            }
+            hideStrategyPendingBanner();
+            try{ _onStrategyResult(_r); }catch(e){
+              console.error('[STRATEGY-UI] refresh_render_error',e);
+              Toast.error(isRtl?'فشل عرض المعاينة':'Preview rendering failed');
+            }
+            return;
+          }
+          if(s.status === 'error'){
+            hideStrategyPendingBanner();
+            Toast.error((isRtl?'خطأ: ':'Error: ')+(s.error||'Unknown'));
+            return;
+          }
+          /* Still pending/running — refresh banner with new telemetry. */
+          var _newStage = (s.stage!==undefined)?s.stage:stage;
+          var _newElapsed = (typeof s.elapsed_seconds==='number')
+                            ? s.elapsed_seconds
+                            : ((typeof s.elapsed_s==='number')?s.elapsed_s:elapsedSeconds);
+          renderStrategyPendingBanner(tid, _newStage, _newElapsed);
+        })
+        .catch(function(){
+          btn.disabled = false;
+          if(statusEl){statusEl.textContent = isRtl?'تعذّر التحديث':'Refresh failed';}
+        });
+    });
+  }
+}
+
+function hideStrategyPendingBanner(){
+  var banner = document.getElementById('strategy-pending-banner');
+  if(banner && banner.parentNode){banner.parentNode.removeChild(banner);}
+}
+
 try{
   /* Start async generation */
   var startRes=await fetch('/api/generate-strategy-async',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
@@ -1657,10 +1763,20 @@ try{
          the user does not retry and spawn another concurrent task. */
       if(d && d.pending === true){
         console.warn('[STRATEGY-UI] recovery_backend_still_running '+
-                     'reason='+reason+' task='+(d.task_id||'').slice(0,8));
+                     'reason='+reason+' task='+(d.task_id||'').slice(0,8)+
+                     ' stage='+(d.stage||'?')+
+                     ' elapsed_seconds='+(d.elapsed_seconds==null?'?':d.elapsed_seconds));
         hideLoading();
-        Toast.error(isRtl?'لا يزال الإنشاء قيد التشغيل. يُرجى الانتظار أو مراجعة وثائقي.'
-                          :'Generation is still running. Please wait or check My Documents.');
+        /* PR-CY14 — render a persistent pending banner instead of a
+           transient Toast that disappears in 3s. The banner exposes the
+           current stage, elapsed seconds, and a "تحديث الحالة" / "Refresh
+           status" button that re-polls /api/strategy-status/<task_id>
+           using the same task_id. We do NOT tell the user to check
+           My Documents while pending — the task is still running and
+           no document has been written. */
+        renderStrategyPendingBanner(d.task_id || tid,
+                                    d.stage,
+                                    d.elapsed_seconds);
         return;
       }
       if(d&&d.success&&(d.sections||d.content_json)){

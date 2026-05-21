@@ -18074,13 +18074,54 @@ def api_strategy_latest():
             except Exception:  # noqa: BLE001
                 _active_tid = None
             if _active_tid:
+                # PR-CY14 — surface live task lifecycle telemetry on the
+                # pending envelope so the frontend can render the new
+                # "still running. stage=… elapsed=…s" banner and refresh
+                # button instead of a stale "check My Documents" toast.
+                # Both fields are best-effort: a missing stage column on a
+                # pre-migration DB or an unparseable created_at falls back
+                # to ``None`` and the frontend formats accordingly.
+                _pending_stage = None
+                _pending_elapsed_s = None
+                _pending_status = None
+                try:
+                    _ptask = get_background_task(_active_tid)
+                except Exception:  # noqa: BLE001
+                    _ptask = None
+                if _ptask is not None:
+                    _pkeys = _ptask.keys() if hasattr(_ptask, 'keys') else []
+                    _pending_stage = (
+                        _ptask['stage'] if 'stage' in _pkeys else None
+                    )
+                    _pending_status = (
+                        _ptask['status'] if 'status' in _pkeys else None
+                    )
+                    _p_created_raw = (
+                        _ptask['created_at'] if 'created_at' in _pkeys else None
+                    )
+                    _p_created_dt = _parse_db_timestamp(_p_created_raw)
+                    if _p_created_dt is not None:
+                        try:
+                            from datetime import datetime as _dt_pn
+                            _pending_elapsed_s = max(
+                                0,
+                                int((_dt_pn.utcnow() - _p_created_dt)
+                                    .total_seconds()),
+                            )
+                        except Exception:  # noqa: BLE001
+                            _pending_elapsed_s = None
                 print(f"[STRATEGY-ASYNC] latest_recoverable_pending "
                       f"user={session['user_id']} domain={domain!r} "
-                      f"task={_active_tid[:8]}", flush=True)
+                      f"task={_active_tid[:8]} "
+                      f"stage={_pending_stage!r} "
+                      f"elapsed_seconds={_pending_elapsed_s}", flush=True)
                 return jsonify({
                     'success': False,
                     'pending': True,
                     'task_id': _active_tid,
+                    'task_status': _pending_status,
+                    'stage': _pending_stage,
+                    'elapsed_seconds': _pending_elapsed_s,
                     'message': 'Generation is still running',
                     'attempts': attempts,
                 })
