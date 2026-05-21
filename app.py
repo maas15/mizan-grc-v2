@@ -11512,13 +11512,206 @@ def _build_methodology_block(metadata, selected_fws_keys, lang,
     ]
 
 
-def _extract_owners_from_content(content_sections, lang):
-    """Return up to N ``(role, scope, accountability)`` rows derived from
-    owners that the AI already wrote into KPI / pillar / roadmap tables.
+# PR-CY17 — Deterministic Cyber Security governance / responsibilities
+# table.  Used by ``_extract_owners_from_content`` when the domain is
+# Cyber Security so the rendered ``نموذج الحوكمة والمسؤوليات`` /
+# ``Governance and Ownership Model`` section enumerates the actual
+# governance roles required to deliver an NCA ECC / NCA DCC compliant
+# program — not KPI assessment-procedure text accidentally extracted
+# from the KPI table's ``Owner`` column.
+#
+# Each row is a 5-tuple matching the problem-statement required
+# columns:
+#   (الدور / Role,
+#    نطاق المسؤولية / Responsibility Scope,
+#    المساءلة / Accountability,
+#    التقارير / التصعيد / Reporting / Escalation,
+#    الإطار المرتبط / Related Framework)
+#
+# These are ROLES, not strategy initiatives, so they do not violate
+# the "no deterministic strategy content" rule for the generated
+# strategy sections (vision / pillars / roadmap / kpis / etc).  The
+# governance model is a structural document block populated from
+# organisational governance facts, not generated strategy content.
+_CYBER_GOVERNANCE_ROLES_AR = [
+    ('اللجنة التوجيهية للأمن السيبراني',
+     'اعتماد استراتيجية الأمن السيبراني والإشراف على تنفيذها',
+     'مساءَلة عن التوجه الاستراتيجي واعتماد السياسات والميزانيات',
+     'ترفع تقاريرها إلى الإدارة العليا ومجلس الإدارة',
+     'NCA ECC / NCA DCC'),
+    ('رئيس الأمن السيبراني CISO',
+     'قيادة برنامج الأمن السيبراني وإدارة المخاطر السيبرانية',
+     'مساءَل عن تنفيذ الاستراتيجية والامتثال لـ NCA ECC و NCA DCC',
+     'يرفع التقارير إلى اللجنة التوجيهية والإدارة العليا',
+     'NCA ECC / NCA DCC'),
+    ('مدير حوكمة الأمن السيبراني',
+     'إدارة السياسات والمعايير ومتابعة الامتثال التنظيمي',
+     'مساءَل عن تطوير وتحديث سياسات الأمن السيبراني',
+     'يرفع التقارير إلى CISO',
+     'NCA ECC'),
+    ('مدير مركز العمليات الأمنية SOC',
+     'إدارة SOC والمراقبة المستمرة للتهديدات وتفعيل SIEM',
+     'مساءَل عن كشف الحوادث الأمنية وزمن الاستجابة الأولية',
+     'يرفع التقارير إلى CISO ويصعد الحوادث الحرجة فوراً',
+     'NCA ECC'),
+    ('مدير حماية البيانات',
+     'إدارة DLP والتشفير وتصنيف البيانات وحمايتها',
+     'مساءَل عن تطبيق ضوابط حماية البيانات الحساسة',
+     'يرفع التقارير إلى CISO ويصعد حوادث تسرب البيانات',
+     'NCA DCC'),
+    ('مدير إدارة الهوية والوصول IAM/PAM',
+     'إدارة الهويات والصلاحيات وتفعيل MFA للوصول المميز',
+     'مساءَل عن منع الوصول غير المصرح وإدارة الحسابات المميزة',
+     'يرفع التقارير إلى CISO',
+     'NCA ECC'),
+    ('مدير الاستجابة للحوادث CSIRT',
+     'قيادة فريق CSIRT وتنفيذ خطة الاستجابة للحوادث',
+     'مساءَل عن احتواء الحوادث وإدارتها حتى الإغلاق',
+     'يرفع التقارير إلى CISO ويصعد الحوادث ذات الأثر العالي',
+     'NCA ECC'),
+    ('مدير إدارة الثغرات',
+     'إدارة برنامج إدارة الثغرات وفحصها ومعالجتها وفق SLA',
+     'مساءَل عن معالجة الثغرات الحرجة خلال SLA المحدد',
+     'يرفع التقارير إلى CISO',
+     'NCA ECC'),
+    ('مدير استمرارية الأعمال / التعافي',
+     'إدارة استمرارية الأعمال والتعافي من الكوارث السيبرانية',
+     'مساءَل عن تنفيذ خطط BCP / DRP السيبرانية واختبارها',
+     'يرفع التقارير إلى CISO والإدارة العليا',
+     'NCA ECC'),
+    ('مكتب إدارة المشاريع PMO',
+     'متابعة تنفيذ خارطة الطريق والمبادرات السيبرانية',
+     'مساءَل عن تتبع الإنجاز والمخاطر والتصعيد',
+     'يرفع التقارير إلى CISO واللجنة التوجيهية',
+     'NCA ECC / NCA DCC'),
+    ('الإدارة العليا',
+     'الإشراف التنفيذي ورفع المخاطر السيبرانية إلى مجلس الإدارة',
+     'مساءَلة عن دعم الموارد واتخاذ القرارات الاستراتيجية',
+     'ترفع التقارير إلى مجلس الإدارة',
+     'NCA ECC / NCA DCC'),
+]
 
-    Pure parsing of the canonical 9-column KPI table (column 7 = owner) and
-    pillar tables (last column = responsible). Never invents new owners.
+_CYBER_GOVERNANCE_ROLES_EN = [
+    ('Cybersecurity Steering Committee',
+     'Approve cybersecurity strategy and oversee its execution',
+     'Accountable for strategic direction, policy and budget approval',
+     'Reports to executive management and the board',
+     'NCA ECC / NCA DCC'),
+    ('Chief Information Security Officer (CISO)',
+     'Lead the cybersecurity program and manage cyber risks',
+     'Accountable for strategy execution and NCA ECC / NCA DCC '
+     'compliance',
+     'Reports to the steering committee and executive management',
+     'NCA ECC / NCA DCC'),
+    ('Cybersecurity Governance Manager',
+     'Manage policies, standards and regulatory compliance tracking',
+     'Accountable for developing and maintaining cybersecurity '
+     'policies',
+     'Reports to the CISO',
+     'NCA ECC'),
+    ('SOC Manager',
+     'Manage the SOC and continuous threat monitoring and SIEM',
+     'Accountable for incident detection and initial response time',
+     'Reports to the CISO and escalates critical incidents '
+     'immediately',
+     'NCA ECC'),
+    ('Data Protection Manager',
+     'Manage DLP, encryption and data classification and protection',
+     'Accountable for sensitive data protection control enforcement',
+     'Reports to the CISO and escalates data leakage incidents',
+     'NCA DCC'),
+    ('Identity and Access Management Manager (IAM/PAM)',
+     'Manage identities and entitlements and MFA for privileged '
+     'access',
+     'Accountable for preventing unauthorized access and managing '
+     'privileged accounts',
+     'Reports to the CISO',
+     'NCA ECC'),
+    ('Incident Response Manager (CSIRT)',
+     'Lead the CSIRT team and execute the incident response plan',
+     'Accountable for incident containment and case management '
+     'through closure',
+     'Reports to the CISO and escalates high-impact incidents',
+     'NCA ECC'),
+    ('Vulnerability Management Manager',
+     'Manage the vulnerability scanning and remediation program per '
+     'SLA',
+     'Accountable for remediating critical vulnerabilities within the '
+     'SLA',
+     'Reports to the CISO',
+     'NCA ECC'),
+    ('Business Continuity / Disaster Recovery Manager',
+     'Manage business continuity and recovery from cyber disasters',
+     'Accountable for executing and testing cyber BCP / DRP plans',
+     'Reports to the CISO and executive management',
+     'NCA ECC'),
+    ('Project Management Office (PMO)',
+     'Track roadmap and cybersecurity initiative implementation',
+     'Accountable for delivery, risk tracking and escalation',
+     'Reports to the CISO and the steering committee',
+     'NCA ECC / NCA DCC'),
+    ('Executive Management',
+     'Executive oversight and escalation of cyber risks to the board',
+     'Accountable for resource support and strategic decisions',
+     'Reports to the board of directors',
+     'NCA ECC / NCA DCC'),
+]
+
+
+def _extract_owners_from_content(content_sections, lang, domain_code=None):
+    """Return up to N ownership rows derived from owners that the AI
+    already wrote into KPI / pillar / roadmap tables.
+
+    For ``domain_code == 'cyber'`` the function returns a deterministic
+    Cyber-domain governance / responsibilities table (PR-CY17) that
+    enumerates the 11 governance roles the user organisation must put
+    in place to deliver an NCA ECC / NCA DCC compliant cybersecurity
+    program.  This avoids the production defect where the previous
+    KPI-table extractor picked up KPI assessment-procedure text
+    (``جمع بيانات الحسابات المميزة النشطة``,
+    ``فحص تكوين MFA لكل حساب مميز``) and rendered them as
+    "responsibilities" in the governance model section.
+
+    Each Cyber row is a 5-tuple
+    ``(role, responsibility_scope, accountability,
+       reporting_escalation, related_framework)``
+    consumed by the 5-column governance renderer.
+
+    Pure parsing of the canonical 9-column KPI table (column 7 = owner)
+    and pillar tables (last column = responsible).  Never invents new
+    owners for non-Cyber domains.
     """
+    # PR-CY17 — Cyber Security domain returns the deterministic
+    # governance role table per the problem-statement preferred
+    # mapping.  Strictly scoped to ``domain_code == 'cyber'``: every
+    # other domain keeps the existing KPI-table extraction behaviour
+    # byte-for-byte.
+    try:
+        _dcode = (str(domain_code or '').strip().lower())
+    except Exception:  # noqa: BLE001 — defensive
+        _dcode = ''
+    if _dcode == 'cyber':
+        # Only emit the deterministic Cyber governance roles when the
+        # document actually has substantive content — i.e. when the AI
+        # has generated at least one canonical strategy section.  This
+        # preserves the existing PR-5B.8R contract that an empty
+        # content blob never invents structural rows.
+        try:
+            _has_content = isinstance(content_sections, dict) and any(
+                isinstance(content_sections.get(_k), str)
+                and content_sections.get(_k, '').strip()
+                for _k in ('vision', 'pillars', 'environment',
+                           'gaps', 'roadmap', 'kpis', 'confidence')
+            )
+        except Exception:  # noqa: BLE001 — defensive
+            _has_content = False
+        if not _has_content:
+            return []
+        return list(
+            _CYBER_GOVERNANCE_ROLES_AR
+            if (str(lang or '').lower() == 'ar')
+            else _CYBER_GOVERNANCE_ROLES_EN
+        )
     rows = []
     seen = set()
     # KPI table — column index 6 in the canonical 9-col table is "المالك" / Owner.
@@ -12142,39 +12335,47 @@ _CYBER_TRACEABILITY_SOFT_KPI_RISK = {
     # distinct family-specific phrase — never invents new strategy rows,
     # only labels the metric / risk axis with a capability-derived,
     # coherent phrase per the PR-CY5 problem-statement preferred mapping.
+    # PR-CY17 — ECC Part B KPI/Risk soft-derivation phrases updated to
+    # the problem-statement preferred wording so weak roadmap cells
+    # (numeric ranges like ``5-8`` / ``7-9`` / ``21-24``) and KPI
+    # measurement procedure phrases (e.g. ``احتساب نسبة المجتازين``,
+    # ``تصنيف الثغرات المعالجة في الوقت وخارجه``) never leak into the
+    # rendered ECC traceability rows.
     'ECC': {
         'governance': {
-            'ar': ('نسبة الامتثال لمتطلبات الحوكمة وتقارير الحوكمة',
-                   'ضعف حوكمة الأمن السيبراني أو ضعف التحكم في الوصول'),
-            'en': ('Cybersecurity governance compliance rate / '
-                   'governance reporting',
-                   'Weak cybersecurity governance or weak access control'),
+            'ar': ('نسبة اكتمال الهيكل التنظيمي والسياسات المعتمدة',
+                   'ضعف الحوكمة أو غياب المساءلة السيبرانية'),
+            'en': ('Organisational structure and approved policies '
+                   'completion rate',
+                   'Weak governance or absence of cybersecurity '
+                   'accountability'),
         },
         'identity_access': {
-            'ar': ('نسبة تطبيق MFA ونسبة الامتثال لسياسات التحكم في الوصول',
-                   'ضعف التحكم في الوصول أو الوصول غير المصرح'),
-            'en': ('MFA adoption rate / access-control policy compliance',
-                   'Weak access control or unauthorized access'),
+            'ar': ('نسبة تطبيق المصادقة متعددة العوامل MFA للوصول المميز',
+                   'اختراق أنظمة التحكم في الوصول والهوية'),
+            'en': ('Multi-factor authentication (MFA) adoption rate for '
+                   'privileged access',
+                   'Compromise of identity and access control systems'),
         },
         'monitoring': {
-            'ar': ('فعالية الرصد والاستجابة وزمن الكشف عن الحوادث',
-                   'ضعف الرصد والاستجابة الأمنية'),
-            'en': ('Monitoring and response effectiveness / '
-                   'incident detection time',
-                   'Weak security monitoring and response'),
+            'ar': ('متوسط زمن كشف الحوادث الأمنية الحرجة',
+                   'فشل آليات الكشف المبكر للتهديدات المتقدمة'),
+            'en': ('Mean time to detect critical security incidents',
+                   'Failure of early detection mechanisms for advanced '
+                   'threats'),
         },
         'incident_response': {
-            'ar': ('وقت الاستجابة للحوادث',
-                   'تأخر الاستجابة للحوادث أو ضعف احتواء الحوادث'),
-            'en': ('Incident response time',
-                   'Delayed incident response or weak incident containment'),
+            'ar': ('متوسط زمن الاستجابة للحوادث الحرجة',
+                   'تأخر احتواء الحوادث أو ضعف الاستجابة للحوادث'),
+            'en': ('Mean time to respond to critical incidents',
+                   'Delayed incident containment or weak incident response'),
         },
         'vulnerability_management': {
-            'ar': ('فعالية إدارة الثغرات ومعدل اكتشاف الثغرات',
-                   'استغلال الثغرات الأمنية'),
-            'en': ('Vulnerability management effectiveness / '
-                   'vulnerability detection rate',
-                   'Exploitation of security vulnerabilities'),
+            'ar': ('نسبة الثغرات الحرجة المعالجة خلال SLA المحدد',
+                   'استغلال الثغرات الحرجة في الأنظمة الحكومية'),
+            'en': ('Critical vulnerability remediation rate within SLA',
+                   'Exploitation of critical vulnerabilities in government '
+                   'systems'),
         },
     },
 }
@@ -12194,30 +12395,36 @@ _CYBER_TRACEABILITY_SOFT_KPI_RISK = {
 # Scoped to (domain=cyber, framework=ECC).
 _CYBER_TRACEABILITY_SOFT_INITIATIVE = {
     'ECC': {
+        # PR-CY17 — ECC Part B initiatives updated to the
+        # problem-statement preferred wording.  The (cyber, ECC) branch
+        # of ``_build_traceability_matrix`` always prefers these soft
+        # initiatives over any per-section lookup result so weak
+        # roadmap cells (numeric ranges ``5-8`` / ``7-9`` / ``21-24``)
+        # and KPI procedure text never reach the Initiative column.
         'governance': {
-            'ar': ('تأسيس لجنة حوكمة الأمن السيبراني وإنشاء إدارة '
+            'ar': ('تأسيس إدارة الأمن السيبراني وتشكيل لجنة حوكمة '
                    'الأمن السيبراني'),
-            'en': ('Establish a cybersecurity governance committee and '
-                   'cybersecurity department'),
+            'en': ('Establish a cybersecurity department and form a '
+                   'cybersecurity governance committee'),
         },
         'identity_access': {
-            'ar': 'تنفيذ إدارة الهوية والوصول (IAM) وتفعيل MFA و PAM',
-            'en': 'Implement IAM with MFA and PAM',
+            'ar': 'تطبيق IAM/PAM/MFA',
+            'en': 'Implement IAM/PAM/MFA',
         },
         'monitoring': {
-            'ar': 'تأسيس مركز العمليات الأمنية (SOC) وتفعيل SIEM',
+            'ar': 'تأسيس مركز العمليات الأمنية SOC وتفعيل SIEM',
             'en': 'Establish a Security Operations Center (SOC) and '
                   'activate SIEM',
         },
         'incident_response': {
-            'ar': 'تطوير نظام الاستجابة للحوادث وتشكيل فريق CSIRT',
-            'en': 'Develop the incident response capability and form a '
-                  'CSIRT team',
+            'ar': 'تأسيس فريق CSIRT وتطوير خطة الاستجابة للحوادث',
+            'en': 'Establish a CSIRT team and develop the incident '
+                  'response plan',
         },
         'vulnerability_management': {
-            'ar': 'تنفيذ عملية إدارة الثغرات وتقييم الثغرات بشكل دوري',
-            'en': 'Implement vulnerability management and periodic '
-                  'vulnerability assessment',
+            'ar': 'تنفيذ برنامج إدارة الثغرات الأمنية وفحص الثغرات',
+            'en': 'Implement a vulnerability management program and '
+                  'vulnerability scanning',
         },
     },
     # PR-CY6 — Soft Initiative derivation map for Cyber-scope DCC
@@ -12913,48 +13120,56 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                                           ['confidence', 'kpis', 'roadmap'],
                                           ar_kws, en_kws,
                                           exclude=[initiative, kpi]) or dash)
-                        # PR-CY5 — soft Initiative derivation scoped to
-                        # (cyber, ECC).  Fills the Initiative axis with
-                        # a family-coherent phrase ONLY when the row's
-                        # gap (or a sibling KPI/Risk lookup) already
-                        # exists from real generated content but the
-                        # pillars / roadmap text didn't carry an exact
-                        # phrase the lookup recognised.  Keeps Part B
-                        # cells coherent: IAM stays IAM/MFA/PAM, IR
-                        # stays CSIRT, SOC stays SIEM, etc.  Does NOT
-                        # insert any new strategy row.
-                        if (initiative == dash and
-                                (gap != dash or kpi != dash or risk != dash)):
-                            _si = (_CYBER_TRACEABILITY_SOFT_INITIATIVE
-                                   .get(fw_key, {}) or {}).get(
-                                       canonical_id) or {}
-                            _si_val = _si.get(
-                                'ar' if lang == 'ar' else 'en')
-                            if _si_val:
-                                initiative = _si_val
-                        # PR-CY5 — soft KPI/Risk derivation scoped to
-                        # (cyber, ECC).  Only fills the metric / risk
-                        # axis when the row's gap AND initiative are
-                        # real but the KPI or Risk lookup did not find
-                        # a distinct, family-coherent phrase.  Prevents
-                        # IAM rows being labelled with SOC / incident
-                        # KPI text drawn from an unrelated family row.
-                        if (gap != dash and initiative != dash
-                                and (kpi == dash or risk == dash)):
-                            _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
-                                     .get(fw_key, {}) or {}).get(
-                                         canonical_id) or {}
-                            _soft_lang = _soft.get(
-                                'ar' if lang == 'ar' else 'en')
-                            if _soft_lang:
-                                _soft_kpi, _soft_risk = _soft_lang
-                                if (kpi == dash and _soft_kpi
-                                        and _soft_kpi != initiative):
-                                    kpi = _soft_kpi
-                                if (risk == dash and _soft_risk
-                                        and _soft_risk != initiative
-                                        and _soft_risk != kpi):
-                                    risk = _soft_risk
+                        # PR-CY17 — Always prefer soft Initiative for
+                        # (cyber, ECC) so weak roadmap cells (numeric
+                        # ranges ``5-8`` / ``7-9`` / ``21-24``) and
+                        # KPI procedure phrases never leak into the
+                        # rendered Initiative column.  Mirrors the
+                        # (cyber, DCC) branch above but ONLY when the
+                        # row already exists in real content (at least
+                        # one of gap / kpi / risk is non-dash) so an
+                        # empty input never invents a row.
+                        _row_has_real_content = (
+                            gap != dash or kpi != dash or risk != dash)
+                        _si = (_CYBER_TRACEABILITY_SOFT_INITIATIVE
+                               .get(fw_key, {}) or {}).get(
+                                   canonical_id) or {}
+                        _si_val = _si.get(
+                            'ar' if lang == 'ar' else 'en')
+                        if (_si_val and _row_has_real_content and (
+                                initiative == dash
+                                or initiative != _si_val)):
+                            initiative = _si_val
+                            # Re-resolve KPI / Risk excluding the new
+                            # initiative so they don't echo it.
+                            kpi    = (_find_match_any(
+                                          ['kpis', 'roadmap', 'confidence'],
+                                          ar_kws, en_kws,
+                                          exclude=[initiative]) or dash)
+                            risk   = (_find_match_any(
+                                          ['confidence', 'kpis', 'roadmap'],
+                                          ar_kws, en_kws,
+                                          exclude=[initiative, kpi]) or dash)
+                        # PR-CY17 — Always prefer soft KPI / Risk for
+                        # (cyber, ECC) so KPI measurement procedure
+                        # text (``احتساب نسبة المجتازين``,
+                        # ``تصنيف الثغرات المعالجة في الوقت وخارجه``)
+                        # never reaches the rendered KPI / Risk
+                        # columns.  Mirrors the (cyber, DCC) branch.
+                        # Requires gap and initiative to already be
+                        # real (non-dash) so empty input never invents.
+                        _soft = (_CYBER_TRACEABILITY_SOFT_KPI_RISK
+                                 .get(fw_key, {}) or {}).get(
+                                     canonical_id) or {}
+                        _soft_lang = _soft.get(
+                            'ar' if lang == 'ar' else 'en')
+                        if _soft_lang and gap != dash and initiative != dash:
+                            _soft_kpi, _soft_risk = _soft_lang
+                            if _soft_kpi and _soft_kpi != initiative:
+                                kpi = _soft_kpi
+                            if (_soft_risk and _soft_risk != initiative
+                                    and _soft_risk != kpi):
+                                risk = _soft_risk
                     else:
                         gap        = _find_match('gaps',       ar_kws, en_kws) or dash
                         initiative = (_find_match('pillars',   ar_kws, en_kws)
@@ -13565,6 +13780,26 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
                 f'{_ciso_doc_e}',
                 flush=True,
             )
+        # PR-CY17 — Cyber Arabic wording cleanup (export-time hook).
+        # Rewrites mixed/awkward English-Arabic phrases (``Cyber Security``,
+        # ``Security Cyber``, ``ECC NCA``, ``DCC NCA``, ``استراتيجية Cyber
+        # Security``) before the document model consumes ``content_sections``.
+        # Scoped to (cyber, ar).  Preserves NCA ECC / NCA DCC + acronyms.
+        try:
+            _ar_word_norm_doc = _normalize_cyber_ar_wording_general(
+                content_sections, lang_n, domain)
+            if _ar_word_norm_doc:
+                print(
+                    '[EXPORT-DIAG] cyber_ar_wording_normalization_doc='
+                    f'{_ar_word_norm_doc}',
+                    flush=True,
+                )
+        except Exception as _aw_doc_e:  # noqa: BLE001 — defensive
+            print(
+                '[EXPORT-DIAG] cyber_ar_wording_normalization_doc_failed: '
+                f'{_aw_doc_e}',
+                flush=True,
+            )
     # PR-5B.8S — inference fallback. When no explicit frameworks were
     # passed (or the explicit list resolved to nothing), and the strategy
     # body clearly mentions specific frameworks (ECC NCA / TCC NCA / …),
@@ -13616,7 +13851,8 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
             (content_sections or {}).get('gaps', ''),
             max_paras=1, max_chars=600,
         )
-    governance_rows  = _extract_owners_from_content(content_sections, lang_n)
+    governance_rows  = _extract_owners_from_content(
+        content_sections, lang_n, domain_code=_domain_code)
     traceability     = _build_traceability_matrix(
         content_sections, fws_keys, lang_n, domain_code=_domain_code)
     appendices       = _build_appendices_block(
@@ -27513,6 +27749,12 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             _normalize_cyber_ar_ciso_wording(sections, lang, domain)
         except Exception:  # noqa: BLE001 — defensive
             pass
+        # PR-CY17 — Apply the Arabic wording cleanup before the audit so
+        # downstream validators see the normalized text.
+        try:
+            _normalize_cyber_ar_wording_general(sections, lang, domain)
+        except Exception:  # noqa: BLE001 — defensive
+            pass
     # Strategic Objectives
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -32037,6 +32279,88 @@ def _normalize_cyber_ar_ciso_wording(sections, lang, domain):
             continue
         n = 0
         for src, dst in pairs:
+            if src and src in new_text:
+                _occ = new_text.count(src)
+                new_text = new_text.replace(src, dst)
+                n += _occ
+        if n:
+            sections[key] = new_text
+            counts[key] = n
+    return counts
+
+
+# PR-CY17 — Cyber Arabic wording cleanup normalizer.
+#
+# Production symptom (cyber + ECC + DCC, Arabic PDF): the rendered
+# document contained mixed / awkward English-Arabic phrases that
+# weakened professional polish:
+#
+#   * ``Security Cyber`` / ``Cyber Security`` (generic English noun
+#     phrase appearing inside Arabic sentences),
+#   * ``ECC NCA`` / ``DCC NCA`` (reversed order — should be
+#     ``NCA ECC`` / ``NCA DCC`` per the framework's official name),
+#   * ``استراتيجية Cyber Security`` (specific phrase the AI tends to
+#     emit verbatim from English prompts).
+#
+# Replacements are literal substring rewrites scoped to the Cyber
+# domain (lang=ar only).  Framework names ``NCA ECC`` / ``NCA DCC``
+# and English acronyms (``CISO`` / ``SOC`` / ``SIEM`` / ``IAM`` /
+# ``PAM`` / ``MFA`` / ``CSIRT`` / ``DLP``) are explicitly preserved.
+#
+# Replacement order is significant:
+#   1. Reversed framework names ``ECC NCA`` / ``DCC NCA`` → ``NCA ECC``
+#      / ``NCA DCC`` first so the ``Cyber Security`` cleanup below
+#      does not affect them.
+#   2. The specific phrase ``استراتيجية Cyber Security`` → ``استراتيجية
+#      الأمن السيبراني`` before the generic ``Cyber Security`` rule
+#      so the longer match wins.
+#   3. ``Security Cyber`` (reversed English noun phrase) → ``الأمن
+#      السيبراني``.
+#   4. Generic ``Cyber Security`` → ``الأمن السيبراني``.
+_CYBER_AR_WORDING_FIX_PAIRS = [
+    ('ECC NCA', 'NCA ECC'),
+    ('DCC NCA', 'NCA DCC'),
+    ('استراتيجية Cyber Security', 'استراتيجية الأمن السيبراني'),
+    ('استراتيجية Security Cyber', 'استراتيجية الأمن السيبراني'),
+    ('Security Cyber', 'الأمن السيبراني'),
+    ('Cyber Security', 'الأمن السيبراني'),
+]
+
+
+def _normalize_cyber_ar_wording_general(sections, lang, domain):
+    """PR-CY17 — Rewrite mixed / awkward English-Arabic phrases in the
+    Arabic Cyber Security output.
+
+    Strictly scoped to ``domain == 'cyber'`` and ``lang == 'ar'`` so
+    every other domain and the English Cyber output remain unchanged.
+    Idempotent.  Preserves NCA ECC / NCA DCC and English acronyms
+    (CISO / SOC / SIEM / IAM / PAM / MFA / CSIRT / DLP).
+
+    Returns ``{section_key: count}`` for logging.
+    """
+    try:
+        _dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _dcode = (domain or '').strip().lower()
+    if _dcode != 'cyber':
+        return {}
+    if (str(lang or '').lower() != 'ar'):
+        return {}
+    if not isinstance(sections, dict):
+        return {}
+    counts = {}
+    for key in ('vision', 'pillars', 'environment', 'gaps',
+                'roadmap', 'kpis', 'confidence',
+                'executive_summary'):
+        text = sections.get(key, '') or ''
+        if not text:
+            continue
+        try:
+            new_text = str(text)
+        except Exception:  # noqa: BLE001 — defensive
+            continue
+        n = 0
+        for src, dst in _CYBER_AR_WORDING_FIX_PAIRS:
             if src and src in new_text:
                 _occ = new_text.count(src)
                 new_text = new_text.replace(src, dst)
@@ -45115,6 +45439,32 @@ The confidence score is based on a comprehensive assessment of the organization'
                               f'{_cisoe}',
                               flush=True)
 
+                    # ── PR-CY17: Cyber Arabic wording cleanup ──
+                    # Rewrite mixed/awkward English-Arabic phrases
+                    # (``Cyber Security``, ``Security Cyber``,
+                    # ``ECC NCA``, ``DCC NCA``, ``استراتيجية Cyber
+                    # Security``).  Scoped to (cyber, ar).  Preserves
+                    # NCA ECC / NCA DCC and English acronyms.
+                    try:
+                        _ar_word_norm = _normalize_cyber_ar_wording_general(
+                            sections, lang, domain)
+                        if _ar_word_norm:
+                            print('[STRATEGY-DIAG] '
+                                  f'cyber_ar_wording_normalization='
+                                  f'{_ar_word_norm}',
+                                  flush=True)
+                            _fixed_parts_w = [sections[sk]
+                                              for sk in _section_order_r
+                                              if sections.get(sk)
+                                              and sections[sk].strip()]
+                            if _fixed_parts_w:
+                                content = '\n\n'.join(_fixed_parts_w)
+                    except Exception as _awe:
+                        print('[STRATEGY-DIAG] '
+                              f'cyber_ar_wording_normalization_failed: '
+                              f'{_awe}',
+                              flush=True)
+
                     # ── FINAL DETERMINISTIC REPAIR: vision/SO + confidence/risk ──
                     # Backstop repair pass — runs AFTER all upstream passes
                     # (synth, convergence, KPI rebuild, family collapse, AR
@@ -48412,6 +48762,30 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     'phase=before_post_normalization_audit',
                                     flush=True,
                                 )
+                            # PR-CY17 — Cyber Arabic wording cleanup
+                            # immediately before the post-normalization
+                            # final audit (mirror of the CISO hook
+                            # above). Strictly (cyber, ar)-scoped.
+                            try:
+                                _cy17_pre_audit = (
+                                    _normalize_cyber_ar_wording_general(
+                                        sections, lang, domain))
+                                if _cy17_pre_audit:
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        'cyber_ar_wording_normalization='
+                                        f'{_cy17_pre_audit} '
+                                        'phase=before_post_normalization_audit',
+                                        flush=True,
+                                    )
+                            except Exception as _cy17e:  # noqa: BLE001
+                                print(
+                                    '[STRATEGY-DIAG] '
+                                    'cyber_ar_wording_normalization_failed: '
+                                    f'{_cy17e} '
+                                    'phase=before_post_normalization_audit',
+                                    flush=True,
+                                )
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status,
@@ -49349,6 +49723,30 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         '[STRATEGY-DIAG] '
                                         'cyber_ciso_wording_normalization_failed: '
                                         f'{_cy16fe} '
+                                        'phase=before_unified_422',
+                                        flush=True,
+                                    )
+                                # PR-CY17 — final Cyber Arabic wording
+                                # cleanup immediately BEFORE the unified
+                                # 422.  Strictly (cyber, ar)-scoped; no
+                                # new rows; idempotent.
+                                try:
+                                    _cy17_pre422 = (
+                                        _normalize_cyber_ar_wording_general(
+                                            sections, lang, domain))
+                                    if _cy17_pre422:
+                                        print(
+                                            '[STRATEGY-DIAG] '
+                                            'cyber_ar_wording_normalization='
+                                            f'{_cy17_pre422} '
+                                            'phase=before_unified_422',
+                                            flush=True,
+                                        )
+                                except Exception as _cy17fe:  # noqa: BLE001
+                                    print(
+                                        '[STRATEGY-DIAG] '
+                                        'cyber_ar_wording_normalization_failed: '
+                                        f'{_cy17fe} '
                                         'phase=before_unified_422',
                                         flush=True,
                                     )
@@ -56210,10 +56608,30 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             _docx_pro_heading(_gv.get('title', ''))
             _gv_rows = _gv.get('rows') or []
             if _gv_rows:
-                _hdr = (['الدور', 'النطاق', 'المساءلة'] if is_arabic
-                        else ['Role', 'Scope', 'Accountability'])
-                _docx_pro_grid_table(_hdr,
-                                     [[r[0], r[1], r[2]] for r in _gv_rows])
+                # PR-CY17 — detect 5-col cyber governance roles layout.
+                _gv_max_cols = max(
+                    (len(r) for r in _gv_rows), default=3)
+                if _gv_max_cols >= 5:
+                    _hdr = (['الدور', 'نطاق المسؤولية', 'المساءلة',
+                             'التقارير / التصعيد', 'الإطار المرتبط']
+                            if is_arabic else
+                            ['Role', 'Responsibility Scope',
+                             'Accountability',
+                             'Reporting / Escalation',
+                             'Related Framework'])
+                    _docx_pro_grid_table(
+                        _hdr,
+                        [[r[0] if len(r) > 0 else '',
+                          r[1] if len(r) > 1 else '',
+                          r[2] if len(r) > 2 else '',
+                          r[3] if len(r) > 3 else '',
+                          r[4] if len(r) > 4 else '']
+                         for r in _gv_rows])
+                else:
+                    _hdr = (['الدور', 'النطاق', 'المساءلة'] if is_arabic
+                            else ['Role', 'Scope', 'Accountability'])
+                    _docx_pro_grid_table(_hdr,
+                                         [[r[0], r[1], r[2]] for r in _gv_rows])
             else:
                 _docx_pro_paragraph(
                     'لم يتم استخراج جدول المسؤوليات من المحتوى.'
@@ -57947,23 +58365,37 @@ def api_generate_pdf():
                     _pro_body_sty,
                 ))
                 return flow
-            # PR-5B.8U — detect 4-column ownership rows (RACI-like layout).
-            # Existing rows are 3-tuples ``(role, scope, accountability)``;
-            # newer callers may pass 4-tuples ``(role, responsibilities,
-            # ownership_scope, governance_relation)`` for a richer
-            # consulting-grade ownership model.
+            # PR-5B.8U / PR-CY17 — detect ownership row layout.
+            # 3-tuple: ``(role, scope, accountability)`` (legacy).
+            # 4-tuple: ``(role, responsibilities, ownership_scope,
+            #             governance_relation)``.
+            # 5-tuple: ``(role, responsibility_scope, accountability,
+            #             reporting_escalation, related_framework)``
+            # used by the Cyber-domain deterministic governance roles
+            # table (PR-CY17).
             _max_cols = max((len(r) for r in rows), default=3)
-            _four_cols = (_max_cols >= 4)
+            _five_cols = (_max_cols >= 5)
+            _four_cols = (not _five_cols) and (_max_cols >= 4)
             if is_arabic:
-                hdr = (['الوظيفة / الجهة', 'المسؤوليات',
-                        'نطاق الملكية', 'العلاقة بالحوكمة']
-                       if _four_cols
-                       else ['الدور', 'النطاق', 'المساءلة'])
+                if _five_cols:
+                    hdr = ['الدور', 'نطاق المسؤولية', 'المساءلة',
+                           'التقارير / التصعيد', 'الإطار المرتبط']
+                elif _four_cols:
+                    hdr = ['الوظيفة / الجهة', 'المسؤوليات',
+                           'نطاق الملكية', 'العلاقة بالحوكمة']
+                else:
+                    hdr = ['الدور', 'النطاق', 'المساءلة']
             else:
-                hdr = (['Role / Function', 'Responsibilities',
-                        'Ownership Scope', 'Relation to Governance']
-                       if _four_cols
-                       else ['Role', 'Scope', 'Accountability'])
+                if _five_cols:
+                    hdr = ['Role', 'Responsibility Scope',
+                           'Accountability',
+                           'Reporting / Escalation',
+                           'Related Framework']
+                elif _four_cols:
+                    hdr = ['Role / Function', 'Responsibilities',
+                           'Ownership Scope', 'Relation to Governance']
+                else:
+                    hdr = ['Role', 'Scope', 'Accountability']
             tbl_rows = [[Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _pro_label_sty)
                          for h in hdr]]
             for r in rows:
@@ -57972,7 +58404,19 @@ def api_generate_pdf():
                 # awkwardly word-split inside the narrow governance cell.
                 role = r[0] if len(r) > 0 else ''
                 _role = (_maybe_arabic_role_label(role) if is_arabic else role)
-                if _four_cols:
+                if _five_cols:
+                    c2 = r[1] if len(r) > 1 else ''
+                    c3 = r[2] if len(r) > 2 else ''
+                    c4 = r[3] if len(r) > 3 else ''
+                    c5 = r[4] if len(r) > 4 else ''
+                    tbl_rows.append([
+                        Paragraph(_pro_text(_role, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c2, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c3, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c4, 'value'), _pro_value_sty),
+                        Paragraph(_pro_text(c5, 'value'), _pro_value_sty),
+                    ])
+                elif _four_cols:
                     c2 = r[1] if len(r) > 1 else ''
                     c3 = r[2] if len(r) > 2 else ''
                     c4 = r[3] if len(r) > 3 else ''
@@ -57990,7 +58434,13 @@ def api_generate_pdf():
                         Paragraph(_pro_text(scope, 'value'), _pro_value_sty),
                         Paragraph(_pro_text(acc, 'value'),   _pro_value_sty),
                     ])
-            if _four_cols:
+            if _five_cols:
+                col_widths = [_PRO_PAGE_W * 0.20,
+                              _PRO_PAGE_W * 0.24,
+                              _PRO_PAGE_W * 0.20,
+                              _PRO_PAGE_W * 0.20,
+                              _PRO_PAGE_W * 0.16]
+            elif _four_cols:
                 col_widths = [_PRO_PAGE_W * 0.22,
                               _PRO_PAGE_W * 0.30,
                               _PRO_PAGE_W * 0.24,
