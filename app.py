@@ -30540,6 +30540,199 @@ def _splice_cyber_vision_objective_topup_row(
         + lines[last_data_idx + 1:])
 
 
+# ── PR-CY18 — Cyber specialized-objective row preservation helpers ─────
+#
+# Once the AI has produced an accepted cyber specialized-function
+# objective row, the convergence loop must not allow a later generic
+# objectives repair (or DCC framework-coverage repair) to drop it.
+# These helpers extract / capture / restore an already-accepted row so
+# the loop can re-merge it whenever a downstream repair regresses the
+# vision section.  The helpers are strictly row-preserving — they
+# never invent a new deterministic objective row; an empty string is
+# returned when no AI-generated qualifying row exists.
+
+def _extract_accepted_cyber_specialized_objective_row(vision_text):
+    """Return the FIRST objective-table row line in ``vision_text``
+    that satisfies the dual-requirement Cyber specialized-objective
+    detector (establishment + leadership phrase, no forbidden CISO
+    office wording). Returns the verbatim row line including the
+    leading/trailing pipes, or ``''`` when no qualifying row exists.
+
+    Strictly read-only; the helper never mutates the section text
+    and never inserts a deterministic row.
+    """
+    if not vision_text:
+        return ''
+    text = str(vision_text)
+    hdr_re = _ts_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+        r'|الأهداف)\s*\|',
+        _ts_re.IGNORECASE,
+    )
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    in_tbl = False
+    for ln in text.split('\n'):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if not in_tbl:
+            if hdr_re.match(s):
+                in_tbl = True
+            continue
+        if not (s.startswith('|') and s.endswith('|')):
+            if not s:
+                continue
+            break
+        if sep_re.match(s):
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if len(cells) < 4:
+            continue
+        parts = [str(cells[i] or '') for i in (1, 2, 3) if i < len(cells)]
+        blob = ' '.join(parts)
+        diag = _cyber_vision_objective_row_diagnostic(blob)
+        if (diag.get('has_establishment_phrase')
+                and diag.get('has_leadership_phrase')
+                and not diag.get('contains_bad_ciso_office')):
+            return s
+    return ''
+
+
+def _capture_cyber_preserved_specialized_row(
+        sections, ctx, lang, domain, org_structure_is_none):
+    """If an accepted Cyber specialized-objective row currently exists
+    in ``sections['vision']``, capture it into
+    ``ctx['_cyber_preserved_specialized_row']`` so later convergence
+    repairs can re-merge it if a regression drops it.
+
+    No-op for non-Cyber domains, when ``org_structure_is_none`` is
+    False, or when no qualifying row exists. Returns the captured
+    row (string) or ``''``.
+    """
+    if not isinstance(ctx, dict):
+        return ''
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber' or not org_structure_is_none:
+        return ''
+    try:
+        sf_missing = _compute_missing_specialized_function_objective(
+            sections, domain, lang=lang,
+            org_structure_is_none=True)
+    except Exception:  # noqa: BLE001 — defensive
+        sf_missing = True
+    if sf_missing:
+        return ''
+    try:
+        row = _extract_accepted_cyber_specialized_objective_row(
+            sections.get('vision', '') or '')
+    except Exception:  # noqa: BLE001
+        row = ''
+    if row:
+        ctx['_cyber_preserved_specialized_row'] = row
+    return row
+
+
+def _restore_cyber_preserved_specialized_row(
+        sections, ctx, lang, domain, org_structure_is_none):
+    """If ``ctx`` carries a previously captured Cyber specialized
+    objective row and the current ``sections['vision']`` no longer
+    satisfies the dual-requirement detector, splice the preserved row
+    back into the existing vision text via
+    ``_splice_cyber_vision_objective_topup_row`` and re-check.
+
+    Returns ``True`` when a restoration was performed and the
+    detector now passes; ``False`` otherwise (no preserved row,
+    splice impossible, or splice did not satisfy the detector).
+    Never invents a new deterministic row.
+    """
+    if not isinstance(ctx, dict):
+        return False
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber' or not org_structure_is_none:
+        return False
+    preserved = ctx.get('_cyber_preserved_specialized_row') or ''
+    if not preserved:
+        return False
+    try:
+        sf_missing = _compute_missing_specialized_function_objective(
+            sections, domain, lang=lang,
+            org_structure_is_none=True)
+    except Exception:  # noqa: BLE001
+        sf_missing = True
+    if not sf_missing:
+        # Already accepted — also refresh the captured row in case
+        # the AI produced a more recent qualifying row.
+        try:
+            _capture_cyber_preserved_specialized_row(
+                sections, ctx, lang, domain, True)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    before_text = sections.get('vision', '') or ''
+    try:
+        spliced = _splice_cyber_vision_objective_topup_row(
+            before_text, preserved)
+    except Exception:  # noqa: BLE001
+        spliced = ''
+    if not spliced or spliced == before_text:
+        return False
+    sections['vision'] = spliced
+    try:
+        sf_missing_after = (
+            _compute_missing_specialized_function_objective(
+                sections, domain, lang=lang,
+                org_structure_is_none=True))
+    except Exception:  # noqa: BLE001
+        sf_missing_after = True
+    if sf_missing_after:
+        # Splice did not satisfy the detector — roll back so we do not
+        # leave a partial state. The caller will fall through to its
+        # existing fail-closed path.
+        sections['vision'] = before_text
+        return False
+    return True
+
+
+def _emit_cyber_vision_persistence(
+        phase, *, previous_has=None, candidate_has=None,
+        current_has=None, rows_before=None, rows_candidate=None,
+        rows_after=None, row_preview='', accepted=None,
+        restored=None):
+    """Structured ``[CYBER-VISION-PERSISTENCE]`` log emitter for the
+    PR-CY18 phases (``before_objectives_repair`` /
+    ``after_objectives_repair`` / ``reject_regressive_objectives_repair``
+    / ``after_framework_coverage_repair`` / ``before_final_gate``).
+    Diagnostic only; never mutates state and never raises.
+    """
+    parts = ['[CYBER-VISION-PERSISTENCE]', f'phase={phase}']
+    if previous_has is not None:
+        parts.append(f'previous_has={bool(previous_has)}')
+    if candidate_has is not None:
+        parts.append(f'candidate_has={bool(candidate_has)}')
+    if current_has is not None:
+        parts.append(f'current_has={bool(current_has)}')
+    if rows_before is not None:
+        parts.append(f'rows_before={rows_before}')
+    if rows_candidate is not None:
+        parts.append(f'rows_candidate={rows_candidate}')
+    if rows_after is not None:
+        parts.append(f'rows_after={rows_after}')
+    if row_preview:
+        parts.append(f'row_preview={row_preview!r}')
+    if accepted is not None:
+        parts.append(f'accepted={bool(accepted)}')
+    if restored is not None:
+        parts.append(f'restored={bool(restored)}')
+    try:
+        print(' '.join(parts), flush=True)
+    except Exception:  # noqa: BLE001 — diagnostic only
+        pass
+
+
 # ── PR-CY12 Part B — Cyber vision persistence diagnostic helper ─────────
 def _emit_cyber_vision_persistence_diagnostic(
         sections, lang, domain, org_structure_is_none, phase):
@@ -30605,6 +30798,7 @@ def _emit_cyber_vision_persistence_diagnostic(
         )
     except Exception:  # noqa: BLE001 — diagnostic only
         pass
+
 
 
 def _convergence_cyber_specialized_objective_topup_repair(
@@ -31114,6 +31308,17 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             org_structure_is_none=_audit_org_struct_none,
         )
 
+    # PR-CY18 — Capture an already-accepted Cyber specialized-objective
+    # row at the start of the convergence loop so any later regression
+    # caused by generic objectives or DCC framework-coverage repair can
+    # restore it. No-op for non-Cyber and for Cyber without
+    # ``org_structure_is_none``.
+    try:
+        _capture_cyber_preserved_specialized_row(
+            sections, ctx, lang, domain, _audit_org_struct_none)
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+
     initial = _audit()
     log['initial_defects'] = [(s, t, c, m) for s, t, c, m in initial]
     if not initial:
@@ -31191,6 +31396,53 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             print('[CONVERGENCE-CYBER-FRAMEWORK-COVERAGE-REPAIR] '
                   f'cycle={_it + 1} non-fatal: {_conv_cyfcxe}',
                   flush=True)
+        # PR-CY18 Part D — Post-DCC coverage recheck. Immediately after
+        # the cyber framework-coverage repair completes, verify the
+        # accepted Cyber specialized-objective row still exists. If a
+        # row had been captured into ``ctx['_cyber_preserved_specialized
+        # _row']`` earlier and the dual-requirement detector now fires,
+        # splice the preserved row back into the vision section. This
+        # guarantees DCC coverage repairs (which can rebuild large
+        # vision/pillars/environment/gaps/roadmap/kpis areas) cannot
+        # silently drop the previously-accepted specialized row.
+        try:
+            _cy18_dcode_a = (
+                normalize_domain(domain or '') or '').strip().lower()
+        except Exception:  # noqa: BLE001
+            _cy18_dcode_a = ''
+        if (_cy18_dcode_a == 'cyber' and _audit_org_struct_none
+                and isinstance(ctx, dict)):
+            try:
+                _cy18_prev_has = bool(
+                    ctx.get('_cyber_preserved_specialized_row') or '')
+                _cy18_curr_missing = (
+                    _compute_missing_specialized_function_objective(
+                        sections, domain, lang=lang,
+                        org_structure_is_none=True))
+                _cy18_curr_has = (not bool(_cy18_curr_missing))
+                _cy18_rows_pre = count_valid_objective_rows(
+                    sections.get('vision', '') or '')
+                _cy18_restored = False
+                if _cy18_prev_has and not _cy18_curr_has:
+                    _cy18_restored = (
+                        _restore_cyber_preserved_specialized_row(
+                            sections, ctx, lang, domain, True))
+                _cy18_rows_post = count_valid_objective_rows(
+                    sections.get('vision', '') or '')
+                _emit_cyber_vision_persistence(
+                    'after_framework_coverage_repair',
+                    previous_has=_cy18_prev_has,
+                    current_has=(_cy18_curr_has or _cy18_restored),
+                    rows_before=_cy18_rows_pre,
+                    rows_after=_cy18_rows_post,
+                    restored=_cy18_restored,
+                )
+                # Also capture/refresh the preserved row from the
+                # current accepted state (no-op when missing).
+                _capture_cyber_preserved_specialized_row(
+                    sections, ctx, lang, domain, True)
+            except Exception:  # noqa: BLE001 — diagnostic only
+                pass
         try:
             _conv_bal_n = _convergence_data_roadmap_balance_repair(
                 sections, lang, domain, ctx, log, _it + 1)
@@ -31254,59 +31506,234 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         # content; does not append. Only applies to vision/pillars per
         # prompt Part A clause 7 (no other family logic touched).
         if 'vision' in failing_keys:
-            _v_before = count_valid_objective_rows(
-                sections.get('vision', '') or '')
-            if _it >= 1:
-                _v_text = sections.get('vision', '') or ''
-                _so_hdr = _ts_re.search(
-                    r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
-                    r'[^\n]*',
-                    _v_text, _ts_re.IGNORECASE,
-                )
-                if _so_hdr:
-                    sections['vision'] = (
-                        _v_text[:_so_hdr.start()].rstrip() + '\n')
-                else:
-                    # Fallback: AI may have omitted the ### Strategic
-                    # Objectives sub-heading and placed the table
-                    # directly. Clear from the table header so the
-                    # synth rebuilds from scratch.
-                    _tbl_hdr_fc = _ts_re.search(
-                        r'^\|\s*#\s*\|'
-                        r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-                        r'|الأهداف)\s*\|',
-                        _v_text,
-                        _ts_re.IGNORECASE | _ts_re.MULTILINE,
-                    )
-                    if _tbl_hdr_fc:
-                        sections['vision'] = (
-                            _v_text[:_tbl_hdr_fc.start()].rstrip()
-                            + '\n')
+            # PR-CY18 Part A/B/C — Cyber specialized-objective row
+            # preservation. Capture the current state BEFORE any
+            # generic objectives synth so:
+            #   * Part B: an already-accepted AI-generated row is
+            #     captured into ``ctx['_cyber_preserved_specialized
+            #     _row']`` for downstream cycles / the final pre-gate
+            #     guard;
+            #   * Part C: when the ONLY remaining defect for cyber is
+            #     ``specialized_function_objective_missing:cyber`` we
+            #     route directly to the targeted top-up
+            #     (_convergence_cyber_specialized_objective_topup_repair)
+            #     instead of the generic synthesize_objectives_depth
+            #     rebuild — the generic rebuild has been observed to
+            #     drop the accepted specialized row (objectives:6->5);
+            #   * Part A: when the generic rebuild does run, capture
+            #     the pre-synth vision text so a regression that drops
+            #     the previously-accepted specialized row is reverted.
             try:
-                synthesize_objectives_depth(
-                    sections, lang, domain=domain, fw_short=fw_short,
-                    sector=ctx.get('sector', 'General'),
-                    org_name=ctx.get('org_name', 'The Organization'),
-                    org_structure_is_none=ctx.get(
-                        'org_structure_is_none', False),
-                    challenge_flags=ctx.get('challenge_flags', {}),
-                    diagnostic_gaps=ctx.get('diagnostic_gaps', []),
-                    maturity=ctx.get('maturity', 'initial'),
-                    generation_mode=ctx.get('generation_mode', 'drafting'),
+                _cy18_v_dcode = (
+                    normalize_domain(domain or '') or '').strip().lower()
+            except Exception:  # noqa: BLE001
+                _cy18_v_dcode = ''
+            _cy18_is_cyber = (
+                _cy18_v_dcode == 'cyber'
+                and bool(_audit_org_struct_none))
+            _cy18_pre_text = sections.get('vision', '') or ''
+            _cy18_pre_rows = count_valid_objective_rows(_cy18_pre_text)
+            _cy18_pre_has = False
+            _cy18_only_specialized = False
+            if _cy18_is_cyber:
+                try:
+                    _cy18_pre_missing = (
+                        _compute_missing_specialized_function_objective(
+                            sections, domain, lang=lang,
+                            org_structure_is_none=True))
+                    _cy18_pre_has = (not bool(_cy18_pre_missing))
+                except Exception:  # noqa: BLE001
+                    _cy18_pre_has = False
+                # Capture / refresh the preserved row whenever a
+                # qualifying row exists right now.
+                if _cy18_pre_has:
+                    try:
+                        _capture_cyber_preserved_specialized_row(
+                            sections, ctx, lang, domain, True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                # Determine whether the ONLY vision-section defect is
+                # the specialized-function objective miss. If so, the
+                # generic objectives rebuild will only make things
+                # worse — route to the targeted top-up instead.
+                try:
+                    _cy18_audit_now = _audit()
+                except Exception:  # noqa: BLE001
+                    _cy18_audit_now = []
+                _cy18_vision_defects = [
+                    d for d in (_cy18_audit_now or [])
+                    if isinstance(d, (list, tuple)) and d and d[0] == 'vision'
+                ]
+                _cy18_only_specialized = bool(
+                    _cy18_vision_defects
+                    and all(
+                        len(d) >= 2 and isinstance(d[1], str)
+                        and d[1].startswith(
+                            'specialized_function_objective_missing:')
+                        for d in _cy18_vision_defects))
+                _emit_cyber_vision_persistence(
+                    'before_objectives_repair',
+                    previous_has=_cy18_pre_has,
+                    rows_before=_cy18_pre_rows,
+                    row_preview=(
+                        ctx.get('_cyber_preserved_specialized_row', '')[:80]
+                        if isinstance(ctx, dict) else ''),
                 )
-                _v_after = count_valid_objective_rows(
+            # PR-CY18 Part C — targeted Cyber specialized-objective
+            # top-up takes precedence over the generic objectives
+            # rebuild when it is the only remaining vision defect.
+            if _cy18_is_cyber and _cy18_only_specialized:
+                try:
+                    _convergence_cyber_specialized_objective_topup_repair(
+                        sections, lang, domain, ctx=ctx, log=log)
+                    _v_after = count_valid_objective_rows(
+                        sections.get('vision', '') or '')
+                    cycle['repairs'].append(
+                        f'cyber_specialized_topup:{_cy18_pre_rows}->'
+                        f'{_v_after}')
+                    # After the top-up, refresh the preserved row so a
+                    # newly-accepted row replaces any earlier one.
+                    try:
+                        _capture_cyber_preserved_specialized_row(
+                            sections, ctx, lang, domain, True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _emit_cyber_vision_persistence(
+                        'after_objectives_repair',
+                        previous_has=_cy18_pre_has,
+                        current_has=(
+                            not bool(
+                                _compute_missing_specialized_function_objective(
+                                    sections, domain, lang=lang,
+                                    org_structure_is_none=True))),
+                        rows_before=_cy18_pre_rows,
+                        rows_after=_v_after,
+                    )
+                except Exception as _cy18ce:  # noqa: BLE001
+                    cycle['repairs'].append(
+                        f'cyber_specialized_topup_failed:{_cy18ce}')
+            else:
+                _v_before = count_valid_objective_rows(
                     sections.get('vision', '') or '')
-                cycle['repairs'].append(
-                    f'objectives:{_v_before}->{_v_after}')
-            except RepairError as _vre:
-                # PR-5B.5F1: AI repair unavailable — fail closed for this
-                # section. The convergence loop must NOT report a clean
-                # converged=True when any synth_status entry is failed,
-                # and the post-normalization save gate refuses the save.
-                _mark_synth_failed(log, 'vision', _vre)
-                cycle['repairs'].append(f'objectives_failed:{_vre}')
-            except Exception as _e:
-                cycle['repairs'].append(f'objectives_failed:{_e}')
+                if _it >= 1:
+                    _v_text = sections.get('vision', '') or ''
+                    _so_hdr = _ts_re.search(
+                        r'###\s+(?:Strategic\s+Objectives|الأهداف(?:\s+الاستراتيجية)?)'
+                        r'[^\n]*',
+                        _v_text, _ts_re.IGNORECASE,
+                    )
+                    if _so_hdr:
+                        sections['vision'] = (
+                            _v_text[:_so_hdr.start()].rstrip() + '\n')
+                    else:
+                        # Fallback: AI may have omitted the ### Strategic
+                        # Objectives sub-heading and placed the table
+                        # directly. Clear from the table header so the
+                        # synth rebuilds from scratch.
+                        _tbl_hdr_fc = _ts_re.search(
+                            r'^\|\s*#\s*\|'
+                            r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+                            r'|الأهداف)\s*\|',
+                            _v_text,
+                            _ts_re.IGNORECASE | _ts_re.MULTILINE,
+                        )
+                        if _tbl_hdr_fc:
+                            sections['vision'] = (
+                                _v_text[:_tbl_hdr_fc.start()].rstrip()
+                                + '\n')
+                try:
+                    synthesize_objectives_depth(
+                        sections, lang, domain=domain, fw_short=fw_short,
+                        sector=ctx.get('sector', 'General'),
+                        org_name=ctx.get('org_name', 'The Organization'),
+                        org_structure_is_none=ctx.get(
+                            'org_structure_is_none', False),
+                        challenge_flags=ctx.get('challenge_flags', {}),
+                        diagnostic_gaps=ctx.get('diagnostic_gaps', []),
+                        maturity=ctx.get('maturity', 'initial'),
+                        generation_mode=ctx.get('generation_mode', 'drafting'),
+                    )
+                    _v_after = count_valid_objective_rows(
+                        sections.get('vision', '') or '')
+                    # PR-CY18 Part A — reject regressive objectives
+                    # repair. If the previous vision had an accepted
+                    # Cyber specialized-objective row and the candidate
+                    # produced by ``synthesize_objectives_depth`` no
+                    # longer satisfies the dual-requirement detector,
+                    # restore the pre-synth vision text and skip the
+                    # objectives repair entirely. This blocks the
+                    # ``objectives:6->5`` regression observed in the
+                    # PR-CY17 runtime trace. The preserved row in
+                    # ``ctx`` is left untouched so downstream passes
+                    # can still re-merge it if needed.
+                    _cy18_rejected = False
+                    if _cy18_is_cyber and _cy18_pre_has:
+                        try:
+                            _cy18_post_missing = (
+                                _compute_missing_specialized_function_objective(
+                                    sections, domain, lang=lang,
+                                    org_structure_is_none=True))
+                            _cy18_post_has = (
+                                not bool(_cy18_post_missing))
+                        except Exception:  # noqa: BLE001
+                            _cy18_post_has = False
+                        if not _cy18_post_has:
+                            sections['vision'] = _cy18_pre_text
+                            _v_after = _cy18_pre_rows
+                            _cy18_rejected = True
+                            _emit_cyber_vision_persistence(
+                                'reject_regressive_objectives_repair',
+                                previous_has=True,
+                                candidate_has=False,
+                                current_has=True,
+                                rows_before=_cy18_pre_rows,
+                                rows_candidate=count_valid_objective_rows(
+                                    ''),
+                                rows_after=_cy18_pre_rows,
+                                accepted=False,
+                                restored=True,
+                            )
+                            cycle['repairs'].append(
+                                'objectives_rejected_regressive_cyber:'
+                                f'{_cy18_pre_rows}->{_cy18_pre_rows}')
+                    if not _cy18_rejected:
+                        cycle['repairs'].append(
+                            f'objectives:{_v_before}->{_v_after}')
+                        if _cy18_is_cyber:
+                            try:
+                                _cy18_post_has2 = (
+                                    not bool(
+                                        _compute_missing_specialized_function_objective(
+                                            sections, domain, lang=lang,
+                                            org_structure_is_none=True)))
+                            except Exception:  # noqa: BLE001
+                                _cy18_post_has2 = False
+                            _emit_cyber_vision_persistence(
+                                'after_objectives_repair',
+                                previous_has=_cy18_pre_has,
+                                candidate_has=_cy18_post_has2,
+                                current_has=_cy18_post_has2,
+                                rows_before=_cy18_pre_rows,
+                                rows_after=_v_after,
+                                accepted=_cy18_post_has2,
+                            )
+                            # Refresh preserved row when post-synth
+                            # state still has an accepted row.
+                            if _cy18_post_has2:
+                                try:
+                                    _capture_cyber_preserved_specialized_row(
+                                        sections, ctx, lang, domain, True)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                except RepairError as _vre:
+                    # PR-5B.5F1: AI repair unavailable — fail closed for this
+                    # section. The convergence loop must NOT report a clean
+                    # converged=True when any synth_status entry is failed,
+                    # and the post-normalization save gate refuses the save.
+                    _mark_synth_failed(log, 'vision', _vre)
+                    cycle['repairs'].append(f'objectives_failed:{_vre}')
+                except Exception as _e:
+                    cycle['repairs'].append(f'objectives_failed:{_e}')
         if 'pillars' in failing_keys:
             _pillars_text_before = sections.get('pillars', '') or ''
             _p_matches_b = list(
@@ -46625,6 +47052,22 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'non-fatal: {_csoxe}',
                                     flush=True,
                                 )
+                            # PR-CY18 — capture the (possibly newly)
+                            # accepted Cyber specialized-objective row
+                            # so the final pre-gate guard can re-merge
+                            # it if a later normalization pass drops
+                            # it. No-op when no qualifying row exists.
+                            try:
+                                _capture_cyber_preserved_specialized_row(
+                                    sections, _final_ctx, lang, domain,
+                                    bool(
+                                        _final_ctx.get(
+                                            'org_structure_is_none',
+                                            False)
+                                        if isinstance(_final_ctx, dict)
+                                        else False))
+                            except Exception:  # noqa: BLE001
+                                pass
 
                     # ── PR-5B.9K: Pillars governance/structure repair ────
                     # When ``org_structure_is_none=True`` the Strategic
@@ -49644,6 +50087,107 @@ The confidence score is based on a comprehensive assessment of the organization'
                                             f'err={_cy11re}',
                                             flush=True,
                                         )
+                                    # PR-CY18 Part E — Final pre-gate
+                                    # guard. If the targeted top-up
+                                    # above still left the defect in
+                                    # place but a previously-accepted
+                                    # Cyber specialized-objective row
+                                    # was captured into ``_final_ctx``
+                                    # earlier in the run, splice it
+                                    # back into the vision section and
+                                    # re-run the final audit ONCE. This
+                                    # guarantees an AI-generated
+                                    # accepted row is preserved across
+                                    # the entire convergence pipeline.
+                                    # No deterministic row is invented;
+                                    # if no preserved row is recorded,
+                                    # this is a no-op and the 422 below
+                                    # fires as designed.
+                                    try:
+                                        _cy18_still_defect = bool(
+                                            _post_norm_defects and any(
+                                                isinstance(d, (list, tuple))
+                                                and len(d) >= 2
+                                                and str(d[1]).startswith(
+                                                    'specialized_function_'
+                                                    'objective_missing:')
+                                                and str(d[1]).endswith(
+                                                    ':cyber')
+                                                for d in _post_norm_defects))
+                                    except Exception:  # noqa: BLE001
+                                        _cy18_still_defect = False
+                                    _cy18_e_restored = False
+                                    if _cy18_still_defect:
+                                        try:
+                                            _emit_cyber_vision_persistence(
+                                                'before_final_gate',
+                                                previous_has=bool(
+                                                    isinstance(_final_ctx, dict)
+                                                    and _final_ctx.get(
+                                                        '_cyber_preserved_specialized_row')),
+                                                current_has=False,
+                                            )
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                                        try:
+                                            _cy18_e_restored = (
+                                                _restore_cyber_preserved_specialized_row(
+                                                    sections, _final_ctx,
+                                                    lang, domain, True))
+                                        except Exception as _cy18ee:  # noqa: BLE001
+                                            print(
+                                                '[CYBER-VISION-'
+                                                'PERSISTENCE] '
+                                                'phase=before_final_gate'
+                                                f' restore_failed='
+                                                f'{_cy18ee}',
+                                                flush=True,
+                                            )
+                                            _cy18_e_restored = False
+                                        if _cy18_e_restored:
+                                            try:
+                                                _post_norm_defects = (
+                                                    _final_strategy_audit(
+                                                        sections, lang,
+                                                        doc_subtype,
+                                                        synth_status=_synth_status,
+                                                        selected_frameworks=_frameworks_raw,
+                                                        domain=domain,
+                                                        org_structure_is_none=_cy11_org_none,
+                                                    ))
+                                            except Exception as _cy18re:  # noqa: BLE001
+                                                print(
+                                                    '[CYBER-VISION-'
+                                                    'PERSISTENCE] '
+                                                    'phase=before_final_gate'
+                                                    f' reaudit_failed='
+                                                    f'{_cy18re}',
+                                                    flush=True,
+                                                )
+                                            try:
+                                                _emit_cyber_vision_persistence(
+                                                    'before_final_gate',
+                                                    previous_has=True,
+                                                    current_has=(
+                                                        not bool(
+                                                            _post_norm_defects
+                                                            and any(
+                                                                isinstance(
+                                                                    d,
+                                                                    (list, tuple))
+                                                                and len(d) >= 2
+                                                                and str(d[1]).startswith(
+                                                                    'specialized_function_'
+                                                                    'objective_missing:')
+                                                                and str(d[1]).endswith(
+                                                                    ':cyber')
+                                                                for d in
+                                                                _post_norm_defects))),
+                                                    restored=True,
+                                                    accepted=True,
+                                                )
+                                            except Exception:  # noqa: BLE001
+                                                pass
                                     print(
                                         '[CYBER-VISION-SPECIALIZED-'
                                         'OBJECTIVE] '
