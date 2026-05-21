@@ -1648,6 +1648,21 @@ try{
     fetch('/api/strategy/latest?domain='+encodeURIComponent(data.domain))
     .then(function(r){return r.json().catch(function(){return null;});})
     .then(function(d){
+      /* PR-CY12 Part A — backend now distinguishes "no strategy at all"
+         from "no strategy yet because the background task is still
+         running" by returning a 200 ``{success:false, pending:true,
+         message:'Generation is still running'}`` envelope in the latter
+         case. Surface that as an informational toast instead of the
+         generic "انتهت مهلة الإنشاء" / "Generation timed out" error so
+         the user does not retry and spawn another concurrent task. */
+      if(d && d.pending === true){
+        console.warn('[STRATEGY-UI] recovery_backend_still_running '+
+                     'reason='+reason+' task='+(d.task_id||'').slice(0,8));
+        hideLoading();
+        Toast.error(isRtl?'لا يزال الإنشاء قيد التشغيل. يُرجى الانتظار أو مراجعة وثائقي.'
+                          :'Generation is still running. Please wait or check My Documents.');
+        return;
+      }
       if(d&&d.success&&(d.sections||d.content_json)){
         /* Strategy was saved — render preview as if it came from normal path.
            _onStrategyResult is wrapped in its own try/catch so any rendering

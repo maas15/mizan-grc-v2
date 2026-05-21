@@ -257,6 +257,37 @@ def get_background_task(task_id):
         print(f"Task get error: {e}", flush=True)
         return None
 
+def find_active_strategy_task(user_id, domain):
+    """PR-CY12 Part A — return the task_id of the most recently created
+    background_tasks row for ``user_id`` + ``callback_domain`` that is
+    still in a non-terminal state (status in ('pending', 'running')).
+    Returns ``None`` if no such row exists or on any DB error.
+
+    Used by ``api_generate_strategy_async`` to reuse an active task
+    instead of spawning a duplicate concurrent generation, and by
+    ``api_strategy_latest`` to distinguish "no strategy yet because
+    generation is still running" from "no strategy at all".
+    """
+    if not user_id or not domain:
+        return None
+    try:
+        with closing(get_db_direct()) as conn:
+            row = conn.execute(
+                'SELECT task_id FROM background_tasks '
+                'WHERE user_id = ? AND callback_domain = ? '
+                "AND status IN ('pending', 'running') "
+                'ORDER BY created_at DESC LIMIT 1',
+                (user_id, domain)
+            ).fetchone()
+            if not row:
+                return None
+            return row['task_id'] if hasattr(row, 'keys') else row[0]
+    except Exception as e:
+        print(f"[STRATEGY-ASYNC] find_active_strategy_task error: {e}",
+              flush=True)
+        return None
+
+
 def delete_background_task(task_id):
     """Remove completed task."""
     try:
@@ -17690,6 +17721,24 @@ def api_generate_strategy_async():
         print(f"[STRATEGY] usage-limit check error (non-fatal): {_ul_err}", flush=True)
 
     task_id = str(uuid.uuid4())
+    # PR-CY12 Part A — prevent duplicate concurrent strategy tasks for
+    # the same user+domain. Retrying the form while a previous task is
+    # still running used to spawn a second background thread that issued
+    # an entirely separate Anthropic call pipeline, multiplying runtime
+    # and AI cost. Reuse the existing task_id instead — the frontend
+    # poll loop will keep polling the same task and receive the result
+    # when generation finishes.
+    try:
+        _existing_tid = find_active_strategy_task(user_id, domain)
+    except Exception as _eat_err:  # noqa: BLE001 — defensive
+        print(f"[STRATEGY-ASYNC] active_task_lookup_error: {_eat_err}",
+              flush=True)
+        _existing_tid = None
+    if _existing_tid:
+        print(f"[STRATEGY-ASYNC] active_task_reused user={user_id} "
+              f"domain={domain!r} task={_existing_tid[:8]}", flush=True)
+        return jsonify({'task_id': _existing_tid, 'reused': True})
+
     create_background_task(task_id, user_id, domain)
 
     threading.Thread(
@@ -17861,7 +17910,19 @@ def api_strategy_status(task_id):
         return jsonify(_with_progress({'status': 'error', 'error': _err_payload}))
     print(f"[STRATEGY-STATUS] returning_pending task={task_id[:8]}",
           flush=True)
-    return jsonify(_with_progress({'status': 'pending'}))
+    # PR-CY12 Part A — frontend contract for an active task: also expose
+    # ``pending=True``, ``elapsed_seconds`` (snake-case alias of
+    # ``elapsed_s``) and a human-readable ``message`` so the polling UI
+    # can distinguish "still running" from "no strategy found" without
+    # having to special-case ``status==='pending'`` plus an additional
+    # field name. Existing ``status`` / ``stage`` / ``elapsed_s`` are
+    # preserved untouched for back-compat.
+    return jsonify(_with_progress({
+        'status': 'pending',
+        'pending': True,
+        'elapsed_seconds': _elapsed_s,
+        'message': 'Generation is still running',
+    }))
 
 
 @app.route('/api/strategy/latest')
@@ -17889,6 +17950,31 @@ def api_strategy_latest():
             session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5
         )
         if not row:
+            # PR-CY12 Part A — do NOT return "No strategy found" while the
+            # background task for this user+domain is still pending /
+            # running. The frontend recovery path used to fall back to a
+            # generic "Generation timed out" toast in that race window,
+            # which misled users into retrying and spawning yet more
+            # concurrent tasks. Return a 200 pending envelope instead so
+            # the UI can surface "Generation is still running. Please wait
+            # or check My Documents." and keep the saved-strategy
+            # recovery available once the worker finishes.
+            try:
+                _active_tid = find_active_strategy_task(
+                    session['user_id'], domain)
+            except Exception:  # noqa: BLE001
+                _active_tid = None
+            if _active_tid:
+                print(f"[STRATEGY-ASYNC] latest_recoverable_pending "
+                      f"user={session['user_id']} domain={domain!r} "
+                      f"task={_active_tid[:8]}", flush=True)
+                return jsonify({
+                    'success': False,
+                    'pending': True,
+                    'task_id': _active_tid,
+                    'message': 'Generation is still running',
+                    'attempts': attempts,
+                })
             return jsonify({
                 'success': False,
                 'error': 'No strategy found',
@@ -28934,6 +29020,20 @@ def _convergence_cyber_roadmap_balance_repair(
               flush=True)
         return 0
     if not missing:
+        # PR-CY12 Part C — explicit no-op signal when the targeted
+        # roadmap top-up has nothing to repair. Without this the
+        # surrounding convergence loop could call this function on
+        # every cycle and the only evidence of "no work done" was the
+        # absence of subsequent log lines. The explicit
+        # ``missing_after=[]`` marker mirrors the per-attempt
+        # diagnostics so log scrapers can confirm the early-exit.
+        try:
+            print('[CYBER-ROADMAP-BALANCE-REPAIR] '
+                  f'cycle={cycle_no} missing_after=[] '
+                  'stopping_early accepted=True',
+                  flush=True)
+        except Exception:  # noqa: BLE001
+            pass
         return 0
     print('[CYBER-ROADMAP-BALANCE-REPAIR] '
           f'cycle={cycle_no} missing_before={missing} '
@@ -29603,6 +29703,73 @@ def _splice_cyber_vision_objective_topup_row(
         + lines[last_data_idx + 1:])
 
 
+# ── PR-CY12 Part B — Cyber vision persistence diagnostic helper ─────────
+def _emit_cyber_vision_persistence_diagnostic(
+        sections, lang, domain, org_structure_is_none, phase):
+    """Emit a ``[CYBER-VISION-PERSISTENCE] phase=...`` log line that
+    reports whether an accepted Cyber specialized-function objective row
+    is still present in ``sections['vision']`` at three pipeline points
+    (``after_accept`` / ``after_normalization`` / ``before_final_audit``).
+
+    Strictly Cyber-scoped (no-op for any other domain) and strictly
+    diagnostic — never mutates ``sections``, never raises. ``phase``
+    is the literal label to embed in the log; callers control where
+    each emission happens so log scrapers can confirm the row survives
+    every downstream pass.
+    """
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return
+    try:
+        vision_text = sections.get('vision', '') or ''
+    except Exception:  # noqa: BLE001
+        vision_text = ''
+    has_specialized_objective = False
+    row_preview = ''
+    try:
+        sf_missing = _compute_missing_specialized_function_objective(
+            sections, domain, lang=lang,
+            org_structure_is_none=bool(org_structure_is_none))
+        has_specialized_objective = (not bool(sf_missing))
+    except Exception:  # noqa: BLE001
+        has_specialized_objective = False
+    try:
+        _hdr = _ts_re.compile(
+            r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
+            r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+            _ts_re.IGNORECASE,
+        )
+        for _cells in _ts_table_rows(vision_text, _hdr):
+            if len(_cells) < 4:
+                continue
+            _parts = [
+                str(_cells[_i] or '')
+                for _i in (1, 2, 3) if _i < len(_cells)
+            ]
+            _blob = ' '.join(_parts)
+            _d = _cyber_vision_objective_row_diagnostic(_blob)
+            if (_d.get('has_establishment_phrase')
+                    and _d.get('has_leadership_phrase')
+                    and not _d.get('contains_bad_ciso_office')):
+                row_preview = _d.get('row_preview') or _blob[:160]
+                break
+    except Exception:  # noqa: BLE001
+        row_preview = ''
+    try:
+        print(
+            '[CYBER-VISION-PERSISTENCE] '
+            f'phase={phase} '
+            f'has_specialized_objective={bool(has_specialized_objective)} '
+            f'row_preview={row_preview!r}',
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001 — diagnostic only
+        pass
+
+
 def _convergence_cyber_specialized_objective_topup_repair(
         sections, lang, domain, ctx, log):
     """PR-CY9 Part D — targeted AI-first top-up that resolves a
@@ -29637,6 +29804,22 @@ def _convergence_cyber_specialized_objective_topup_repair(
     except Exception:  # noqa: BLE001 — defensive
         sf_missing = True
     if not sf_missing:
+        # PR-CY12 Part C — explicit no-op signal so log scrapers can
+        # confirm the targeted top-up did NOT trigger an additional
+        # Anthropic call after a prior accepted candidate (or the
+        # baseline synthesis) already satisfied the dual-requirement
+        # detector. Avoids the duplicate-retry pattern observed in
+        # the runtime logs.
+        try:
+            print(
+                '[CYBER-VISION-SPECIALIZED-OBJECTIVE] '
+                'phase=skip_already_passing '
+                'specialized_missing_before=False '
+                'accepted=True',
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — diagnostic only
+            pass
         return 0
     before_text = sections.get('vision', '') or ''
     try:
@@ -30002,6 +30185,20 @@ def _convergence_cyber_specialized_objective_topup_repair(
                     f'row_preview={_acc_diag["row_preview"]!r} '
                     'accepted=True',
                     flush=True,
+                )
+            except Exception:  # noqa: BLE001 — diagnostic only
+                pass
+            # PR-CY12 Part B — persistence verification after the
+            # accepted candidate has been committed to ``sections
+            # ['vision']``. Confirms the row exists immediately after
+            # acceptance so subsequent ``after_normalization`` and
+            # ``before_final_audit`` emissions can be diffed against
+            # this baseline.
+            try:
+                _emit_cyber_vision_persistence_diagnostic(
+                    sections, lang, domain,
+                    org_structure_is_none=True,
+                    phase='after_accept',
                 )
             except Exception:  # noqa: BLE001 — diagnostic only
                 pass
@@ -47425,6 +47622,32 @@ The confidence score is based on a comprehensive assessment of the organization'
                         try:
                             # PR-5B.8B Section E: coarse stage beacon — final_audit.
                             _bump_stage('final_audit')
+                            # PR-CY12 Part B — persistence diagnostics
+                            # bracketing the post-normalization audit so
+                            # log scrapers can confirm an accepted Cyber
+                            # specialized-function objective row survives
+                            # the AR normalization pass and is still
+                            # present when the final audit runs. Both
+                            # emissions are no-ops for non-Cyber domains
+                            # and never mutate ``sections``.
+                            try:
+                                _cy12_org_none = bool(
+                                    _final_ctx.get(
+                                        'org_structure_is_none', False)
+                                    if isinstance(_final_ctx, dict)
+                                    else False)
+                                _emit_cyber_vision_persistence_diagnostic(
+                                    sections, lang, domain,
+                                    org_structure_is_none=_cy12_org_none,
+                                    phase='after_normalization',
+                                )
+                                _emit_cyber_vision_persistence_diagnostic(
+                                    sections, lang, domain,
+                                    org_structure_is_none=_cy12_org_none,
+                                    phase='before_final_audit',
+                                )
+                            except Exception:  # noqa: BLE001 — diagnostic only
+                                pass
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status,
