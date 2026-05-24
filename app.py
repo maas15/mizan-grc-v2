@@ -4137,7 +4137,7 @@ _DOMAIN_STRATEGY_PROFILES: dict = {
         # TCC entries in Appendix B even though TCC was not selected.
         "glossary_baseline": [
             "ECC", "IAM", "PAM", "SOC", "SIEM", "CSIRT",
-            "DLP", "EDR", "MFA",
+            "DLP", "EDR", "MFA", "KPI", "KRI",
         ],
     },
     "data": {
@@ -11006,18 +11006,49 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
             paras.append('Top gaps: ' + '; '.join(gaps) + '.')
 
     # Implementation horizon — pull the longest "timeframe" label from
-    # the roadmap table column. Heuristic only; never invents a horizon.
+    # the roadmap table column AND from the vision/objectives table.
+    # PR-CY19: pick the MAXIMUM timeframe (months / year) across both
+    # tables instead of the last regex match — otherwise a roadmap that
+    # ends with a short wave can hide an 18-month strategic objective.
     roadmap_text = (content_sections or {}).get('roadmap', '') or ''
     horizon = ''
-    if roadmap_text:
+    if True:
         import re as _re_h
+        sources_text = (
+            (roadmap_text or '')
+            + '\n'
+            + ((content_sections or {}).get('vision', '') or '')
+            + '\n'
+            + ((content_sections or {}).get('pillars', '') or '')
+        )
         # Look for tokens like "12 شهر", "18 months", "Q4 2026", "2027".
         cands = _re_h.findall(
-            r'(\d{1,2}\s*(?:شهر|أشهر|months?|month)|Q[1-4]\s*\d{4}|20\d{2})',
-            roadmap_text, _re_h.IGNORECASE)
+            r'(\d{1,3}\s*(?:شهر|أشهر|شهراً|months?|month)|\d{1,2}\s*(?:سنوات?|سنة|years?|year)|Q[1-4]\s*\d{4}|20\d{2})',
+            sources_text, _re_h.IGNORECASE)
+
+        def _to_months(tok):
+            t = tok.strip().lower()
+            mnum = _re_h.match(r'(\d{1,3})\s*(\D+)', t)
+            if mnum:
+                n = int(mnum.group(1))
+                unit = mnum.group(2)
+                if 'year' in unit or 'سن' in unit:
+                    return n * 12
+                if ('month' in unit or 'شهر' in unit or 'أشه' in unit):
+                    return n
+            qm = _re_h.match(r'q([1-4])\s*(\d{4})', t)
+            if qm:
+                year = int(qm.group(2))
+                return year * 12 + int(qm.group(1)) * 3
+            ym = _re_h.match(r'(20\d{2})', t)
+            if ym:
+                return int(ym.group(1)) * 12
+            return 0
+
         if cands:
-            horizon = cands[-1] if 'شهر' not in cands[-1] and 'month' not in cands[-1].lower() \
-                else cands[-1]
+            ranked = sorted(((_to_months(c), c) for c in cands),
+                            key=lambda x: x[0])
+            horizon = ranked[-1][1] if ranked else ''
     if horizon:
         if lang == 'ar':
             paras.append(f'الأفق الزمني للتنفيذ: حتى {horizon}.')
@@ -13798,6 +13829,28 @@ def _build_strategy_document_model(content, metadata=None, sections=None,
             print(
                 '[EXPORT-DIAG] cyber_ar_wording_normalization_doc_failed: '
                 f'{_aw_doc_e}',
+                flush=True,
+            )
+        # PR-CY19 — Final Cyber post-generation consistency audit.
+        # Runs roadmap dedup + dependency ordering, KPI RTL column
+        # repair, KRI auto-generation, DCC traceability validation, and
+        # confidence-score breakdown.  Scoped to ``domain == 'cyber'``
+        # only; idempotent; does NOT touch the PR-CY18 row-preservation
+        # pipeline.
+        try:
+            _cy19_diag = _cyber_post_generation_consistency_audit(
+                content_sections, lang_n, domain,
+                metadata=metadata, selected_frameworks=fws_keys)
+            if _cy19_diag:
+                print(
+                    '[EXPORT-DIAG] cyber_consistency_audit='
+                    f'{_cy19_diag}',
+                    flush=True,
+                )
+        except Exception as _cy19_e:  # noqa: BLE001 — defensive
+            print(
+                '[EXPORT-DIAG] cyber_consistency_audit_failed: '
+                f'{_cy19_e}',
                 flush=True,
             )
     # PR-5B.8S — inference fallback. When no explicit frameworks were
@@ -32796,6 +32849,859 @@ def _normalize_cyber_ar_wording_general(sections, lang, domain):
             sections[key] = new_text
             counts[key] = n
     return counts
+
+
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY19 — Cyber post-generation consistency audit
+# ════════════════════════════════════════════════════════════════════════
+#
+# Runs as the final post-processing gate for Cyber Security strategy
+# documents BEFORE export / preview composition. Scope is strictly
+# ``domain == 'cyber'`` — every other domain is byte-for-byte unchanged.
+# All passes are read-then-rewrite on the markdown section strings,
+# never touching the PR-CY18 row-preservation logic.
+#
+# Defects addressed (each pass is independent and idempotent):
+#
+#   1. Roadmap rows that are semantically duplicates (same description
+#      + owner + timeframe + output) are merged: only the first
+#      occurrence is kept and the ``#`` column is re-sequenced.
+#
+#   2. Roadmap dependency ordering — governance / CISO / establish-
+#      department / committee initiatives must precede dependent
+#      initiatives (IAM, SOC, vulnerability management, DLP, third-
+#      party risk, reporting). Re-orders in place while preserving the
+#      relative order within each group.
+#
+#   3. KPI table RTL column mapping is validated. Any data row where
+#      the Target Value cell is the literal word ``KPI`` (header
+#      leakage) or where the Formula cell is just a timeframe is
+#      repaired: timeframe moves to the Timeframe column and Target
+#      Value / Formula get sensible placeholders.
+#
+#   4. KRI auto-generation. If the methodology mentions KRI but the
+#      kpis section contains no KRI table, a deterministic table of
+#      standard cyber KRIs is appended (mean-time-to-detect / respond,
+#      patching SLA breach %, failed-login %, DLP incidents, third-
+#      party risk score, etc.). This mirrors the deterministic cyber
+#      governance roles table — it is a structural compliance artefact,
+#      not generated strategy content.
+#
+#   5. DCC traceability cell validation. Rows whose framework family
+#      is ``encryption`` (DCC) must reference encryption initiatives /
+#      controls — not awareness / phishing training. Rows whose family
+#      is ``dlp`` must reference DLP initiatives and leakage-risk
+#      indicators. Mis-targeted cells are rewritten to canonical DCC
+#      initiative / KPI / risk phrases.
+#
+#   6. Confidence score breakdown. A weighted-factor table is appended
+#      to the confidence section showing input completeness, framework
+#      coverage, roadmap feasibility, resource readiness, governance
+#      maturity, and data protection readiness — with a derived final
+#      percentage computed from those factors. The existing AI-emitted
+#      score is preserved as the reported headline; the breakdown
+#      provides explainability.
+#
+# Returns a diagnostic dict: ``{'cyber_consistency_audit':
+#   {'roadmap_dedup': int, 'roadmap_reorder': int, 'kpi_rtl_fix': int,
+#    'kri_table_added': bool, 'dcc_traceability_fix': int,
+#    'confidence_breakdown_added': bool}}`` — useful for [EXPORT-DIAG].
+# ════════════════════════════════════════════════════════════════════════
+
+
+_PRCY19_ROADMAP_HDR_RE = None  # lazy-compiled inside helper
+_PRCY19_GOV_TOKENS_AR = (
+    'إنشاء إدارة الأمن السيبراني', 'إدارة الأمن السيبراني بقيادة CISO',
+    'تعيين CISO', 'تعيين رئيس الأمن السيبراني',
+    'لجنة حوكمة الأمن السيبراني', 'لجنة الأمن السيبراني',
+    'حوكمة الأمن السيبراني',
+    'تأسيس إدارة الأمن السيبراني',
+)
+_PRCY19_GOV_TOKENS_EN = (
+    'establish cybersecurity department',
+    'establish the cybersecurity department',
+    'appoint ciso', 'appoint the ciso', 'appoint a ciso',
+    'cybersecurity governance committee',
+    'cyber governance committee',
+    'cybersecurity governance', 'ciso office', 'led by the ciso',
+)
+_PRCY19_DEPENDENT_TOKENS_AR = (
+    'إدارة الهوية', 'IAM', 'مركز العمليات الأمنية', 'SOC',
+    'إدارة الثغرات', 'الثغرات', 'منع تسرب البيانات', 'DLP',
+    'الأطراف الثالثة', 'الموردين', 'الطرف الثالث',
+    'التقارير', 'رفع التقارير', 'تقارير الامتثال',
+)
+_PRCY19_DEPENDENT_TOKENS_EN = (
+    'identity and access', 'iam',
+    'security operations center', 'soc',
+    'vulnerability management', 'vulnerability',
+    'data loss prevention', 'dlp',
+    'third-party', 'third party', 'vendor risk', 'supplier',
+    'reporting', 'compliance reporting',
+)
+
+
+def _prcy19_strip_md_table_rows(text):
+    """Yield (line_index, cells) for every data row of every markdown
+    table in ``text``; cells are stripped of leading/trailing whitespace.
+    Header and separator rows are also yielded with a ``role`` marker
+    so callers can rebuild the table verbatim.
+    Returns a list of dicts: ``{'idx': i, 'kind': 'header'|'sep'|'data',
+    'cells': [...], 'raw': original line}``.
+    """
+    rows = []
+    if not text:
+        return rows
+    lines = text.split('\n')
+    in_tbl = False
+    seen_sep = False
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s.startswith('|'):
+            in_tbl = False
+            seen_sep = False
+            rows.append({'idx': i, 'kind': 'other', 'cells': None,
+                         'raw': ln})
+            continue
+        cells = [c.strip() for c in s.strip('|').split('|')]
+        # separator row
+        if set(s.replace('|', '').strip()) <= set('-: '):
+            in_tbl = True
+            seen_sep = True
+            rows.append({'idx': i, 'kind': 'sep', 'cells': cells,
+                         'raw': ln})
+            continue
+        if not in_tbl or not seen_sep:
+            in_tbl = True
+            rows.append({'idx': i, 'kind': 'header', 'cells': cells,
+                         'raw': ln})
+        else:
+            rows.append({'idx': i, 'kind': 'data', 'cells': cells,
+                         'raw': ln})
+    return rows
+
+
+def _prcy19_emit_md_table(rows):
+    """Rebuild markdown text from rows produced by
+    :func:`_prcy19_strip_md_table_rows`. Data rows are emitted from
+    their ``cells`` (allowing in-place mutation); other rows from
+    ``raw``.
+    """
+    out = []
+    for r in rows:
+        if r['kind'] in ('header', 'data', 'sep') and r['cells']:
+            out.append('| ' + ' | '.join(r['cells']) + ' |')
+        else:
+            out.append(r['raw'])
+    return '\n'.join(out)
+
+
+def _prcy19_normalize_text(s):
+    """Lowercase + collapse whitespace + strip punctuation for
+    semantic-duplicate detection. Pure text helper."""
+    if not s:
+        return ''
+    import re as _re_n
+    out = str(s).strip().lower()
+    out = _re_n.sub(r'[\s\u00a0\u200f\u200e]+', ' ', out)
+    out = _re_n.sub(r'[\.\,\;\:\!\?\(\)\[\]\-\—\–\*\#"\'`]', '', out)
+    return out.strip()
+
+
+def _prcy19_roadmap_dedup_and_reorder(sections, lang):
+    """Pass 1+2 — semantic-duplicate removal + dependency ordering on
+    the roadmap section. Returns ``(dedup_count, reorder_count)``.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return (0, 0)
+    rows = _prcy19_strip_md_table_rows(text)
+    # Find the roadmap table — the FIRST table whose header includes
+    # roadmap-ish tokens.  Locate header index.
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('initiative' in blob or 'مبادرة' in blob
+                    or 'activity' in blob or 'roadmap' in blob
+                    or 'النشاط' in blob or 'خارطة' in blob
+                    or 'الإطار الزمني' in blob or 'timeframe' in blob):
+                hdr_idx = i
+                break
+    if hdr_idx is None:
+        return (0, 0)
+    # Collect contiguous data rows after header (skipping sep).
+    data_start = None
+    data_end = None
+    for j in range(hdr_idx + 1, len(rows)):
+        if rows[j]['kind'] == 'sep':
+            continue
+        if rows[j]['kind'] == 'data':
+            if data_start is None:
+                data_start = j
+            data_end = j
+        else:
+            break
+    if data_start is None:
+        return (0, 0)
+    data = rows[data_start:data_end + 1]
+    # ── Pass 1: dedup ────────────────────────────────────────────────
+    seen = set()
+    kept = []
+    dedup_n = 0
+    for r in data:
+        cells = r['cells'] or []
+        # Most cyber roadmap schemas: # | Initiative | Owner | Timeframe | Output
+        # Some have 6 cols incl. Framework.  Use last 4 normalised cells
+        # past the # column for the signature.
+        sig_cells = cells[1:] if (cells and cells[0].strip().isdigit()) else cells
+        key = tuple(_prcy19_normalize_text(c) for c in sig_cells)
+        if key in seen and any(key):
+            dedup_n += 1
+            continue
+        seen.add(key)
+        kept.append(r)
+    # ── Pass 2: dependency ordering ──────────────────────────────────
+    gov_tokens = _PRCY19_GOV_TOKENS_AR + _PRCY19_GOV_TOKENS_EN
+    dep_tokens = _PRCY19_DEPENDENT_TOKENS_AR + _PRCY19_DEPENDENT_TOKENS_EN
+    gov_lc = tuple(t.lower() for t in gov_tokens)
+    dep_lc = tuple(t.lower() for t in dep_tokens)
+
+    def _row_blob(r):
+        return ' '.join(r['cells'] or []).lower()
+
+    governance = []
+    dependents = []
+    others = []
+    for r in kept:
+        b = _row_blob(r)
+        is_gov = any(t in b for t in gov_lc)
+        is_dep = any(t in b for t in dep_lc) and not is_gov
+        if is_gov:
+            governance.append(r)
+        elif is_dep:
+            dependents.append(r)
+        else:
+            others.append(r)
+    new_order = governance + others + dependents
+    # Detect whether any dependent currently precedes any governance row
+    reorder_n = 0
+    if governance and dependents:
+        first_gov_pos = min(kept.index(r) for r in governance)
+        first_dep_pos = min(kept.index(r) for r in dependents)
+        if first_dep_pos < first_gov_pos:
+            reorder_n = sum(1 for r in dependents
+                            if kept.index(r) < first_gov_pos)
+    if not dedup_n and not reorder_n:
+        return (0, 0)
+    # Re-sequence the # column for the kept rows.
+    for new_i, r in enumerate(new_order, start=1):
+        if r['cells'] and r['cells'][0].strip().isdigit():
+            r['cells'][0] = str(new_i)
+    # Splice back into the table layout.
+    new_rows = rows[:data_start] + new_order + rows[data_end + 1:]
+    sections['roadmap'] = _prcy19_emit_md_table(new_rows)
+    return (dedup_n, reorder_n)
+
+
+# ── KPI formula preservation helpers ────────────────────────────────
+#
+# A "recoverable formula" is one of: ratio formulas (e.g. ``(X/Y)*100``,
+# ``X/Y``, ``×100%``), average-time formulas (``متوسط ...``, ``average
+# ...``, ``mean ...``), count-based formulas (``عدد ...``, ``count of
+# ...``, ``number of ...``, ``sum ...``). Bare timeframe tokens such as
+# ``24 ساعة`` / ``12 months`` are NOT formulas; they are timeframe leak.
+#
+# When the formula cell holds garbage but another cell in the same row
+# holds a recoverable formula, PR-CY19 must move that recoverable
+# formula into the formula column instead of inventing a generic
+# "Measured per approved methodology" string. Only when no neighbour
+# cell holds a recoverable formula may the row be marked as
+# ``[REQUIRES_AI_FORMULA_REPAIR]`` — explicit signal to the downstream
+# AI-repair pass that the row needs reformulation. No invented
+# placeholder is written.
+import re as _re_prcy19_fmla  # module-level helper import
+_PRCY19_RECOVERABLE_FORMULA_RE = _re_prcy19_fmla.compile(
+    r'(\([^)]+\)\s*[×x\*]\s*100\s*%?|'      # (num/den)*100[%]
+    r'\d+(?:\.\d+)?\s*[/÷]\s*\d+(?:\.\d+)?|'  # n/d ratio
+    r'×\s*100\s*%?|'                          # ×100
+    r'\bمتوسط\b|\baverage\b|\bavg\b|\bmean\b|'
+    r'\bعدد\b|\bcount\b|\bnumber\s+of\b|\bsum\b|'
+    r'\bمجموع\b|\bنسبة\b|\bratio\b|'
+    r'∑|Σ)',
+    _re_prcy19_fmla.IGNORECASE,
+)
+_PRCY19_AI_REPAIR_FORMULA_MARKER_AR = '[يتطلب إعادة صياغة عبر مراجعة ذكية]'
+_PRCY19_AI_REPAIR_FORMULA_MARKER_EN = '[REQUIRES_AI_FORMULA_REPAIR]'
+
+
+def _prcy19_is_recoverable_formula(s):
+    """Return True iff ``s`` looks like a recoverable KPI formula
+    (ratio / average-time / count-based). Bare timeframes do not match.
+    """
+    if not s:
+        return False
+    txt = str(s).strip()
+    if not txt or txt in ('—', '-'):
+        return False
+    return bool(_PRCY19_RECOVERABLE_FORMULA_RE.search(txt))
+
+
+def _prcy19_kpi_rtl_fix(sections, lang):
+    """Pass 3 — repair KPI rows where ``KPI`` header leaked into the
+    Target Value cell or a timeframe leaked into the Formula cell.
+
+    The repair is **non-destructive**:
+
+    1. If the formula cell already holds a recoverable formula, do not
+       touch it.
+    2. Otherwise scan the row for a recoverable formula in any other
+       cell (the most common production defect was the formula
+       leaking into the Target Value column) and move it into the
+       formula column.
+    3. Only when no recoverable formula exists anywhere in the row do
+       we mark the formula cell as ``[REQUIRES_AI_FORMULA_REPAIR]`` —
+       never invent a generic measurement string.
+
+    Returns the number of repaired rows.
+    """
+    import re as _re_kp
+    text = (sections or {}).get('kpis', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    # Find KPI table header.
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('kpi description' in blob or 'وصف المؤشر' in blob
+                    or 'القيمة المستهدفة' in blob
+                    or 'target value' in blob):
+                hdr_idx = i
+                break
+    if hdr_idx is None:
+        return 0
+    tf_re = _re_kp.compile(
+        r'^\s*(?:\d+\s*(?:months?|years?|weeks?|days?|أشهر|شهراً?|سنوات?|سنة|ساعة|ساعات?|hours?)'
+        r'|(?:within|خلال)\s+\d+|Q[1-4]\s*\d{4})\s*$',
+        _re_kp.IGNORECASE,
+    )
+    ai_marker = (_PRCY19_AI_REPAIR_FORMULA_MARKER_AR if lang == 'ar'
+                 else _PRCY19_AI_REPAIR_FORMULA_MARKER_EN)
+    fixed = 0
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] != 'data':
+            if r['kind'] == 'sep':
+                continue
+            break
+        c = r['cells'] or []
+        if len(c) < 6:
+            continue
+        # ── Defect A: Target Value is literally "KPI" / header leakage ──
+        if c[2].strip().lower() in ('kpi', 'kpi description', 'وصف المؤشر'):
+            c[2] = '—'
+            fixed += 1
+        # ── Formula preservation check ─────────────────────────────────
+        formula_ok = _prcy19_is_recoverable_formula(c[3])
+        if formula_ok:
+            # Already a recoverable formula — leave row alone (only the
+            # Defect A repair above may have touched the target value).
+            continue
+        # ── Step 1: reconstruct from neighbouring cells ────────────────
+        # Look in the other cells (typically the Target Value cell)
+        # for a leaked formula. Skip the # column (0) and the formula
+        # column (3) itself; columns 1 (Description), 2 (Target),
+        # 4 (Rationale), 5 (Timeframe).
+        recovered_idx = None
+        for j in (2, 1, 4):
+            if j < len(c) and _prcy19_is_recoverable_formula(c[j]):
+                recovered_idx = j
+                break
+        if recovered_idx is not None:
+            # Move that formula into the formula column. If the formula
+            # cell currently holds a bare timeframe, salvage it into
+            # the timeframe column before overwriting.
+            if tf_re.match(c[3] or '') and (not c[5] or c[5].strip() in ('—', '-', '')):
+                c[5] = c[3]
+            c[3] = c[recovered_idx].strip()
+            # If we pulled the formula out of the Target Value column,
+            # leave a placeholder dash there so the column still
+            # validates structurally; the downstream AI pass can
+            # re-fill it from the methodology.
+            if recovered_idx == 2:
+                c[2] = '—'
+            fixed += 1
+            continue
+        # ── Step 2: no recoverable formula anywhere in the row ─────────
+        # Defect B: Formula cell holds a bare timeframe — move it to
+        # the timeframe column and mark for AI repair.
+        if tf_re.match(c[3] or ''):
+            if not c[5] or c[5].strip() in ('—', '-', ''):
+                c[5] = c[3]
+            c[3] = ai_marker
+            fixed += 1
+            continue
+        # Defect C: Target Value is a bare timeframe AND formula empty.
+        if (tf_re.match(c[2] or '')
+                and (not c[3] or c[3].strip() in ('—', '-', ''))):
+            if not c[5] or c[5].strip() in ('—', '-', ''):
+                c[5] = c[2]
+            c[2] = '—'
+            c[3] = ai_marker
+            fixed += 1
+            continue
+        # Defect D: Formula cell is empty/dash and target is something
+        # that isn't a formula either — mark for AI repair without
+        # inventing wording.
+        if not c[3] or c[3].strip() in ('—', '-', ''):
+            c[3] = ai_marker
+            fixed += 1
+    if fixed:
+        sections['kpis'] = _prcy19_emit_md_table(rows)
+    return fixed
+
+
+def _prcy19_kri_table_present(text):
+    """True iff ``text`` contains a markdown table whose header looks
+    like a KRI table (Arabic or English)."""
+    if not text:
+        return False
+    rows = _prcy19_strip_md_table_rows(text)
+    for r in rows:
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if (('kri' in blob and ('indicator' in blob or 'مؤشر' in blob
+                                    or 'threshold' in blob or 'الحد' in blob))
+                    or 'مؤشر المخاطر' in blob
+                    or 'key risk indicator' in blob):
+                return True
+    return False
+
+
+_PRCY19_KRI_HEADER_AR = (
+    '\n\n### مؤشرات المخاطر الرئيسية (KRIs)\n\n'
+    '| # | مؤشر المخاطر (KRI) | الحد الأعلى المقبول | مصدر القياس | الإطار الزمني |\n'
+    '|---|---|---|---|---|\n'
+)
+_PRCY19_KRI_HEADER_EN = (
+    '\n\n### Key Risk Indicators (KRIs)\n\n'
+    '| # | KRI | Acceptable Threshold | Measurement Source | Cadence |\n'
+    '|---|---|---|---|---|\n'
+)
+
+
+# Per-signal KRI catalogue. Each entry: signal_key → (AR_row_tuple,
+# EN_row_tuple). A row is appended ONLY when its signal is observed in
+# the strategy sections, selected frameworks, gaps, or roadmap. This is
+# the difference between PR-CY19 v1 (deterministic fixed rows) and the
+# revised PR-CY19 (derived rows): the STRUCTURE is deterministic but
+# the CONTENT depends on the inputs.
+_PRCY19_KRI_CATALOGUE = {
+    'incident_response': (
+        ('متوسط زمن اكتشاف الحوادث (MTTD)', '≤ 60 دقيقة', 'SIEM/SOC', 'شهري'),
+        ('Mean Time To Detect (MTTD)', '≤ 60 minutes', 'SIEM/SOC', 'Monthly'),
+    ),
+    'incident_response_mttr': (
+        ('متوسط زمن الاستجابة للحوادث (MTTR)', '≤ 4 ساعات', 'SOC', 'شهري'),
+        ('Mean Time To Respond (MTTR)', '≤ 4 hours', 'SOC', 'Monthly'),
+    ),
+    'vulnerability_patching': (
+        ('نسبة الترقيع الأمني خارج SLA', '≤ 5%', 'إدارة الثغرات', 'شهري'),
+        ('Patching SLA breach rate', '≤ 5%', 'Vulnerability mgmt', 'Monthly'),
+    ),
+    'iam_auth': (
+        ('نسبة محاولات الدخول الفاشلة الشاذة', '≤ 2%', 'IAM/SIEM', 'أسبوعي'),
+        ('Anomalous failed login rate', '≤ 2%', 'IAM/SIEM', 'Weekly'),
+    ),
+    'dlp_leakage': (
+        ('عدد حوادث تسرب البيانات (DLP)', '0 حادثة حرجة', 'منصة DLP', 'شهري'),
+        ('DLP incidents (critical)', '0', 'DLP platform', 'Monthly'),
+    ),
+    'encryption_coverage': (
+        ('نسبة تغطية التشفير للبيانات الحساسة', '≥ 95%',
+         'إدارة الأمن السيبراني', 'ربع سنوي'),
+        ('Encryption coverage for sensitive data', '≥ 95%',
+         'Cybersecurity dept.', 'Quarterly'),
+    ),
+    'third_party_risk': (
+        ('درجة مخاطر الأطراف الثالثة', '≤ 30/100',
+         'إدارة مخاطر الموردين', 'ربع سنوي'),
+        ('Third-party risk score', '≤ 30/100',
+         'Vendor risk mgmt', 'Quarterly'),
+    ),
+    'data_classification': (
+        ('نسبة الأصول المُصنّفة وفق ضوابط البيانات', '≥ 90%',
+         'حوكمة البيانات', 'ربع سنوي'),
+        ('Assets classified per data-protection controls', '≥ 90%',
+         'Data governance', 'Quarterly'),
+    ),
+    'awareness': (
+        ('نسبة الموظفين المُجتازين لاختبار محاكاة التصيد', '≥ 90%',
+         'الموارد البشرية والأمن', 'ربع سنوي'),
+        ('Staff passing phishing-simulation tests', '≥ 90%',
+         'HR & Security', 'Quarterly'),
+    ),
+    'governance_committee': (
+        ('نسبة انعقاد لجنة حوكمة الأمن السيبراني وفق التواتر المعتمد',
+         '≥ 95%', 'مكتب الحوكمة', 'ربع سنوي'),
+        ('Cybersecurity governance committee meeting adherence',
+         '≥ 95%', 'Governance office', 'Quarterly'),
+    ),
+}
+
+
+def _prcy19_derive_kri_rows(sections, lang, selected_frameworks=None):
+    """Derive KRI rows from observable signals in the strategy section
+    bodies (cyber risks, gaps, selected frameworks, roadmap initiatives,
+    and data-protection obligations).
+
+    Returns a list of ``(name, threshold, source, cadence)`` tuples in
+    the requested language. Empty list when no signal fires — callers
+    must NOT emit a KRI table in that case (no fixed/deterministic
+    fallback rows are permitted).
+    """
+    blob_parts = []
+    for k in ('vision', 'pillars', 'gaps', 'risks', 'kpis', 'roadmap',
+              'methodology', 'data_protection', 'objectives',
+              'capabilities', 'traceability'):
+        v = (sections or {}).get(k, '')
+        if v:
+            blob_parts.append(str(v))
+    blob_lc = ('\n'.join(blob_parts)).lower()
+    fws_upper = ' '.join(str(f).upper() for f in (selected_frameworks or []))
+
+    def _has(*tokens):
+        return any(t.lower() in blob_lc for t in tokens)
+
+    def _has_fw(*tokens):
+        return any(t.upper() in fws_upper for t in tokens)
+
+    derived_keys = []
+    # Incident detection / response (SOC, SIEM, incident-response signals,
+    # or ECC selection which mandates incident management).
+    if _has('SOC', 'SIEM', 'حوادث', 'الحوادث', 'incident', 'incidents',
+            'الاستجابة للحوادث', 'incident response', 'MTTD', 'MTTR',
+            'CSIRT'):
+        derived_keys.append('incident_response')
+        derived_keys.append('incident_response_mttr')
+    # Vulnerability / patching
+    if _has('الثغرات', 'الترقيع', 'ترقيع', 'patching', 'patch',
+            'vulnerability', 'vulnerabilities', 'CVE'):
+        derived_keys.append('vulnerability_patching')
+    # IAM / authentication / access
+    if _has('IAM', 'PAM', 'إدارة الهوية', 'إدارة الهويات', 'المصادقة',
+            'authentication', 'login', 'الدخول', 'identity', 'access management',
+            'MFA'):
+        derived_keys.append('iam_auth')
+    # DLP / data leakage  (also derived from DCC framework selection)
+    if (_has('DLP', 'تسرب البيانات', 'منع تسرب', 'data loss prevention',
+             'leakage', 'تسرب')
+            or _has_fw('DCC')):
+        derived_keys.append('dlp_leakage')
+    # Encryption coverage
+    if _has('تشفير', 'التشفير', 'encryption', 'encrypt', 'cryptograph'):
+        derived_keys.append('encryption_coverage')
+    # Third-party / vendor risk
+    if _has('الأطراف الثالثة', 'الطرف الثالث', 'الموردين', 'third-party',
+            'third party', 'vendor', 'supplier', 'مخاطر الموردين'):
+        derived_keys.append('third_party_risk')
+    # Data classification (DCC obligation or explicit classification mention)
+    if (_has('تصنيف البيانات', 'classification', 'data classification',
+             'الأصول المعلوماتية', 'تصنيف الأصول')
+            or _has_fw('DCC')):
+        derived_keys.append('data_classification')
+    # Awareness / phishing programmes
+    if _has('التوعية', 'phishing', 'التصيد', 'awareness', 'تدريب الموظفين'):
+        derived_keys.append('awareness')
+    # Governance committee cadence
+    if _has('لجنة حوكمة', 'governance committee', 'حوكمة الأمن السيبراني',
+            'cybersecurity governance committee'):
+        derived_keys.append('governance_committee')
+
+    # De-duplicate while preserving order.
+    seen = set()
+    ordered = []
+    for k in derived_keys:
+        if k not in seen:
+            seen.add(k)
+            ordered.append(k)
+
+    out = []
+    idx = 0 if lang == 'ar' else 1
+    for k in ordered:
+        out.append(_PRCY19_KRI_CATALOGUE[k][idx])
+    return out
+
+
+def _prcy19_kri_ensure(sections, lang, selected_frameworks=None):
+    """Pass 4 — append a KRI table to the kpis section when no KRI
+    table is present AND at least one KRI signal can be derived from
+    cyber risks, gaps, selected frameworks, roadmap initiatives, or
+    data-protection obligations.
+
+    No fixed deterministic rows are inserted: when no signal fires,
+    nothing is appended and ``False`` is returned.
+    """
+    text = (sections or {}).get('kpis', '') or ''
+    if not text:
+        return False
+    if _prcy19_kri_table_present(text):
+        return False
+    derived = _prcy19_derive_kri_rows(sections, lang, selected_frameworks)
+    if not derived:
+        return False
+    header = (_PRCY19_KRI_HEADER_AR if lang == 'ar'
+              else _PRCY19_KRI_HEADER_EN)
+    body_lines = []
+    for i, (name, threshold, source, cadence) in enumerate(derived, start=1):
+        body_lines.append(
+            f'| {i} | {name} | {threshold} | {source} | {cadence} |')
+    sections['kpis'] = (text.rstrip() + header
+                        + '\n'.join(body_lines) + '\n')
+    return True
+
+
+_PRCY19_AWARENESS_TOKENS = (
+    'awareness', 'phishing', 'training',
+    'التوعية', 'التثقيف', 'التصيد', 'التدريب',
+)
+_PRCY19_ENCRYPTION_TOKENS = (
+    'encryption', 'encrypt', 'تشفير', 'التشفير',
+)
+_PRCY19_DLP_TOKENS = (
+    'dlp', 'data loss prevention', 'leakage',
+    'منع تسرب', 'تسرب البيانات', 'منع فقدان',
+)
+
+
+def _prcy19_dcc_traceability_fix(sections, lang):
+    """Pass 5 — DCC traceability cell validation. Currently emits
+    counts of detected misroutes; the actual rewrite is conservative:
+    misrouted encryption / DLP initiative cells are flagged in the
+    traceability section by appending a canonical phrase if absent.
+    Returns the number of repaired rows.
+    """
+    # We look only at the kpis / roadmap / pillars sections — the
+    # traceability matrix itself is rebuilt deterministically by
+    # ``_build_traceability_matrix`` and does not need cell-level
+    # rewriting here. Instead we validate that any row LABELLED with an
+    # encryption family does NOT mention awareness/phishing as the
+    # primary initiative, and that DLP rows do mention leakage / loss
+    # prevention vocabulary. Misroutes are corrected by appending the
+    # canonical capability phrase.
+    fixed = 0
+    for key in ('roadmap', 'pillars', 'kpis'):
+        text = (sections or {}).get(key, '') or ''
+        if not text:
+            continue
+        rows = _prcy19_strip_md_table_rows(text)
+        changed = False
+        for r in rows:
+            if r['kind'] != 'data' or not r['cells']:
+                continue
+            blob = ' '.join(r['cells']).lower()
+            mentions_enc_family = any(t in blob for t in _PRCY19_ENCRYPTION_TOKENS)
+            mentions_dlp_family = any(t in blob for t in _PRCY19_DLP_TOKENS)
+            if mentions_enc_family:
+                # If the row primarily talks about awareness/phishing
+                # while being tagged as encryption, append canonical
+                # encryption phrase.
+                awareness_hits = sum(t in blob for t in _PRCY19_AWARENESS_TOKENS)
+                enc_hits = sum(t in blob for t in _PRCY19_ENCRYPTION_TOKENS)
+                if awareness_hits > enc_hits:
+                    appendix = (' — تطبيق التشفير للبيانات أثناء النقل والتخزين'
+                                if lang == 'ar'
+                                else ' — apply encryption at rest and in transit')
+                    # Append to the longest free-text cell (initiative).
+                    target_i = max(range(len(r['cells'])),
+                                   key=lambda i: len(r['cells'][i] or ''))
+                    r['cells'][target_i] = (r['cells'][target_i] or '') + appendix
+                    fixed += 1
+                    changed = True
+            if mentions_dlp_family:
+                dlp_specific = ('leakage' in blob or 'تسرب' in blob
+                                or 'loss prevention' in blob
+                                or 'منع تسرب' in blob)
+                if not dlp_specific:
+                    appendix = (' — منع تسرب البيانات وفق ضوابط DCC'
+                                if lang == 'ar'
+                                else ' — data loss prevention per DCC controls')
+                    target_i = max(range(len(r['cells'])),
+                                   key=lambda i: len(r['cells'][i] or ''))
+                    r['cells'][target_i] = (r['cells'][target_i] or '') + appendix
+                    fixed += 1
+                    changed = True
+        if changed:
+            sections[key] = _prcy19_emit_md_table(rows)
+    return fixed
+
+
+_PRCY19_CONFIDENCE_HEADER_AR = '#### تفصيل عوامل درجة الثقة'
+_PRCY19_CONFIDENCE_HEADER_EN = '#### Confidence Score Breakdown'
+
+
+def _prcy19_confidence_breakdown(sections, lang, metadata=None,
+                                 selected_frameworks=None):
+    """Pass 6 — append a weighted-factor confidence breakdown to the
+    confidence section. Returns ``True`` if appended.
+    The final percentage is the weighted sum of six factors; the
+    existing AI-emitted headline score is preserved.
+    """
+    text = (sections or {}).get('confidence', '') or ''
+    if not text:
+        return False
+    if (_PRCY19_CONFIDENCE_HEADER_AR in text
+            or _PRCY19_CONFIDENCE_HEADER_EN in text):
+        return False
+    # Estimate factor scores deterministically from observable signals
+    # in the strategy content + metadata. Each factor is 0-100; all
+    # carry equal weight in the headline % (rounded to nearest int).
+    md = metadata or {}
+    fws = list(selected_frameworks or [])
+    vision_text = (sections or {}).get('vision', '') or ''
+    roadmap_text = (sections or {}).get('roadmap', '') or ''
+    pillars_text = (sections or {}).get('pillars', '') or ''
+    gaps_text = (sections or {}).get('gaps', '') or ''
+    kpis_text = (sections or {}).get('kpis', '') or ''
+
+    def _has(haystack, needles):
+        h = (haystack or '').lower()
+        return any(n.lower() in h for n in needles)
+
+    input_completeness = 70
+    if md.get('org_name') and md.get('sector'):
+        input_completeness = 85
+    if md.get('org_name') and md.get('sector') and md.get('domain'):
+        input_completeness = 92
+    framework_coverage = min(100, 40 + 15 * len(fws))
+    roadmap_feasibility = 60
+    if roadmap_text.count('|') > 50:
+        roadmap_feasibility = 78
+    if _has(roadmap_text, ('12 شهر', '18 شهر', '12 month', '18 month')):
+        roadmap_feasibility = min(100, roadmap_feasibility + 10)
+    resource_readiness = 65
+    if _has(roadmap_text + pillars_text,
+            ('CISO', 'إدارة الأمن السيبراني', 'cybersecurity department')):
+        resource_readiness = 80
+    governance_maturity = 60
+    if _has(pillars_text + vision_text,
+            ('لجنة حوكمة', 'governance committee', 'حوكمة الأمن السيبراني',
+             'cybersecurity governance')):
+        governance_maturity = 82
+    data_protection = 55
+    if _has(roadmap_text + pillars_text + kpis_text,
+            ('تشفير', 'encryption', 'DLP', 'تسرب', 'classification', 'تصنيف')):
+        data_protection = 78
+    factors = [
+        ('input_completeness', input_completeness),
+        ('framework_coverage', framework_coverage),
+        ('roadmap_feasibility', roadmap_feasibility),
+        ('resource_readiness', resource_readiness),
+        ('governance_maturity', governance_maturity),
+        ('data_protection_readiness', data_protection),
+    ]
+    weights = [0.15, 0.20, 0.20, 0.10, 0.20, 0.15]
+    derived = int(round(sum(v * w for (_n, v), w in zip(factors, weights))))
+    if lang == 'ar':
+        labels = {
+            'input_completeness': 'اكتمال المدخلات',
+            'framework_coverage': 'تغطية الأطر المرجعية',
+            'roadmap_feasibility': 'جدوى خارطة الطريق',
+            'resource_readiness': 'جاهزية الموارد',
+            'governance_maturity': 'نضج الحوكمة',
+            'data_protection_readiness': 'جاهزية حماية البيانات',
+        }
+        hdr = _PRCY19_CONFIDENCE_HEADER_AR
+        table = (
+            f'\n\n{hdr}\n\n'
+            '| العامل | الوزن | الدرجة | المساهمة |\n'
+            '|---|---|---|---|\n'
+        )
+        for (name, val), w in zip(factors, weights):
+            contrib = round(val * w, 1)
+            table += f'| {labels[name]} | {int(w*100)}% | {val} | {contrib} |\n'
+        table += f'\n**درجة الثقة المُشتقة من العوامل:** {derived}%\n'
+    else:
+        labels = {
+            'input_completeness': 'Input completeness',
+            'framework_coverage': 'Framework coverage',
+            'roadmap_feasibility': 'Roadmap feasibility',
+            'resource_readiness': 'Resource readiness',
+            'governance_maturity': 'Governance maturity',
+            'data_protection_readiness': 'Data protection readiness',
+        }
+        hdr = _PRCY19_CONFIDENCE_HEADER_EN
+        table = (
+            f'\n\n{hdr}\n\n'
+            '| Factor | Weight | Score | Contribution |\n'
+            '|---|---|---|---|\n'
+        )
+        for (name, val), w in zip(factors, weights):
+            contrib = round(val * w, 1)
+            table += f'| {labels[name]} | {int(w*100)}% | {val} | {contrib} |\n'
+        table += f'\n**Derived weighted confidence:** {derived}%\n'
+    sections['confidence'] = text.rstrip() + table
+    return True
+
+
+def _cyber_post_generation_consistency_audit(sections, lang, domain,
+                                             metadata=None,
+                                             selected_frameworks=None):
+    """PR-CY19 — Final Cyber Security post-generation consistency audit.
+
+    Strictly scoped to ``domain == 'cyber'``. Idempotent. Returns a
+    diagnostic dict (empty when scope does not apply) suitable for
+    ``[EXPORT-DIAG]`` logging.
+
+    Does NOT modify the PR-CY18 specialized-objective row preservation
+    pipeline. Operates only on the post-pipeline markdown text in the
+    section dictionary.
+    """
+    try:
+        _dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        _dcode = (domain or '').strip().lower()
+    if _dcode != 'cyber':
+        return {}
+    if not isinstance(sections, dict):
+        return {}
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    diag = {}
+    try:
+        dedup_n, reorder_n = _prcy19_roadmap_dedup_and_reorder(sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        dedup_n, reorder_n = 0, 0
+        diag['roadmap_error'] = repr(_e)
+    diag['roadmap_dedup'] = dedup_n
+    diag['roadmap_reorder'] = reorder_n
+    try:
+        diag['kpi_rtl_fix'] = _prcy19_kpi_rtl_fix(sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['kpi_rtl_fix'] = 0
+        diag['kpi_error'] = repr(_e)
+    try:
+        diag['kri_table_added'] = bool(
+            _prcy19_kri_ensure(sections, lang_n, selected_frameworks))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['kri_table_added'] = False
+        diag['kri_error'] = repr(_e)
+    try:
+        diag['dcc_traceability_fix'] = _prcy19_dcc_traceability_fix(
+            sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['dcc_traceability_fix'] = 0
+        diag['dcc_error'] = repr(_e)
+    try:
+        diag['confidence_breakdown_added'] = bool(
+            _prcy19_confidence_breakdown(sections, lang_n, metadata,
+                                         selected_frameworks))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['confidence_breakdown_added'] = False
+        diag['confidence_error'] = repr(_e)
+    return diag
+
+
 #
 # Real production symptom: the KPI section (or any canonical section)
 # sometimes contains a SECOND `## N. {canonical title}` heading inside
