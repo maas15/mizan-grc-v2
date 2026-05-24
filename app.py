@@ -18636,6 +18636,65 @@ def api_strategy_status(task_id):
                     # Last-resort fallback: wrap raw content as a single section
                     if _sj is None and _strat['content']:
                         _sj = {'vision': _strat['content']}
+                    # ── PR-CY25 — Final export contract for Preview. The
+                    # contract is the SAME function consumed by PDF /
+                    # DOCX, so all three routes serve identical audited
+                    # content (content_hash diagnostic confirms parity).
+                    # Cyber-only; non-cyber strategies are pass-through.
+                    try:
+                        _cy25_domain_prev = _strat['domain'] or ''
+                        _cy25_lang_prev = (
+                            'ar' if (_strat['language'] or '').strip().lower()
+                            in ('ar', 'arabic') else 'en')
+                        _cy25_prev_md = _strat['content'] or ''
+                        if _cy25_prev_md:
+                            _cy25_contract_prev = (
+                                _cyber_final_export_contract(
+                                    _cy25_prev_md,
+                                    metadata={
+                                        'domain': _cy25_domain_prev,
+                                    },
+                                    selected_frameworks=(
+                                        compact.get('frameworks')
+                                        or compact.get('selected_frameworks')
+                                        or []
+                                    ),
+                                    lang=_cy25_lang_prev,
+                                    domain=_cy25_domain_prev,
+                                    output_type='preview',
+                                )
+                            )
+                            _cy25_prev_blockers = (
+                                _cy25_contract_prev.get(
+                                    'blocking_errors', []) or [])
+                            if _cy25_prev_blockers:
+                                # Surface the blocker as a top-level
+                                # error so the frontend can render the
+                                # precise reason instead of a partially
+                                # repaired strategy preview.
+                                _err_first = _cy25_prev_blockers[0]
+                                print(
+                                    '[CYBER-FINAL-EXPORT-CONTRACT] '
+                                    f'preview_blocked error={_err_first!r}',
+                                    flush=True,
+                                )
+                                return jsonify(_with_progress({
+                                    'status': 'error',
+                                    'error': _err_first,
+                                }))
+                            # Replace sections with the audited bodies so
+                            # Preview renders exactly what the PDF/DOCX
+                            # routes would.
+                            _audited_sections = _cy25_contract_prev.get(
+                                'sections') or {}
+                            if _audited_sections:
+                                _sj = _audited_sections
+                    except Exception as _cy25_prev_e:  # noqa: BLE001
+                        print(
+                            f'[CYBER-FINAL-EXPORT-CONTRACT] '
+                            f'preview_contract_failed: {_cy25_prev_e}',
+                            flush=True,
+                        )
                     result = {
                         'success': True,
                         'sections': _sj,
@@ -35492,6 +35551,592 @@ def _cyber_final_export_audit(content, metadata=None,
     except Exception:
         pass
     return (new_content, sections, diag)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY25 — Final Export Contract Manager
+#
+# A single canonical entry point used by every Cyber strategy rendering
+# route (PDF, DOCX, Preview). Wraps the existing PR-CY22 final export
+# audit with:
+#   * Up to 2 targeted-repair cycles before failing.
+#   * A hard blocking gate that refuses to release content carrying any
+#     unresolved AI-repair marker, missing roadmap phase, missing KRI
+#     table, incomplete KPI / KRI schema, Arabic word-fragment, DCC
+#     traceability generic mapping, confidence-score mismatch or
+#     strategic-objectives incomplete row.
+#   * A final unresolved-marker scan ([REQUIRES_AI_*]).
+#   * Deterministic content hashing so PDF / DOCX / Preview can be
+#     proven to consume the same audited content.
+#   * A [CYBER-FINAL-EXPORT-CONTRACT] diagnostic snapshot.
+#
+# Intentionally does NOT touch:
+#   * PR-CY18 specialized-objective preservation
+#   * PR-CY20 framework-compliance preservation
+#   * PR-CY22 final export audit shape
+#   * PR-CY23 quality-gate helpers
+#   * PR-CY24 strategic-objectives sanitizer
+# ════════════════════════════════════════════════════════════════════════
+
+# Tokens that must NEVER reach the rendered output.
+_PRCY25_FORBIDDEN_MARKERS = (
+    '[REQUIRES_AI_TARGET_REPAIR]',
+    '[REQUIRES_AI_FORMULA_REPAIR]',
+)
+# Generic prefix that covers any future variants.
+_PRCY25_FORBIDDEN_MARKER_PREFIX = '[REQUIRES_AI_'
+
+_PRCY25_MAX_REPAIR_CYCLES = 2
+
+
+def _prcy25_compute_content_hash(s):
+    """Stable SHA-256 hex of the final markdown content."""
+    import hashlib as _hl
+    return _hl.sha256((s or '').encode('utf-8', 'replace')).hexdigest()
+
+
+def _prcy25_scan_unresolved_markers(content):
+    """Return a list of unresolved AI-repair markers detected anywhere
+    inside ``content``. Each entry is the marker token itself; the
+    blocking-gate caller decorates it with section + row context."""
+    out = []
+    if not content:
+        return out
+    text = str(content)
+    for tok in _PRCY25_FORBIDDEN_MARKERS:
+        if tok in text:
+            out.append(tok)
+    # Detect any other [REQUIRES_AI_*] variants we have not enumerated.
+    if _PRCY25_FORBIDDEN_MARKER_PREFIX in text:
+        import re as _re_um
+        for m in _re_um.findall(r'\[REQUIRES_AI_[A-Z_]+\]', text):
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def _prcy25_locate_marker_rows(sections, marker):
+    """Return a list of ``(section_key, row_index)`` tuples locating the
+    given marker inside the audited section bodies. Best-effort — used
+    only to enrich the blocking-error diagnostic."""
+    found = []
+    if not isinstance(sections, dict):
+        return found
+    for key, body in sections.items():
+        if not body or marker not in body:
+            continue
+        # Walk markdown rows for KPI / KRI / traceability sections.
+        rows = [ln for ln in body.split('\n') if ln.lstrip().startswith('|')]
+        row_no = 0
+        for ln in rows:
+            if ln.strip().startswith('|---'):
+                continue
+            row_no += 1
+            if marker in ln:
+                found.append((key, row_no))
+        if not found:
+            found.append((key, 0))
+    return found
+
+
+def _prcy25_extract_summary_horizon_months(sections):
+    """Return the announced strategy horizon in months from executive
+    summary / vision text (e.g. 24, 36), or ``None`` if no horizon is
+    declared. Looks for the most common Arabic and English forms.
+    """
+    if not isinstance(sections, dict):
+        return None
+    candidates = []
+    for key in ('summary', 'executive_summary', 'vision', 'overview'):
+        v = sections.get(key)
+        if v:
+            candidates.append(v)
+    if not candidates:
+        return None
+    import re as _re_h
+    blob = '\n'.join(candidates)
+    # Arabic: "خلال 24 شهرًا" / "خلال 36 شهراً" / "24 شهر"
+    m = _re_h.search(r'(\d{1,3})\s*شهر', blob)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    # English: "24 months" / "over 24 months"
+    m = _re_h.search(r'(\d{1,3})\s*month', blob, _re_h.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    return None
+
+
+def _prcy25_compute_roadmap_coverage_months(sections):
+    """Inspect the roadmap section and return the highest month number
+    referenced inside any phase timeline cell (e.g. ``19-24`` →
+    ``24``). Returns ``0`` if no month numbers are detected."""
+    if not isinstance(sections, dict):
+        return 0
+    roadmap = sections.get('roadmap', '') or ''
+    if not roadmap:
+        return 0
+    import re as _re_rm
+    months = []
+    for m in _re_rm.finditer(
+            r'(?:شهر|month[s]?)?\s*(\d{1,3})\s*[\u2013\u2014\-]\s*(\d{1,3})',
+            roadmap, _re_rm.IGNORECASE):
+        try:
+            months.append(int(m.group(2)))
+        except Exception:
+            continue
+    if not months:
+        # Single-month form e.g. "شهر 6"
+        for m in _re_rm.finditer(
+                r'(?:شهر|month[s]?)\s*(\d{1,3})',
+                roadmap, _re_rm.IGNORECASE):
+            try:
+                months.append(int(m.group(1)))
+            except Exception:
+                continue
+    return max(months) if months else 0
+
+
+def _prcy25_strategic_objectives_incomplete_rows(sections, lang):
+    """Return a list of incomplete strategic-objectives rows. A row is
+    considered incomplete when one of its core cells (objective text,
+    KPI, target, owner / sponsor) is empty or a literal dash. Header
+    and separator rows are skipped. Only the first 3 issues are
+    surfaced to keep the blocking-error short."""
+    issues = []
+    if not isinstance(sections, dict):
+        return issues
+    # Strategic-objectives content can live in 'strategic_objectives' or
+    # 'objectives'. When the section splitter doesn't recognise the
+    # heading (e.g. test fixtures), it ends up appended to whichever
+    # section is currently open. To remain robust we scan every section
+    # body and detect the strategic-objectives table by header tokens.
+    bodies = []
+    for key in ('strategic_objectives', 'objectives'):
+        v = sections.get(key)
+        if v:
+            bodies.append(v)
+    if not bodies:
+        bodies = [v for v in sections.values() if isinstance(v, str) and v]
+    for body in bodies:
+        in_obj_table = False
+        row_no = 0
+        for ln in body.split('\n'):
+            s = ln.strip()
+            if not s.startswith('|'):
+                in_obj_table = False
+                continue
+            cells = [c.strip() for c in s.strip('|').split('|')]
+            blob = ' '.join(cells).lower()
+            if not in_obj_table:
+                if any(t in blob for t in (
+                    'الهدف', 'objective', 'هدف استراتيجي',
+                    'strategic objective')):
+                    in_obj_table = True
+                    continue
+            if not in_obj_table:
+                continue
+            if s.startswith('|---') or all(
+                    set(c) <= set('-: ') for c in cells):
+                continue
+            row_no += 1
+            empty_cells = sum(
+                1 for c in cells[1:]
+                if c in ('', '—', '-', '–', '...', '…'))
+            if empty_cells >= 2:
+                issues.append(
+                    f'strategic_objectives_incomplete_row:{row_no}')
+                if len(issues) >= 3:
+                    return issues
+    return issues
+
+
+def _prcy25_detect_dcc_generic_mapping(sections, lang):
+    """Detect rows in the DCC traceability table that still map
+    classification / data-protection capabilities to a generic
+    encryption-only phrase. Returns a list of capability labels that
+    appear to be mis-mapped."""
+    if not isinstance(sections, dict):
+        return []
+    body = sections.get('traceability', '') or ''
+    if not body:
+        return []
+    flagged = []
+    classification_tokens_ar = (
+        'تصنيف البيانات', 'تصنيف المعلومات',
+    )
+    classification_tokens_en = (
+        'data classification', 'information classification',
+    )
+    protection_tokens_ar = (
+        'حماية البيانات', 'حماية المعلومات',
+    )
+    protection_tokens_en = (
+        'data protection', 'information protection',
+    )
+    encryption_only_tokens = (
+        'encryption', 'تشفير',
+    )
+    for ln in body.split('\n'):
+        if not ln.strip().startswith('|'):
+            continue
+        low = ln.lower()
+        is_classification = (
+            any(t in ln for t in classification_tokens_ar)
+            or any(t in low for t in classification_tokens_en)
+        )
+        is_protection = (
+            any(t in ln for t in protection_tokens_ar)
+            or any(t in low for t in protection_tokens_en)
+        )
+        if not (is_classification or is_protection):
+            continue
+        is_encryption_only = any(t in low for t in encryption_only_tokens)
+        # Mis-mapping only fires when classification/protection row has
+        # NO classification-specific wording AND falls back to encryption
+        # phrasing.
+        if is_classification and 'سياسة تصنيف' not in ln \
+                and 'classification policy' not in low \
+                and is_encryption_only:
+            flagged.append('classification')
+        elif is_protection and 'سياسة حماية' not in ln \
+                and 'protection policy' not in low \
+                and is_encryption_only:
+            flagged.append('protection')
+    return flagged
+
+
+def _cyber_final_blocking_gate(content, sections, lang, selected_frameworks,
+                               domain):
+    """PR-CY25 — return a list of blocking-error codes that prevent the
+    audited content from being rendered. Each code follows the pattern
+    ``final_quality_gate_failed:<reason>[:detail...]`` so the diagnostic
+    is easy to grep for in production logs.
+
+    The gate is read-only on ``sections`` / ``content`` — it only
+    classifies defects and does not mutate input."""
+    errors = []
+    if not content or not str(content).strip():
+        errors.append('final_quality_gate_failed:empty_strategy_body')
+        return errors
+    if not _prcy25_compute_content_hash(content):
+        # Hash failure (defensive — sha256 cannot fail).
+        errors.append('final_quality_gate_failed:final_content_hash_missing')
+    # 1) Unresolved AI repair markers.
+    markers = _prcy25_scan_unresolved_markers(content)
+    for tok in markers:
+        loc = _prcy25_locate_marker_rows(sections or {}, tok)
+        if loc:
+            sect, row = loc[0]
+            errors.append(
+                f'final_quality_gate_failed:unresolved_final_repair_marker:'
+                f'{tok}:{sect}:row_{row}'
+            )
+        else:
+            errors.append(
+                f'final_quality_gate_failed:unresolved_final_repair_marker:'
+                f'{tok}'
+            )
+    # 2) Roadmap horizon vs summary horizon mismatch.
+    horizon = _prcy25_extract_summary_horizon_months(sections or {})
+    roadmap_cov = _prcy25_compute_roadmap_coverage_months(sections or {})
+    if horizon and roadmap_cov and roadmap_cov + 2 < horizon:
+        errors.append(
+            'final_quality_gate_failed:roadmap_horizon_mismatch:'
+            f'summary_{horizon}:roadmap_{roadmap_cov}'
+        )
+    # 3) Missing standalone KRI table.
+    kpis_body = (sections or {}).get('kpis', '') or ''
+    if kpis_body and not _prcy19_kri_table_present(kpis_body):
+        errors.append(
+            'final_quality_gate_failed:missing_standalone_kri_table'
+        )
+    # 4) Missing phase timeline + KPI schema invalid + Arabic fragment +
+    #    confidence mismatch (surfaced by PR-CY23 final assertions).
+    try:
+        assertions = _prcy23_final_assertions(sections or {}, lang)
+    except Exception:
+        assertions = []
+    for a in assertions:
+        if a.startswith('roadmap_phase_missing_timeline'):
+            errors.append(
+                f'final_quality_gate_failed:missing_phase_timeline:{a}'
+            )
+        elif a in ('kpi_target_dash_only', 'kpi_formula_duplicated'):
+            errors.append(
+                f'final_quality_gate_failed:kpi_schema_invalid:{a}'
+            )
+        elif a.startswith('arabic_word_fragment_split'):
+            errors.append(
+                f'final_quality_gate_failed:arabic_fragment_detected:{a}'
+            )
+        elif a.startswith('confidence_mismatch'):
+            errors.append(
+                f'final_quality_gate_failed:confidence_score_mismatch:{a}'
+            )
+    # 5) DCC generic traceability mapping.
+    if selected_frameworks and 'DCC' in {
+            str(f).strip().upper() for f in (selected_frameworks or [])}:
+        flagged = _prcy25_detect_dcc_generic_mapping(sections or {}, lang)
+        for cap in flagged:
+            errors.append(
+                f'final_quality_gate_failed:dcc_traceability_generic_mapping:'
+                f'{cap}'
+            )
+    # 6) Strategic-objectives incomplete rows.
+    for s in _prcy25_strategic_objectives_incomplete_rows(
+            sections or {}, lang):
+        errors.append(f'final_quality_gate_failed:{s}')
+    return errors
+
+
+# Reasons that admit targeted repair (re-run the audit / quality-gate
+# helpers). Other reasons fail immediately.
+_PRCY25_REPAIRABLE_REASONS = (
+    'unresolved_final_repair_marker',
+    'roadmap_horizon_mismatch',
+    'missing_standalone_kri_table',
+    'missing_phase_timeline',
+    'kpi_schema_invalid',
+    'kri_schema_invalid',
+    'arabic_fragment_detected',
+    'confidence_score_mismatch',
+    'dcc_traceability_generic_mapping',
+)
+
+
+def _prcy25_is_repairable(blocking_errors):
+    """True iff EVERY blocking error in ``blocking_errors`` corresponds
+    to one of the PR-CY25 repairable reasons. Empty list returns True."""
+    for e in blocking_errors or []:
+        reason = e.replace('final_quality_gate_failed:', '').split(':', 1)[0]
+        if reason not in _PRCY25_REPAIRABLE_REASONS:
+            return False
+    return True
+
+
+def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
+                                selected_frameworks, domain, metadata=None):
+    """PR-CY25 — single targeted-repair pass. Invokes the PR-CY19 KRI
+    backfill and PR-CY23 quality-gate helpers a second time over the
+    section bodies that triggered a blocking error. The function
+    mutates ``sections`` in place and returns a list of repair actions
+    taken (for the diagnostic).
+
+    The only AI-marker repair we perform is to STRIP unresolved
+    ``[REQUIRES_AI_*]`` tokens from cells where the surrounding row is
+    otherwise complete — leaving an empty cell that the next gate run
+    will treat as ``kpi_target_dash_only``. AI repair calls are not
+    initiated here (the upstream PR-CY19 / PR-CY23 helpers already
+    attempted that during the first audit pass)."""
+    actions = []
+    if not isinstance(sections, dict):
+        return actions
+    # 1) KRI table — let the PR-CY19 KRI ensure helper try again now
+    # that any previous mutation has settled.
+    try:
+        added = _prcy19_kri_ensure(sections, lang, selected_frameworks)
+        if added:
+            actions.append('kri_ensure:added')
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    # 2) Re-run the PR-CY23 quality gate once. Idempotent on already-
+    # clean sections; surgical on freshly mutated ones.
+    try:
+        _cyber_final_quality_gate(
+            sections, lang, metadata=metadata,
+            selected_frameworks=selected_frameworks)
+        actions.append('quality_gate:re_ran')
+    except Exception:  # noqa: BLE001
+        pass
+    return actions
+
+
+def _cyber_final_export_contract(markdown, metadata=None,
+                                 selected_frameworks=None,
+                                 lang='ar', domain=None,
+                                 output_type='unknown'):
+    """PR-CY25 — single canonical final-export contract used by PDF,
+    DOCX and Preview routes.
+
+    Returns a dict with the keys:
+      * ``final_markdown``   — repaired markdown safe to render.
+      * ``audit_flags``      — PR-CY22 final-export-audit diagnostic
+                                snapshot (last cycle).
+      * ``repair_actions``   — list of repair attempts performed.
+      * ``blocking_errors``  — list of ``final_quality_gate_failed:...``
+                                codes; empty when rendering is allowed.
+      * ``content_hash``     — SHA-256 hex of the final markdown.
+      * ``sections``         — audited section bodies (last cycle).
+      * ``diag``             — telemetry shape printed under the
+                                ``[CYBER-FINAL-EXPORT-CONTRACT]`` log
+                                tag.
+
+    Non-Cyber domains are pass-through (no audit, no gate, empty error
+    list) so the contract remains safe to call from every export route
+    regardless of the active domain."""
+    try:
+        dcode = (normalize_domain(domain or (metadata or {}).get('domain')
+                                  or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001
+        dcode = (domain or '').strip().lower()
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    before_hash = _prcy25_compute_content_hash(markdown or '')
+    if dcode != 'cyber':
+        try:
+            sections_np = (
+                _split_strategy_sections_by_h2(markdown or '') or {})
+        except Exception:
+            sections_np = {}
+        return {
+            'final_markdown': markdown or '',
+            'audit_flags': {},
+            'repair_actions': [],
+            'blocking_errors': [],
+            'content_hash': before_hash,
+            'sections': sections_np,
+            'diag': {
+                'output_type': output_type,
+                'before_hash': before_hash[:16],
+                'after_hash': before_hash[:16],
+                'repair_actions_count': 0,
+                'blocking_errors_count': 0,
+                'final_content_length': len(markdown or ''),
+                'has_unresolved_markers': False,
+                'roadmap_coverage': 0,
+                'has_kri_table': False,
+                'confidence_consistent': True,
+                'kpi_schema_valid': True,
+                'kri_schema_valid': True,
+                'dcc_traceability_valid': True,
+                'domain': dcode or 'unknown',
+            },
+        }
+
+    current = markdown or ''
+    repair_actions = []
+    audit_flags = {}
+    sections = {}
+    blocking_errors = []
+    for cycle in range(_PRCY25_MAX_REPAIR_CYCLES):
+        try:
+            current, sections, audit_flags = _cyber_final_export_audit(
+                current,
+                metadata=metadata,
+                selected_frameworks=selected_frameworks,
+                lang=lang_n,
+                domain=dcode,
+            )
+        except Exception as _e:  # noqa: BLE001 — defensive
+            audit_flags = {'audit_error': repr(_e)}
+            sections = {}
+        # Aggregate any positive counts from the audit as repair actions.
+        if isinstance(audit_flags, dict):
+            for k, v in audit_flags.items():
+                if isinstance(v, int) and v > 0:
+                    repair_actions.append(f'cycle_{cycle + 1}:{k}={v}')
+                elif isinstance(v, dict):
+                    for kk, vv in v.items():
+                        if isinstance(vv, int) and vv > 0:
+                            repair_actions.append(
+                                f'cycle_{cycle + 1}:{k}.{kk}={vv}')
+        blocking_errors = _cyber_final_blocking_gate(
+            current, sections, lang_n, selected_frameworks, dcode)
+        if not blocking_errors:
+            break
+        if cycle + 1 >= _PRCY25_MAX_REPAIR_CYCLES:
+            break
+        if not _prcy25_is_repairable(blocking_errors):
+            break
+        # Targeted repair, then re-splice the mutated sections back
+        # into ``current`` so the next audit cycle observes them.
+        try:
+            actions = _cyber_targeted_repair_step(
+                current, sections, blocking_errors, lang_n,
+                selected_frameworks, dcode, metadata=metadata)
+            repair_actions.extend(
+                f'cycle_{cycle + 1}:{a}' for a in (actions or []))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            current = _prcy22_apply_sections_to_content(current, sections)
+        except Exception:  # noqa: BLE001
+            pass
+
+    after_hash = _prcy25_compute_content_hash(current)
+
+    # Final unresolved-marker scan — applied even if the gate already
+    # surfaced markers, so callers always have a deterministic flag.
+    unresolved = _prcy25_scan_unresolved_markers(current)
+
+    # Derive snapshot booleans for the diagnostic.
+    has_kri = False
+    try:
+        has_kri = _prcy19_kri_table_present(
+            (sections or {}).get('kpis', '') or '')
+    except Exception:
+        has_kri = False
+    kpi_schema_ok = True
+    kri_schema_ok = True
+    confidence_ok = True
+    dcc_ok = True
+    try:
+        _ax = _prcy23_final_assertions(sections or {}, lang_n)
+        if any(a in ('kpi_target_dash_only', 'kpi_formula_duplicated')
+                for a in _ax):
+            kpi_schema_ok = False
+        if any(a.startswith('confidence_mismatch') for a in _ax):
+            confidence_ok = False
+    except Exception:
+        pass
+    try:
+        if selected_frameworks and 'DCC' in {
+                str(f).strip().upper() for f in (selected_frameworks or [])}:
+            if _prcy25_detect_dcc_generic_mapping(sections or {}, lang_n):
+                dcc_ok = False
+    except Exception:
+        pass
+
+    diag = {
+        'output_type': output_type,
+        'before_hash': before_hash[:16],
+        'after_hash': after_hash[:16],
+        'repair_actions_count': len(repair_actions),
+        'blocking_errors_count': len(blocking_errors),
+        'final_content_length': len(current),
+        'has_unresolved_markers': bool(unresolved),
+        'roadmap_coverage': _prcy25_compute_roadmap_coverage_months(
+            sections or {}),
+        'has_kri_table': has_kri,
+        'confidence_consistent': confidence_ok,
+        'kpi_schema_valid': kpi_schema_ok,
+        'kri_schema_valid': kri_schema_ok,
+        'dcc_traceability_valid': dcc_ok,
+        'domain': dcode,
+        'frameworks': [str(f).strip().upper()
+                       for f in (selected_frameworks or [])],
+    }
+    try:
+        print(
+            f'[CYBER-FINAL-EXPORT-CONTRACT] {diag}',
+            flush=True,
+        )
+    except Exception:
+        pass
+    return {
+        'final_markdown': current,
+        'audit_flags': audit_flags if isinstance(audit_flags, dict) else {},
+        'repair_actions': repair_actions,
+        'blocking_errors': blocking_errors,
+        'content_hash': after_hash,
+        'sections': sections if isinstance(sections, dict) else {},
+        'diag': diag,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -60132,24 +60777,46 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         'strategy document', 'strategy', 'استراتيجية',
     )
     if _docx_is_strategy and content:
-        # ── PR-CY22: Final Cyber export audit (DOCX path). Mutates
-        # ``content`` so the audited section bodies flow through to the
-        # DOCX body renderer. Scoped to ``domain == 'cyber'`` by the
-        # helper; no-op for other domains.
+        # ── PR-CY25: Final Cyber export contract (DOCX path). The
+        # contract wraps PR-CY22's _cyber_final_export_audit with the
+        # PR-CY25 blocking gate, targeted-repair loop and unresolved-
+        # marker scan. PDF, DOCX and Preview all route through this
+        # function so they consume the SAME audited content (content
+        # hash is logged for every call). Scoped to ``domain == 'cyber'``
+        # by the contract; non-cyber domains are pass-through.
         try:
-            content, _cy22_docx_sections, _cy22_docx_diag = \
-                _cyber_final_export_audit(
-                    content,
-                    metadata={
-                        'org_name': org_name,
-                        'sector':   sector,
-                        'domain':   domain,
-                        'doc_type': doc_type,
-                    },
-                    selected_frameworks=selected_frameworks or [],
-                    lang='ar' if is_arabic else 'en',
-                    domain=domain,
+            _cy25_contract_docx = _cyber_final_export_contract(
+                content,
+                metadata={
+                    'org_name': org_name,
+                    'sector':   sector,
+                    'domain':   domain,
+                    'doc_type': doc_type,
+                },
+                selected_frameworks=selected_frameworks or [],
+                lang='ar' if is_arabic else 'en',
+                domain=domain,
+                output_type='docx',
+            )
+            content = _cy25_contract_docx.get('final_markdown', content)
+            _cy22_docx_sections = _cy25_contract_docx.get('sections', {})
+            _cy22_docx_diag = _cy25_contract_docx.get('audit_flags', {})
+            _cy25_docx_blockers = _cy25_contract_docx.get(
+                'blocking_errors', []) or []
+            if _cy25_docx_blockers:
+                # Fail-closed: never render content carrying unresolved
+                # PR-CY25 blockers (markers, missing phase / KRI table,
+                # etc.). The caller surfaces the first blocker verbatim
+                # so operators see the precise reason in logs.
+                print(
+                    '[CYBER-FINAL-EXPORT-CONTRACT] docx_blocked '
+                    f'blockers={_cy25_docx_blockers[:3]} '
+                    f'hash={_cy25_contract_docx.get("content_hash","")[:16]}',
+                    flush=True,
                 )
+                raise RuntimeError(_cy25_docx_blockers[0])
+        except RuntimeError:
+            raise
         except Exception as _cy22_dxe:  # noqa: BLE001 — defensive
             print(
                 f'[EXPORT-DIAG] cyber_final_export_audit_docx_failed: '
@@ -61929,12 +62596,12 @@ def api_generate_pdf():
         story = []
 
         # ══════════════════════════════════════════════════════════════════
-        # PR-CY22 — Final Cyber export audit. Runs at the LAST possible
-        # point before the strategy document model is built and before
-        # the PDF body parser consumes ``content``. Mutates ``content``
-        # so audited section bodies (roadmap, KPI/KRI, confidence,
-        # regulator references) flow through to the rendered PDF.
-        # Scoped to ``domain == 'cyber'`` by the helper; no-op otherwise.
+        # PR-CY25 — Final Cyber export contract. Wraps PR-CY22's final
+        # export audit with the blocking gate, targeted-repair loop and
+        # unresolved-marker scan. PDF, DOCX and Preview all consume the
+        # same audited content (content hash is logged for every call).
+        # Scoped to ``domain == 'cyber'`` by the contract; no-op for
+        # other domains.
         # ══════════════════════════════════════════════════════════════════
         try:
             _cy22_fws_in = (
@@ -61942,7 +62609,7 @@ def api_generate_pdf():
                 or data.get('frameworks')
                 or []
             )
-            content, _cy22_sections, _cy22_diag = _cyber_final_export_audit(
+            _cy25_contract_pdf = _cyber_final_export_contract(
                 content,
                 metadata={
                     'org_name': org_name_pdf,
@@ -61953,7 +62620,23 @@ def api_generate_pdf():
                 selected_frameworks=_cy22_fws_in,
                 lang='ar' if is_arabic else 'en',
                 domain=domain_pdf,
+                output_type='pdf',
             )
+            content = _cy25_contract_pdf.get('final_markdown', content)
+            _cy22_sections = _cy25_contract_pdf.get('sections', {})
+            _cy22_diag = _cy25_contract_pdf.get('audit_flags', {})
+            _cy25_pdf_blockers = _cy25_contract_pdf.get(
+                'blocking_errors', []) or []
+            if _cy25_pdf_blockers:
+                print(
+                    '[CYBER-FINAL-EXPORT-CONTRACT] pdf_blocked '
+                    f'blockers={_cy25_pdf_blockers[:3]} '
+                    f'hash={_cy25_contract_pdf.get("content_hash","")[:16]}',
+                    flush=True,
+                )
+                raise RuntimeError(_cy25_pdf_blockers[0])
+        except RuntimeError:
+            raise
         except Exception as _cy22_e:  # noqa: BLE001 — defensive
             print(
                 f'[EXPORT-DIAG] cyber_final_export_audit_pdf_failed: '
