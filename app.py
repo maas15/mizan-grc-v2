@@ -35042,6 +35042,15 @@ def _cyber_final_export_audit(content, metadata=None,
     except Exception as _e:  # noqa: BLE001 — defensive
         diag['roadmap_dash_only_dropped'] = 0
         diag['roadmap_dash_only_error'] = repr(_e)
+    # ── PR-CY23 — Cyber strategy final quality gate (executive-grade)
+    try:
+        diag['prcy23'] = _cyber_final_quality_gate(
+            sections, lang_n,
+            metadata=metadata,
+            selected_frameworks=selected_frameworks,
+        )
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['prcy23'] = {'error': repr(_e)}
     new_content = _prcy22_apply_sections_to_content(content or '', sections)
     diag['snapshot_after'] = {
         k: len(v or '') for k, v in (sections or {}).items()
@@ -35056,6 +35065,753 @@ def _cyber_final_export_audit(content, metadata=None,
     except Exception:
         pass
     return (new_content, sections, diag)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# PR-CY23 — Cyber strategy final quality gate (executive-grade)
+#
+# Runs the LAST executive-grade quality checks on the audited section
+# bodies, after PR-CY19/PR-CY21 consistency audit and PR-CY22 regulator
+# guard + dash-only orphan strip. Helpers are pure text mutators and
+# DO NOT touch:
+#   * PR-CY18 specialized-objective preservation
+#   * PR-CY20 framework-compliance preservation
+#   * PR-CY22 final export audit shape
+#
+# Coverage:
+#   1. Arabic word-fragment repair in vision (problem statement
+#      observed split "إرس / اء" → "إرساء").
+#   2. Roadmap phase timeline validation (every phase must have a
+#      dated timeline table or it is dropped).
+#   3. Orphan rows AFTER the last phase block (data classification /
+#      governance committee / IAM-MFA flat rows) are stripped.
+#   4. KPI table schema enforcement (6 canonical columns, no dash-only
+#      targets, no duplicated formula in source/target, malformed
+#      "5% >" thresholds normalised, source/frequency validation).
+#   5. KRI table schema + threshold direction (coverage / completion
+#      indicators flipped from ≤ to ≥, incident / failure indicators
+#      flipped from ≥ to ≤).
+#   6. Confidence consistency (displayed overall == derived weighted).
+#   7. Resource consistency (unsupported headcount claims rewritten
+#      as phased staffing ranges).
+#   8. DCC capability-specific traceability mapping (no shared DLP
+#      phrase across distinct capabilities).
+#   9. Final assertions surfaced in diagnostic for caller use.
+# ────────────────────────────────────────────────────────────────────────
+
+_PRCY23_AI_TARGET_REPAIR_MARKER = '[REQUIRES_AI_TARGET_REPAIR]'
+
+# Known Arabic fragment pairs that must be re-joined. Each entry maps
+# the regex pattern (suffix at start of line preceded by the prefix
+# at the end of the previous line, with optional whitespace/newlines)
+# to the joined form. The most prominent case in the observed PDF was
+# "إرس" + "اء" splitting around a soft line break.
+_PRCY23_AR_FRAGMENT_PAIRS = (
+    ('إرس', 'اء'),     # إرساء (e.g. إرساء برنامج)
+    ('استرات', 'يجية'),  # استراتيجية
+    ('استرات', 'يجي'),   # استراتيجي
+    ('استرا', 'تيجية'),
+    ('استرا', 'تيجي'),
+    ('سياس', 'ات'),    # سياسات
+    ('حوكم', 'ة'),     # حوكمة
+    ('برنا', 'مج'),    # برنامج
+    ('متخص', 'ص'),     # متخصص
+    ('متخصص', 'ين'),   # متخصصين
+    ('متخصص', 'ون'),   # متخصصون
+)
+
+
+def _prcy23_arabic_word_fragment_repair(sections, lang):
+    """Re-join Arabic word fragments split across a soft line break or
+    inserted whitespace. Returns the number of fragments rejoined.
+
+    The observed defect was the Cyber vision rendering "إرس\\nاء برنامج"
+    instead of "إرساء برنامج". The repair is conservative: it only
+    targets a whitelist of known prefix/suffix pairs that are valid
+    Arabic word fragments on their own AND combine into a real word.
+    """
+    if lang != 'ar' or not isinstance(sections, dict):
+        return 0
+    import re as _re_f
+    total = 0
+    # Only touch text sections (no tables) — vision, pillars, environment,
+    # gaps, confidence — that's where natural-language wrapping occurs.
+    for key in ('vision', 'pillars', 'environment', 'gaps', 'confidence',
+                'objectives', 'governance', 'risks'):
+        text = (sections or {}).get(key, '')
+        if not isinstance(text, str) or not text:
+            continue
+        original = text
+        for prefix, suffix in _PRCY23_AR_FRAGMENT_PAIRS:
+            # Match `prefix` followed by mandatory whitespace (incl
+            # newlines) followed by `suffix` at a word boundary.
+            # Use a non-capturing group so the replacement preserves
+            # nothing in between.
+            pat = _re_f.compile(
+                _re_f.escape(prefix)
+                + r'[\s\u00a0\u200f\u200e\u200d\u200c]+'
+                + _re_f.escape(suffix),
+            )
+            new_text, n = pat.subn(prefix + suffix, text)
+            if n:
+                text = new_text
+                total += n
+        if text != original:
+            sections[key] = text
+    return total
+
+
+def _prcy23_extract_phase_blocks(text):
+    """Return a list of dicts ``{'start': i, 'end': j, 'header': str}``
+    for each phase block in ``text``. A phase block starts at
+    ``### المرحلة N`` / ``### Phase N`` and ends at the next phase
+    header or the end of the text.
+    """
+    if not text:
+        return []
+    import re as _re_p
+    pat = _re_p.compile(
+        r'^\s*#{2,4}\s*(?:Phase\s*\d+|المرحلة\s*\d+|المرحلة\s+الأولى|'
+        r'المرحلة\s+الثانية|المرحلة\s+الثالثة|Phase\s+One|Phase\s+Two|'
+        r'Phase\s+Three)',
+        _re_p.IGNORECASE | _re_p.MULTILINE,
+    )
+    starts = [(m.start(), m.group(0).strip()) for m in pat.finditer(text)]
+    blocks = []
+    for i, (s, hdr) in enumerate(starts):
+        e = starts[i + 1][0] if i + 1 < len(starts) else len(text)
+        blocks.append({'start': s, 'end': e, 'header': hdr})
+    return blocks
+
+
+def _prcy23_phase_has_timeline_table(block_text):
+    """True iff the markdown block ``block_text`` contains at least one
+    table whose header advertises ``Month`` / ``الشهر`` / ``Timeline`` /
+    ``الإطار الزمني`` AND has at least one data row.
+    """
+    if not block_text:
+        return False
+    rows = _prcy19_strip_md_table_rows(block_text)
+    in_phased = False
+    for r in rows:
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('الشهر' in blob or 'month' in blob
+                    or 'timeline' in blob or 'الإطار الزمني' in blob
+                    or 'timeframe' in blob):
+                in_phased = True
+                continue
+            in_phased = False
+        elif r['kind'] == 'data' and in_phased and r['cells']:
+            # Require at least one non-dash cell beyond the # column.
+            non_dash = [c.strip() for c in r['cells'][1:]
+                        if c and c.strip() not in ('', '—', '-', '–')]
+            if non_dash:
+                return True
+    return False
+
+
+def _prcy23_roadmap_phase_timeline_validate(sections, lang):
+    """Drop phase blocks that lack any dated timeline table. Returns
+    the number of phases dropped. The phase header AND its body (up
+    to the next phase header or section end) are removed.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return 0
+    blocks = _prcy23_extract_phase_blocks(text)
+    if not blocks:
+        return 0
+    dropped = 0
+    # Process from last to first so indices remain valid as we slice.
+    new_text = text
+    for blk in reversed(blocks):
+        block_text = text[blk['start']:blk['end']]
+        if not _prcy23_phase_has_timeline_table(block_text):
+            new_text = new_text[:blk['start']] + new_text[blk['end']:]
+            dropped += 1
+    if dropped:
+        # Collapse triple+ blank lines that result from removal.
+        import re as _re_c
+        new_text = _re_c.sub(r'\n{3,}', '\n\n', new_text)
+        sections['roadmap'] = new_text.rstrip() + '\n'
+    return dropped
+
+
+def _prcy23_strip_orphan_post_phase_rows(sections, lang):
+    """Remove flat orphan rows that appear in any non-phased table in
+    the roadmap section AND mention typical orphan-row tokens (data
+    classification, governance committee, IAM/MFA, basic policies,
+    sensitive-data protection). These are the leftover flat rows
+    described in the PR-CY23 problem statement that bypass the
+    PR-CY21 orphan-flat-table strip when the trailing table has
+    realistic-looking owner/timeframe cells.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    if not rows:
+        return 0
+    ORPHAN_TOKENS = (
+        'تصنيف البيانات', 'data classification',
+        'لجنة حوكمة', 'governance committee',
+        'iam', 'mfa', 'mfa framework',
+        'سياسات أساسية', 'basic policies',
+        'حماية البيانات الحساسة', 'sensitive-data protection',
+        'sensitive data protection',
+    )
+    PHASED_TOKENS = ('الشهر', 'month', 'المرحلة', 'phase')
+    keep = []
+    dropped = 0
+    in_phased_table = False
+    for r in rows:
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            in_phased_table = any(t in blob for t in PHASED_TOKENS)
+            keep.append(r)
+            continue
+        if r['kind'] == 'data' and r['cells'] and not in_phased_table:
+            blob = ' '.join(r['cells']).lower()
+            if any(t.lower() in blob for t in ORPHAN_TOKENS):
+                dropped += 1
+                continue
+        keep.append(r)
+    if not dropped:
+        return 0
+    sections['roadmap'] = _prcy19_emit_md_table(keep)
+    return dropped
+
+
+# ── KPI schema enforcement ───────────────────────────────────────────
+
+_PRCY23_KPI_HEADERS_AR = (
+    '#', 'وصف المؤشر', 'القيمة المستهدفة', 'صيغة الاحتساب',
+    'مصدر البيانات/الأداة', 'تواتر القياس',
+)
+_PRCY23_KPI_HEADERS_EN = (
+    '#', 'KPI description', 'Target value', 'Formula',
+    'Data source / Tool', 'Measurement frequency',
+)
+_PRCY23_FREQUENCY_TOKENS = (
+    'شهري', 'ربع سنوي', 'سنوي', 'أسبوعي', 'يومي', 'مستمر',
+    'monthly', 'quarterly', 'annual', 'annually', 'weekly',
+    'daily', 'continuous', 'real-time', 'real time',
+)
+_PRCY23_SOURCE_TOOL_TOKENS = (
+    'siem', 'soc', 'iam', 'pam', 'dlp', 'edr', 'mdm', 'soar',
+    'cmdb', 'منصة', 'نظام', 'أداة', 'platform', 'system', 'tool',
+    'dashboard', 'لوحة', 'sccm', 'splunk', 'qradar',
+)
+
+
+def _prcy23_normalize_rtl_threshold(s, lang=None):
+    """Convert malformed RTL thresholds such as "5% >" / "5% &gt;" /
+    "5% &lt;" into a well-formed Arabic phrase ("أقل من 5%" /
+    "أكبر من 5%") or English ("< 5%" / "> 5%"). Returns the (possibly
+    rewritten) string and a boolean flag. When ``lang`` is ``'ar'``
+    or ``'en'`` it overrides script auto-detection.
+    """
+    if not s:
+        return s, False
+    import re as _re_t
+    txt = str(s)
+    # Decode HTML entities first.
+    txt2 = (txt.replace('&gt;', '>')
+                .replace('&lt;', '<')
+                .replace('&ge;', '≥')
+                .replace('&le;', '≤'))
+    # Pattern: NUMBER %  + (<|<=|≤|>|>=|≥) at end (RTL artefact).
+    m = _re_t.search(
+        r'(\d+(?:\.\d+)?)\s*%\s*(<=|>=|≤|≥|<|>)\s*$', txt2)
+    if not m:
+        return (txt2 if txt2 != txt else s), (txt2 != txt)
+    num, op = m.group(1), m.group(2)
+    if op in ('<', '<=', '≤'):
+        ar = f'أقل من {num}%'
+        en = f'< {num}%'
+    else:
+        ar = f'أكبر من {num}%'
+        en = f'> {num}%'
+    if lang == 'ar':
+        return ar, True
+    if lang == 'en':
+        return en, True
+    # Auto-detect from any Arabic char in the original.
+    if any('\u0600' <= c <= '\u06ff' for c in txt):
+        return ar, True
+    return en, True
+
+
+def _prcy23_kpi_schema_enforce(sections, lang):
+    """Enforce the canonical 6-column KPI schema and validate cell
+    semantics. Returns a diagnostic dict with counts of repairs.
+    """
+    text = (sections or {}).get('kpis', '') or ''
+    if not text:
+        return {'fixed': 0}
+    rows = _prcy19_strip_md_table_rows(text)
+    if not rows:
+        return {'fixed': 0}
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('وصف المؤشر' in blob or 'kpi description' in blob
+                    or 'القيمة المستهدفة' in blob
+                    or 'target value' in blob):
+                hdr_idx = i
+                break
+    if hdr_idx is None:
+        return {'fixed': 0}
+    diag = {
+        'fixed': 0, 'dash_only_marked': 0, 'duplicated_formula_cleared': 0,
+        'rtl_threshold_normalized': 0, 'source_marked_invalid': 0,
+        'frequency_marked_invalid': 0, 'header_rewritten': False,
+    }
+    # Enforce header schema (only when cells count matches canonical).
+    headers_canonical = (_PRCY23_KPI_HEADERS_AR if lang == 'ar'
+                         else _PRCY23_KPI_HEADERS_EN)
+    if rows[hdr_idx]['cells'] and len(rows[hdr_idx]['cells']) == 6:
+        if tuple(rows[hdr_idx]['cells']) != headers_canonical:
+            rows[hdr_idx]['cells'] = list(headers_canonical)
+            diag['header_rewritten'] = True
+            diag['fixed'] += 1
+    ai_marker = _PRCY23_AI_TARGET_REPAIR_MARKER
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] != 'data':
+            if r['kind'] == 'sep':
+                continue
+            break
+        c = r['cells'] or []
+        if len(c) < 6:
+            continue
+        # ── Target value validation (col 2) ──
+        target = (c[2] or '').strip()
+        if target in ('', '—', '-', '–') and ai_marker not in target:
+            c[2] = ai_marker
+            diag['dash_only_marked'] += 1
+            diag['fixed'] += 1
+        # ── RTL threshold normalisation (cols 2..4) ──
+        for j in (2, 3):
+            new_v, changed = _prcy23_normalize_rtl_threshold(c[j], lang)
+            if changed:
+                c[j] = new_v
+                diag['rtl_threshold_normalized'] += 1
+                diag['fixed'] += 1
+        # ── Duplicated formula in target/source columns ──
+        formula = (c[3] or '').strip()
+        if formula and formula != ai_marker:
+            for j in (2, 4):
+                if (c[j] or '').strip() == formula:
+                    c[j] = '—'
+                    diag['duplicated_formula_cleared'] += 1
+                    diag['fixed'] += 1
+        # ── Source/tool validation (col 4) ──
+        source = (c[4] or '').strip().lower()
+        if source and source not in ('—', '-', '–'):
+            has_tool = any(t in source for t in _PRCY23_SOURCE_TOOL_TOKENS)
+            # Reject when col 4 actually holds a formula or pure number.
+            looks_like_formula = _prcy19_is_recoverable_formula(source)
+            if not has_tool and looks_like_formula:
+                c[4] = '—'
+                diag['source_marked_invalid'] += 1
+                diag['fixed'] += 1
+        # ── Frequency validation (col 5) ──
+        freq = (c[5] or '').strip().lower()
+        if freq and freq not in ('—', '-', '–'):
+            ok = any(t in freq for t in _PRCY23_FREQUENCY_TOKENS)
+            if not ok:
+                # Don't overwrite — surface as a defect for downstream
+                # AI repair via dash placeholder.
+                c[5] = '—'
+                diag['frequency_marked_invalid'] += 1
+                diag['fixed'] += 1
+    if diag['fixed']:
+        sections['kpis'] = _prcy19_emit_md_table(rows)
+    return diag
+
+
+# ── KRI schema + threshold-direction enforcement ─────────────────────
+
+_PRCY23_KRI_COVERAGE_TOKENS = (
+    'تغطية', 'coverage', 'completion', 'اكتمال',
+    'pass rate', 'pass-rate', 'نسبة النجاح', 'نسبة الاجتياز',
+    'adherence', 'الالتزام', 'انعقاد', 'مُجتاز',
+    'classification', 'تصنيف', 'مُصنّف', 'classified',
+)
+_PRCY23_KRI_FAILURE_TOKENS = (
+    'incident', 'حادثة', 'حوادث', 'failure', 'فشل',
+    'leakage', 'تسرب', 'failed login', 'محاولات الدخول الفاشلة',
+    'breach', 'اختراق', 'خرق',
+)
+
+
+def _prcy23_flip_threshold_direction(cell, want):
+    """Flip ``≤`` / ``<=`` / ``<`` to ``≥`` / ``>=`` / ``>`` (or vice
+    versa) inside ``cell`` based on ``want`` in {'ge', 'le'}. Returns
+    (new_cell, changed).
+    """
+    if not cell:
+        return cell, False
+    txt = str(cell)
+    new = txt
+    if want == 'ge':
+        new = new.replace('≤', '≥').replace('<=', '>=').replace('<', '>')
+    elif want == 'le':
+        new = new.replace('≥', '≤').replace('>=', '<=').replace('>', '<')
+    return new, (new != txt)
+
+
+def _prcy23_kri_schema_enforce(sections, lang):
+    """Enforce KRI threshold direction (coverage/completion ≥, incident/
+    failure ≤). Returns the number of repaired rows.
+    """
+    text = (sections or {}).get('kpis', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    # Find KRI table header (catalog uses الحد الأعلى المقبول / Acceptable
+    # Threshold etc.).
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('kri' in blob or 'مؤشر المخاطر' in blob
+                    or 'key risk indicator' in blob):
+                hdr_idx = i
+                break
+    if hdr_idx is None:
+        return 0
+    fixed = 0
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] != 'data':
+            if r['kind'] == 'sep':
+                continue
+            break
+        c = r['cells'] or []
+        if len(c) < 3:
+            continue
+        name = (c[1] or '').lower()
+        threshold_cells = c[2:]  # acceptable + warning + critical (varies)
+        is_coverage = any(t in name for t in _PRCY23_KRI_COVERAGE_TOKENS)
+        is_failure = any(t in name for t in _PRCY23_KRI_FAILURE_TOKENS)
+        if is_coverage and not is_failure:
+            want = 'ge'
+        elif is_failure and not is_coverage:
+            want = 'le'
+        else:
+            continue
+        for j, _v in enumerate(threshold_cells):
+            new_v, changed = _prcy23_flip_threshold_direction(_v, want)
+            if changed:
+                c[2 + j] = new_v
+                fixed += 1
+    if fixed:
+        sections['kpis'] = _prcy19_emit_md_table(rows)
+    return fixed
+
+
+# ── Confidence consistency ──────────────────────────────────────────
+
+def _prcy23_confidence_consistency(sections, lang):
+    """If the confidence section has both a displayed overall score and
+    a derived weighted score (from the PR-CY19 breakdown table), force
+    the displayed score to match the derived one.
+    """
+    text = (sections or {}).get('confidence', '') or ''
+    if not text:
+        return {'fixed': False}
+    import re as _re_cf
+    # Derived weighted score — emitted by _prcy19_confidence_breakdown.
+    m_derived = _re_cf.search(
+        r'(?:درجة\s+الثقة\s+المُشتقة\s+من\s+العوامل|'
+        r'Derived\s+weighted\s+confidence)\s*[:：]?\s*\**\s*(\d{1,3})\s*%',
+        text, _re_cf.IGNORECASE)
+    if not m_derived:
+        return {'fixed': False}
+    derived_score = int(m_derived.group(1))
+    if not (0 <= derived_score <= 100):
+        return {'fixed': False}
+    # Displayed overall score(s). Match common forms used by the AI
+    # body: "**درجة الثقة:** 72%", "Confidence Score: 72%", "Overall
+    # confidence: 72%". Replace each occurrence whose value differs.
+    pat = _re_cf.compile(
+        r'((?:Overall\s+confidence|Confidence\s+Score|درجة\s+الثقة'
+        r'(?:\s+الإجمالية)?)\s*[:：]?\s*\**\s*)(\d{1,3})(\s*%)',
+        _re_cf.IGNORECASE,
+    )
+    fixed = 0
+    derived_marker_pos = m_derived.start()
+
+    def _repl(m):
+        nonlocal fixed
+        # Skip the derived-marker match itself (it's part of the
+        # breakdown table). We detect it by position overlap.
+        if m.start() >= derived_marker_pos:
+            return m.group(0)
+        existing = int(m.group(2))
+        if existing == derived_score:
+            return m.group(0)
+        fixed += 1
+        return f'{m.group(1)}{derived_score}{m.group(3)}'
+
+    new_text = pat.sub(_repl, text)
+    if fixed:
+        sections['confidence'] = new_text
+    return {
+        'fixed': bool(fixed),
+        'displayed_rewrites': fixed,
+        'derived_score': derived_score,
+    }
+
+
+# ── Resource consistency ────────────────────────────────────────────
+
+def _prcy23_resource_consistency(sections, lang):
+    """Replace unsupported absolute headcount claims ("15 specialized
+    employees") with phased staffing wording when the roadmap/resource
+    plan does not back them up.
+    """
+    if not isinstance(sections, dict):
+        return 0
+    import re as _re_r
+    roadmap = (sections or {}).get('roadmap', '') or ''
+    # If the roadmap explicitly enumerates a matching headcount table
+    # we leave the number alone; otherwise rewrite.
+    headcount_supported = bool(_re_r.search(
+        r'(?:عدد\s+الموظفين|headcount|staff(?:ing)?\s+plan|'
+        r'كادر|FTE)', roadmap, _re_r.IGNORECASE))
+    pattern_ar = _re_r.compile(
+        r'(\d{1,3})\s*(?:موظف(?:ًا|ا)?(?:ين|ون)?|كادر|أفراد)\s*متخصص'
+        r'(?:ين|ون)?',
+    )
+    pattern_en = _re_r.compile(
+        r'(\d{1,3})\s+specialized\s+(?:employees|staff|FTEs?)',
+        _re_r.IGNORECASE,
+    )
+    replacement_ar = 'كادر متخصص متدرّج وفق مراحل خارطة الطريق'
+    replacement_en = 'phased specialized staffing aligned with the roadmap'
+    fixed = 0
+    for key in ('vision', 'pillars', 'gaps', 'roadmap', 'objectives',
+                'governance', 'risks', 'environment', 'kpis',
+                'confidence'):
+        text = (sections or {}).get(key, '')
+        if not isinstance(text, str) or not text:
+            continue
+        original = text
+        if not headcount_supported:
+            text, n = pattern_ar.subn(replacement_ar, text)
+            fixed += n
+            text, n = pattern_en.subn(replacement_en, text)
+            fixed += n
+        if text != original:
+            sections[key] = text
+    return fixed
+
+
+# ── DCC capability-specific mapping ─────────────────────────────────
+
+_PRCY23_DCC_CAPABILITY_PHRASES_AR = {
+    'data_classification': 'سياسة تصنيف البيانات وجرد الأصول والوسم',
+    'encryption': 'ضوابط التشفير وإدارة المفاتيح وتغطية التشفير',
+    'dlp': 'منع تسرب البيانات وضوابط المراقبة',
+    'sensitive_data_processing': 'ضوابط معالجة البيانات الحساسة والوصول والإخفاء والاحتفاظ',
+    'data_protection': 'حماية البيانات: النسخ الاحتياطي والتشفير ومنع التسرب وضوابط الوصول والمراقبة',
+}
+_PRCY23_DCC_CAPABILITY_PHRASES_EN = {
+    'data_classification': 'Classification policy, data inventory, and labeling',
+    'encryption': 'Encryption controls, key management, encryption coverage',
+    'dlp': 'Data-leakage monitoring and prevention controls',
+    'sensitive_data_processing': 'Sensitive data handling, access, retention, masking, processing controls',
+    'data_protection': 'Backup, encryption, DLP, access control, and monitoring',
+}
+_PRCY23_DCC_CAPABILITY_ROW_TOKENS = {
+    'data_classification': (
+        'تصنيف البيانات', 'data classification', 'classification',
+        'تصنيف الأصول',
+    ),
+    'encryption': ('تشفير', 'encryption', 'encrypt', 'cryptograph'),
+    'dlp': ('dlp', 'data loss prevention', 'تسرب البيانات', 'منع تسرب'),
+    'sensitive_data_processing': (
+        'بيانات حساسة', 'sensitive data', 'sensitive-data',
+        'معالجة البيانات الحساسة', 'sensitive data processing',
+    ),
+    'data_protection': (
+        'حماية البيانات', 'data protection',
+    ),
+}
+
+
+def _prcy23_dcc_capability_mapping(sections, lang):
+    """Append capability-specific phrasing to DCC traceability rows so
+    that the same DLP text is not reused across classification /
+    processing / protection capability cells.
+
+    Returns the number of rows augmented.
+    """
+    if not isinstance(sections, dict):
+        return 0
+    # Operate on a dedicated traceability section if present, else on
+    # the pillars section where DCC capabilities are most often listed.
+    keys = [k for k in ('traceability', 'pillars', 'roadmap', 'kpis')
+            if (sections.get(k) or '').strip()]
+    phrases = (_PRCY23_DCC_CAPABILITY_PHRASES_AR if lang == 'ar'
+               else _PRCY23_DCC_CAPABILITY_PHRASES_EN)
+    fixed = 0
+    for key in keys:
+        text = sections.get(key, '') or ''
+        rows = _prcy19_strip_md_table_rows(text)
+        if not rows:
+            continue
+        changed = False
+        for r in rows:
+            if r['kind'] != 'data' or not r['cells']:
+                continue
+            blob = ' '.join(r['cells']).lower()
+            for cap, tokens in _PRCY23_DCC_CAPABILITY_ROW_TOKENS.items():
+                if not any(t in blob for t in tokens):
+                    continue
+                phrase = phrases[cap]
+                if phrase.lower() in blob:
+                    continue
+                # Append phrase to the longest free-text cell (the
+                # capability description cell).
+                target_i = max(range(len(r['cells'])),
+                               key=lambda i: len(r['cells'][i] or ''))
+                cell = r['cells'][target_i] or ''
+                # Avoid double-append if a different DCC phrase is
+                # already present for the SAME capability.
+                r['cells'][target_i] = (cell.rstrip() + ' — ' + phrase
+                                        if cell.strip() else phrase)
+                fixed += 1
+                changed = True
+                break  # one capability per row
+        if changed:
+            sections[key] = _prcy19_emit_md_table(rows)
+    return fixed
+
+
+# ── Final assertion gate ────────────────────────────────────────────
+
+def _prcy23_final_assertions(sections, lang):
+    """Return a list of executive-grade quality issues remaining in
+    the audited sections. Each entry is a string of the form
+    ``code:detail``. Used by the export-diag snapshot only — never
+    raises.
+    """
+    issues = []
+    if not isinstance(sections, dict):
+        return issues
+    # 1. Arabic broken-word fragment check (vision)
+    vision = sections.get('vision', '') or ''
+    if 'إرس' in vision and 'اء' in vision:
+        # Re-detect the split form (whitespace between prefix and suffix).
+        import re as _re_a
+        if _re_a.search(r'إرس[\s\u00a0\u200f\u200e\u200d\u200c]+اء',
+                        vision):
+            issues.append('arabic_word_fragment_split:vision:إرساء')
+    # 2. Roadmap phase timeline integrity
+    roadmap = sections.get('roadmap', '') or ''
+    for blk in _prcy23_extract_phase_blocks(roadmap):
+        body = roadmap[blk['start']:blk['end']]
+        if not _prcy23_phase_has_timeline_table(body):
+            issues.append(f'roadmap_phase_missing_timeline:{blk["header"]}')
+    # 3. KPI dash-only target without marker
+    rows = _prcy19_strip_md_table_rows(sections.get('kpis', '') or '')
+    in_kpi = False
+    for r in rows:
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            in_kpi = ('وصف المؤشر' in blob or 'kpi description' in blob
+                      or 'القيمة المستهدفة' in blob
+                      or 'target value' in blob)
+            continue
+        if r['kind'] == 'data' and in_kpi and r['cells']:
+            c = r['cells']
+            if len(c) >= 6:
+                tgt = (c[2] or '').strip()
+                if tgt in ('', '—', '-', '–'):
+                    issues.append('kpi_target_dash_only')
+                formula = (c[3] or '').strip()
+                if formula and formula in ((c[2] or '').strip(),
+                                            (c[4] or '').strip()):
+                    issues.append('kpi_formula_duplicated')
+    # 4. Confidence consistency
+    text_c = sections.get('confidence', '') or ''
+    import re as _re_c2
+    m_der = _re_c2.search(
+        r'(?:درجة\s+الثقة\s+المُشتقة\s+من\s+العوامل|'
+        r'Derived\s+weighted\s+confidence)\s*[:：]?\s*\**\s*(\d{1,3})\s*%',
+        text_c, _re_c2.IGNORECASE)
+    if m_der:
+        derived = int(m_der.group(1))
+        m_disp = _re_c2.search(
+            r'(?:Overall\s+confidence|Confidence\s+Score|درجة\s+الثقة'
+            r'(?:\s+الإجمالية)?)\s*[:：]?\s*\**\s*(\d{1,3})\s*%',
+            text_c[:m_der.start()], _re_c2.IGNORECASE)
+        if m_disp and int(m_disp.group(1)) != derived:
+            issues.append(
+                f'confidence_mismatch:displayed={m_disp.group(1)}'
+                f',derived={derived}'
+            )
+    return issues
+
+
+def _cyber_final_quality_gate(sections, lang, metadata=None,
+                              selected_frameworks=None):
+    """PR-CY23 — orchestrator. Runs all PR-CY23 helpers in order and
+    returns the diagnostic dict. Idempotent and safe to call multiple
+    times — each helper is a no-op once its repair invariants hold.
+    """
+    diag = {}
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    try:
+        diag['arabic_word_fragment_repair'] = (
+            _prcy23_arabic_word_fragment_repair(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['arabic_word_fragment_repair_error'] = repr(_e)
+    try:
+        diag['roadmap_phase_timeline_dropped'] = (
+            _prcy23_roadmap_phase_timeline_validate(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['roadmap_phase_timeline_error'] = repr(_e)
+    try:
+        diag['roadmap_post_phase_orphan_dropped'] = (
+            _prcy23_strip_orphan_post_phase_rows(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['roadmap_post_phase_orphan_error'] = repr(_e)
+    try:
+        diag['kpi_schema'] = _prcy23_kpi_schema_enforce(sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['kpi_schema_error'] = repr(_e)
+    try:
+        diag['kri_threshold_flipped'] = _prcy23_kri_schema_enforce(
+            sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['kri_threshold_error'] = repr(_e)
+    try:
+        diag['confidence_consistency'] = _prcy23_confidence_consistency(
+            sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['confidence_consistency_error'] = repr(_e)
+    try:
+        diag['resource_consistency_fixed'] = (
+            _prcy23_resource_consistency(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['resource_consistency_error'] = repr(_e)
+    try:
+        diag['dcc_capability_mapping'] = _prcy23_dcc_capability_mapping(
+            sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['dcc_capability_mapping_error'] = repr(_e)
+    try:
+        diag['final_assertions'] = _prcy23_final_assertions(
+            sections, lang_n)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['final_assertions_error'] = repr(_e)
+    return diag
+
 
 
 def _prcy22_strip_blank_pdf_pages(story):
