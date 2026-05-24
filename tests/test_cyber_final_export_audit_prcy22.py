@@ -265,7 +265,8 @@ class FinalExportAuditPRCY22Tests(unittest.TestCase):
 
     # ── (B) Horizon parsing is exercised by PR-CY21's own suite —
     # PR-CY22 only ensures the audited content reaches the renderer.
-    # See ``tests/test_cyber_final_document_audit_prcy21.py``.
+    # See ``tests/test_cyber_final_document_audit_prcy21.py`` for the
+    # executive-summary horizon (defect B) coverage.
 
 
 if __name__ == '__main__':
