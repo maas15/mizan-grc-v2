@@ -215,7 +215,8 @@ class TestPRCY19KPIRtl(unittest.TestCase):
         self.assertNotEqual(cells[2], 'KPI',
                             'Target Value must not be literal "KPI"')
         # Formula must not be a bare timeframe.
-        self.assertNotIn('ساعة', cells[3].split()[-1:][0] if cells[3] else '')
+        formula_last_token = cells[3].split()[-1] if cells[3].split() else ''
+        self.assertNotIn('ساعة', formula_last_token)
 
 
 class TestPRCY19KRI(unittest.TestCase):
