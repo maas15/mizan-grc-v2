@@ -34795,6 +34795,305 @@ def _cyber_post_generation_consistency_audit(sections, lang, domain,
     return diag
 
 
+# ────────────────────────────────────────────────────────────────────────
+# PR-CY22 — Final exported Cyber PDF model fixes (after PR-CY21).
+#
+# All helpers below are pure-text mutators on the `sections` dict or the
+# composed `content` markdown string. They are scoped to ``domain ==
+# 'cyber'`` by the orchestrator ``_cyber_final_export_audit`` which is
+# invoked at the LAST point before PDF/DOCX/preview rendering. The
+# helpers never invent strategy rows and never call AI.
+# ────────────────────────────────────────────────────────────────────────
+
+# Frameworks for which the regulator guard rewrites stray CST / CITC /
+# هيئة الاتصالات references back to the canonical NCA references.
+_PRCY22_NCA_FRAMEWORK_KEYS = {'ECC', 'DCC', 'CSCC', 'TCC'}
+
+# Wrong-regulator tokens (case-insensitive). Each is rewritten to the
+# canonical NCA reference. ``بهيئة`` is matched too because Arabic
+# preposition forms attach to the noun without a space.
+_PRCY22_REGULATOR_PATTERNS_AR = (
+    'هيئة الاتصالات وتقنية المعلومات',
+    'هيئة الاتصالات والفضاء والتقنية',
+    'هيئة الاتصالات',
+    'بهيئة الاتصالات',
+    'الهيئة الاتصالات',
+    'CITC',
+    'CST',
+)
+_PRCY22_REGULATOR_REPLACEMENT_AR = 'الهيئة الوطنية للأمن السيبراني'
+_PRCY22_REGULATOR_REPLACEMENT_EN = 'National Cybersecurity Authority (NCA)'
+
+# Sections that may carry regulator references which we must guard.
+_PRCY22_REGULATOR_GUARD_SECTIONS = (
+    'vision', 'pillars', 'environment', 'gaps', 'roadmap',
+    'kpis', 'confidence',
+)
+
+
+def _prcy22_regulator_guard(sections, lang, frameworks=None):
+    """Replace stray ``هيئة الاتصالات`` / ``CST`` / ``CITC`` references
+    with the canonical NCA reference, for Cyber strategies whose selected
+    frameworks are NCA-issued (ECC / DCC / CSCC / TCC).
+
+    Returns a dict ``{section_key: replacements_count}`` (empty when no
+    replacement occurred). Idempotent: rerunning yields no further
+    replacements.
+
+    Cybersecurity strategies for organisations like banks legitimately
+    cite NCA, not CITC/CST. The wrong-regulator references are an AI
+    hallucination defect observed in the rendered PDF and must never
+    appear in confidence/risk/vision/roadmap sections.
+    """
+    if not isinstance(sections, dict):
+        return {}
+    fws = {str(f).upper() for f in (frameworks or [])}
+    if not (fws & _PRCY22_NCA_FRAMEWORK_KEYS):
+        return {}
+    repl_ar = _PRCY22_REGULATOR_REPLACEMENT_AR
+    repl_en = _PRCY22_REGULATOR_REPLACEMENT_EN
+    summary = {}
+    for key in _PRCY22_REGULATOR_GUARD_SECTIONS:
+        text = sections.get(key, '')
+        if not isinstance(text, str) or not text:
+            continue
+        original = text
+        count = 0
+        # Arabic / mixed Arabic-English forms.
+        for tok in _PRCY22_REGULATOR_PATTERNS_AR:
+            # Skip pure-ASCII tokens here so we can use case-insensitive
+            # rewriting (English path below).
+            if all(ord(c) < 128 for c in tok):
+                continue
+            n = text.count(tok)
+            if n:
+                text = text.replace(tok, repl_ar)
+                count += n
+        # English / acronym forms — case-insensitive, word-bounded.
+        import re as _re_g
+        for tok in ('CITC', 'CST'):
+            pat = _re_g.compile(r'\b' + _re_g.escape(tok) + r'\b')
+            n = len(pat.findall(text))
+            if n:
+                text = pat.sub(
+                    repl_ar if lang == 'ar' else repl_en, text)
+                count += n
+        if count and text != original:
+            sections[key] = text
+            summary[key] = count
+    return summary
+
+
+def _prcy22_strip_dash_only_orphan_rows(sections, lang):
+    """Remove markdown data rows whose timeframe / phase column is
+    empty or holds only ``—``/``-`` AFTER a phased roadmap table is
+    present in the roadmap section. These are leak rows that bypassed
+    the PR-CY21 orphan-flat-table strip because their header looks
+    legitimate.
+
+    Returns the number of dash-only rows dropped.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    # Locate the first phased table (header carries Phase/Month/الشهر/المرحلة).
+    PHASED = ('الشهر', 'month', 'المرحلة', 'phase')
+    phased_seen_at = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if any(t in blob for t in PHASED):
+                phased_seen_at = i
+                break
+    if phased_seen_at is None:
+        return 0
+    dropped = 0
+    keep = []
+    for i, r in enumerate(rows):
+        if i <= phased_seen_at:
+            keep.append(r)
+            continue
+        if r['kind'] == 'data' and r['cells']:
+            # Dash-only/empty timeframe (col 3 or 4 typically). We look
+            # at *every* non-# cell — if all of them are dash/empty, or
+            # the timeframe-position cell is dash/empty, drop the row.
+            cells = r['cells']
+            non_num = [c.strip() for c in cells[1:] if c is not None]
+            if not non_num:
+                keep.append(r)
+                continue
+            dashy = sum(1 for c in non_num if c in ('', '—', '-', '–'))
+            if dashy >= max(1, len(non_num) - 1):
+                dropped += 1
+                continue
+        keep.append(r)
+    if not dropped:
+        return 0
+    sections['roadmap'] = _prcy19_emit_md_table(keep)
+    return dropped
+
+
+def _prcy22_apply_sections_to_content(content, sections):
+    """Splice the (possibly mutated) section bodies in ``sections`` back
+    into the original ``content`` markdown so downstream PDF / DOCX /
+    preview body renderers consume the audited content.
+
+    The splice respects the H2 boundaries detected by
+    :func:`_split_strategy_sections_by_h2`. Sections that are not
+    present in ``content`` are left untouched. Returns the new content
+    string (or ``content`` verbatim when nothing changed).
+    """
+    if not content or not isinstance(sections, dict):
+        return content or ''
+    import re as _re_a
+    _patterns = [
+        ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
+        ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
+        ('environment', r'(?:البيئة|Environment|Regulatory)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
+        ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
+        ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
+    ]
+    lines = content.split('\n')
+    section_starts = []  # list of (line_index, key)
+    seen_keys = set()
+    for idx, ln in enumerate(lines):
+        s = ln.lstrip()
+        if not s.startswith('## '):
+            continue
+        head = s[3:].strip()
+        for key, pat in _patterns:
+            if key in seen_keys:
+                continue
+            if _re_a.search(pat, head, _re_a.IGNORECASE):
+                section_starts.append((idx, key))
+                seen_keys.add(key)
+                break
+    if not section_starts:
+        return content
+    # Build the new content by reassembling chunks: preamble + per-section
+    # body (using the section dict value when available, else the original
+    # slice).
+    out = []
+    first_start = section_starts[0][0]
+    out.append('\n'.join(lines[:first_start]).rstrip())
+    for i, (start, key) in enumerate(section_starts):
+        end = (section_starts[i + 1][0] if i + 1 < len(section_starts)
+               else len(lines))
+        new_body = sections.get(key)
+        if isinstance(new_body, str) and new_body.strip():
+            chunk = new_body.rstrip()
+        else:
+            chunk = '\n'.join(lines[start:end]).rstrip()
+        out.append('')
+        out.append(chunk)
+    new = '\n'.join(out).rstrip() + '\n'
+    return new
+
+
+def _cyber_final_export_audit(content, metadata=None,
+                              selected_frameworks=None, lang='ar',
+                              domain=None):
+    """PR-CY22 — Final Cyber strategy export audit, invoked at the LAST
+    possible point before PDF / DOCX / preview rendering.
+
+    Parses ``content`` into sections, runs the PR-CY19/PR-CY21
+    consistency audit, applies the new PR-CY22 helpers (regulator
+    guard, dash-only orphan row strip), splices the mutated section
+    bodies back into the content string, and emits one
+    ``[EXPORT-DIAG] cyber_final_export_audit=`` snapshot diagnostic.
+
+    Returns ``(new_content, sections, diag)``.
+
+    No-op for non-cyber domains: returns ``(content, sections, {})``.
+    """
+    try:
+        dcode = (normalize_domain(domain or
+                                  (metadata or {}).get('domain') or '')
+                 or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = (domain or '').strip().lower()
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    sections = _split_strategy_sections_by_h2(content or '') or {}
+    if dcode != 'cyber':
+        return (content or '', sections, {})
+    diag = {}
+    # Snapshot lengths before audit so callers can spot mutations.
+    diag['snapshot_before'] = {
+        k: len(v or '') for k, v in (sections or {}).items()
+    }
+    try:
+        diag['consistency'] = _cyber_post_generation_consistency_audit(
+            sections, lang_n, dcode,
+            metadata=metadata,
+            selected_frameworks=selected_frameworks)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['consistency_error'] = repr(_e)
+    try:
+        diag['regulator_guard'] = _prcy22_regulator_guard(
+            sections, lang_n, selected_frameworks)
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['regulator_guard_error'] = repr(_e)
+    try:
+        diag['roadmap_dash_only_dropped'] = (
+            _prcy22_strip_dash_only_orphan_rows(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['roadmap_dash_only_dropped'] = 0
+        diag['roadmap_dash_only_error'] = repr(_e)
+    new_content = _prcy22_apply_sections_to_content(content or '', sections)
+    diag['snapshot_after'] = {
+        k: len(v or '') for k, v in (sections or {}).items()
+    }
+    diag['content_len_before'] = len(content or '')
+    diag['content_len_after'] = len(new_content or '')
+    try:
+        print(
+            f'[EXPORT-DIAG] cyber_final_export_audit={diag}',
+            flush=True,
+        )
+    except Exception:
+        pass
+    return (new_content, sections, diag)
+
+
+def _prcy22_strip_blank_pdf_pages(story):
+    """Remove redundant blank pages from a ReportLab PDF story.
+
+    A blank page is a sequence of ``PageBreak`` flowables with no body
+    content between them. We collapse two-or-more consecutive
+    ``PageBreak`` instances down to one, and drop any trailing
+    ``PageBreak`` at the end of the story (it would otherwise emit a
+    final blank page after the last body content).
+
+    Returns ``(new_story, dropped_count)``. Pure list mutation; no
+    rendering side-effects. Safe to call on any story list.
+    """
+    if not story:
+        return (story, 0)
+    try:
+        from reportlab.platypus import PageBreak
+    except Exception:  # noqa: BLE001 — defensive
+        return (story, 0)
+    out = []
+    dropped = 0
+    last_was_page_break = False
+    for fl in story:
+        is_page_break = isinstance(fl, PageBreak)
+        if is_page_break and last_was_page_break:
+            dropped += 1
+            continue
+        out.append(fl)
+        last_was_page_break = is_page_break
+    # Drop trailing PageBreak at end of document (avoids the blank
+    # trailing page reported in the PDF before governance/responsibilities).
+    while out and isinstance(out[-1], PageBreak):
+        out.pop()
+        dropped += 1
+    return (out, dropped)
+
+
 #
 # Real production symptom: the KPI section (or any canonical section)
 # sometimes contains a SECOND `## N. {canonical title}` heading inside
@@ -58636,6 +58935,30 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         'strategy document', 'strategy', 'استراتيجية',
     )
     if _docx_is_strategy and content:
+        # ── PR-CY22: Final Cyber export audit (DOCX path). Mutates
+        # ``content`` so the audited section bodies flow through to the
+        # DOCX body renderer. Scoped to ``domain == 'cyber'`` by the
+        # helper; no-op for other domains.
+        try:
+            content, _cy22_docx_sections, _cy22_docx_diag = \
+                _cyber_final_export_audit(
+                    content,
+                    metadata={
+                        'org_name': org_name,
+                        'sector':   sector,
+                        'domain':   domain,
+                        'doc_type': doc_type,
+                    },
+                    selected_frameworks=selected_frameworks or [],
+                    lang='ar' if is_arabic else 'en',
+                    domain=domain,
+                )
+        except Exception as _cy22_dxe:  # noqa: BLE001 — defensive
+            print(
+                f'[EXPORT-DIAG] cyber_final_export_audit_docx_failed: '
+                f'{_cy22_dxe}',
+                flush=True,
+            )
         try:
             _docx_doc_model = _build_strategy_document_model(
                 content,
@@ -60409,13 +60732,40 @@ def api_generate_pdf():
         story = []
 
         # ══════════════════════════════════════════════════════════════════
-        # PR-5B.8R — Build the professional strategy document model.
-        # Populated only when the artifact is a strategy; used to render
-        # doc-control, executive summary, scope/frameworks, methodology,
-        # current-state, governance, traceability matrix and appendices.
-        # The composer is pure: it never invents strategy rows, never
-        # calls AI, and leaves preview rendering untouched.
+        # PR-CY22 — Final Cyber export audit. Runs at the LAST possible
+        # point before the strategy document model is built and before
+        # the PDF body parser consumes ``content``. Mutates ``content``
+        # so audited section bodies (roadmap, KPI/KRI, confidence,
+        # regulator references) flow through to the rendered PDF.
+        # Scoped to ``domain == 'cyber'`` by the helper; no-op otherwise.
         # ══════════════════════════════════════════════════════════════════
+        try:
+            _cy22_fws_in = (
+                data.get('selected_frameworks')
+                or data.get('frameworks')
+                or []
+            )
+            content, _cy22_sections, _cy22_diag = _cyber_final_export_audit(
+                content,
+                metadata={
+                    'org_name': org_name_pdf,
+                    'sector':   sector_pdf,
+                    'domain':   domain_pdf,
+                    'doc_type': doc_type_pdf,
+                },
+                selected_frameworks=_cy22_fws_in,
+                lang='ar' if is_arabic else 'en',
+                domain=domain_pdf,
+            )
+        except Exception as _cy22_e:  # noqa: BLE001 — defensive
+            print(
+                f'[EXPORT-DIAG] cyber_final_export_audit_pdf_failed: '
+                f'{_cy22_e}',
+                flush=True,
+            )
+
+        # ══════════════════════════════════════════════════════════════════
+        # PR-5B.8R — Build the professional strategy document model.
         _strategy_doc_model = None
         try:
             _is_strategy_pdf_local = (
@@ -62848,6 +63198,28 @@ def api_generate_pdf():
                 )
         except Exception:
             pass
+
+        # ── PR-CY22: blank-page sanitizer. Collapse consecutive
+        # PageBreak flowables and drop any trailing PageBreak so the
+        # final PDF carries no blank-body pages (e.g. before
+        # governance/responsibilities). Snapshot is re-taken AFTER the
+        # sanitizer so the diagnostic above already reflects the final
+        # story; we re-snapshot here only for the retry path below.
+        try:
+            story, _cy22_pages_dropped = _prcy22_strip_blank_pdf_pages(story)
+            if _cy22_pages_dropped:
+                print(
+                    f'[EXPORT-DIAG] cyber_blank_page_strip '
+                    f'dropped={_cy22_pages_dropped}',
+                    flush=True,
+                )
+                _story_snapshot = list(story)
+        except Exception as _cy22_pe:  # noqa: BLE001 — defensive
+            print(
+                f'[EXPORT-DIAG] cyber_blank_page_strip_failed: '
+                f'{_cy22_pe}',
+                flush=True,
+            )
 
         try:
             doc.build(story, onFirstPage=_on_page_combined, onLaterPages=_on_page_combined)
