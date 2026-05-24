@@ -19708,6 +19708,394 @@ def _audit_doc_quality_diag(sections, doc_subtype, lang, surviving_flags):
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# PR-CY24 — Strategic Objectives table sanitizer
+#
+# Runs immediately after the final quality repair (PR-CY22/PR-CY23 final
+# quality gate, or _repair_and_revalidate in the save flow) and BEFORE
+# the strategic_objectives_row_schema_violation check inside
+# _audit_doc_quality.
+#
+# Scope: Cyber-safe AND domain-safe — pure markdown row mutator that
+# never touches the PR-CY18 specialized-objective row preservation or
+# the PR-CY20 framework-compliance objective row preservation. Rows that
+# carry specialized-cyber / framework-compliance vocabulary are NEVER
+# dropped or merged by this helper.
+# ─────────────────────────────────────────────────────────────────────────
+def _strategic_objectives_schema_diag(domain, lang, phase, row_index,
+                                      raw_row, normalized_cells,
+                                      non_empty_cell_count, detected_issue,
+                                      action_taken):
+    """Single-row diagnostic for ``[STRATEGIC-OBJECTIVES-SCHEMA-DIAG]``.
+
+    Pure logging — never mutates state, never raises. Fields match the
+    PR-CY24 spec: domain, lang, phase, row_index, raw_row_preview,
+    normalized_cells, non_empty_cell_count, detected_issue, action_taken.
+    """
+    try:
+        print(
+            '[STRATEGIC-OBJECTIVES-SCHEMA-DIAG] '
+            f'domain={(domain or "")!r} lang={(lang or "")!r} '
+            f'phase={(phase or "")!r} row_index={row_index} '
+            f'raw_row_preview={((raw_row or "")[:200])!r} '
+            f'normalized_cells={normalized_cells!r} '
+            f'non_empty_cell_count={non_empty_cell_count} '
+            f'detected_issue={(detected_issue or "")!r} '
+            f'action_taken={(action_taken or "")!r}',
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+# PR-CY18 / PR-CY20 preserved-row vocabulary. A Strategic Objectives row
+# that contains ANY of these tokens (case-insensitive substring) is
+# considered preserved and is NEVER removed or merged away by the
+# PR-CY24 sanitizer — its presence keeps the PR-CY18 specialized-objective
+# and PR-CY20 framework-compliance gates intact.
+_PRCY24_PRESERVED_ROW_KEYWORDS = (
+    # PR-CY18 — Cyber specialized-function vocabulary
+    'ciso', 'governance committee', 'reporting line',
+    'cybersecurity function', 'cybersecurity department',
+    'إدارة الأمن السيبراني', 'لجنة الحوكمة', 'لجنة حوكمة',
+    'خط الإبلاغ', 'خطوط الإبلاغ',
+    # PR-CY20 — Cyber framework-compliance vocabulary
+    'ecc', 'cscc', 'dcc', 'tcc', 'iso 27001', 'iso27001',
+    'nist csf', 'csf 2.0', 'csf2.0', 'sama', 'nca',
+    'framework compliance', 'compliance with', 'compliance objective',
+    'الامتثال', 'إطار', 'الإطار', 'هيئة الاتصالات',
+    'الهيئة الوطنية للأمن السيبراني',
+)
+
+
+def _sanitize_strategic_objectives_table_rows(target, lang, domain):
+    """PR-CY24 — Cyber-safe and domain-safe Strategic Objectives table
+    sanitizer.
+
+    Behaviour (per PR-CY24 spec):
+
+    * Removes fully empty rows.
+    * Removes separator/spacer rows beyond the canonical single header
+      separator.
+    * Removes rows where every meaningful cell is dash-only.
+    * Merges continuation rows into the previous objective row when they
+      are clearly RTL line-wrap fragments (single meaningful cell that is
+      a timeframe).
+    * Normalises broken Arabic word fragments inside cells (zero-width
+      joiners + isolated short suffixes glued to the preceding token).
+    * Re-sequences objective numbers after row removal.
+
+    The sanitizer NEVER:
+      * removes a valid objective row;
+      * removes a row that carries PR-CY18 specialized-objective or
+        PR-CY20 framework-compliance vocabulary;
+      * invents deterministic objective content;
+      * bypasses the validator (it only normalises noise rows — partial
+        but real rows are kept and surfaced via ``incomplete_rows`` so
+        the caller can route to targeted AI repair or fail-close);
+      * counts framework mentions outside the SO table as objective rows;
+      * weakens the PR-CY18 / PR-CY20 gates.
+
+    ``target`` may be a sections dict (mutated in place — every section
+    whose body carries a Strategic Objectives table header is sanitised)
+    or a raw markdown string (returns the sanitised string via
+    ``diag['sanitized_text']``).
+
+    Required column schema (rationale == justification):
+        | # | Objective | Target Metric | Rationale | Timeframe |
+
+    A row is considered a valid objective row when:
+      * the ``#`` cell is a numeric or re-sequenceable id;
+      * the Objective text is non-empty and is not itself a timeframe;
+      * the Target Metric, Rationale and Timeframe cells are non-empty;
+      * the Timeframe matches ``N month(s) / N week(s) / N شهر / N أشهر
+        / N شهرا / N أسابيع / Within N / خلال N``.
+
+    Returns a diagnostic dict with keys:
+        removed_empty_rows, removed_separator_extra_rows,
+        removed_dash_only_rows, merged_continuation_rows,
+        normalized_arabic_fragments, resequenced_rows, incomplete_rows,
+        sanitized_text (only for string-mode input).
+    """
+    import re as _so_re
+
+    diag = {
+        'removed_empty_rows': 0,
+        'removed_separator_extra_rows': 0,
+        'removed_dash_only_rows': 0,
+        'merged_continuation_rows': 0,
+        'normalized_arabic_fragments': 0,
+        'resequenced_rows': 0,
+        'incomplete_rows': [],
+    }
+
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    dom_n = (domain or '').strip().lower()
+
+    _HDR_RE = _so_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'
+        r'\s*(?:Target Metric|المقياس المستهدف|المؤشر المستهدف)\s*\|'
+        r'\s*(?:Justification|Rationale|المبرر|التبرير)\s*\|'
+        r'\s*(?:Timeframe|الإطار الزمني)\s*\|',
+        _so_re.IGNORECASE | _so_re.MULTILINE,
+    )
+    _SEP_RE = _so_re.compile(r'^\|[\s\-:|]*[-:][\s\-:|]*\|$')
+    _TF_RE = _so_re.compile(
+        r'^\s*(?:\d+\s*(?:months?|years?|weeks?|days?|'
+        r'أشهر|شهر|شهراً|شهرا|سنوات|سنة|أسابيع|أيام)'
+        r'|(?:Within|خلال)\s+\d+)',
+        _so_re.IGNORECASE,
+    )
+    _DASH_TOKENS = {'', '—', '-', '–', '−', '--', '---',
+                    'n/a', 'na', 'لا يوجد', 'لا ينطبق'}
+
+    def _is_dash(v):
+        return (v or '').strip().lower() in _DASH_TOKENS
+
+    def _is_timeframe(v):
+        return bool(_TF_RE.match((v or '').strip()))
+
+    def _norm_arabic_fragment(v):
+        if not v or lang_n != 'ar':
+            return v, False
+        original = v
+        v2 = (v.replace('\u200b', '')
+                .replace('\u200c', '')
+                .replace('\u200d', '')
+                .replace('\ufeff', ''))
+        # Glue a trailing 1-2 Arabic-letter fragment onto the preceding
+        # 3+ letter token: ``إرس اء`` → ``إرساء``. Conservative — only
+        # fires when the suffix is genuinely short and surrounded by
+        # whitespace / punctuation / end-of-cell.
+        def _glue(m):
+            return m.group(1) + m.group(2)
+        v2 = _so_re.sub(
+            r'([\u0621-\u064A]{3,})\s+([\u0621-\u064A]{1,2})(?=\s|$|[،.])',
+            _glue, v2,
+        )
+        return (v2, v2 != original)
+
+    def _row_kind(line):
+        s = line.strip()
+        if not (s.startswith('|') and s.endswith('|')):
+            return ('OUT', None)
+        if _SEP_RE.match(s):
+            return ('SEP', None)
+        return ('DATA', [c.strip() for c in s.split('|')[1:-1]])
+
+    def _is_preserved_row(cells):
+        try:
+            txt = ' | '.join(cells).lower()
+        except Exception:
+            return False
+        return any(k.lower() in txt for k in _PRCY24_PRESERVED_ROW_KEYWORDS)
+
+    def _sanitize_text(text):
+        if not text:
+            return text
+        lines = text.split('\n')
+        new_lines = []
+        in_tbl = False
+        table_row_index = 0
+        seq = 0
+        sep_seen_for_current_table = False
+        last_data_idx_in_new = -1
+        for raw in lines:
+            stripped = raw.strip()
+            if _HDR_RE.match(stripped):
+                in_tbl = True
+                table_row_index = 0
+                seq = 0
+                sep_seen_for_current_table = False
+                last_data_idx_in_new = -1
+                new_lines.append(raw)
+                continue
+            if not in_tbl:
+                new_lines.append(raw)
+                continue
+            kind, cells = _row_kind(raw)
+            if kind == 'OUT':
+                in_tbl = False
+                new_lines.append(raw)
+                continue
+            if kind == 'SEP':
+                if sep_seen_for_current_table:
+                    diag['removed_separator_extra_rows'] += 1
+                    _strategic_objectives_schema_diag(
+                        dom_n, lang_n, 'sanitize', table_row_index,
+                        raw, None, 0,
+                        'extra_separator_row', 'remove_separator_row',
+                    )
+                    continue
+                sep_seen_for_current_table = True
+                new_lines.append(raw)
+                continue
+            # DATA row
+            table_row_index += 1
+            arabic_norm_any = False
+            for i in range(len(cells)):
+                cells[i], _changed = _norm_arabic_fragment(cells[i])
+                arabic_norm_any = arabic_norm_any or _changed
+            if arabic_norm_any:
+                diag['normalized_arabic_fragments'] += 1
+
+            non_empty = sum(1 for c in cells if c and not _is_dash(c))
+            preserved = _is_preserved_row(cells)
+
+            # PR-CY18/PR-CY20 preserved row — keep as-is, only re-sequence
+            # numeric # cell when it drifts after upstream row removals.
+            if preserved:
+                seq += 1
+                if (cells and cells[0]
+                        and cells[0].replace('.', '').isdigit()
+                        and cells[0].replace('.', '') != str(seq)):
+                    cells[0] = str(seq)
+                    diag['resequenced_rows'] += 1
+                new_lines.append('| ' + ' | '.join(cells) + ' |')
+                last_data_idx_in_new = len(new_lines) - 1
+                _strategic_objectives_schema_diag(
+                    dom_n, lang_n, 'sanitize', table_row_index,
+                    raw, cells, non_empty,
+                    'preserved_specialized_or_compliance_row',
+                    'keep_preserved_row',
+                )
+                continue
+
+            # 1) Fully empty data row.
+            if non_empty == 0:
+                diag['removed_empty_rows'] += 1
+                _strategic_objectives_schema_diag(
+                    dom_n, lang_n, 'sanitize', table_row_index,
+                    raw, cells, non_empty,
+                    'fully_empty_row', 'remove_empty_row',
+                )
+                continue
+
+            # 2) Dash-only meaningful cells (after the # column).
+            meaningful = [c for c in cells[1:] if c]
+            if meaningful and all(_is_dash(c) for c in meaningful):
+                diag['removed_dash_only_rows'] += 1
+                _strategic_objectives_schema_diag(
+                    dom_n, lang_n, 'sanitize', table_row_index,
+                    raw, cells, non_empty,
+                    'dash_only_meaningful_cells',
+                    'remove_dash_only_row',
+                )
+                continue
+
+            # 3) Orphan continuation row: exactly one meaningful body cell
+            #    and it is a timeframe → merge into previous row.
+            body_meaningful = [
+                (i, c) for i, c in enumerate(cells)
+                if c and not _is_dash(c)
+                and not (i == 0 and c.replace('.', '').isdigit())
+            ]
+            if (len(body_meaningful) == 1
+                    and _is_timeframe(body_meaningful[0][1])):
+                if last_data_idx_in_new >= 0:
+                    prev = new_lines[last_data_idx_in_new]
+                    pcells = [c.strip()
+                              for c in prev.split('|')[1:-1]]
+                    if (len(pcells) == 5
+                            and (not pcells[4] or _is_dash(pcells[4]))):
+                        pcells[4] = body_meaningful[0][1]
+                        new_lines[last_data_idx_in_new] = (
+                            '| ' + ' | '.join(pcells) + ' |')
+                        diag['merged_continuation_rows'] += 1
+                        _strategic_objectives_schema_diag(
+                            dom_n, lang_n, 'sanitize',
+                            table_row_index, raw, cells, non_empty,
+                            'orphan_continuation_timeframe',
+                            'merge_into_prev_row',
+                        )
+                        continue
+                # No mergeable previous row — drop the lone-timeframe
+                # orphan (it would otherwise emit a schema violation).
+                diag['removed_empty_rows'] += 1
+                _strategic_objectives_schema_diag(
+                    dom_n, lang_n, 'sanitize', table_row_index,
+                    raw, cells, non_empty,
+                    'unmergeable_orphan_timeframe_row',
+                    'remove_orphan_row',
+                )
+                continue
+
+            # 4) Schema classification — required-cell completeness.
+            obj_text = cells[1] if len(cells) > 1 else ''
+            tgt = cells[2] if len(cells) > 2 else ''
+            rat = cells[3] if len(cells) > 3 else ''
+            tfm = cells[4] if len(cells) > 4 else ''
+            obj_ok = (bool(obj_text) and not _is_dash(obj_text)
+                      and not _is_timeframe(obj_text))
+            tgt_ok = bool(tgt) and not _is_dash(tgt)
+            rat_ok = bool(rat) and not _is_dash(rat)
+            tfm_ok = bool(tfm) and _is_timeframe(tfm)
+
+            if obj_ok and tgt_ok and rat_ok and tfm_ok:
+                seq += 1
+                if (cells and cells[0]
+                        and cells[0].replace('.', '').isdigit()
+                        and cells[0].replace('.', '') != str(seq)):
+                    cells[0] = str(seq)
+                    diag['resequenced_rows'] += 1
+                new_lines.append('| ' + ' | '.join(cells) + ' |')
+                last_data_idx_in_new = len(new_lines) - 1
+                continue
+
+            # 5) Partially empty but appears real — keep the row so the
+            #    validator surfaces the row, and signal an incomplete row
+            #    so the caller can route to targeted AI repair OR mark
+            #    generation failed with strategic_objectives_incomplete_row.
+            if obj_ok:
+                seq += 1
+                if (cells and cells[0]
+                        and cells[0].replace('.', '').isdigit()
+                        and cells[0].replace('.', '') != str(seq)):
+                    cells[0] = str(seq)
+                    diag['resequenced_rows'] += 1
+                diag['incomplete_rows'].append({
+                    'row_index': table_row_index,
+                    'objective': obj_text[:200],
+                    'missing_target_metric': not tgt_ok,
+                    'missing_rationale': not rat_ok,
+                    'missing_timeframe': not tfm_ok,
+                })
+                _strategic_objectives_schema_diag(
+                    dom_n, lang_n, 'sanitize', table_row_index,
+                    raw, cells, non_empty,
+                    'incomplete_real_objective',
+                    'keep_for_targeted_repair',
+                )
+                new_lines.append('| ' + ' | '.join(cells) + ' |')
+                last_data_idx_in_new = len(new_lines) - 1
+                continue
+
+            # 6) Unclassifiable noise row (no preserved keywords, no real
+            #    objective text, not a clean continuation) — remove.
+            diag['removed_empty_rows'] += 1
+            _strategic_objectives_schema_diag(
+                dom_n, lang_n, 'sanitize', table_row_index,
+                raw, cells, non_empty,
+                'unclassifiable_partial_row',
+                'remove_unclassifiable_row',
+            )
+            continue
+        return '\n'.join(new_lines)
+
+    if isinstance(target, dict):
+        for _sk, _txt in list(target.items()):
+            if (not _txt or not isinstance(_txt, str)
+                    or '|' not in _txt):
+                continue
+            if not _HDR_RE.search(_txt):
+                continue
+            target[_sk] = _sanitize_text(_txt)
+        return diag
+
+    diag['sanitized_text'] = _sanitize_text(target or '')
+    return diag
+
+
 def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
     """Validate that the assembled sections meet the expected quality bar for
     the requested document type (technical strategy vs board summary) and
@@ -19744,6 +20132,35 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
         issues.append('generic_scaffold_dominant')
 
     # ── Row-schema violation detectors (apply to ALL modes and both doc types) ──
+    # PR-CY24 — Cyber-safe / domain-safe Strategic Objectives table sanitiser.
+    # Runs immediately after final quality repair (PR-CY22/PR-CY23 quality
+    # gate or _repair_and_revalidate in the save flow) and BEFORE the
+    # strategic_objectives_row_schema_violation loop below. The sanitiser
+    # never touches PR-CY18 specialized-objective or PR-CY20 framework-
+    # compliance rows; it only strips empty / dash-only / orphan-timeframe
+    # continuation noise that the validator would otherwise misread as a
+    # schema violation. Partial-but-real rows are kept and surfaced via the
+    # ``strategic_objectives_incomplete_row`` flag below so callers can
+    # route to targeted AI repair or fail-close.
+    try:
+        _so_sanitizer_diag = _sanitize_strategic_objectives_table_rows(
+            sections, lang, '',
+        )
+    except Exception as _so_san_e:  # noqa: BLE001 — defensive
+        _so_sanitizer_diag = {'incomplete_rows': [], 'error': repr(_so_san_e)}
+        try:
+            print(
+                '[STRATEGIC-OBJECTIVES-SCHEMA-DIAG] '
+                f'sanitizer_failed_before_validation err={_so_san_e!r}',
+                flush=True,
+            )
+        except Exception:
+            pass
+    # Re-read section texts since the sanitiser may have mutated them.
+    vision_text = sections.get('vision', '') or ''
+    all_text = '\n'.join(v for v in sections.values()
+                         if v and isinstance(v, str))
+
     # Residual safety net: catches rows where a timeframe still appears in the
     # wrong column AFTER fix_strategic_objectives_table / fix_kpi_main_table
     # have run. When triggered, the save path forces artifact_status='draft' and
@@ -19814,6 +20231,16 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
             _so_row_count += 1
     if _so_violated:
         issues.append('strategic_objectives_row_schema_violation')
+    # PR-CY24 — Sanitiser may have detected partial-but-real objective rows
+    # that the schema validator would otherwise either silently keep as
+    # noise or reject as a violation. Surface a precise flag so the save
+    # path can route to targeted AI repair OR fail-close with the exact
+    # ``strategic_objectives_incomplete_row`` reason from the PR-CY24 spec.
+    try:
+        if _so_sanitizer_diag and _so_sanitizer_diag.get('incomplete_rows'):
+            issues.append('strategic_objectives_incomplete_row')
+    except Exception:
+        pass
     # Minimum-row-count check: a real Technical Strategy must have ≥ 3 objectives.
     # If the ghost-row drop or the AI itself left fewer, flag for regeneration.
     # Only check when we actually found a Strategic Objectives table (row_count
@@ -35810,6 +36237,20 @@ def _cyber_final_quality_gate(sections, lang, metadata=None,
             sections, lang_n)
     except Exception as _e:  # noqa: BLE001 — defensive
         diag['final_assertions_error'] = repr(_e)
+    # ── PR-CY24 — Strategic Objectives table sanitiser (Cyber-safe and
+    # domain-safe). Runs AFTER every PR-CY23 helper has had a chance to
+    # mutate the audited section bodies and BEFORE any downstream caller
+    # invokes strategic_objectives_row_schema validation on the audited
+    # sections. Pure noise removal — never touches PR-CY18 specialized-
+    # objective or PR-CY20 framework-compliance rows.
+    try:
+        diag['strategic_objectives_sanitizer'] = (
+            _sanitize_strategic_objectives_table_rows(
+                sections, lang_n, 'cyber',
+            )
+        )
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['strategic_objectives_sanitizer_error'] = repr(_e)
     return diag
 
 
