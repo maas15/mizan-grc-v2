@@ -346,5 +346,294 @@ class TestPRCY19PRCY18Untouched(unittest.TestCase):
                             f'PR-CY18 helper {name} missing — regression!')
 
 
+# ════════════════════════════════════════════════════════════════════════
+# Regression tests required by the revised PR-CY19 specification.
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPRCY19KRIDerivedContent(unittest.TestCase):
+    """KRI rows must be DERIVED from observable inputs — there are no
+    fixed deterministic rows. Changing the inputs must change the
+    emitted KRI rows."""
+
+    @_skip_if_no_app
+    def test_kri_no_rows_when_no_signals(self):
+        # KPIs section is present (so the table COULD be appended) but
+        # there are no risks / gaps / frameworks / DLP / encryption /
+        # IAM / incident-response / awareness signals anywhere — so no
+        # KRI table must be appended (no fixed deterministic fallback).
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Quarterly board review attendance | ≥ 90% | '
+                '(attended/scheduled)×100 | Oversight | Quarterly |\n'
+            ),
+        }
+        diag = _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber')
+        self.assertFalse(diag['kri_table_added'],
+                         'no KRI rows must be emitted when no risk / '
+                         'gap / framework / data-protection signal is '
+                         'present')
+        self.assertNotIn('MTTD', sections['kpis'])
+        self.assertNotIn('Patching SLA', sections['kpis'])
+        self.assertNotIn('DLP incidents', sections['kpis'])
+
+    @_skip_if_no_app
+    def test_kri_changes_when_input_risks_and_gaps_change(self):
+        # A minimal KPI table that contains no KRI-triggering vocabulary
+        # (board attendance only). Shared between both scenarios so the
+        # ONLY differing signal is what we inject in gaps / roadmap.
+        kpi_table = (
+            '## 6. KPIs\n\n'
+            '| # | KPI Description | Target Value | Formula | '
+            'Rationale | Timeframe |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | Board oversight cadence | ≥ 90% | '
+            '(attended/scheduled)×100 | Oversight | Quarterly |\n'
+        )
+        # Scenario A: incident-response + patching risks only.
+        sections_a = {
+            'kpis': kpi_table,
+            'gaps': 'Incident response is immature; SOC has no SIEM. '
+                    'Vulnerability patching is delayed.',
+            'roadmap': 'Build SOC; deploy vulnerability management.',
+        }
+        diag_a = _APP._cyber_post_generation_consistency_audit(
+            sections_a, 'en', 'cyber')
+        self.assertTrue(diag_a['kri_table_added'])
+        kri_a = sections_a['kpis']
+        self.assertIn('MTTD', kri_a)
+        self.assertIn('MTTR', kri_a)
+        self.assertIn('Patching SLA', kri_a)
+        # No DLP / IAM signal → those rows must NOT appear.
+        self.assertNotIn('DLP incidents', kri_a)
+        self.assertNotIn('Anomalous failed login', kri_a)
+        self.assertNotIn('Encryption coverage', kri_a)
+        self.assertNotIn('Third-party risk score', kri_a)
+
+        # Scenario B: DLP + encryption + third-party risks only — the
+        # derived KRI table must be materially different from A.
+        sections_b = {
+            'kpis': kpi_table,
+            'gaps': 'Data classification controls are missing; '
+                    'encryption coverage on sensitive data is partial.',
+            'roadmap': 'Deploy DLP; enforce encryption at rest; vendor '
+                       'risk programme for third-party suppliers.',
+        }
+        diag_b = _APP._cyber_post_generation_consistency_audit(
+            sections_b, 'en', 'cyber')
+        self.assertTrue(diag_b['kri_table_added'])
+        kri_b = sections_b['kpis']
+        self.assertIn('DLP incidents', kri_b)
+        self.assertIn('Encryption coverage', kri_b)
+        self.assertIn('Third-party risk score', kri_b)
+        # No SOC/SIEM/incident or patching signal → those must NOT appear.
+        self.assertNotIn('MTTD', kri_b)
+        self.assertNotIn('MTTR', kri_b)
+        self.assertNotIn('Patching SLA', kri_b)
+        # Content MUST differ between the two scenarios.
+        self.assertNotEqual(kri_a, kri_b,
+                            'derived KRI rows must change when input '
+                            'risks/gaps change')
+
+    @_skip_if_no_app
+    def test_kri_derived_from_selected_frameworks(self):
+        # No textual signals other than the KPI header — but DCC is a
+        # selected framework that mandates data-classification and DLP
+        # KRIs. The derived KRIs must reflect that obligation.
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Quarterly board review | ≥ 90% | '
+                '(attended/scheduled)×100 | Oversight | Quarterly |\n'
+            ),
+        }
+        diag = _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber',
+            selected_frameworks=['DCC'])
+        self.assertTrue(diag['kri_table_added'])
+        self.assertIn('DLP incidents', sections['kpis'])
+        self.assertIn('Assets classified', sections['kpis'])
+
+    @_skip_if_no_app
+    def test_kri_table_not_duplicated_on_repeated_runs(self):
+        sections = {
+            'kpis': _kpis_no_kri_table(),
+            'gaps': 'Incident response is immature.',
+        }
+        d1 = _APP._cyber_post_generation_consistency_audit(
+            sections, 'ar', 'cyber')
+        kpis_after_first = sections['kpis']
+        d2 = _APP._cyber_post_generation_consistency_audit(
+            sections, 'ar', 'cyber')
+        self.assertTrue(d1['kri_table_added'])
+        self.assertFalse(d2['kri_table_added'],
+                         'KRI table must not be appended again on a '
+                         'second audit run')
+        self.assertEqual(sections['kpis'], kpis_after_first,
+                         'second audit run must leave kpis unchanged')
+        # The KRI header should appear exactly once.
+        self.assertEqual(sections['kpis'].count('مؤشرات المخاطر الرئيسية'),
+                         1, 'KRI heading must appear exactly once')
+
+
+class TestPRCY19KPIFormulaPreservation(unittest.TestCase):
+    """KPI repair must preserve existing recoverable formulas and never
+    invent a generic ``Measured per approved methodology`` placeholder."""
+
+    @_skip_if_no_app
+    def test_ratio_formula_preserved(self):
+        sections = {
+            'kpis': (
+                '## 6. مؤشرات الأداء الرئيسية\n\n'
+                '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | '
+                'المبرر | الإطار الزمني |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | تغطية الترقيع الأمني | 95% | '
+                '(مرقّع/إجمالي)×100 | حرج | شهري |\n'
+            ),
+        }
+        _APP._cyber_post_generation_consistency_audit(
+            sections, 'ar', 'cyber')
+        # The ratio formula must still be present, untouched.
+        self.assertIn('(مرقّع/إجمالي)×100', sections['kpis'])
+        # And it must NOT have been replaced by a generic placeholder.
+        self.assertNotIn('يُحتسب وفق المنهجية المعتمدة', sections['kpis'])
+        self.assertNotIn('Measured per approved methodology',
+                         sections['kpis'])
+
+    @_skip_if_no_app
+    def test_average_time_formula_preserved(self):
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Incident response time | ≤ 4 hours | '
+                'Average time from detection to containment | '
+                'Critical | Monthly |\n'
+            ),
+        }
+        _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber')
+        self.assertIn('Average time from detection to containment',
+                      sections['kpis'])
+        self.assertNotIn('Measured per approved methodology',
+                         sections['kpis'])
+        self.assertNotIn('Elapsed time from event trigger to completion',
+                         sections['kpis'])
+
+    @_skip_if_no_app
+    def test_count_formula_preserved(self):
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Critical incidents per quarter | 0 | '
+                'Count of incidents classified as critical | '
+                'Resilience | Quarterly |\n'
+            ),
+        }
+        _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber')
+        self.assertIn('Count of incidents classified as critical',
+                      sections['kpis'])
+
+    @_skip_if_no_app
+    def test_formula_reconstructed_from_neighbour_when_leaked(self):
+        # Formula leaked into the Target Value cell; formula cell is
+        # empty / dash. Repair must move it back, not invent a generic
+        # placeholder.
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Patching coverage | (patched/total)×100 | — | '
+                'Critical | Monthly |\n'
+            ),
+        }
+        diag = _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber')
+        self.assertGreaterEqual(diag['kpi_rtl_fix'], 1)
+        # The formula must now live in the Formula column, not in Target.
+        row1 = [ln for ln in sections['kpis'].split('\n')
+                if ln.startswith('| 1 |')][0]
+        cells = [c.strip() for c in row1.strip('|').split('|')]
+        self.assertEqual(cells[3], '(patched/total)×100',
+                         'leaked formula must be moved back to the '
+                         'Formula column')
+        # No generic invented wording.
+        self.assertNotIn('Measured per approved methodology',
+                         sections['kpis'])
+
+    @_skip_if_no_app
+    def test_unrecoverable_formula_marked_for_ai_repair_not_invented(self):
+        # No recoverable formula anywhere in the row; formula cell holds
+        # a bare timeframe. PR-CY19 (revised) must mark the row for AI
+        # repair, NOT invent a generic measurement string.
+        sections = {
+            'kpis': (
+                '## 6. KPIs\n\n'
+                '| # | KPI Description | Target Value | Formula | '
+                'Rationale | Timeframe |\n'
+                '|---|---|---|---|---|---|\n'
+                '| 1 | Incident response | 24 hours | 24 hours | '
+                'Critical | — |\n'
+            ),
+        }
+        diag = _APP._cyber_post_generation_consistency_audit(
+            sections, 'en', 'cyber')
+        self.assertGreaterEqual(diag['kpi_rtl_fix'], 1)
+        self.assertNotIn('Measured per approved methodology',
+                         sections['kpis'])
+        self.assertNotIn('Elapsed time from event trigger to completion',
+                         sections['kpis'])
+        self.assertIn('REQUIRES_AI_FORMULA_REPAIR', sections['kpis'])
+
+
+class TestPRCY19RoadmapDistinctRowsPreserved(unittest.TestCase):
+    """Roadmap dedup must remove duplicates only, never collapse two
+    distinct initiatives into one."""
+
+    @_skip_if_no_app
+    def test_distinct_rows_preserved_after_dedup(self):
+        sections = {'roadmap': _roadmap_with_duplicates_and_bad_order()}
+        _APP._cyber_post_generation_consistency_audit(
+            sections, 'ar', 'cyber')
+        roadmap = sections['roadmap']
+        # Every distinct initiative from the original (apart from the
+        # duplicate of row 10) must still be present exactly once.
+        distinct_initiatives = [
+            'تنفيذ إدارة الهوية والوصول IAM',
+            'بناء مركز العمليات الأمنية SOC',
+            'إدارة الثغرات',
+            'منع تسرب البيانات DLP',
+            'إدارة مخاطر الأطراف الثالثة',
+            'تقارير الامتثال للإدارة العليا',
+            'إنشاء إدارة الأمن السيبراني',
+            'تطبيق ضوابط تصنيف البيانات والتشفير',
+            'تدريب الموظفين على الوعي الأمني',
+        ]
+        for init in distinct_initiatives:
+            self.assertGreaterEqual(
+                roadmap.count(init), 1,
+                f'distinct initiative was dropped: {init!r}')
+        # The semantic-duplicate phrase must appear exactly once.
+        self.assertEqual(
+            roadmap.count('تطبيق ضوابط تصنيف البيانات والتشفير'), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

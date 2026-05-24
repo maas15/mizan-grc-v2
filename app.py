@@ -33104,9 +33104,65 @@ def _prcy19_roadmap_dedup_and_reorder(sections, lang):
     return (dedup_n, reorder_n)
 
 
+# ── KPI formula preservation helpers ────────────────────────────────
+#
+# A "recoverable formula" is one of: ratio formulas (e.g. ``(X/Y)*100``,
+# ``X/Y``, ``×100%``), average-time formulas (``متوسط ...``, ``average
+# ...``, ``mean ...``), count-based formulas (``عدد ...``, ``count of
+# ...``, ``number of ...``, ``sum ...``). Bare timeframe tokens such as
+# ``24 ساعة`` / ``12 months`` are NOT formulas; they are timeframe leak.
+#
+# When the formula cell holds garbage but another cell in the same row
+# holds a recoverable formula, PR-CY19 must move that recoverable
+# formula into the formula column instead of inventing a generic
+# "Measured per approved methodology" string. Only when no neighbour
+# cell holds a recoverable formula may the row be marked as
+# ``[REQUIRES_AI_FORMULA_REPAIR]`` — explicit signal to the downstream
+# AI-repair pass that the row needs reformulation. No invented
+# placeholder is written.
+import re as _re_prcy19_fmla  # module-level helper import
+_PRCY19_RECOVERABLE_FORMULA_RE = _re_prcy19_fmla.compile(
+    r'(\([^)]+\)\s*[×x\*]\s*100\s*%?|'      # (num/den)*100[%]
+    r'\d+(?:\.\d+)?\s*[/÷]\s*\d+(?:\.\d+)?|'  # n/d ratio
+    r'×\s*100\s*%?|'                          # ×100
+    r'\bمتوسط\b|\baverage\b|\bavg\b|\bmean\b|'
+    r'\bعدد\b|\bcount\b|\bnumber\s+of\b|\bsum\b|'
+    r'\bمجموع\b|\bنسبة\b|\bratio\b|'
+    r'∑|Σ)',
+    _re_prcy19_fmla.IGNORECASE,
+)
+_PRCY19_AI_REPAIR_FORMULA_MARKER_AR = '[يتطلب إعادة صياغة عبر مراجعة ذكية]'
+_PRCY19_AI_REPAIR_FORMULA_MARKER_EN = '[REQUIRES_AI_FORMULA_REPAIR]'
+
+
+def _prcy19_is_recoverable_formula(s):
+    """Return True iff ``s`` looks like a recoverable KPI formula
+    (ratio / average-time / count-based). Bare timeframes do not match.
+    """
+    if not s:
+        return False
+    txt = str(s).strip()
+    if not txt or txt in ('—', '-'):
+        return False
+    return bool(_PRCY19_RECOVERABLE_FORMULA_RE.search(txt))
+
+
 def _prcy19_kpi_rtl_fix(sections, lang):
     """Pass 3 — repair KPI rows where ``KPI`` header leaked into the
     Target Value cell or a timeframe leaked into the Formula cell.
+
+    The repair is **non-destructive**:
+
+    1. If the formula cell already holds a recoverable formula, do not
+       touch it.
+    2. Otherwise scan the row for a recoverable formula in any other
+       cell (the most common production defect was the formula
+       leaking into the Target Value column) and move it into the
+       formula column.
+    3. Only when no recoverable formula exists anywhere in the row do
+       we mark the formula cell as ``[REQUIRES_AI_FORMULA_REPAIR]`` —
+       never invent a generic measurement string.
+
     Returns the number of repaired rows.
     """
     import re as _re_kp
@@ -33131,6 +33187,8 @@ def _prcy19_kpi_rtl_fix(sections, lang):
         r'|(?:within|خلال)\s+\d+|Q[1-4]\s*\d{4})\s*$',
         _re_kp.IGNORECASE,
     )
+    ai_marker = (_PRCY19_AI_REPAIR_FORMULA_MARKER_AR if lang == 'ar'
+                 else _PRCY19_AI_REPAIR_FORMULA_MARKER_EN)
     fixed = 0
     for r in rows[hdr_idx + 1:]:
         if r['kind'] != 'data':
@@ -33140,25 +33198,64 @@ def _prcy19_kpi_rtl_fix(sections, lang):
         c = r['cells'] or []
         if len(c) < 6:
             continue
-        # Defect A: Target Value is literally "KPI" / "KPI Description".
+        # ── Defect A: Target Value is literally "KPI" / header leakage ──
         if c[2].strip().lower() in ('kpi', 'kpi description', 'وصف المؤشر'):
             c[2] = '—'
             fixed += 1
-        # Defect B: Formula cell holds a bare timeframe value.
+        # ── Formula preservation check ─────────────────────────────────
+        formula_ok = _prcy19_is_recoverable_formula(c[3])
+        if formula_ok:
+            # Already a recoverable formula — leave row alone (only the
+            # Defect A repair above may have touched the target value).
+            continue
+        # ── Step 1: reconstruct from neighbouring cells ────────────────
+        # Look in the other cells (typically the Target Value cell)
+        # for a leaked formula. Skip the # column (0) and the formula
+        # column (3) itself; columns 1 (Description), 2 (Target),
+        # 4 (Rationale), 5 (Timeframe).
+        recovered_idx = None
+        for j in (2, 1, 4):
+            if j < len(c) and _prcy19_is_recoverable_formula(c[j]):
+                recovered_idx = j
+                break
+        if recovered_idx is not None:
+            # Move that formula into the formula column. If the formula
+            # cell currently holds a bare timeframe, salvage it into
+            # the timeframe column before overwriting.
+            if tf_re.match(c[3] or '') and (not c[5] or c[5].strip() in ('—', '-', '')):
+                c[5] = c[3]
+            c[3] = c[recovered_idx].strip()
+            # If we pulled the formula out of the Target Value column,
+            # leave a placeholder dash there so the column still
+            # validates structurally; the downstream AI pass can
+            # re-fill it from the methodology.
+            if recovered_idx == 2:
+                c[2] = '—'
+            fixed += 1
+            continue
+        # ── Step 2: no recoverable formula anywhere in the row ─────────
+        # Defect B: Formula cell holds a bare timeframe — move it to
+        # the timeframe column and mark for AI repair.
         if tf_re.match(c[3] or ''):
-            # If Timeframe column is empty or dash, move it there.
             if not c[5] or c[5].strip() in ('—', '-', ''):
                 c[5] = c[3]
-            c[3] = (lang == 'ar' and 'يُحتسب وفق المنهجية المعتمدة'
-                    or 'Measured per approved methodology')
+            c[3] = ai_marker
             fixed += 1
-        # Defect C: Target Value is a bare timeframe AND Formula is empty.
-        if tf_re.match(c[2] or '') and (not c[3] or c[3].strip() in ('—', '-')):
-            # The "target" is actually a response-time value — keep as
-            # target but populate formula sensibly.
-            c[3] = (lang == 'ar'
-                    and 'الزمن من بدء الحادثة حتى الإنجاز'
-                    or 'Elapsed time from event trigger to completion')
+            continue
+        # Defect C: Target Value is a bare timeframe AND formula empty.
+        if (tf_re.match(c[2] or '')
+                and (not c[3] or c[3].strip() in ('—', '-', ''))):
+            if not c[5] or c[5].strip() in ('—', '-', ''):
+                c[5] = c[2]
+            c[2] = '—'
+            c[3] = ai_marker
+            fixed += 1
+            continue
+        # Defect D: Formula cell is empty/dash and target is something
+        # that isn't a formula either — mark for AI repair without
+        # inventing wording.
+        if not c[3] or c[3].strip() in ('—', '-', ''):
+            c[3] = ai_marker
             fixed += 1
     if fixed:
         sections['kpis'] = _prcy19_emit_md_table(rows)
@@ -33182,44 +33279,186 @@ def _prcy19_kri_table_present(text):
     return False
 
 
-_PRCY19_KRI_TABLE_AR = (
+_PRCY19_KRI_HEADER_AR = (
     '\n\n### مؤشرات المخاطر الرئيسية (KRIs)\n\n'
     '| # | مؤشر المخاطر (KRI) | الحد الأعلى المقبول | مصدر القياس | الإطار الزمني |\n'
     '|---|---|---|---|---|\n'
-    '| 1 | متوسط زمن اكتشاف الحوادث (MTTD) | ≤ 60 دقيقة | SIEM/SOC | شهري |\n'
-    '| 2 | متوسط زمن الاستجابة للحوادث (MTTR) | ≤ 4 ساعات | SOC | شهري |\n'
-    '| 3 | نسبة الترقيع الأمني خارج SLA | ≤ 5% | إدارة الثغرات | شهري |\n'
-    '| 4 | نسبة محاولات الدخول الفاشلة الشاذة | ≤ 2% | IAM/SIEM | أسبوعي |\n'
-    '| 5 | عدد حوادث تسرب البيانات (DLP) | 0 حادثة حرجة | DLP | شهري |\n'
-    '| 6 | درجة مخاطر الأطراف الثالثة | ≤ 30/100 | إدارة مخاطر الموردين | ربع سنوي |\n'
 )
-_PRCY19_KRI_TABLE_EN = (
+_PRCY19_KRI_HEADER_EN = (
     '\n\n### Key Risk Indicators (KRIs)\n\n'
     '| # | KRI | Acceptable Threshold | Measurement Source | Cadence |\n'
     '|---|---|---|---|---|\n'
-    '| 1 | Mean Time To Detect (MTTD) | ≤ 60 minutes | SIEM/SOC | Monthly |\n'
-    '| 2 | Mean Time To Respond (MTTR) | ≤ 4 hours | SOC | Monthly |\n'
-    '| 3 | Patching SLA breach rate | ≤ 5% | Vulnerability mgmt | Monthly |\n'
-    '| 4 | Anomalous failed login rate | ≤ 2% | IAM/SIEM | Weekly |\n'
-    '| 5 | DLP incidents (critical) | 0 | DLP platform | Monthly |\n'
-    '| 6 | Third-party risk score | ≤ 30/100 | Vendor risk mgmt | Quarterly |\n'
 )
 
 
-def _prcy19_kri_ensure(sections, lang):
-    """Pass 4 — append a deterministic KRI table to the kpis section
-    when the methodology mentions KRI but no KRI table is present.
-    Returns ``True`` if appended.
+# Per-signal KRI catalogue. Each entry: signal_key → (AR_row_tuple,
+# EN_row_tuple). A row is appended ONLY when its signal is observed in
+# the strategy sections, selected frameworks, gaps, or roadmap. This is
+# the difference between PR-CY19 v1 (deterministic fixed rows) and the
+# revised PR-CY19 (derived rows): the STRUCTURE is deterministic but
+# the CONTENT depends on the inputs.
+_PRCY19_KRI_CATALOGUE = {
+    'incident_response': (
+        ('متوسط زمن اكتشاف الحوادث (MTTD)', '≤ 60 دقيقة', 'SIEM/SOC', 'شهري'),
+        ('Mean Time To Detect (MTTD)', '≤ 60 minutes', 'SIEM/SOC', 'Monthly'),
+    ),
+    'incident_response_mttr': (
+        ('متوسط زمن الاستجابة للحوادث (MTTR)', '≤ 4 ساعات', 'SOC', 'شهري'),
+        ('Mean Time To Respond (MTTR)', '≤ 4 hours', 'SOC', 'Monthly'),
+    ),
+    'vulnerability_patching': (
+        ('نسبة الترقيع الأمني خارج SLA', '≤ 5%', 'إدارة الثغرات', 'شهري'),
+        ('Patching SLA breach rate', '≤ 5%', 'Vulnerability mgmt', 'Monthly'),
+    ),
+    'iam_auth': (
+        ('نسبة محاولات الدخول الفاشلة الشاذة', '≤ 2%', 'IAM/SIEM', 'أسبوعي'),
+        ('Anomalous failed login rate', '≤ 2%', 'IAM/SIEM', 'Weekly'),
+    ),
+    'dlp_leakage': (
+        ('عدد حوادث تسرب البيانات (DLP)', '0 حادثة حرجة', 'منصة DLP', 'شهري'),
+        ('DLP incidents (critical)', '0', 'DLP platform', 'Monthly'),
+    ),
+    'encryption_coverage': (
+        ('نسبة تغطية التشفير للبيانات الحساسة', '≥ 95%',
+         'إدارة الأمن السيبراني', 'ربع سنوي'),
+        ('Encryption coverage for sensitive data', '≥ 95%',
+         'Cybersecurity dept.', 'Quarterly'),
+    ),
+    'third_party_risk': (
+        ('درجة مخاطر الأطراف الثالثة', '≤ 30/100',
+         'إدارة مخاطر الموردين', 'ربع سنوي'),
+        ('Third-party risk score', '≤ 30/100',
+         'Vendor risk mgmt', 'Quarterly'),
+    ),
+    'data_classification': (
+        ('نسبة الأصول المُصنّفة وفق ضوابط البيانات', '≥ 90%',
+         'حوكمة البيانات', 'ربع سنوي'),
+        ('Assets classified per data-protection controls', '≥ 90%',
+         'Data governance', 'Quarterly'),
+    ),
+    'awareness': (
+        ('نسبة الموظفين المُجتازين لاختبار محاكاة التصيد', '≥ 90%',
+         'الموارد البشرية والأمن', 'ربع سنوي'),
+        ('Staff passing phishing-simulation tests', '≥ 90%',
+         'HR & Security', 'Quarterly'),
+    ),
+    'governance_committee': (
+        ('نسبة انعقاد لجنة حوكمة الأمن السيبراني وفق التواتر المعتمد',
+         '≥ 95%', 'مكتب الحوكمة', 'ربع سنوي'),
+        ('Cybersecurity governance committee meeting adherence',
+         '≥ 95%', 'Governance office', 'Quarterly'),
+    ),
+}
+
+
+def _prcy19_derive_kri_rows(sections, lang, selected_frameworks=None):
+    """Derive KRI rows from observable signals in the strategy section
+    bodies (cyber risks, gaps, selected frameworks, roadmap initiatives,
+    and data-protection obligations).
+
+    Returns a list of ``(name, threshold, source, cadence)`` tuples in
+    the requested language. Empty list when no signal fires — callers
+    must NOT emit a KRI table in that case (no fixed/deterministic
+    fallback rows are permitted).
+    """
+    blob_parts = []
+    for k in ('vision', 'pillars', 'gaps', 'risks', 'kpis', 'roadmap',
+              'methodology', 'data_protection', 'objectives',
+              'capabilities', 'traceability'):
+        v = (sections or {}).get(k, '')
+        if v:
+            blob_parts.append(str(v))
+    blob_lc = ('\n'.join(blob_parts)).lower()
+    fws_upper = ' '.join(str(f).upper() for f in (selected_frameworks or []))
+
+    def _has(*tokens):
+        return any(t.lower() in blob_lc for t in tokens)
+
+    def _has_fw(*tokens):
+        return any(t.upper() in fws_upper for t in tokens)
+
+    derived_keys = []
+    # Incident detection / response (SOC, SIEM, incident-response signals,
+    # or ECC selection which mandates incident management).
+    if _has('SOC', 'SIEM', 'حوادث', 'الحوادث', 'incident', 'incidents',
+            'الاستجابة للحوادث', 'incident response', 'MTTD', 'MTTR',
+            'CSIRT'):
+        derived_keys.append('incident_response')
+        derived_keys.append('incident_response_mttr')
+    # Vulnerability / patching
+    if _has('الثغرات', 'الترقيع', 'ترقيع', 'patching', 'patch',
+            'vulnerability', 'vulnerabilities', 'CVE'):
+        derived_keys.append('vulnerability_patching')
+    # IAM / authentication / access
+    if _has('IAM', 'PAM', 'إدارة الهوية', 'إدارة الهويات', 'المصادقة',
+            'authentication', 'login', 'الدخول', 'identity', 'access management',
+            'MFA'):
+        derived_keys.append('iam_auth')
+    # DLP / data leakage  (also derived from DCC framework selection)
+    if (_has('DLP', 'تسرب البيانات', 'منع تسرب', 'data loss prevention',
+             'leakage', 'تسرب')
+            or _has_fw('DCC')):
+        derived_keys.append('dlp_leakage')
+    # Encryption coverage
+    if _has('تشفير', 'التشفير', 'encryption', 'encrypt', 'cryptograph'):
+        derived_keys.append('encryption_coverage')
+    # Third-party / vendor risk
+    if _has('الأطراف الثالثة', 'الطرف الثالث', 'الموردين', 'third-party',
+            'third party', 'vendor', 'supplier', 'مخاطر الموردين'):
+        derived_keys.append('third_party_risk')
+    # Data classification (DCC obligation or explicit classification mention)
+    if (_has('تصنيف البيانات', 'classification', 'data classification',
+             'الأصول المعلوماتية', 'تصنيف الأصول')
+            or _has_fw('DCC')):
+        derived_keys.append('data_classification')
+    # Awareness / phishing programmes
+    if _has('التوعية', 'phishing', 'التصيد', 'awareness', 'تدريب الموظفين'):
+        derived_keys.append('awareness')
+    # Governance committee cadence
+    if _has('لجنة حوكمة', 'governance committee', 'حوكمة الأمن السيبراني',
+            'cybersecurity governance committee'):
+        derived_keys.append('governance_committee')
+
+    # De-duplicate while preserving order.
+    seen = set()
+    ordered = []
+    for k in derived_keys:
+        if k not in seen:
+            seen.add(k)
+            ordered.append(k)
+
+    out = []
+    idx = 0 if lang == 'ar' else 1
+    for k in ordered:
+        out.append(_PRCY19_KRI_CATALOGUE[k][idx])
+    return out
+
+
+def _prcy19_kri_ensure(sections, lang, selected_frameworks=None):
+    """Pass 4 — append a KRI table to the kpis section when no KRI
+    table is present AND at least one KRI signal can be derived from
+    cyber risks, gaps, selected frameworks, roadmap initiatives, or
+    data-protection obligations.
+
+    No fixed deterministic rows are inserted: when no signal fires,
+    nothing is appended and ``False`` is returned.
     """
     text = (sections or {}).get('kpis', '') or ''
     if not text:
         return False
     if _prcy19_kri_table_present(text):
         return False
-    # Methodology block is built deterministically for cyber and always
-    # mentions KRI, so the precondition is satisfied by construction.
-    addition = _PRCY19_KRI_TABLE_AR if lang == 'ar' else _PRCY19_KRI_TABLE_EN
-    sections['kpis'] = text.rstrip() + addition
+    derived = _prcy19_derive_kri_rows(sections, lang, selected_frameworks)
+    if not derived:
+        return False
+    header = (_PRCY19_KRI_HEADER_AR if lang == 'ar'
+              else _PRCY19_KRI_HEADER_EN)
+    body_lines = []
+    for i, (name, threshold, source, cadence) in enumerate(derived, start=1):
+        body_lines.append(
+            f'| {i} | {name} | {threshold} | {source} | {cadence} |')
+    sections['kpis'] = (text.rstrip() + header
+                        + '\n'.join(body_lines) + '\n')
     return True
 
 
@@ -33442,7 +33681,8 @@ def _cyber_post_generation_consistency_audit(sections, lang, domain,
         diag['kpi_rtl_fix'] = 0
         diag['kpi_error'] = repr(_e)
     try:
-        diag['kri_table_added'] = bool(_prcy19_kri_ensure(sections, lang_n))
+        diag['kri_table_added'] = bool(
+            _prcy19_kri_ensure(sections, lang_n, selected_frameworks))
     except Exception as _e:  # noqa: BLE001 — defensive
         diag['kri_table_added'] = False
         diag['kri_error'] = repr(_e)
