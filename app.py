@@ -11021,10 +11021,34 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
             + '\n'
             + ((content_sections or {}).get('pillars', '') or '')
         )
-        # Look for tokens like "12 شهر", "18 months", "Q4 2026", "2027".
+        # Look for tokens like "12 شهر", "18 months", "Q4 2026", "2027",
+        # plus phased-roadmap "Month / الشهر" column ranges such as
+        # "1-2", "7-9", "31-36" (PR-CY21 — horizon must reflect the
+        # full phased horizon when phase-3 activities extend beyond
+        # the strategic objectives' nominal timeframe).
         cands = _re_h.findall(
             r'(\d{1,3}\s*(?:شهر|أشهر|شهراً|months?|month)|\d{1,2}\s*(?:سنوات?|سنة|years?|year)|Q[1-4]\s*\d{4}|20\d{2})',
             sources_text, _re_h.IGNORECASE)
+        # PR-CY21 — phased roadmap "Month" / "الشهر" ranges. Scan only
+        # the roadmap table cell contents (between pipes) so generic
+        # prose ranges (e.g. "10-12 employees") do not leak in. Use the
+        # MAX upper bound as a month value.
+        range_cands = []
+        _range_re = _re_h.compile(r'(\d{1,3})\s*[-–]\s*(\d{1,3})')
+        for _ln in (roadmap_text or '').split('\n'):
+            _s = _ln.strip()
+            if not (_s.startswith('|') and _s.endswith('|')):
+                continue
+            for _cell in _s.strip('|').split('|'):
+                _c = _cell.strip()
+                m = _range_re.fullmatch(_c)
+                if m:
+                    try:
+                        lo = int(m.group(1)); hi = int(m.group(2))
+                        if 0 < lo <= hi <= 240:
+                            range_cands.append(hi)
+                    except (ValueError, TypeError):
+                        continue
 
         def _to_months(tok):
             t = tok.strip().lower()
@@ -11045,10 +11069,24 @@ def _build_executive_summary_block(content_sections, metadata, selected_fws_keys
                 return int(ym.group(1)) * 12
             return 0
 
-        if cands:
+        if cands or range_cands:
             ranked = sorted(((_to_months(c), c) for c in cands),
                             key=lambda x: x[0])
-            horizon = ranked[-1][1] if ranked else ''
+            best_token = ranked[-1] if ranked else (0, '')
+            # PR-CY21 — if a phased-roadmap month range upper bound is
+            # higher than the best textual candidate, surface it as the
+            # horizon instead of inventing prose.
+            if range_cands:
+                _max_range = max(range_cands)
+                if _max_range > best_token[0]:
+                    if lang == 'ar':
+                        horizon = f'{_max_range} شهراً'
+                    else:
+                        horizon = f'{_max_range} months'
+                else:
+                    horizon = best_token[1] if best_token[1] else ''
+            else:
+                horizon = best_token[1] if best_token[1] else ''
     if horizon:
         if lang == 'ar':
             paras.append(f'الأفق الزمني للتنفيذ: حتى {horizon}.')
@@ -12760,6 +12798,14 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                         if lbl and (lbl.strip()
                                     in _TRACEABILITY_BROKEN_LABEL_BLOCKLIST):
                             continue
+                        # PR-CY21 — reject month-range labels such as
+                        # ``10-12`` that leak from the phased roadmap
+                        # ``الشهر`` / ``Month`` column.
+                        if lbl:
+                            import re as _re_mr
+                            if _re_mr.fullmatch(r'\d+\s*[-–]\s*\d+',
+                                                lbl.strip()):
+                                continue
                         return lbl
         return None
 
@@ -33857,6 +33903,134 @@ def _prcy19_normalize_text(s):
     return out.strip()
 
 
+def _prcy21_roadmap_cross_table_dedup(sections, lang):
+    """PR-CY21 — Semantic dedup across all markdown tables in the
+    roadmap section. Operates on the rendered text after all
+    composition passes. Returns the number of rows dropped.
+
+    A row is considered a duplicate when its initiative phrase (the
+    longest free-text cell beyond the # column) normalises to a phrase
+    already seen in an earlier table in the section. This is the
+    correct way to remove the DLP/encryption and classification
+    repeated rows observed in the latest Cyber PDF.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    seen_phrases = set()
+    drop_indices = set()
+
+    def _longest_text_cell(cells):
+        # Drop pure numeric / range / dash / short tokens; pick the
+        # longest remaining cell as the initiative signature.
+        import re as _re_l
+        best = ''
+        for c in cells or []:
+            cc = (c or '').strip()
+            if not cc or cc in ('—', '-'):
+                continue
+            if _re_l.fullmatch(r'\d+', cc):
+                continue
+            if _re_l.fullmatch(r'\d+\s*[-–]\s*\d+', cc):
+                continue
+            if len(cc) > len(best):
+                best = cc
+        return best
+
+    for i, r in enumerate(rows):
+        if r['kind'] != 'data' or not r['cells']:
+            continue
+        phrase = _longest_text_cell(r['cells'])
+        if not phrase:
+            continue
+        key = _prcy19_normalize_text(phrase)
+        if not key or len(key) < 8:
+            # Too short to claim semantic identity safely.
+            continue
+        if key in seen_phrases:
+            drop_indices.add(i)
+            continue
+        seen_phrases.add(key)
+    if not drop_indices:
+        return 0
+    new_rows = [r for i, r in enumerate(rows) if i not in drop_indices]
+    sections['roadmap'] = _prcy19_emit_md_table(new_rows)
+    return len(drop_indices)
+
+
+def _prcy19_roadmap_strip_orphan_flat_tables(sections, lang):
+    """PR-CY21 — Remove orphan flat-roadmap tables/rows that appear
+    AFTER a phased roadmap table (one whose header includes a
+    ``الشهر`` / ``Month`` / ``المرحلة`` / ``Phase`` column).
+
+    A document must carry a single roadmap model. When the AI emits a
+    phased table first and then re-emits the same initiatives as a
+    flat ``Initiative / Owner / Timeframe / Output`` table, the second
+    table is an orphan artefact that contaminates the rendered
+    document with duplicate DLP / encryption / classification rows.
+
+    Returns the number of orphan rows dropped.
+    """
+    text = (sections or {}).get('roadmap', '') or ''
+    if not text:
+        return 0
+    rows = _prcy19_strip_md_table_rows(text)
+    # Discover all header rows, classify each table block.
+    headers = []
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            headers.append(i)
+    if len(headers) < 2:
+        return 0
+    PHASED_TOKENS = ('الشهر', 'month', 'المرحلة', 'phase')
+
+    def _is_phased(idx):
+        blob = ' '.join(rows[idx]['cells'] or []).lower()
+        return any(t in blob for t in PHASED_TOKENS)
+
+    # Find first phased table.
+    phased_idx = None
+    for h in headers:
+        if _is_phased(h):
+            phased_idx = h
+            break
+    if phased_idx is None:
+        return 0
+    # Drop every subsequent table block (header + sep + data rows).
+    dropped = 0
+    keep_idx = set()
+    in_orphan = False
+    for i, r in enumerate(rows):
+        if i in headers and i > phased_idx:
+            blob = ' '.join(r['cells'] or []).lower()
+            # Only strip if it actually looks like a roadmap table —
+            # not e.g. a maturity / success-indicator follow-up table
+            # that the doc legitimately includes. We require the
+            # header to mention initiative / activity / مبادرة / نشاط.
+            if ('initiative' in blob or 'مبادرة' in blob
+                    or 'activity' in blob or 'النشاط' in blob):
+                in_orphan = True
+                dropped += 1
+                continue
+            else:
+                in_orphan = False
+                keep_idx.add(i)
+                continue
+        if in_orphan:
+            if r['kind'] in ('sep', 'data'):
+                if r['kind'] == 'data':
+                    dropped += 1
+                continue
+            in_orphan = False
+        keep_idx.add(i)
+    if not dropped:
+        return 0
+    new_rows = [r for i, r in enumerate(rows) if i in keep_idx]
+    sections['roadmap'] = _prcy19_emit_md_table(new_rows)
+    return dropped
+
+
 def _prcy19_roadmap_dedup_and_reorder(sections, lang):
     """Pass 1+2 — semantic-duplicate removal + dependency ordering on
     the roadmap section. Returns ``(dedup_count, reorder_count)``.
@@ -34031,6 +34205,10 @@ def _prcy19_kpi_rtl_fix(sections, lang):
                 break
     if hdr_idx is None:
         return 0
+    # PR-CY21 — repair header if "المبرر" column actually carries
+    # source/tool content. Detected later (after row scan) so that
+    # rename is applied once.
+    header_cells = rows[hdr_idx]['cells'] or []
     tf_re = _re_kp.compile(
         r'^\s*(?:\d+\s*(?:months?|years?|weeks?|days?|أشهر|شهراً?|سنوات?|سنة|ساعة|ساعات?|hours?)'
         r'|(?:within|خلال)\s+\d+|Q[1-4]\s*\d{4})\s*$',
@@ -34038,7 +34216,21 @@ def _prcy19_kpi_rtl_fix(sections, lang):
     )
     ai_marker = (_PRCY19_AI_REPAIR_FORMULA_MARKER_AR if lang == 'ar'
                  else _PRCY19_AI_REPAIR_FORMULA_MARKER_EN)
+    # PR-CY21 — tokens that must never appear inside KPI value columns
+    # (cols 2..5) unless an explicit "Type" column exists. The current
+    # schema has no Type column, so these are always defects.
+    _PRCY21_TYPE_TOKENS = {'kpi', 'kri', 'kpi description', 'وصف المؤشر',
+                           'نوع المؤشر', 'type', 'indicator type'}
+    _PRCY21_SOURCE_HINTS = ('siem', 'soc', 'iam', 'dlp', 'platform',
+                            'system', 'tool', 'منصة', 'نظام', 'أداة',
+                            'إدارة', 'department')
+    _PRCY21_FREQ_HINTS = ('monthly', 'quarterly', 'annual', 'weekly',
+                          'daily', 'شهري', 'ربع سنوي', 'سنوي',
+                          'أسبوعي', 'يومي', 'month', 'quarter',
+                          'year', 'days')
     fixed = 0
+    source_like_in_col4 = 0
+    type_token_strips = 0
     for r in rows[hdr_idx + 1:]:
         if r['kind'] != 'data':
             if r['kind'] == 'sep':
@@ -34047,6 +34239,21 @@ def _prcy19_kpi_rtl_fix(sections, lang):
         c = r['cells'] or []
         if len(c) < 6:
             continue
+        # ── PR-CY21 — strip literal type tokens from value columns ──
+        # The current schema has no Type column, so any cell in cols
+        # 2..5 that is literally "KPI" / "KRI" / "نوع المؤشر" is a
+        # leakage artefact.
+        for _col in (2, 3, 4, 5):
+            _v = (c[_col] or '').strip().lower()
+            if _v in _PRCY21_TYPE_TOKENS:
+                c[_col] = '—'
+                type_token_strips += 1
+                fixed += 1
+        # Track when col 4 ("المبرر" by default) actually contains a
+        # source/tool value — used below to decide header rename.
+        col4 = (c[4] or '').strip().lower()
+        if any(h.lower() in col4 for h in _PRCY21_SOURCE_HINTS):
+            source_like_in_col4 += 1
         # ── Defect A: Target Value is literally "KPI" / header leakage ──
         if c[2].strip().lower() in ('kpi', 'kpi description', 'وصف المؤشر'):
             c[2] = '—'
@@ -34106,6 +34313,27 @@ def _prcy19_kpi_rtl_fix(sections, lang):
         if not c[3] or c[3].strip() in ('—', '-', ''):
             c[3] = ai_marker
             fixed += 1
+    # PR-CY21 — header rename. If most rows place source/tool content
+    # in col 4 and the header still says "المبرر" / "Justification",
+    # rename it to "مصدر البيانات/الأداة" / "Data Source / Tool".
+    try:
+        n_data = sum(1 for _r in rows[hdr_idx + 1:]
+                     if _r['kind'] == 'data')
+        if n_data and len(header_cells) >= 6 and source_like_in_col4:
+            _h4 = (header_cells[4] or '').strip().lower()
+            _is_justification = (_h4 in ('المبرر', 'justification',
+                                         'rationale')
+                                 or 'justif' in _h4
+                                 or 'rationale' in _h4
+                                 or 'المبرر' in (header_cells[4] or ''))
+            if (_is_justification
+                    and source_like_in_col4 * 2 >= n_data):
+                header_cells[4] = ('مصدر البيانات/الأداة' if lang == 'ar'
+                                   else 'Data Source / Tool')
+                rows[hdr_idx]['cells'] = header_cells
+                fixed += 1
+    except Exception:  # noqa: BLE001 — defensive
+        pass
     if fixed:
         sections['kpis'] = _prcy19_emit_md_table(rows)
     return fixed
@@ -34524,6 +34752,22 @@ def _cyber_post_generation_consistency_audit(sections, lang, domain,
         diag['roadmap_error'] = repr(_e)
     diag['roadmap_dedup'] = dedup_n
     diag['roadmap_reorder'] = reorder_n
+    # PR-CY21 — strip orphan flat-roadmap tables that follow a phased
+    # roadmap.  Semantic dedup is then re-run across the entire section
+    # so any cross-table duplicates introduced after composition are
+    # removed too.
+    try:
+        diag['roadmap_orphan_flat_dropped'] = (
+            _prcy19_roadmap_strip_orphan_flat_tables(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['roadmap_orphan_flat_dropped'] = 0
+        diag['roadmap_orphan_error'] = repr(_e)
+    try:
+        diag['roadmap_cross_table_dedup'] = (
+            _prcy21_roadmap_cross_table_dedup(sections, lang_n))
+    except Exception as _e:  # noqa: BLE001 — defensive
+        diag['roadmap_cross_table_dedup'] = 0
+        diag['roadmap_cross_dedup_error'] = repr(_e)
     try:
         diag['kpi_rtl_fix'] = _prcy19_kpi_rtl_fix(sections, lang_n)
     except Exception as _e:  # noqa: BLE001 — defensive
