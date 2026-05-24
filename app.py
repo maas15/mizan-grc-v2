@@ -24995,8 +24995,23 @@ def _apply_final_synthesis_pass(sections, lang, domain, fw_short, ctx=None):
 _FRAMEWORK_COVERAGE_REQUIREMENTS = {
     "ECC": {
         "display": "NCA ECC (Essential Cybersecurity Controls)",
-        "aliases": ["nca ecc", "ecc", "essential cybersecurity",
-                    "الضوابط الأساسية", "الأساسية للأمن السيبراني"],
+        # PR-CY20 — alias list widened to cover every selected-framework
+        # variant the AI may emit inside the Vision/Objectives table
+        # (English long-form, reversed short-form, and Arabic
+        # canonical/inverted forms). Substring matching is unchanged;
+        # widening is detection-only and does not weaken any other
+        # gate — the substring search still runs strictly within the
+        # canonical Strategic Objectives table rows of the vision
+        # section, never against scope, methodology, appendix,
+        # traceability matrix, or glossary text.
+        "aliases": ["nca ecc", "ecc nca", "ecc",
+                    "essential cybersecurity controls",
+                    "essential cybersecurity",
+                    "nca essential cybersecurity controls",
+                    "الضوابط الأساسية للأمن السيبراني",
+                    "ضوابط الأمن السيبراني الأساسية",
+                    "الضوابط الأساسية",
+                    "الأساسية للأمن السيبراني"],
         "applicable_domains": ["Cyber Security"],
         "capabilities": [
             ("governance", ["الحوكمة", "السياسات", "الإطار التنظيمي",
@@ -25083,8 +25098,18 @@ _FRAMEWORK_COVERAGE_REQUIREMENTS = {
     },
     "DCC": {
         "display": "NCA DCC (Data Cybersecurity Controls)",
-        "aliases": ["nca dcc", "dcc", "data cybersecurity",
-                    "ضوابط الأمن السيبراني للبيانات"],
+        # PR-CY20 — alias list widened to cover every selected-framework
+        # variant the AI may emit (English long-form, reversed short-
+        # form, and Arabic canonical/inverted forms). Detection still
+        # runs strictly within the Vision/Objectives table rows so
+        # mentions in scope / methodology / appendix / traceability
+        # matrix / glossary do not satisfy the vision objective gate.
+        "aliases": ["nca dcc", "dcc nca", "dcc",
+                    "data cybersecurity controls",
+                    "data cybersecurity",
+                    "nca data cybersecurity controls",
+                    "ضوابط الأمن السيبراني للبيانات",
+                    "ضوابط حماية البيانات السيبرانية"],
         "applicable_domains": ["Cyber Security", "Data Management"],
         # PR-5B.9M — DCC capability families widened so the traceability
         # matrix for ECC+DCC strategies produces meaningful DCC rows.
@@ -30786,6 +30811,633 @@ def _emit_cyber_vision_persistence(
         pass
 
 
+# ── PR-CY20 — Cyber framework-compliance objective row preservation ─────
+#
+# Mirrors the PR-CY18 specialized-objective preservation pattern, but
+# for the SELECTED-FRAMEWORK COMPLIANCE objective rows in the Vision/
+# Strategic Objectives table.  Once the AI has produced an accepted
+# compliance objective row that mentions a selected framework (e.g.
+# "تحقيق الالتزام بضوابط NCA ECC") inside the canonical objectives
+# table, the convergence loop must not allow a later generic
+# objectives repair (or a DCC framework-coverage repair) to drop it.
+# These helpers extract / capture / restore already-accepted rows so
+# the loop can re-merge them whenever a downstream repair regresses
+# the vision section. The helpers are strictly row-preserving — they
+# never invent a deterministic objective row; an empty result is
+# returned when no AI-generated qualifying row exists.
+#
+# Detection is strictly scoped to rows inside the canonical Strategic
+# Objectives table of ``sections['vision']`` (the same scope used by
+# ``_compute_missing_compliance_objective``).  Mentions of a selected
+# framework anywhere else in the document (scope, methodology,
+# appendix, traceability matrix, glossary) do NOT satisfy the gate.
+
+def _extract_accepted_cyber_framework_compliance_rows(
+        vision_text, selected_frameworks, domain=None, lang='en'):
+    """Return a dict mapping framework registry key (e.g. ``'ECC'``)
+    to the first verbatim objective-table row line in ``vision_text``
+    that satisfies the framework-compliance detector for that key.
+
+    The matching logic mirrors ``_compute_missing_compliance_objective``
+    exactly: a row qualifies for framework ``fw`` when its concatenated
+    Objective+Target+Justification cells contain BOTH a compliance/
+    alignment/امتثال/التزام keyword AND either a registry alias for
+    ``fw`` OR a generic ``selected frameworks / الأطر المختارة``
+    phrase. Header and separator rows are skipped.
+
+    Returns ``{}`` when no qualifying rows exist or when no frameworks
+    are selected for the current domain. Strictly read-only.
+    """
+    if not vision_text:
+        return {}
+    try:
+        fws = _resolve_selected_frameworks(
+            selected_frameworks, domain)
+    except Exception:  # noqa: BLE001 — defensive
+        fws = []
+    if not fws:
+        return {}
+    hdr_re = _ts_re.compile(
+        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
+        r'|الأهداف)\s*\|',
+        _ts_re.IGNORECASE,
+    )
+    sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
+    captured = {}
+    in_tbl = False
+    for ln in str(vision_text).split('\n'):
+        s = _TRACE_STRIP_RE.sub('', ln).strip()
+        if not in_tbl:
+            if hdr_re.match(s):
+                in_tbl = True
+            continue
+        if not (s.startswith('|') and s.endswith('|')):
+            if not s:
+                continue
+            break
+        if sep_re.match(s):
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if len(cells) < 4:
+            continue
+        parts = [str(cells[i] or '') for i in (1, 2, 3)
+                 if i < len(cells)]
+        blob = ' '.join(parts)
+        if not blob:
+            continue
+        blob_lc = blob.lower()
+        has_kw = False
+        for _kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_AR:
+            if _kw and _kw in blob:
+                has_kw = True
+                break
+        if not has_kw:
+            for _kw in _COMPLIANCE_OBJECTIVE_KEYWORDS_EN:
+                if _kw and _kw in blob_lc:
+                    has_kw = True
+                    break
+        if not has_kw:
+            continue
+        # Generic "selected frameworks" phrase satisfies every selected
+        # framework — capture the row once per still-unmatched fw.
+        is_generic = False
+        for _gp in ('الأطر المختارة', 'الضوابط المختارة',
+                    'الأطر المرجعية المختارة'):
+            if _gp in blob:
+                is_generic = True
+                break
+        if not is_generic:
+            for _gp in ('selected framework', 'selected controls',
+                        'selected frameworks'):
+                if _gp in blob_lc:
+                    is_generic = True
+                    break
+        if is_generic:
+            for fwk in fws:
+                if fwk not in captured:
+                    captured[fwk] = s
+            continue
+        for fw_key in fws:
+            if fw_key in captured:
+                continue
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(fw_key, {})
+            for alias in spec.get('aliases', []) or []:
+                a = (alias or '').strip()
+                if not a:
+                    continue
+                if a.lower() in blob_lc:
+                    captured[fw_key] = s
+                    break
+    return captured
+
+
+def _capture_cyber_preserved_framework_compliance_rows(
+        sections, ctx, lang, domain, selected_frameworks):
+    """If any accepted Cyber framework-compliance objective rows
+    currently exist in ``sections['vision']``, capture them into
+    ``ctx['_cyber_preserved_framework_compliance_rows']`` so later
+    convergence repairs can re-merge them if a regression drops them.
+
+    No-op for non-Cyber domains, when no frameworks are selected, or
+    when no qualifying rows exist. Returns the captured dict (may be
+    empty). Strictly additive — existing entries for frameworks not
+    re-detected in the current vision are PRESERVED so an earlier
+    accepted row is never silently forgotten.
+    """
+    if not isinstance(ctx, dict):
+        return {}
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return {}
+    try:
+        rows_by_fw = (
+            _extract_accepted_cyber_framework_compliance_rows(
+                sections.get('vision', '') or '',
+                selected_frameworks,
+                domain=domain, lang=lang))
+    except Exception:  # noqa: BLE001
+        rows_by_fw = {}
+    if not rows_by_fw:
+        return ctx.get(
+            '_cyber_preserved_framework_compliance_rows', {}) or {}
+    existing = ctx.get(
+        '_cyber_preserved_framework_compliance_rows') or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = dict(existing)
+    for fw_key, row_line in rows_by_fw.items():
+        # Refresh: latest accepted row wins so a more recent AI-
+        # generated row replaces any earlier one.
+        merged[fw_key] = row_line
+    ctx['_cyber_preserved_framework_compliance_rows'] = merged
+    return merged
+
+
+def _restore_cyber_preserved_framework_compliance_rows(
+        sections, ctx, lang, domain, selected_frameworks):
+    """If ``ctx`` carries previously-captured Cyber framework-compliance
+    objective rows and the current ``sections['vision']`` no longer
+    satisfies the framework-compliance detector for one or more of the
+    preserved frameworks, splice the preserved rows back into the
+    existing vision text via ``_splice_cyber_vision_objective_topup_row``
+    and re-check.
+
+    Returns ``True`` when a restoration was performed AND the detector
+    now passes for every framework that was previously preserved;
+    ``False`` otherwise (no preserved rows, splice impossible, or the
+    splice did not satisfy the detector). Never invents a deterministic
+    row.
+    """
+    if not isinstance(ctx, dict):
+        return False
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return False
+    preserved = ctx.get(
+        '_cyber_preserved_framework_compliance_rows') or {}
+    if not isinstance(preserved, dict) or not preserved:
+        return False
+    try:
+        missing_fws = (
+            _compute_missing_compliance_objective(
+                sections, selected_frameworks,
+                domain=domain, lang=lang) or [])
+    except Exception:  # noqa: BLE001
+        missing_fws = list(preserved.keys())
+    # Restrict restoration to the intersection of {still-missing} and
+    # {preserved} — we never re-inject a row for a framework that is
+    # already covered by the current vision.
+    to_restore = [
+        fw for fw in missing_fws
+        if fw in preserved and (preserved.get(fw) or '').strip()
+    ]
+    if not to_restore:
+        return False
+    before_text = sections.get('vision', '') or ''
+    current_text = before_text
+    spliced_any = False
+    for fw_key in to_restore:
+        row_line = preserved.get(fw_key) or ''
+        if not row_line:
+            continue
+        try:
+            spliced = _splice_cyber_vision_objective_topup_row(
+                current_text, row_line)
+        except Exception:  # noqa: BLE001
+            spliced = ''
+        if spliced and spliced != current_text:
+            current_text = spliced
+            spliced_any = True
+    if not spliced_any:
+        return False
+    sections['vision'] = current_text
+    try:
+        missing_after = (
+            _compute_missing_compliance_objective(
+                sections, selected_frameworks,
+                domain=domain, lang=lang) or [])
+    except Exception:  # noqa: BLE001
+        missing_after = list(to_restore)
+    still_missing_preserved = [
+        fw for fw in missing_after if fw in preserved]
+    if still_missing_preserved:
+        # The splice did not satisfy the detector for every preserved
+        # framework — roll back so we do not leave a partial state.
+        sections['vision'] = before_text
+        return False
+    return True
+
+
+def _emit_cyber_framework_compliance_persistence(
+        phase, *, previous_missing=None, candidate_missing=None,
+        current_missing=None, preserved_fws=None, rows_before=None,
+        rows_candidate=None, rows_after=None, accepted=None,
+        restored=None):
+    """Structured ``[CYBER-FW-COMPLIANCE-PERSISTENCE]`` log emitter for
+    the PR-CY20 phases (``before_objectives_repair`` /
+    ``after_objectives_repair`` / ``reject_regressive_objectives_repair``
+    / ``after_framework_coverage_repair`` / ``before_final_gate``).
+    Diagnostic only; never mutates state and never raises.
+    """
+    parts = ['[CYBER-FW-COMPLIANCE-PERSISTENCE]', f'phase={phase}']
+    if previous_missing is not None:
+        parts.append(f'previous_missing={list(previous_missing)}')
+    if candidate_missing is not None:
+        parts.append(f'candidate_missing={list(candidate_missing)}')
+    if current_missing is not None:
+        parts.append(f'current_missing={list(current_missing)}')
+    if preserved_fws is not None:
+        parts.append(f'preserved_fws={list(preserved_fws)}')
+    if rows_before is not None:
+        parts.append(f'rows_before={rows_before}')
+    if rows_candidate is not None:
+        parts.append(f'rows_candidate={rows_candidate}')
+    if rows_after is not None:
+        parts.append(f'rows_after={rows_after}')
+    if accepted is not None:
+        parts.append(f'accepted={bool(accepted)}')
+    if restored is not None:
+        parts.append(f'restored={bool(restored)}')
+    try:
+        print(' '.join(parts), flush=True)
+    except Exception:  # noqa: BLE001 — diagnostic only
+        pass
+
+
+def _convergence_cyber_framework_compliance_objective_topup_repair(
+        sections, lang, domain, ctx, log):
+    """PR-CY20 — targeted AI-first top-up that resolves a persistent
+    ``selected_framework_compliance_objective_missing:<FW>`` vision
+    defect for Cyber Security strategies without invoking the generic
+    objectives rebuild (which has been observed to drop the previously-
+    accepted Cyber specialized-function objective row).
+
+    Strictly scoped to ``domain='cyber'``.  No-op when the framework-
+    compliance detector already returns no missing frameworks. AI-first:
+    bounded retry x2; rejected candidates restore the prior vision text
+    and the final failure marks ``synth_failed:vision`` so the post-
+    normalization audit fails closed.
+
+    Row-preserving: when the full-vision AI candidate is rejected, the
+    helper extracts qualifying compliance rows from the AI response and
+    splices them into the ORIGINAL vision text via
+    ``_splice_cyber_vision_objective_topup_row`` so every existing
+    valid objective row is preserved verbatim.
+
+    Returns 1 when at least one repair attempt succeeded, 0 otherwise.
+    """
+    if not isinstance(ctx, dict):
+        return 0
+    try:
+        dcode = (normalize_domain(domain or '') or '').strip().lower()
+    except Exception:  # noqa: BLE001 — defensive
+        dcode = ''
+    if dcode != 'cyber':
+        return 0
+    selected_fws_raw = ctx.get('frameworks') or []
+    try:
+        resolved_fws = _resolve_selected_frameworks(
+            selected_fws_raw, domain)
+    except Exception:  # noqa: BLE001
+        resolved_fws = []
+    if not resolved_fws:
+        return 0
+    try:
+        missing_pre = (
+            _compute_missing_compliance_objective(
+                sections, selected_fws_raw,
+                domain=domain, lang=lang) or [])
+    except Exception:  # noqa: BLE001
+        missing_pre = []
+    if not missing_pre:
+        try:
+            print(
+                '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+                'phase=skip_already_passing '
+                f'missing_pre={missing_pre} accepted=True',
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+    before_text = sections.get('vision', '') or ''
+    try:
+        before_rows = count_valid_objective_rows(before_text)
+    except Exception:  # noqa: BLE001
+        before_rows = 0
+    try:
+        dctx = get_strategy_domain_context(domain)
+    except Exception as _e:  # noqa: BLE001
+        print(
+            '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+            f'phase=topup_domain_context_failed err={_e}',
+            flush=True,
+        )
+        return 0
+    if dctx is None:
+        return 0
+    try:
+        dctx = dict(dctx)
+        dctx['selected_frameworks'] = (
+            list(selected_fws_raw)
+            if isinstance(selected_fws_raw, (list, tuple))
+            else ([str(selected_fws_raw)] if selected_fws_raw else []))
+    except Exception:  # noqa: BLE001
+        pass
+    _synth_status = log.setdefault('synth_status', {})
+    org_name = ctx.get('org_name', 'The Organization')
+    sector = ctx.get('sector', 'General')
+    maturity = ctx.get('maturity', 'initial')
+    gen_mode = ctx.get('generation_mode', 'drafting')
+    osn = bool(ctx.get('org_structure_is_none', False))
+
+    fw_display_names = []
+    for _fwk in missing_pre:
+        try:
+            fw_display_names.append(
+                _framework_repair_display_label(_fwk, lang))
+        except Exception:  # noqa: BLE001
+            spec = _FRAMEWORK_COVERAGE_REQUIREMENTS.get(_fwk, {})
+            fw_display_names.append(
+                spec.get('display') or _fwk)
+    print(
+        '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+        'phase=topup_before '
+        f'rows_before={before_rows} '
+        f'missing_pre={missing_pre} '
+        f'frameworks={fw_display_names} '
+        'accepted=False',
+        flush=True,
+    )
+
+    MAX_ATTEMPTS = 2
+    accepted = False
+    last_err = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        ve_msg = (
+            'Cyber Security Vision/Strategic Objectives table is '
+            'missing an explicit objective to achieve compliance '
+            'with the following selected framework(s): '
+            + ', '.join(fw_display_names) + '. '
+            'Add ONE additional Strategic Objective row (NOT a '
+            'replacement) whose Objective/Target/Justification '
+            'cells explicitly state achieving compliance with the '
+            'named framework(s). Preserve EVERY existing Strategic '
+            'Objective row verbatim — do NOT remove any row in '
+            'order to add the compliance one, and do NOT replace '
+            'the Cyber specialized-function establishment row with '
+            'the compliance row (both must coexist). The row must '
+            'be a valid Strategic Objective row with all canonical '
+            'columns (Objective, Target, Justification, Timeframe).'
+        )
+        if attempt > 1:
+            ve_msg = (
+                f'(A) Retry attempt {attempt} — previous output did '
+                'not include a framework-compliance objective row '
+                'inside the Strategic Objectives table for: '
+                + ', '.join(fw_display_names) + '. ' + ve_msg
+            )
+        try:
+            cand = ai_repair_strategy_section(
+                section_key='vision',
+                sections=sections,
+                lang=lang,
+                domain_context=dctx,
+                org_name=org_name,
+                sector=sector,
+                maturity=maturity,
+                generation_mode=gen_mode,
+                validation_error=ve_msg,
+                org_structure_is_none=osn,
+            )
+        except RepairError as _re:
+            last_err = _re
+            print(
+                '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+                f'phase=topup_repair_failed attempt={attempt} '
+                f'err={_re}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        except Exception as _re2:  # noqa: BLE001
+            last_err = _re2
+            print(
+                '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+                f'phase=topup_repair_unexpected attempt={attempt} '
+                f'err={_re2}',
+                flush=True,
+            )
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        if not (cand and cand.strip()):
+            last_err = Exception('empty_repair_response')
+            if attempt < MAX_ATTEMPTS:
+                continue
+            _mark_synth_failed(_synth_status, 'vision', last_err)
+            break
+        is_final = (attempt == MAX_ATTEMPTS)
+        try:
+            report = _assign_vision_if_valid_or_restore(
+                sections, cand, before_text,
+                domain=domain,
+                selected_frameworks=selected_fws_raw,
+                org_structure_is_none=osn,
+                generation_mode=gen_mode,
+                lang=lang,
+                synth_status=_synth_status if is_final else None,
+                original_valid_rows=before_rows,
+                repair_label=(
+                    'cyber-fw-compliance-objective-topup-attempt-'
+                    f'{attempt}'),
+            )
+        except Exception as _ave:  # noqa: BLE001
+            last_err = _ave
+            if attempt < MAX_ATTEMPTS:
+                continue
+            break
+        try:
+            after_rows = count_valid_objective_rows(
+                sections.get('vision', '') or '')
+        except Exception:  # noqa: BLE001
+            after_rows = before_rows
+        try:
+            missing_after = (
+                _compute_missing_compliance_objective(
+                    sections, selected_fws_raw,
+                    domain=domain, lang=lang) or [])
+        except Exception:  # noqa: BLE001
+            missing_after = list(missing_pre)
+        assign_allowed = bool(report.get('assign_allowed'))
+        ok = bool(assign_allowed and not missing_after)
+        print(
+            '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+            f'phase=topup_attempt_{attempt} '
+            f'rows_before={before_rows} rows_after={after_rows} '
+            f'missing_after={missing_after} '
+            f'assign_allowed={assign_allowed} '
+            f'accepted={ok}',
+            flush=True,
+        )
+        # Row-preserving splice fallback: when the full-vision
+        # candidate was rejected (validator failure OR detector still
+        # missing one or more frameworks), extract qualifying
+        # compliance rows from the AI response and splice them into
+        # the ORIGINAL vision text. Every existing valid objective row
+        # is preserved verbatim; only AI-emitted rows are added.
+        if not ok:
+            try:
+                extracted = (
+                    _extract_accepted_cyber_framework_compliance_rows(
+                        cand, selected_fws_raw,
+                        domain=domain, lang=lang))
+            except Exception:  # noqa: BLE001
+                extracted = {}
+            # Keep only rows for frameworks that are still missing in
+            # the ORIGINAL pre-attempt vision text — we never re-inject
+            # a row for a framework that is already covered.
+            extracted = {
+                fw: row for fw, row in (extracted or {}).items()
+                if fw in missing_pre and (row or '').strip()
+            }
+            if extracted:
+                current_text = before_text
+                spliced_any = False
+                for fw_key in sorted(extracted):
+                    row_line = extracted[fw_key]
+                    try:
+                        spliced = (
+                            _splice_cyber_vision_objective_topup_row(
+                                current_text, row_line))
+                    except Exception:  # noqa: BLE001
+                        spliced = ''
+                    if spliced and spliced != current_text:
+                        current_text = spliced
+                        spliced_any = True
+                if spliced_any and current_text != before_text:
+                    try:
+                        splice_report = (
+                            _assign_vision_if_valid_or_restore(
+                                sections, current_text, before_text,
+                                domain=domain,
+                                selected_frameworks=selected_fws_raw,
+                                org_structure_is_none=osn,
+                                generation_mode=gen_mode,
+                                lang=lang,
+                                synth_status=(
+                                    _synth_status
+                                    if is_final else None),
+                                original_valid_rows=before_rows,
+                                repair_label=(
+                                    'cyber-fw-compliance-objective-'
+                                    f'topup-splice-attempt-{attempt}'),
+                            ))
+                    except Exception as _spe:  # noqa: BLE001
+                        splice_report = {'assign_allowed': False}
+                        last_err = _spe
+                    splice_allowed = bool(
+                        splice_report.get('assign_allowed'))
+                    try:
+                        splice_after_rows = (
+                            count_valid_objective_rows(
+                                sections.get('vision', '') or ''))
+                    except Exception:  # noqa: BLE001
+                        splice_after_rows = before_rows
+                    try:
+                        splice_missing = (
+                            _compute_missing_compliance_objective(
+                                sections, selected_fws_raw,
+                                domain=domain, lang=lang) or [])
+                    except Exception:  # noqa: BLE001
+                        splice_missing = list(missing_pre)
+                    splice_ok = bool(
+                        splice_allowed and not splice_missing
+                        and splice_after_rows >= before_rows)
+                    print(
+                        '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+                        f'phase=topup_splice_attempt_{attempt} '
+                        f'rows_before={before_rows} '
+                        f'rows_after={splice_after_rows} '
+                        f'missing_after={splice_missing} '
+                        f'spliced_fws={sorted(extracted)} '
+                        f'assign_allowed={splice_allowed} '
+                        f'accepted={splice_ok}',
+                        flush=True,
+                    )
+                    if splice_ok:
+                        # Capture the now-accepted rows for downstream
+                        # preservation passes.
+                        try:
+                            _capture_cyber_preserved_framework_compliance_rows(
+                                sections, ctx, lang, domain,
+                                selected_fws_raw)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        ok = True
+                    else:
+                        if sections.get('vision', '') != before_text:
+                            sections['vision'] = before_text
+        if ok:
+            accepted = True
+            try:
+                _capture_cyber_preserved_framework_compliance_rows(
+                    sections, ctx, lang, domain, selected_fws_raw)
+            except Exception:  # noqa: BLE001
+                pass
+            print(
+                '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+                f'phase=accepted attempt={attempt} '
+                f'rows_before={before_rows} '
+                'accepted=True',
+                flush=True,
+            )
+            break
+        if sections.get('vision', '') != before_text:
+            sections['vision'] = before_text
+        if attempt >= MAX_ATTEMPTS:
+            _mark_synth_failed(
+                _synth_status, 'vision',
+                last_err or Exception(
+                    'cyber_framework_compliance_objective_topup_unmet'))
+            break
+    print(
+        '[CYBER-FW-COMPLIANCE-PERSISTENCE] '
+        'phase=topup_done '
+        f'accepted={accepted} '
+        f'attempts={MAX_ATTEMPTS}',
+        flush=True,
+    )
+    return 1 if accepted else 0
+
+
 # ── PR-CY12 Part B — Cyber vision persistence diagnostic helper ─────────
 def _emit_cyber_vision_persistence_diagnostic(
         sections, lang, domain, org_structure_is_none, phase):
@@ -31371,6 +32023,15 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             sections, ctx, lang, domain, _audit_org_struct_none)
     except Exception:  # noqa: BLE001 — defensive
         pass
+    # PR-CY20 — Capture already-accepted Cyber framework-compliance
+    # objective rows (one per selected framework) at the start of the
+    # convergence loop so later generic objectives / DCC framework-
+    # coverage repairs cannot silently drop them. No-op for non-Cyber.
+    try:
+        _capture_cyber_preserved_framework_compliance_rows(
+            sections, ctx, lang, domain, _audit_selected_fws)
+    except Exception:  # noqa: BLE001 — defensive
+        pass
 
     initial = _audit()
     log['initial_defects'] = [(s, t, c, m) for s, t, c, m in initial]
@@ -31494,6 +32155,55 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 # current accepted state (no-op when missing).
                 _capture_cyber_preserved_specialized_row(
                     sections, ctx, lang, domain, True)
+            except Exception:  # noqa: BLE001 — diagnostic only
+                pass
+        # PR-CY20 — Post-DCC coverage recheck for framework-compliance
+        # objective rows. Same shape as the PR-CY18 specialized-row
+        # recheck above: if rows were captured earlier and the
+        # compliance detector now reports missing frameworks, restore
+        # the preserved rows by splicing them back into the vision
+        # text. Strictly Cyber-scoped.
+        if (_cy18_dcode_a == 'cyber'
+                and isinstance(ctx, dict)
+                and _audit_selected_fws):
+            try:
+                _cy20_preserved = (
+                    ctx.get(
+                        '_cyber_preserved_framework_compliance_rows')
+                    or {})
+                _cy20_prev_fws = sorted(
+                    list(_cy20_preserved.keys())) if isinstance(
+                        _cy20_preserved, dict) else []
+                _cy20_curr_missing = (
+                    _compute_missing_compliance_objective(
+                        sections, _audit_selected_fws,
+                        domain=domain, lang=lang) or [])
+                _cy20_rows_pre = count_valid_objective_rows(
+                    sections.get('vision', '') or '')
+                _cy20_restored = False
+                if _cy20_prev_fws and _cy20_curr_missing:
+                    _cy20_restored = (
+                        _restore_cyber_preserved_framework_compliance_rows(
+                            sections, ctx, lang, domain,
+                            _audit_selected_fws))
+                _cy20_rows_post = count_valid_objective_rows(
+                    sections.get('vision', '') or '')
+                _cy20_missing_after = (
+                    _compute_missing_compliance_objective(
+                        sections, _audit_selected_fws,
+                        domain=domain, lang=lang) or [])
+                _emit_cyber_framework_compliance_persistence(
+                    'after_framework_coverage_repair',
+                    previous_missing=_cy20_curr_missing,
+                    current_missing=_cy20_missing_after,
+                    preserved_fws=_cy20_prev_fws,
+                    rows_before=_cy20_rows_pre,
+                    rows_after=_cy20_rows_post,
+                    restored=_cy20_restored,
+                )
+                # Refresh capture from the current accepted state.
+                _capture_cyber_preserved_framework_compliance_rows(
+                    sections, ctx, lang, domain, _audit_selected_fws)
             except Exception:  # noqa: BLE001 — diagnostic only
                 pass
         try:
@@ -31632,6 +32342,68 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                         ctx.get('_cyber_preserved_specialized_row', '')[:80]
                         if isinstance(ctx, dict) else ''),
                 )
+            # PR-CY20 — Determine whether the ONLY remaining vision
+            # defect(s) are `selected_framework_compliance_objective
+            # _missing:<FW>`. Applies to ALL Cyber strategies (not
+            # only those with `org_structure_is_none`). Capture an
+            # already-accepted compliance row before any objectives
+            # synth and capture a snapshot of pre-synth missing FWs so
+            # a regressive candidate (one that drops a previously-
+            # covered framework) can be rejected.
+            try:
+                _cy20_v_dcode = (
+                    normalize_domain(domain or '') or '').strip().lower()
+            except Exception:  # noqa: BLE001
+                _cy20_v_dcode = ''
+            _cy20_is_cyber = (_cy20_v_dcode == 'cyber')
+            _cy20_only_compliance = False
+            _cy20_pre_missing = []
+            _cy20_pre_text_compl = sections.get('vision', '') or ''
+            _cy20_pre_rows_compl = count_valid_objective_rows(
+                _cy20_pre_text_compl)
+            if _cy20_is_cyber and _audit_selected_fws:
+                try:
+                    _cy20_pre_missing = (
+                        _compute_missing_compliance_objective(
+                            sections, _audit_selected_fws,
+                            domain=domain, lang=lang) or [])
+                except Exception:  # noqa: BLE001
+                    _cy20_pre_missing = []
+                # Capture / refresh the preserved compliance rows
+                # whenever any qualifying row already exists.
+                try:
+                    _capture_cyber_preserved_framework_compliance_rows(
+                        sections, ctx, lang, domain,
+                        _audit_selected_fws)
+                except Exception:  # noqa: BLE001
+                    pass
+                # Compute whether the ONLY remaining vision defect(s)
+                # are framework-compliance objective misses.
+                try:
+                    _cy20_audit_now = _audit()
+                except Exception:  # noqa: BLE001
+                    _cy20_audit_now = []
+                _cy20_vision_defects = [
+                    d for d in (_cy20_audit_now or [])
+                    if isinstance(d, (list, tuple)) and d
+                    and d[0] == 'vision'
+                ]
+                _cy20_only_compliance = bool(
+                    _cy20_vision_defects
+                    and all(
+                        len(d) >= 2 and isinstance(d[1], str)
+                        and d[1].startswith(
+                            'selected_framework_compliance_objective'
+                            '_missing:')
+                        for d in _cy20_vision_defects))
+                _emit_cyber_framework_compliance_persistence(
+                    'before_objectives_repair',
+                    previous_missing=_cy20_pre_missing,
+                    preserved_fws=sorted(list((ctx.get(
+                        '_cyber_preserved_framework_compliance_rows')
+                        or {}).keys())),
+                    rows_before=_cy20_pre_rows_compl,
+                )
             # PR-CY18 Part C — targeted Cyber specialized-objective
             # top-up takes precedence over the generic objectives
             # rebuild when it is the only remaining vision defect.
@@ -31665,6 +32437,42 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                 except Exception as _cy18ce:  # noqa: BLE001
                     cycle['repairs'].append(
                         f'cyber_specialized_topup_failed:{_cy18ce}')
+            elif _cy20_is_cyber and _cy20_only_compliance:
+                # PR-CY20 — targeted Cyber framework-compliance
+                # objective top-up takes precedence over the generic
+                # objectives rebuild when it is the only remaining
+                # vision defect. Row-preserving: the helper splices
+                # AI-extracted compliance rows into the ORIGINAL
+                # vision text rather than allowing a full-vision
+                # rewrite to drop other accepted rows (the same
+                # ``objectives:6->5`` failure mode PR-CY18 fixed for
+                # the specialized-function row).
+                try:
+                    _convergence_cyber_framework_compliance_objective_topup_repair(
+                        sections, lang, domain, ctx=ctx, log=log)
+                    _v_after = count_valid_objective_rows(
+                        sections.get('vision', '') or '')
+                    cycle['repairs'].append(
+                        f'cyber_fw_compliance_topup:'
+                        f'{_cy20_pre_rows_compl}->{_v_after}')
+                    try:
+                        _cy20_post_missing = (
+                            _compute_missing_compliance_objective(
+                                sections, _audit_selected_fws,
+                                domain=domain, lang=lang) or [])
+                    except Exception:  # noqa: BLE001
+                        _cy20_post_missing = list(_cy20_pre_missing)
+                    _emit_cyber_framework_compliance_persistence(
+                        'after_objectives_repair',
+                        previous_missing=_cy20_pre_missing,
+                        current_missing=_cy20_post_missing,
+                        rows_before=_cy20_pre_rows_compl,
+                        rows_after=_v_after,
+                        accepted=(not _cy20_post_missing),
+                    )
+                except Exception as _cy20ce:  # noqa: BLE001
+                    cycle['repairs'].append(
+                        f'cyber_fw_compliance_topup_failed:{_cy20ce}')
             else:
                 _v_before = count_valid_objective_rows(
                     sections.get('vision', '') or '')
@@ -31750,34 +32558,75 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                                 'objectives_rejected_regressive_cyber:'
                                 f'{_cy18_pre_rows}->{_cy18_pre_rows}')
                     if not _cy18_rejected:
-                        cycle['repairs'].append(
-                            f'objectives:{_v_before}->{_v_after}')
-                        if _cy18_is_cyber:
+                        # PR-CY20 — also reject regressive objectives
+                        # repair when the previous vision had accepted
+                        # Cyber framework-compliance objective row(s)
+                        # for one or more selected frameworks and the
+                        # candidate produced by
+                        # ``synthesize_objectives_depth`` no longer
+                        # satisfies the compliance detector for any of
+                        # those frameworks. Restore the pre-synth
+                        # vision text so the captured preserved rows
+                        # in ``ctx`` survive into downstream passes.
+                        _cy20_rejected = False
+                        if (_cy20_is_cyber and _audit_selected_fws
+                                and not _cy20_pre_missing):
                             try:
-                                _cy18_post_has2 = (
-                                    not bool(
-                                        _compute_missing_specialized_function_objective(
-                                            sections, domain, lang=lang,
-                                            org_structure_is_none=True)))
+                                _cy20_post_missing_chk = (
+                                    _compute_missing_compliance_objective(
+                                        sections, _audit_selected_fws,
+                                        domain=domain, lang=lang) or [])
                             except Exception:  # noqa: BLE001
-                                _cy18_post_has2 = False
-                            _emit_cyber_vision_persistence(
-                                'after_objectives_repair',
-                                previous_has=_cy18_pre_has,
-                                candidate_has=_cy18_post_has2,
-                                current_has=_cy18_post_has2,
-                                rows_before=_cy18_pre_rows,
-                                rows_after=_v_after,
-                                accepted=_cy18_post_has2,
-                            )
-                            # Refresh preserved row when post-synth
-                            # state still has an accepted row.
-                            if _cy18_post_has2:
+                                _cy20_post_missing_chk = []
+                            if _cy20_post_missing_chk:
+                                sections['vision'] = _cy20_pre_text_compl
+                                _v_after = _cy20_pre_rows_compl
+                                _cy20_rejected = True
+                                _emit_cyber_framework_compliance_persistence(
+                                    'reject_regressive_objectives_repair',
+                                    previous_missing=[],
+                                    candidate_missing=(
+                                        _cy20_post_missing_chk),
+                                    current_missing=[],
+                                    rows_before=_cy20_pre_rows_compl,
+                                    rows_after=_cy20_pre_rows_compl,
+                                    accepted=False,
+                                    restored=True,
+                                )
+                                cycle['repairs'].append(
+                                    'objectives_rejected_regressive_cyber'
+                                    '_fw_compliance:'
+                                    f'{_cy20_pre_rows_compl}->'
+                                    f'{_cy20_pre_rows_compl}')
+                        if not _cy20_rejected:
+                            cycle['repairs'].append(
+                                f'objectives:{_v_before}->{_v_after}')
+                            if _cy18_is_cyber:
                                 try:
-                                    _capture_cyber_preserved_specialized_row(
-                                        sections, ctx, lang, domain, True)
+                                    _cy18_post_has2 = (
+                                        not bool(
+                                            _compute_missing_specialized_function_objective(
+                                                sections, domain, lang=lang,
+                                                org_structure_is_none=True)))
                                 except Exception:  # noqa: BLE001
-                                    pass
+                                    _cy18_post_has2 = False
+                                _emit_cyber_vision_persistence(
+                                    'after_objectives_repair',
+                                    previous_has=_cy18_pre_has,
+                                    candidate_has=_cy18_post_has2,
+                                    current_has=_cy18_post_has2,
+                                    rows_before=_cy18_pre_rows,
+                                    rows_after=_v_after,
+                                    accepted=_cy18_post_has2,
+                                )
+                                # Refresh preserved row when post-synth
+                                # state still has an accepted row.
+                                if _cy18_post_has2:
+                                    try:
+                                        _capture_cyber_preserved_specialized_row(
+                                            sections, ctx, lang, domain, True)
+                                    except Exception:  # noqa: BLE001
+                                        pass
                 except RepairError as _vre:
                     # PR-5B.5F1: AI repair unavailable — fail closed for this
                     # section. The convergence loop must NOT report a clean
@@ -47524,6 +48373,57 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 domain=domain, lang=lang,
                                             )
                                         )
+                                        if _still_missing:
+                                            # PR-CY20 — final-gate
+                                            # restore for Cyber: if
+                                            # preserved framework-
+                                            # compliance objective
+                                            # rows were captured
+                                            # earlier in the
+                                            # convergence loop, splice
+                                            # them back into the
+                                            # CURRENT vision (or
+                                            # restored original)
+                                            # before declaring
+                                            # synth_failed. The
+                                            # splice helper renumbers
+                                            # the inserted row's `#`
+                                            # to ``last_num+1`` so it
+                                            # does not collide with
+                                            # existing rows. Only
+                                            # rows for frameworks
+                                            # still missing are
+                                            # restored, so we never
+                                            # widen the table beyond
+                                            # what was previously
+                                            # accepted.
+                                            try:
+                                                _cy20_v_dcode_final = (
+                                                    (normalize_domain(
+                                                        domain or '')
+                                                     or '').strip().lower())
+                                            except Exception:  # noqa: BLE001
+                                                _cy20_v_dcode_final = ''
+                                            if (_cy20_v_dcode_final
+                                                    == 'cyber'):
+                                                try:
+                                                    _cy20_restored = (
+                                                        _restore_cyber_preserved_framework_compliance_rows(
+                                                            sections,
+                                                            _final_ctx,
+                                                            lang, domain,
+                                                            _frameworks_raw,
+                                                        ))
+                                                except Exception:  # noqa: BLE001
+                                                    _cy20_restored = False
+                                                if _cy20_restored:
+                                                    _still_missing = (
+                                                        _compute_missing_compliance_objective(
+                                                            sections,
+                                                            _frameworks_raw,
+                                                            domain=domain,
+                                                            lang=lang,
+                                                        ))
                                         if _still_missing:
                                             # Restore original vision so
                                             # we never persist a worse
