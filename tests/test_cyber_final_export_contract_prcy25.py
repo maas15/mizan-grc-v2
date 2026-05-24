@@ -166,10 +166,12 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
 
     @_skip_if_no_app
     def test_target_marker_in_kpi_blocks_rendering(self):
-        # Inject the marker AFTER audit by patching content directly.
+        # Use a KPI description that does not match any PR-CY26
+        # deterministic catalog entry so the marker remains unresolved
+        # and the PR-CY25 hard gate still blocks rendering.
         polluted = _CLEAN_CYBER_AR.replace(
             '| 1 | تغطية الترقيع | 95% |',
-            '| 1 | تغطية الترقيع | [REQUIRES_AI_TARGET_REPAIR] |',
+            '| 1 | مؤشر تشغيلي مخصص | [REQUIRES_AI_TARGET_REPAIR] |',
         )
         out = _APP._cyber_final_export_contract(
             polluted,
@@ -184,6 +186,33 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
         self.assertIn('unresolved_final_repair_marker', joined)
         self.assertIn('REQUIRES_AI_TARGET_REPAIR', joined)
         self.assertTrue(out['diag']['has_unresolved_markers'])
+
+    @_skip_if_no_app
+    def test_known_kpi_target_marker_is_repaired_before_gate(self):
+        # ``تغطية الترقيع`` matches the PR-CY26 vulnerability /
+        # patching remediation catalog entry, so the marker must be
+        # repaired into ``≥ 95% خلال 72 ساعة`` BEFORE the final
+        # blocking gate fires and rendering must be allowed.
+        polluted = _CLEAN_CYBER_AR.replace(
+            '| 1 | تغطية الترقيع | 95% |',
+            '| 1 | تغطية الترقيع | [REQUIRES_AI_TARGET_REPAIR] |',
+        )
+        out = _APP._cyber_final_export_contract(
+            polluted,
+            metadata={'domain': 'cyber'},
+            selected_frameworks=['ECC'],
+            lang='ar',
+            domain='cyber',
+            output_type='pdf',
+        )
+        self.assertEqual(out['blocking_errors'], [])
+        self.assertFalse(out['diag']['has_unresolved_markers'])
+        self.assertNotIn('[REQUIRES_AI_TARGET_REPAIR]',
+                         out['final_markdown'])
+        self.assertIn('≥ 95% خلال 72 ساعة', out['final_markdown'])
+        self.assertTrue(any(
+            a.startswith('cycle_') and 'kpi_target_repair' in a
+            for a in out['repair_actions']))
 
     @_skip_if_no_app
     def test_arbitrary_requires_ai_variant_is_caught(self):
