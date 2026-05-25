@@ -18669,6 +18669,14 @@ def api_strategy_status(task_id):
                                             or compact.get(
                                                 'selected_frameworks')
                                             or []),
+                                        # PR-CY32 — surface the request
+                                        # correlation fields so the
+                                        # CYBER-PR-VERSION diagnostic
+                                        # can tie a runtime stamp to a
+                                        # specific async task / strategy.
+                                        'route_name': 'preview',
+                                        'async_task_id': task_id,
+                                        'strategy_id': strategy_id,
                                     },
                                 )
                             )
@@ -18697,6 +18705,56 @@ def api_strategy_status(task_id):
                                 'sections') or {}
                             if _audited_sections:
                                 _sj = _audited_sections
+                                # PR-CY32 — Re-derive content_json from
+                                # the audited sections so the Preview
+                                # response carries the SAME post-contract
+                                # payload that the PDF / DOCX routes
+                                # would consume. Avoids the "preview
+                                # reads pre-contract content_json"
+                                # mismatch flagged in the spec.
+                                try:
+                                    _sj_lang = (
+                                        'ar' if _cy25_lang_prev == 'ar'
+                                        else 'en')
+                                    _cj = _sections_to_json(
+                                        _audited_sections,
+                                        domain=_cy25_domain_prev,
+                                        lang=_sj_lang,
+                                        title=(_strat['document_title']
+                                               or '')
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            # PR-CY32 — Content source diagnostic.
+                            # ``preview_hash`` is the hash of the
+                            # final_markdown returned by the contract,
+                            # which is the SAME content the PDF / DOCX
+                            # routes will receive (because they run the
+                            # same contract on the saved bytes).
+                            try:
+                                _prcy32_emit_content_source_diag(
+                                    output_type='preview',
+                                    route_name='preview',
+                                    pre_contract_hash=_cy25_contract_prev.get(
+                                        'pre_contract_hash'),
+                                    post_contract_hash=_cy25_contract_prev.get(
+                                        'post_contract_hash'),
+                                    saved_content_hash=(
+                                        _prcy25_compute_content_hash(
+                                            _cy25_prev_md)),
+                                    preview_hash=_cy25_contract_prev.get(
+                                        'post_contract_hash'),
+                                    source_used_by_preview=(
+                                        'cyber_final_export_contract.'
+                                        'final_markdown'),
+                                    source_used_by_save=(
+                                        'strategies.content'),
+                                    action_taken=(
+                                        'preview_uses_post_contract_'
+                                        'final_markdown'),
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
                     except Exception as _cy25_prev_e:  # noqa: BLE001
                         print(
                             f'[CYBER-FINAL-EXPORT-CONTRACT] '
@@ -35657,7 +35715,23 @@ _PRCY28_VERSION_FLAGS = {
     'prcy26': True,
     'prcy27': True,
     'prcy28': True,
+    # PR-CY32 — record every Cyber strategy PR that must be active in
+    # the running image. ``_prcy32_runtime_version_gate`` reads this map
+    # and refuses to release content when any required flag is missing.
+    'prcy29': True,
+    'prcy30': True,
+    'prcy31': True,
+    'prcy32': True,
 }
+
+# PR-CY32 — flags that must all be True before any Cyber strategy
+# rendering route is allowed to produce output. If any flag is False the
+# final export contract appends ``final_quality_gate_failed:<flag>_not_
+# active_in_runtime`` to the blocking error list so the hard gate fires.
+_PRCY32_REQUIRED_RUNTIME_FLAGS = (
+    'prcy25', 'prcy26', 'prcy27', 'prcy28',
+    'prcy29', 'prcy30', 'prcy31', 'prcy32',
+)
 
 
 def _prcy28_app_commit_hash():
@@ -35675,17 +35749,115 @@ def _prcy28_app_commit_hash():
     return ''
 
 
-def _prcy28_emit_version(output_type='unknown', domain=None):
+def _prcy28_emit_version(output_type='unknown', domain=None,
+                         route_name=None, async_task_id=None,
+                         strategy_id=None, request_context=None):
     """Emit the ``[CYBER-PR-VERSION]`` diagnostic. Safe to call from any
-    cyber final-export route (preview, PDF, DOCX, live generation)."""
+    cyber final-export route (preview, PDF, DOCX, live generation).
+
+    PR-CY32 — payload now also surfaces ``route_name``, ``async_task_id``
+    and ``strategy_id`` so operators can correlate a runtime stamp with
+    the exact request being processed. Optional ``request_context`` may
+    carry ``async_task_id`` / ``strategy_id`` / ``route_name`` when the
+    caller has them; explicit arguments still win."""
     try:
         payload = dict(_PRCY28_VERSION_FLAGS)
         payload['app_commit_hash'] = _prcy28_app_commit_hash()
         payload['output_type'] = output_type
         payload['domain'] = (domain or '').strip().lower() or 'unknown'
+        rc = request_context if isinstance(request_context, dict) else {}
+        payload['route_name'] = (
+            route_name or rc.get('route_name')
+            or output_type or 'unknown')
+        payload['async_task_id'] = str(
+            async_task_id or rc.get('async_task_id') or '')
+        payload['strategy_id'] = str(
+            strategy_id or rc.get('strategy_id') or '')
         print(f'[CYBER-PR-VERSION] {payload}', flush=True)
     except Exception:  # noqa: BLE001 — diagnostic must never raise
         pass
+
+
+def _prcy32_runtime_version_gate():
+    """PR-CY32 — Return a list of blocking-error codes for every required
+    PR flag that is False / missing in the running image. Empty list
+    means the runtime is healthy and rendering may proceed."""
+    errors = []
+    try:
+        for flag in _PRCY32_REQUIRED_RUNTIME_FLAGS:
+            if not _PRCY28_VERSION_FLAGS.get(flag):
+                errors.append(
+                    f'final_quality_gate_failed:{flag}_not_active_in_runtime')
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    return errors
+
+
+def _prcy32_emit_content_source_diag(*, output_type, route_name,
+                                     pre_contract_hash,
+                                     post_contract_hash,
+                                     saved_content_hash=None,
+                                     preview_hash=None,
+                                     pdf_hash=None,
+                                     docx_hash=None,
+                                     source_used_by_preview=None,
+                                     source_used_by_save=None,
+                                     source_used_by_pdf=None,
+                                     source_used_by_docx=None,
+                                     action_taken='emit',
+                                     extra=None):
+    """PR-CY32 — Emit the ``[CYBER-FINAL-CONTENT-SOURCE]`` diagnostic so
+    operators can prove that every Cyber render route (preview, save,
+    PDF, DOCX) consumed the SAME post-contract bytes.
+
+    Returns ``(hashes_match, mutation_after_contract_detected)`` so
+    callers can decide whether to append
+    ``final_quality_gate_failed:final_content_source_mismatch:<route>``
+    to their blocking-error list."""
+    def _h(v):
+        if not v:
+            return ''
+        s = str(v)
+        return s[:16]
+
+    candidates = [
+        ('saved', saved_content_hash),
+        ('preview', preview_hash),
+        ('pdf', pdf_hash),
+        ('docx', docx_hash),
+    ]
+    present = [(name, h) for (name, h) in candidates if h]
+    mutation = False
+    for name, h in present:
+        if post_contract_hash and h and h != post_contract_hash:
+            mutation = True
+            break
+    hashes_match = not mutation
+    payload = {
+        'output_type': output_type,
+        'route_name': route_name or output_type or 'unknown',
+        'pre_contract_hash': _h(pre_contract_hash),
+        'post_contract_hash': _h(post_contract_hash),
+        'saved_content_hash': _h(saved_content_hash),
+        'preview_hash': _h(preview_hash),
+        'pdf_hash': _h(pdf_hash),
+        'docx_hash': _h(docx_hash),
+        'source_used_by_preview': source_used_by_preview or '',
+        'source_used_by_save': source_used_by_save or '',
+        'source_used_by_pdf': source_used_by_pdf or '',
+        'source_used_by_docx': source_used_by_docx or '',
+        'hashes_match': hashes_match,
+        'mutation_after_contract_detected': mutation,
+        'action_taken': action_taken,
+    }
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            payload.setdefault(k, v)
+    try:
+        print(f'[CYBER-FINAL-CONTENT-SOURCE] {payload}', flush=True)
+    except Exception:  # noqa: BLE001 — diagnostic must never raise
+        pass
+    return (hashes_match, mutation)
 
 
 def _prcy25_compute_content_hash(s):
@@ -38476,8 +38648,19 @@ def _cyber_final_export_contract(markdown, metadata=None,
         dcode = (domain or '').strip().lower()
     lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
     # PR-CY28 — emit version stamp so operators can verify the live
-    # route is running the patched pipeline.
-    _prcy28_emit_version(output_type=output_type, domain=dcode)
+    # route is running the patched pipeline. PR-CY32 — also surface
+    # ``route_name`` / ``async_task_id`` / ``strategy_id`` from the
+    # request context so the stamp can be correlated to a single
+    # request in the production logs.
+    _rc_for_version = (
+        request_context if isinstance(request_context, dict) else {})
+    _prcy28_emit_version(
+        output_type=output_type, domain=dcode,
+        route_name=_rc_for_version.get('route_name') or output_type,
+        async_task_id=_rc_for_version.get('async_task_id'),
+        strategy_id=_rc_for_version.get('strategy_id'),
+        request_context=_rc_for_version,
+    )
     # PR-CY28 — normalize HTML-escaped / fullwidth marker variants up
     # front so every subsequent scan, repair and assertion sees a
     # single canonical representation of the marker token.
@@ -38711,6 +38894,18 @@ def _cyber_final_export_contract(markdown, metadata=None,
             blocking_errors.append(
                 'final_quality_gate_failed:missing_framework_context:cyber')
 
+    # PR-CY32 — Runtime version gate. Refuses to release content when
+    # any of the required PR flags is missing in the running image so
+    # the live preview / PDF / DOCX routes cannot silently render
+    # pre-PR-CY31 output. ``_PRCY28_VERSION_FLAGS`` is the source of
+    # truth; ``_prcy32_runtime_version_gate`` builds the blocking
+    # error codes (``prcy31_not_active_in_runtime`` etc.).
+    try:
+        for _vg in _prcy32_runtime_version_gate():
+            blocking_errors.append(_vg)
+    except Exception:  # noqa: BLE001
+        pass
+
     after_hash = _prcy25_compute_content_hash(final_markdown)
 
     # Final unresolved-marker scan — applied even if the gate already
@@ -38800,6 +38995,11 @@ def _cyber_final_export_contract(markdown, metadata=None,
         'repair_actions': repair_actions,
         'blocking_errors': blocking_errors,
         'content_hash': after_hash,
+        # PR-CY32 — explicit pre/post-contract hashes so call sites can
+        # cross-check the content they save / render against the bytes
+        # produced by the canonical final-export contract.
+        'pre_contract_hash': before_hash,
+        'post_contract_hash': after_hash,
         'sections': sections if isinstance(sections, dict) else {},
         'diag': diag,
         # PR-CY30 — Expose the canonical framework list at the top
@@ -59334,6 +59534,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     data.get('frameworks')
                                     or data.get('selected_frameworks')
                                     or []),
+                                # PR-CY32 — surface the request
+                                # correlation fields so the
+                                # CYBER-PR-VERSION diagnostic can be
+                                # tied to a specific generation request.
+                                'route_name': 'generation',
+                                'async_task_id': (
+                                    data.get('task_id')
+                                    or data.get('async_task_id')
+                                    or ''),
+                                'strategy_id': '',
                             },
                         )
                         _cy28_blockers = (
@@ -59365,6 +59575,30 @@ The confidence score is based on a comprehensive assessment of the organization'
                             for _csk, _csv in _cy28_audited_sections.items():
                                 if isinstance(_csv, str) and _csv:
                                     sections[_csk] = _csv
+                        # PR-CY32 — Emit the canonical content-source
+                        # diagnostic so operators can prove the save
+                        # path persisted the SAME bytes that the
+                        # contract emitted (no post-contract mutation).
+                        try:
+                            _cy32_saved_hash = (
+                                _prcy25_compute_content_hash(content))
+                            _prcy32_emit_content_source_diag(
+                                output_type='generation',
+                                route_name='generation',
+                                pre_contract_hash=_cy28_contract.get(
+                                    'pre_contract_hash'),
+                                post_contract_hash=_cy28_contract.get(
+                                    'post_contract_hash'),
+                                saved_content_hash=_cy32_saved_hash,
+                                source_used_by_save=(
+                                    'cyber_final_export_contract.'
+                                    'final_markdown'),
+                                action_taken=(
+                                    'save_uses_post_contract_'
+                                    'final_markdown'),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                     except Exception as _cy28_e:  # noqa: BLE001
                         print(
                             '[CYBER-FINAL-EXPORT-CONTRACT] '
@@ -63546,6 +63780,26 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             _cy22_docx_diag = _cy25_contract_docx.get('audit_flags', {})
             _cy25_docx_blockers = _cy25_contract_docx.get(
                 'blocking_errors', []) or []
+            # PR-CY32 — Emit the canonical content-source diagnostic
+            # for the DOCX route so operators can prove DOCX consumed
+            # the SAME post-contract bytes the Preview / Save / PDF
+            # routes would have produced.
+            try:
+                _prcy32_emit_content_source_diag(
+                    output_type='docx',
+                    route_name='docx',
+                    pre_contract_hash=_cy25_contract_docx.get(
+                        'pre_contract_hash'),
+                    post_contract_hash=_cy25_contract_docx.get(
+                        'post_contract_hash'),
+                    docx_hash=_prcy25_compute_content_hash(content),
+                    source_used_by_docx=(
+                        'cyber_final_export_contract.final_markdown'),
+                    action_taken=(
+                        'docx_uses_post_contract_final_markdown'),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if _cy25_docx_blockers:
                 # Fail-closed: never render content carrying unresolved
                 # PR-CY25 blockers (markers, missing phase / KRI table,
@@ -65375,6 +65629,26 @@ def api_generate_pdf():
             _cy22_diag = _cy25_contract_pdf.get('audit_flags', {})
             _cy25_pdf_blockers = _cy25_contract_pdf.get(
                 'blocking_errors', []) or []
+            # PR-CY32 — Emit the canonical content-source diagnostic
+            # for the PDF route so operators can prove PDF consumed
+            # the SAME post-contract bytes that Preview / Save / DOCX
+            # would render.
+            try:
+                _prcy32_emit_content_source_diag(
+                    output_type='pdf',
+                    route_name='pdf',
+                    pre_contract_hash=_cy25_contract_pdf.get(
+                        'pre_contract_hash'),
+                    post_contract_hash=_cy25_contract_pdf.get(
+                        'post_contract_hash'),
+                    pdf_hash=_prcy25_compute_content_hash(content),
+                    source_used_by_pdf=(
+                        'cyber_final_export_contract.final_markdown'),
+                    action_taken=(
+                        'pdf_uses_post_contract_final_markdown'),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if _cy25_pdf_blockers:
                 print(
                     '[CYBER-FINAL-EXPORT-CONTRACT] pdf_blocked '
