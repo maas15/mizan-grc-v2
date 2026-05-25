@@ -35588,6 +35588,51 @@ _PRCY25_FORBIDDEN_MARKER_PREFIX = '[REQUIRES_AI_'
 
 _PRCY25_MAX_REPAIR_CYCLES = 2
 
+# ────────────────────────────────────────────────────────────────────────
+# PR-CY28 — Cyber strategy generation pipeline version stamp.
+#
+# Emitted by ``_cyber_final_export_contract`` at the start of every
+# invocation so operators can prove (in production logs) that:
+#   * the contract is wired into the live generation route, the
+#     preview route, the PDF route and the DOCX route;
+#   * the PR-CY25/26/27/28 fixes are active in the running image;
+#   * the app commit hash matches the deployment they expect.
+# ────────────────────────────────────────────────────────────────────────
+_PRCY28_VERSION_FLAGS = {
+    'prcy25': True,
+    'prcy26': True,
+    'prcy27': True,
+    'prcy28': True,
+}
+
+
+def _prcy28_app_commit_hash():
+    """Return a short application commit hash if one is available in
+    the environment (``GIT_COMMIT`` / ``RENDER_GIT_COMMIT`` /
+    ``SOURCE_COMMIT``) or an empty string otherwise. Never raises."""
+    import os as _os_v
+    for _name in (
+        'GIT_COMMIT', 'RENDER_GIT_COMMIT', 'SOURCE_COMMIT',
+        'COMMIT_SHA', 'HEROKU_SLUG_COMMIT',
+    ):
+        _v = _os_v.environ.get(_name, '') or ''
+        if _v:
+            return _v.strip()[:40]
+    return ''
+
+
+def _prcy28_emit_version(output_type='unknown', domain=None):
+    """Emit the ``[CYBER-PR-VERSION]`` diagnostic. Safe to call from any
+    cyber final-export route (preview, PDF, DOCX, live generation)."""
+    try:
+        payload = dict(_PRCY28_VERSION_FLAGS)
+        payload['app_commit_hash'] = _prcy28_app_commit_hash()
+        payload['output_type'] = output_type
+        payload['domain'] = (domain or '').strip().lower() or 'unknown'
+        print(f'[CYBER-PR-VERSION] {payload}', flush=True)
+    except Exception:  # noqa: BLE001 — diagnostic must never raise
+        pass
+
 
 def _prcy25_compute_content_hash(s):
     """Stable SHA-256 hex of the final markdown content."""
@@ -35595,14 +35640,60 @@ def _prcy25_compute_content_hash(s):
     return _hl.sha256((s or '').encode('utf-8', 'replace')).hexdigest()
 
 
+def _prcy28_normalize_marker_variants(content):
+    """PR-CY28 — Return ``content`` with HTML-escaped / entity-encoded
+    variants of ``[REQUIRES_AI_*]`` markers folded back into their
+    canonical bracketed form so downstream scanners and repair helpers
+    see a single representation. Idempotent on already-canonical input.
+
+    Handles the variants enumerated in the PR-CY28 spec (section 4):
+      * Numeric HTML entities (``&#91;`` / ``&#93;``).
+      * Named HTML entities (``&lbrack;`` / ``&rbrack;``).
+      * Common URL-encoded variants (``%5B`` / ``%5D``).
+      * Fullwidth brackets (``［`` / ``］``) occasionally produced by
+        downstream typographic processors.
+    """
+    if not content:
+        return content
+    text = str(content)
+    if _PRCY25_FORBIDDEN_MARKER_PREFIX in text and '[' in text:
+        # Fast path — already canonical, no normalization needed.
+        return text
+    bracket_pairs = (
+        ('&#91;', '&#93;'),
+        ('&lbrack;', '&rbrack;'),
+        ('%5B', '%5D'),
+        ('%5b', '%5d'),
+        ('［', '］'),
+    )
+    for lb, rb in bracket_pairs:
+        if lb in text or rb in text:
+            # Only fold when the body between brackets looks like a
+            # REQUIRES_AI_* marker, to avoid corrupting unrelated
+            # entity-encoded content elsewhere on the page.
+            import re as _re_norm
+            pattern = (
+                _re_norm.escape(lb)
+                + r'(REQUIRES_AI_[A-Z_]+)'
+                + _re_norm.escape(rb)
+            )
+            text = _re_norm.sub(pattern, r'[\1]', text)
+    return text
+
+
 def _prcy25_scan_unresolved_markers(content):
     """Return a list of unresolved AI-repair markers detected anywhere
     inside ``content``. Each entry is the marker token itself; the
-    blocking-gate caller decorates it with section + row context."""
+    blocking-gate caller decorates it with section + row context.
+
+    PR-CY28 — HTML-escaped / fullwidth-bracket / URL-encoded variants
+    of the same marker are normalized in-place before scanning so they
+    cannot bypass the hard blocking gate by appearing in an alternate
+    encoding."""
     out = []
     if not content:
         return out
-    text = str(content)
+    text = _prcy28_normalize_marker_variants(str(content))
     for tok in _PRCY25_FORBIDDEN_MARKERS:
         if tok in text:
             out.append(tok)
@@ -36703,15 +36794,29 @@ def _cyber_final_export_contract(markdown, metadata=None,
                                 ``[CYBER-FINAL-EXPORT-CONTRACT]`` log
                                 tag.
 
-    Non-Cyber domains are pass-through (no audit, no gate, empty error
+    non-Cyber domains are pass-through (no audit, no gate, empty error
     list) so the contract remains safe to call from every export route
-    regardless of the active domain."""
+    regardless of the active domain.
+
+    PR-CY28 — emits the ``[CYBER-PR-VERSION]`` diagnostic at entry,
+    folds HTML-escaped marker variants up-front, and asserts that the
+    canonical ``[REQUIRES_AI_TARGET_REPAIR]`` token is absent from the
+    single mutable ``final_markdown`` variable immediately after the
+    PR-CY27 last-chance repair so the hard blocking gate observes the
+    same repaired bytes."""
     try:
         dcode = (normalize_domain(domain or (metadata or {}).get('domain')
                                   or '') or '').strip().lower()
     except Exception:  # noqa: BLE001
         dcode = (domain or '').strip().lower()
     lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    # PR-CY28 — emit version stamp so operators can verify the live
+    # route is running the patched pipeline.
+    _prcy28_emit_version(output_type=output_type, domain=dcode)
+    # PR-CY28 — normalize HTML-escaped / fullwidth marker variants up
+    # front so every subsequent scan, repair and assertion sees a
+    # single canonical representation of the marker token.
+    markdown = _prcy28_normalize_marker_variants(markdown or '')
     before_hash = _prcy25_compute_content_hash(markdown or '')
     if dcode != 'cyber':
         try:
@@ -36744,7 +36849,13 @@ def _cyber_final_export_contract(markdown, metadata=None,
             },
         }
 
-    current = markdown or ''
+    # PR-CY28 — single mutable ``final_markdown`` variable threaded
+    # through every audit/repair step. ``current`` is retained as a
+    # local alias so existing helper calls stay readable but every
+    # mutation now also updates ``final_markdown`` so the post-CY27
+    # assertion (and the hard blocking gate) observe the same bytes.
+    final_markdown = markdown or ''
+    current = final_markdown
     repair_actions = []
     audit_flags = {}
     sections = {}
@@ -36793,29 +36904,42 @@ def _cyber_final_export_contract(markdown, metadata=None,
             current = _prcy22_apply_sections_to_content(current, sections)
         except Exception:  # noqa: BLE001
             pass
+    # Keep ``final_markdown`` in lock-step with the post-loop ``current``
+    # so the PR-CY27 last-chance pass observes the same audited bytes.
+    final_markdown = current
 
-    # ── PR-CY27 — Last-chance final-markdown marker repair ────────────
+    # ── PR-CY27 / PR-CY28 — Absolute last-chance final-markdown repair ──
     # Runs IMMEDIATELY before the hard blocking gate so any
     # ``[REQUIRES_AI_TARGET_REPAIR]`` marker that survived the
     # section-level pipeline (e.g. because the section splitter
     # assigned the KPI table to a non-canonical key, or because the
     # diagnostic row index uses a different numbering scheme) is
     # repaired directly on the final markdown that PR-CY25 scans.
-    # Order: PR-CY22 audit → PR-CY23 quality gate → PR-CY24 sanitiser
-    # (all inside ``_cyber_final_export_audit``) → final marker scan
-    # → targeted repairs on ``current`` → re-scan markers → re-run
-    # the blocking gate → hard block only if markers remain.
-    if (current and _PRCY26_KPI_TARGET_MARKER in current) or any(
+    # Order (enforced by PR-CY28): PR-CY22 audit → PR-CY23 quality
+    # gate → PR-CY24 sanitiser (all inside ``_cyber_final_export_audit``)
+    # → PR-CY25 final contract checks → PR-CY26/27 targeted KPI repair
+    # on ``final_markdown`` → re-split final sections from the
+    # repaired ``final_markdown`` → lightweight blocking-gate
+    # re-evaluation only → hard blocking gate → render. NO PR-CY23 /
+    # PR-CY24 / PR-CY25 schema mutator runs after this block, so the
+    # marker cannot be reintroduced before the hard gate fires.
+    if (final_markdown and (
+            _PRCY26_KPI_TARGET_MARKER in final_markdown
+            or _prcy25_scan_unresolved_markers(final_markdown))) or any(
             'unresolved_final_repair_marker' in (e or '')
             for e in (blocking_errors or [])):
         try:
+            # PR-CY28 — re-normalize escaped marker variants in case a
+            # mid-pipeline mutator re-introduced an HTML-entity form.
+            final_markdown = _prcy28_normalize_marker_variants(
+                final_markdown)
             repaired_md, last_chance_actions = (
                 _prcy27_repair_kpi_target_in_final_markdown(
-                    current, blocking_errors, lang=lang_n,
+                    final_markdown, blocking_errors, lang=lang_n,
                     metadata=metadata,
                     selected_frameworks=selected_frameworks))
-            if repaired_md and repaired_md != current:
-                current = repaired_md
+            if repaired_md and repaired_md != final_markdown:
+                final_markdown = repaired_md
                 if last_chance_actions:
                     repair_actions.extend(
                         f'final:{a}' for a in last_chance_actions)
@@ -36824,17 +36948,10 @@ def _cyber_final_export_contract(markdown, metadata=None,
                 # the repaired content.
                 try:
                     new_sections = (
-                        _split_strategy_sections_by_h2(current) or {})
+                        _split_strategy_sections_by_h2(final_markdown)
+                        or {})
                     if new_sections:
                         sections = new_sections
-                except Exception:  # noqa: BLE001
-                    pass
-                # Re-evaluate the hard blocking gate now that the
-                # last-chance repair has been applied.
-                try:
-                    blocking_errors = _cyber_final_blocking_gate(
-                        current, sections, lang_n,
-                        selected_frameworks, dcode)
                 except Exception:  # noqa: BLE001
                     pass
             elif last_chance_actions:
@@ -36845,12 +36962,50 @@ def _cyber_final_export_contract(markdown, metadata=None,
                     f'final:{a}' for a in last_chance_actions)
         except Exception:  # noqa: BLE001 — defensive
             pass
+    # ── PR-CY28 — Single mutable ``final_markdown`` post-repair assertion ──
+    # Emitted unconditionally (even when the PR-CY27 last-chance block
+    # did not run, because PR-CY26 already cleared the marker upstream)
+    # so operators have a deterministic confirmation that the bytes
+    # about to be scanned by the hard blocking gate are marker-free.
+    try:
+        if _PRCY26_KPI_TARGET_MARKER in (final_markdown or ''):
+            _post_repair_count = (
+                final_markdown or '').count(
+                    _PRCY26_KPI_TARGET_MARKER)
+            print(
+                '[CYBER-KPI-TARGET-REPAIR] '
+                f'post_repair_assertion_failed '
+                f'remaining_markers={_post_repair_count} '
+                f'output_type={output_type!r}',
+                flush=True,
+            )
+        else:
+            print(
+                '[CYBER-KPI-TARGET-REPAIR] '
+                'post_repair_assertion_passed '
+                f'output_type={output_type!r}',
+                flush=True,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    # ── PR-CY28 — Lightweight final blocking gate (no schema mutator) ──
+    # This is the SINGLE evaluation of the hard blocking gate after
+    # the CY27 last-chance pass. It must run on the same ``final_markdown``
+    # bytes that the renderer will consume, so we keep ``current`` in
+    # lock-step with it.
+    current = final_markdown
+    try:
+        blocking_errors = _cyber_final_blocking_gate(
+            final_markdown, sections, lang_n,
+            selected_frameworks, dcode)
+    except Exception:  # noqa: BLE001
+        pass
 
-    after_hash = _prcy25_compute_content_hash(current)
+    after_hash = _prcy25_compute_content_hash(final_markdown)
 
     # Final unresolved-marker scan — applied even if the gate already
     # surfaced markers, so callers always have a deterministic flag.
-    unresolved = _prcy25_scan_unresolved_markers(current)
+    unresolved = _prcy25_scan_unresolved_markers(final_markdown)
 
     # Derive snapshot booleans for the diagnostic.
     has_kri = False
@@ -36886,7 +37041,7 @@ def _cyber_final_export_contract(markdown, metadata=None,
         'after_hash': after_hash[:16],
         'repair_actions_count': len(repair_actions),
         'blocking_errors_count': len(blocking_errors),
-        'final_content_length': len(current),
+        'final_content_length': len(final_markdown),
         'has_unresolved_markers': bool(unresolved),
         'roadmap_coverage': _prcy25_compute_roadmap_coverage_months(
             sections or {}),
@@ -36907,7 +37062,7 @@ def _cyber_final_export_contract(markdown, metadata=None,
     except Exception:
         pass
     return {
-        'final_markdown': current,
+        'final_markdown': final_markdown,
         'audit_flags': audit_flags if isinstance(audit_flags, dict) else {},
         'repair_actions': repair_actions,
         'blocking_errors': blocking_errors,
@@ -57411,6 +57566,68 @@ The confidence score is based on a comprehensive assessment of the organization'
                         ),
                         'missing_core_sections': sorted(_remaining_core_final),
                     }), 422
+                # ── PR-CY28 — Live generation route now calls the same
+                # ``_cyber_final_export_contract`` that the preview, PDF
+                # and DOCX routes use, so the saved ``content`` and
+                # ``sections`` go through the PR-CY22 audit → PR-CY23
+                # quality gate → PR-CY24 sanitiser → PR-CY25 hard
+                # blocking gate → PR-CY26/27 targeted KPI repair on
+                # ``final_markdown`` chain before being persisted.
+                # Cyber-only; non-cyber strategies are pass-through.
+                try:
+                    _cy28_dcode = (
+                        normalize_domain(data.get('domain') or '')
+                        or '').strip().lower()
+                except Exception:  # noqa: BLE001
+                    _cy28_dcode = (data.get('domain') or '').strip().lower()
+                if _cy28_dcode == 'cyber' and content:
+                    try:
+                        _cy28_contract = _cyber_final_export_contract(
+                            content,
+                            metadata={'domain': data.get('domain')},
+                            selected_frameworks=(
+                                data.get('frameworks')
+                                or data.get('selected_frameworks')
+                                or []),
+                            lang=('ar' if lang == 'ar' else 'en'),
+                            domain=data.get('domain'),
+                            output_type='generation',
+                        )
+                        _cy28_blockers = (
+                            _cy28_contract.get('blocking_errors', []) or [])
+                        if _cy28_blockers:
+                            _cy28_first = _cy28_blockers[0]
+                            print(
+                                '[CYBER-FINAL-EXPORT-CONTRACT] '
+                                f'generation_blocked error={_cy28_first!r}',
+                                flush=True,
+                            )
+                            return jsonify({
+                                'success': False,
+                                'strategy_id': None,
+                                'error': _cy28_first,
+                                'blocking_errors': _cy28_blockers,
+                            }), 422
+                        # Replace ``content`` and ``sections`` with the
+                        # audited payload so save / preview / export all
+                        # consume the SAME ``final_markdown`` bytes.
+                        _cy28_final_md = (
+                            _cy28_contract.get('final_markdown') or '')
+                        if _cy28_final_md:
+                            content = _cy28_final_md
+                        _cy28_audited_sections = (
+                            _cy28_contract.get('sections') or {})
+                        if isinstance(_cy28_audited_sections, dict) \
+                                and _cy28_audited_sections:
+                            for _csk, _csv in _cy28_audited_sections.items():
+                                if isinstance(_csv, str) and _csv:
+                                    sections[_csk] = _csv
+                    except Exception as _cy28_e:  # noqa: BLE001
+                        print(
+                            '[CYBER-FINAL-EXPORT-CONTRACT] '
+                            f'generation_contract_failed: {_cy28_e}',
+                            flush=True,
+                        )
                 # 5) Serialize final canonical JSON from the normalized +
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back
