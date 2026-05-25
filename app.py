@@ -36167,11 +36167,23 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
         return (markdown, diag)
 
     lines = markdown.split('\n')
+    # PR-CY27 — Collect every candidate KPI data row (line index, row
+    # number within its table, column map). The row locator must be
+    # robust against:
+    #   * row_ref values produced by callers using header-inclusive
+    #     numbering (e.g. PR-CY25 diagnostic ``kpis:row_4`` when the
+    #     marker is in the 3rd data row);
+    #   * row_ref values that simply do not match (PR-CY27 fallback to
+    #     the marker-containing row);
+    #   * tables with an extra leading Type column (KPI / KRI);
+    #   * Arabic RTL rows and multiline-cell rows;
+    #   * markers split around whitespace.
     header_idx = -1
     header_cells = []
     columns = (-1, -1, -1, -1, -1, -1)
     row_no = 0
-    target_line_idx = -1
+    # Each candidate: (row_no, idx, columns)
+    candidates_with_marker = []
     for idx, ln in enumerate(lines):
         if not ln.lstrip().startswith('|'):
             # Table boundary — reset state when we leave a table.
@@ -36196,17 +36208,27 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
                 columns = (-1, -1, -1, -1, -1, -1)
             continue
         row_no += 1
-        if tok not in ln:
+        # PR-CY27 — Tolerate whitespace inside the marker token.
+        if tok not in ln and _PRCY26_KPI_TARGET_MARKER not in ln:
             continue
-        if row_ref and row_ref > 0 and row_no != row_ref:
-            continue
-        target_line_idx = idx
-        break
+        candidates_with_marker.append((row_no, idx, columns))
 
-    if target_line_idx < 0:
+    if not candidates_with_marker:
         diag['action_taken'] = 'row_not_found'
         diag['remaining_markers_count'] = markdown.count(tok)
         return (markdown, diag)
+
+    # Pick the candidate matching row_ref; on miss, fall back to the
+    # first marker-containing data row (PR-CY27 spec D).
+    chosen = None
+    if row_ref and row_ref > 0:
+        for cand in candidates_with_marker:
+            if cand[0] == row_ref:
+                chosen = cand
+                break
+    if chosen is None:
+        chosen = candidates_with_marker[0]
+    row_no, target_line_idx, columns = chosen
 
     diag['row_ref'] = row_no
     raw_row = lines[target_line_idx]
@@ -36234,6 +36256,72 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
     diag['original_target'] = original_target[:120]
     diag['formula_preview'] = formula[:80]
     diag['source_preview'] = source[:80]
+
+    # PR-CY27 — handle misplaced markers. Upstream PR-CY19/CY23 use
+    # a fixed 6-column schema (no Type column). On a 9-column table
+    # they can insert the marker in the Type cell while the real
+    # Target cell still holds a valid value. In that case the row
+    # does not actually need a derived target — just strip the
+    # misplaced marker (restoring "KPI" if it was the Type column).
+    marker_cell_idx = None
+    for _ci, _cv in enumerate(cell_values):
+        if tok in _cv:
+            marker_cell_idx = _ci
+            break
+    target_already_valid = False
+    if (target_idx != marker_cell_idx
+            and 0 <= target_idx < len(cell_values)):
+        _tv = cell_values[target_idx].strip()
+        if _tv and _tv not in ('—', '-', '–', '') and tok not in _tv:
+            # Quick local validity check (avoids forward-reference to
+            # _prcy27_is_valid_kpi_target which is defined later).
+            import re as _re_tv
+            _tv_low = _tv.lower()
+            if (
+                _re_tv.search(r'\d', _tv)
+                or '%' in _tv
+                or '≥' in _tv or '≤' in _tv
+                or 'أقل من' in _tv or 'لا يقل' in _tv
+                or 'أكثر من' in _tv or 'أكبر من' in _tv
+                or 'يساوي' in _tv
+                or any(u in _tv for u in (
+                    'ساعة', 'ساعات', 'دقيقة', 'دقائق', 'يوم', 'أيام',
+                    'شهر', 'سنة', 'سنوات', 'سنوياً'))
+                or any(u in _tv_low for u in (
+                    'hour', 'minute', 'day', 'week', 'month',
+                    'year', 'sla'))
+            ):
+                target_already_valid = True
+    if target_already_valid and marker_cell_idx is not None:
+        # Replace the misplaced marker. If the marker landed in the
+        # Type column (between desc and target), restore a sensible
+        # default ("KPI" or "KRI" based on existing rows), else "—".
+        type_default = 'KPI'
+        if (desc_idx is not None and target_idx is not None
+                and desc_idx < marker_cell_idx < target_idx):
+            type_default = 'KPI'
+        else:
+            type_default = '—'
+        original_misplaced = cells[marker_cell_idx]
+        cells[marker_cell_idx] = (
+            (' ' if original_misplaced.startswith(' ') else '')
+            + type_default
+            + (' ' if original_misplaced.endswith(' ') else ''))
+        new_core = '|'.join(cells)
+        new_row = (('|' if has_leading_pipe else '')
+                   + new_core
+                   + ('|' if has_trailing_pipe else ''))
+        new_row = leading + new_row
+        if tok in new_row:
+            new_row = new_row.replace(tok, type_default)
+        lines[target_line_idx] = new_row
+        new_markdown = '\n'.join(lines)
+        diag['repaired_target'] = cell_values[target_idx][:120]
+        diag['action_taken'] = 'kpi_target_marker_misplaced_stripped'
+        diag['marker_cell_idx'] = marker_cell_idx
+        diag['target_cell_idx'] = target_idx
+        diag['remaining_markers_count'] = new_markdown.count(tok)
+        return (new_markdown, diag)
 
     repaired, confidence, kind = _prcy26_classify_kpi_target(
         description, formula=formula, source=source, lang=lang)
@@ -36320,6 +36408,233 @@ def _prcy26_repair_kpi_target_markers_in_sections(
         break
     sections['kpis'] = body
     return actions
+
+
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY27 — KPI target repair routing for the final unresolved marker
+#
+# Resolves the residual ``[REQUIRES_AI_TARGET_REPAIR]:kpis:row_N``
+# diagnostic that survived PR-CY26 section-level repair. Provides:
+#
+#   1. ``_PRCY27_KPI_SECTION_ALIASES`` — exhaustive list of section
+#      aliases that the PR-CY25 blocking-gate diagnostic may emit for
+#      the KPI table (English / Arabic / mixed).
+#   2. ``_prcy27_is_kpi_section_alias`` — helper used by the targeted
+#      repair router to map an arbitrary section-name token to the
+#      canonical KPI repair path.
+#   3. ``_prcy27_parse_marker_diagnostic`` — parses a
+#      ``final_quality_gate_failed:unresolved_final_repair_marker:...``
+#      error into ``(marker, section_token, row_ref)``.
+#   4. ``_prcy27_is_valid_kpi_target`` — Arabic / English KPI target
+#      validator covering the catalog from the PR-CY27 spec section F
+#      (percentage / threshold / duration / SLA / coverage targets).
+#   5. ``_prcy27_repair_kpi_target_in_final_markdown`` — last-chance
+#      direct-on-final-markdown repair that runs IMMEDIATELY before
+#      the PR-CY25 hard blocking gate so any marker missed by the
+#      section-level pipeline is caught before rendering is refused.
+#
+# Intentionally does NOT touch:
+#   * PR-CY18 specialized-objective preservation
+#   * PR-CY20 framework-compliance preservation
+#   * PR-CY22 final export audit shape
+#   * PR-CY23 quality-gate helpers (only re-invoked, never modified)
+#   * PR-CY24 strategic-objectives sanitiser
+#   * PR-CY25 hard blocking gate (still fires when last-chance repair
+#     cannot resolve the marker)
+# ════════════════════════════════════════════════════════════════════════
+
+_PRCY27_KPI_SECTION_ALIASES = frozenset({
+    'kpi', 'kpis', 'kpi_table',
+    'مؤشرات الأداء',
+    'مؤشرات الأداء الرئيسية',
+    'مؤشرات الأداء الرئيسية kpi',
+    'key performance indicators',
+    'key performance',
+})
+
+
+def _prcy27_is_kpi_section_alias(name):
+    """Return ``True`` if ``name`` (case-insensitive, whitespace-
+    collapsed) maps to the KPI table per the PR-CY27 spec section A.
+    Empty / unknown names fall through to ``False`` so the caller can
+    decide whether to apply a broad fallback."""
+    if not name:
+        return False
+    import re as _re_a
+    n = _re_a.sub(r'\s+', ' ', str(name)).strip().lower()
+    if n in _PRCY27_KPI_SECTION_ALIASES:
+        return True
+    # Tolerate partial matches such as ``mؤشرات الأداء الرئيسية kpi``
+    # or ``kpis-table`` produced by alternative diagnostic emitters.
+    return ('kpi' in n) or ('مؤشرات الأداء' in n)
+
+
+def _prcy27_parse_marker_diagnostic(err):
+    """Parse a PR-CY25 blocking-error string of the form
+    ``final_quality_gate_failed:unresolved_final_repair_marker:<MARKER>``
+    (optionally followed by ``:<section>:row_<N>``) and return a tuple
+    ``(marker, section, row_ref)``. Returns ``(None, '', 0)`` when the
+    error does not match the expected shape."""
+    if not err or 'unresolved_final_repair_marker' not in err:
+        return (None, '', 0)
+    try:
+        body = err.split('unresolved_final_repair_marker:', 1)[1]
+    except IndexError:
+        return (None, '', 0)
+    # ``body`` may be ``[MARKER]`` or ``[MARKER]:section:row_N``.
+    # Marker tokens always start with ``[`` and end with ``]``; split
+    # the remainder after the closing bracket.
+    marker = body
+    rest = ''
+    if body.startswith('['):
+        end = body.find(']')
+        if end >= 0:
+            marker = body[:end + 1]
+            rest = body[end + 1:]
+            if rest.startswith(':'):
+                rest = rest[1:]
+    else:
+        parts = body.split(':', 1)
+        marker = parts[0]
+        rest = parts[1] if len(parts) > 1 else ''
+    section = ''
+    row_ref = 0
+    if rest:
+        parts = rest.split(':')
+        section = parts[0] if parts else ''
+        for p in parts[1:]:
+            if p.startswith('row_'):
+                try:
+                    row_ref = int(p[4:])
+                except ValueError:
+                    row_ref = 0
+                break
+    return (marker.strip(), section.strip(), row_ref)
+
+
+# ── Arabic / English KPI target validator ───────────────────────────
+_PRCY27_FREQUENCY_ONLY_TOKENS = (
+    'شهري', 'أسبوعي', 'ربع سنوي', 'ربعي', 'يومي', 'سنوي',
+    'monthly', 'weekly', 'quarterly', 'daily', 'annual',
+)
+
+
+def _prcy27_is_valid_kpi_target(value, column_role='target'):
+    """Return ``True`` when ``value`` is acceptable as a KPI target
+    cell per the PR-CY27 spec section F. ``column_role`` distinguishes
+    between ``'target'`` (default) and ``'frequency'``; pure cadence
+    tokens such as ``شهري`` / ``monthly`` are valid only in the
+    frequency column.
+    """
+    if not value:
+        return False
+    s = str(value).strip()
+    if not s or s in ('—', '-', '–'):
+        return False
+    if _PRCY26_KPI_TARGET_MARKER in s:
+        return False
+    low = s.lower()
+    # Frequency-only tokens are invalid in target column.
+    if column_role == 'target':
+        if any(low == t or low.startswith(t + ' ') or low.endswith(' ' + t)
+                for t in _PRCY27_FREQUENCY_ONLY_TOKENS):
+            return False
+    # Percentage target (e.g. 95%, 100%، ≥ 90%، لا يقل عن 95%).
+    if '%' in s:
+        return True
+    # Comparison / threshold tokens.
+    threshold_tokens_ar = (
+        'أقل من', 'لا يقل عن', 'لا تقل عن', 'أكبر من', 'يساوي',
+        'لا يزيد عن', 'لا تزيد عن', 'يساوي أو أكثر', 'أو أكثر',
+    )
+    if any(t in s for t in threshold_tokens_ar):
+        return True
+    if any(sym in s for sym in ('≥', '≤', '>=', '<=', '>', '<')):
+        return True
+    # Duration / SLA targets (ساعات/دقيقة/يوم/أسبوع/شهر, hour/minute/day).
+    duration_tokens = (
+        'ساعة', 'ساعات', 'دقيقة', 'دقائق', 'يوم', 'أيام',
+        'أسبوع', 'شهر', 'سنة', 'ثانية',
+        'hour', 'minute', 'day', 'week', 'month', 'year', 'second',
+    )
+    if any(t in s or t in low for t in duration_tokens):
+        return True
+    # Numeric with units (e.g. ``99 SLA``) — accept any cell containing
+    # at least one digit. Frequency-only tokens have already been
+    # rejected above.
+    if any(ch.isdigit() for ch in s):
+        return True
+    return False
+
+
+def _prcy27_repair_kpi_target_in_final_markdown(
+        markdown, blocking_errors, lang='ar',
+        metadata=None, selected_frameworks=None):
+    """PR-CY27 last-chance — Repair every ``[REQUIRES_AI_TARGET_REPAIR]``
+    marker that survives section-level repair, operating DIRECTLY on
+    the final markdown string that the PR-CY25 hard blocking gate
+    scans. Section-name aliases (kpi / kpis / KPI / KPIs / Arabic /
+    kpi_table) all route to the KPI target repair.
+
+    Returns ``(new_markdown, actions)`` where ``actions`` is a list of
+    diagnostic labels that the contract logs as ``repair_actions``."""
+    actions = []
+    if not markdown or not isinstance(markdown, str):
+        return (markdown or '', actions)
+    md = markdown
+    seen_row_refs = set()
+    if blocking_errors:
+        for err in blocking_errors:
+            marker, section, row_ref = _prcy27_parse_marker_diagnostic(err)
+            if not marker or marker != _PRCY26_KPI_TARGET_MARKER:
+                continue
+            # Route only when the section alias maps to KPI repair, or
+            # when no section was supplied (defensive fallback).
+            if section and not _prcy27_is_kpi_section_alias(section):
+                continue
+            new_md, diag = _repair_kpi_target_marker(
+                md, marker, row_ref, lang=lang, metadata=metadata,
+                selected_frameworks=selected_frameworks)
+            try:
+                print(
+                    f'[CYBER-KPI-TARGET-REPAIR-FINAL] '
+                    f'{{"row_ref":{row_ref},"diag":{diag}}}',
+                    flush=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            action = diag.get('action_taken') or 'noop'
+            if action.startswith('kpi_target_repaired'):
+                md = new_md
+                actions.append(
+                    f"final_md_kpi_target_repair:row_{diag.get('row_ref', 0)}"
+                    f":{action.split(':', 1)[1]}")
+                seen_row_refs.add(diag.get('row_ref', 0))
+            elif action == 'unresolved_kpi_target_repair':
+                actions.append(
+                    f"unresolved_kpi_target_repair:"
+                    f"row_{diag.get('row_ref', 0)}")
+    # Broad fallback — repair any remaining markers regardless of
+    # diagnostic context (PR-CY27 spec C: locate by marker only).
+    safety_limit = 16
+    while _PRCY26_KPI_TARGET_MARKER in md and safety_limit > 0:
+        safety_limit -= 1
+        new_md, diag = _repair_kpi_target_marker(
+            md, _PRCY26_KPI_TARGET_MARKER, 0, lang=lang,
+            metadata=metadata, selected_frameworks=selected_frameworks)
+        action = diag.get('action_taken') or 'noop'
+        if new_md == md:
+            if action == 'unresolved_kpi_target_repair':
+                actions.append(
+                    f"unresolved_kpi_target_repair:"
+                    f"row_{diag.get('row_ref', 0)}")
+            break
+        md = new_md
+        actions.append(
+            f"final_md_kpi_target_repair_fallback:"
+            f"row_{diag.get('row_ref', 0)}"
+            f":{action.split(':', 1)[-1] if ':' in action else action}")
+    return (md, actions)
 
 
 def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
@@ -36477,6 +36792,58 @@ def _cyber_final_export_contract(markdown, metadata=None,
         try:
             current = _prcy22_apply_sections_to_content(current, sections)
         except Exception:  # noqa: BLE001
+            pass
+
+    # ── PR-CY27 — Last-chance final-markdown marker repair ────────────
+    # Runs IMMEDIATELY before the hard blocking gate so any
+    # ``[REQUIRES_AI_TARGET_REPAIR]`` marker that survived the
+    # section-level pipeline (e.g. because the section splitter
+    # assigned the KPI table to a non-canonical key, or because the
+    # diagnostic row index uses a different numbering scheme) is
+    # repaired directly on the final markdown that PR-CY25 scans.
+    # Order: PR-CY22 audit → PR-CY23 quality gate → PR-CY24 sanitiser
+    # (all inside ``_cyber_final_export_audit``) → final marker scan
+    # → targeted repairs on ``current`` → re-scan markers → re-run
+    # the blocking gate → hard block only if markers remain.
+    if (current and _PRCY26_KPI_TARGET_MARKER in current) or any(
+            'unresolved_final_repair_marker' in (e or '')
+            for e in (blocking_errors or [])):
+        try:
+            repaired_md, last_chance_actions = (
+                _prcy27_repair_kpi_target_in_final_markdown(
+                    current, blocking_errors, lang=lang_n,
+                    metadata=metadata,
+                    selected_frameworks=selected_frameworks))
+            if repaired_md and repaired_md != current:
+                current = repaired_md
+                if last_chance_actions:
+                    repair_actions.extend(
+                        f'final:{a}' for a in last_chance_actions)
+                # Re-split sections so the downstream snapshot
+                # (assertions / KPI schema / DCC traceability) sees
+                # the repaired content.
+                try:
+                    new_sections = (
+                        _split_strategy_sections_by_h2(current) or {})
+                    if new_sections:
+                        sections = new_sections
+                except Exception:  # noqa: BLE001
+                    pass
+                # Re-evaluate the hard blocking gate now that the
+                # last-chance repair has been applied.
+                try:
+                    blocking_errors = _cyber_final_blocking_gate(
+                        current, sections, lang_n,
+                        selected_frameworks, dcode)
+                except Exception:  # noqa: BLE001
+                    pass
+            elif last_chance_actions:
+                # Marker was unrepairable — surface the diagnostic so
+                # the hard gate continues to block rendering with
+                # ``unresolved_kpi_target_repair:row_N``.
+                repair_actions.extend(
+                    f'final:{a}' for a in last_chance_actions)
+        except Exception:  # noqa: BLE001 — defensive
             pass
 
     after_hash = _prcy25_compute_content_hash(current)
