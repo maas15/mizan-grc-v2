@@ -35514,6 +35514,9 @@ def _cyber_final_export_audit(content, metadata=None,
     if dcode != 'cyber':
         return (content or '', sections, {})
     diag = {}
+    # PR-CY30 — snapshot pre-audit roadmap so the destructive-shrink
+    # guard can restore it if the audit chain wipes it out.
+    _prcy30_roadmap_before = (sections or {}).get('roadmap', '') or ''
     # Snapshot lengths before audit so callers can spot mutations.
     diag['snapshot_before'] = {
         k: len(v or '') for k, v in (sections or {}).items()
@@ -35546,6 +35549,17 @@ def _cyber_final_export_audit(content, metadata=None,
     except Exception as _e:  # noqa: BLE001 — defensive
         diag['prcy23'] = {'error': repr(_e)}
     new_content = _prcy22_apply_sections_to_content(content or '', sections)
+    # PR-CY30 — Roadmap destructive-shrink guard: restore the
+    # pre-audit roadmap section when the audit chain dropped it
+    # below 40% of its original length. Re-splice the restored
+    # roadmap so ``new_content`` and ``sections`` stay in sync.
+    try:
+        if _prcy30_roadmap_destructive_shrink_guard(
+                sections, _prcy30_roadmap_before, diag):
+            new_content = _prcy22_apply_sections_to_content(
+                content or '', sections)
+    except Exception as _e:  # noqa: BLE001
+        diag['prcy30_roadmap_guard_error'] = repr(_e)
     diag['snapshot_after'] = {
         k: len(v or '') for k, v in (sections or {}).items()
     }
@@ -36460,25 +36474,33 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
             and 0 <= target_idx < len(cell_values)):
         _tv = cell_values[target_idx].strip()
         if _tv and _tv not in ('—', '-', '–', '') and tok not in _tv:
-            # Quick local validity check (avoids forward-reference to
-            # _prcy27_is_valid_kpi_target which is defined later).
-            import re as _re_tv
-            _tv_low = _tv.lower()
-            if (
-                _re_tv.search(r'\d', _tv)
-                or '%' in _tv
-                or '≥' in _tv or '≤' in _tv
-                or 'أقل من' in _tv or 'لا يقل' in _tv
-                or 'أكثر من' in _tv or 'أكبر من' in _tv
-                or 'يساوي' in _tv
-                or any(u in _tv for u in (
-                    'ساعة', 'ساعات', 'دقيقة', 'دقائق', 'يوم', 'أيام',
-                    'شهر', 'سنة', 'سنوات', 'سنوياً'))
-                or any(u in _tv_low for u in (
-                    'hour', 'minute', 'day', 'week', 'month',
-                    'year', 'sla'))
-            ):
-                target_already_valid = True
+            # PR-CY30 — Reject formula-looking cells. A column-shifted
+            # row carries the formula text inside the target cell;
+            # treating it as a valid target would leave the actual
+            # marker rows unrepaired. The shift normaliser handles
+            # this case before the repair loop is invoked.
+            if _prcy30_cell_looks_like_formula(_tv):
+                target_already_valid = False
+            else:
+                # Quick local validity check (avoids forward-reference to
+                # _prcy27_is_valid_kpi_target which is defined later).
+                import re as _re_tv
+                _tv_low = _tv.lower()
+                if (
+                    _re_tv.search(r'\d', _tv)
+                    or '%' in _tv
+                    or '≥' in _tv or '≤' in _tv
+                    or 'أقل من' in _tv or 'لا يقل' in _tv
+                    or 'أكثر من' in _tv or 'أكبر من' in _tv
+                    or 'يساوي' in _tv
+                    or any(u in _tv for u in (
+                        'ساعة', 'ساعات', 'دقيقة', 'دقائق', 'يوم', 'أيام',
+                        'شهر', 'سنة', 'سنوات', 'سنوياً'))
+                    or any(u in _tv_low for u in (
+                        'hour', 'minute', 'day', 'week', 'month',
+                        'year', 'sla'))
+                ):
+                    target_already_valid = True
     if target_already_valid and marker_cell_idx is not None:
         # Replace the misplaced marker. If the marker landed in the
         # Type column (between desc and target), restore a sensible
@@ -36601,7 +36623,22 @@ def _prcy26_repair_kpi_target_markers_in_sections(
     if not isinstance(sections, dict):
         return actions
     body = sections.get('kpis', '') or ''
-    if not body or _PRCY26_KPI_TARGET_MARKER not in body:
+    if not body:
+        return actions
+    # PR-CY30 — Normalize structurally shifted rows BEFORE we look for
+    # markers. A shifted row carries the formula text in the target
+    # column and an empty / dash formula column — there's no marker
+    # to find yet, so we must run the pre-pass unconditionally to
+    # stamp a canonical ``[REQUIRES_AI_TARGET_REPAIR]`` marker that
+    # the catalog classifier then resolves.
+    try:
+        shift_fixed = _prcy30_normalize_shifted_kpi_row(sections, lang)
+        if shift_fixed:
+            actions.append(f'kpi_column_shift_normalized:{shift_fixed}')
+            body = sections.get('kpis', '') or ''
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    if _PRCY26_KPI_TARGET_MARKER not in body:
         return actions
     initial_marker_rows = _prcy29_marker_data_row_indices(
         body, _PRCY26_KPI_TARGET_MARKER)
@@ -37119,6 +37156,216 @@ def _prcy29_resolve_selected_frameworks(
     return (final, ctx)
 
 
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY30 — Stabilize final export contract after destructive audit
+# mutations.
+#
+# Three orthogonal safety nets that wrap (without weakening) the
+# PR-CY22 audit, PR-CY23 quality gate, PR-CY25 hard blocking gate and
+# PR-CY26/PR-CY27 KPI repair:
+#
+#   1. KPI column-shift detector + normalizer (``_prcy30_*kpi_shift*``)
+#      detects rows where the formula text leaked into the target
+#      column and the formula column is dash/empty, then swaps the two
+#      cells before the catalog classifier runs. This stops the
+#      PR-CY26/CY27 ``target_already_valid`` short-circuit from
+#      mis-classifying a formula as a valid target and silently
+#      leaving subsequent marker rows unrepaired.
+#   2. Roadmap destructive-shrink guard
+#      (``_prcy30_roadmap_destructive_shrink_guard``) restores the
+#      pre-audit roadmap section when the audit chain shrinks it
+#      below 40% of its pre-audit length (and the pre-audit length
+#      was > 500 chars). Emits ``[CYBER-ROADMAP-MUTATION-REJECTED]``.
+#   3. ``selected_frameworks_canonical`` surfaced in the contract
+#      result so downstream metadata / preview / PDF / DOCX routes can
+#      adopt the canonical IDs the contract resolved.
+# ════════════════════════════════════════════════════════════════════════
+
+# Tokens that strongly indicate a cell contains formula text rather
+# than a target value (e.g. ``عدد ... / ... × 100`` or
+# ``متوسط الوقت لـ ...``). Used by the column-shift detector and by
+# the strengthened ``target_already_valid`` check inside
+# ``_repair_kpi_target_marker``.
+_PRCY30_FORMULA_TOKENS_AR = (
+    'عدد ', 'متوسط الوقت', 'متوسط الزمن', 'مجموع ',
+    'إجمالي ', 'نسبة ', 'معدل ',
+)
+_PRCY30_FORMULA_TOKENS_EN = (
+    'number of ', 'mean time to', 'average time',
+    'total ', 'count of ', 'ratio of ',
+)
+
+
+def _prcy30_cell_looks_like_formula(value):
+    """PR-CY30 — Return True when ``value`` looks like a KPI formula
+    (ratio / average-time / count-based) rather than a target value.
+
+    A cell looks like a formula when it combines a counting / total
+    token (``عدد``, ``متوسط الوقت``, ``number of``, ``mean time to``)
+    with a division (``/``) or a percentage scaling factor
+    (``× 100`` / ``* 100``) OR when the existing PR-CY19 recoverable-
+    formula regex matches.
+    """
+    if not value:
+        return False
+    s = str(value).strip()
+    if not s or s in ('—', '-', '–'):
+        return False
+    low = s.lower()
+    has_counting_ar = any(t in s for t in _PRCY30_FORMULA_TOKENS_AR)
+    has_counting_en = any(t in low for t in _PRCY30_FORMULA_TOKENS_EN)
+    has_counting = has_counting_ar or has_counting_en
+    has_division = '/' in s
+    has_scale = ('× 100' in s or '× 100' in low or '* 100' in s
+                 or 'x 100' in low)
+    if has_counting and (has_division or has_scale):
+        return True
+    # Average-time formulas often don't contain '/' but still describe
+    # a measurement methodology rather than a target value.
+    if ('متوسط الوقت' in s or 'متوسط الزمن' in s
+            or 'mean time to' in low or 'average time' in low):
+        # Reject when paired with a clear duration ceiling — that
+        # actually IS a valid target (e.g. ``متوسط الوقت < 4 ساعات``).
+        if any(sym in s for sym in ('≤', '<', 'أقل من', 'لا يزيد')):
+            return False
+        return True
+    # Fall back to the PR-CY19 formula recogniser.
+    try:
+        return _prcy19_is_recoverable_formula(s)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _prcy30_detect_kpi_column_shift(target_cell, formula_cell,
+                                    marker_token=None):
+    """PR-CY30 spec section E — return True when a KPI row exhibits the
+    structural column-shift pattern: the target cell carries formula
+    text (``عدد ... / ... × 100`` / ``متوسط الوقت``) while the
+    formula cell is dash-only / empty or carries the unresolved
+    target-repair marker.
+    """
+    if not _prcy30_cell_looks_like_formula(target_cell):
+        return False
+    fc = (formula_cell or '').strip()
+    if fc in ('', '—', '-', '–'):
+        return True
+    if marker_token and marker_token in fc:
+        return True
+    return False
+
+
+def _prcy30_normalize_shifted_kpi_row(sections, lang):
+    """PR-CY30 spec section E — Walk the KPI table and swap target<>
+    formula cells for every row that exhibits the column-shift pattern
+    described by ``_prcy30_detect_kpi_column_shift``. Returns the
+    number of rows normalised. Mutates ``sections['kpis']`` in place.
+
+    The catalog classifier (PR-CY26) is intentionally NOT invoked here —
+    after normalisation the surviving target cell is left as the
+    canonical ``[REQUIRES_AI_TARGET_REPAIR]`` marker so the existing
+    PR-CY26/PR-CY27 catalog path can derive the correct target value
+    from the description in a single deterministic pass.
+    """
+    if not isinstance(sections, dict):
+        return 0
+    body = sections.get('kpis', '') or ''
+    if not body:
+        return 0
+    rows = _prcy19_strip_md_table_rows(body)
+    if not rows:
+        return 0
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and r['cells']:
+            blob = ' '.join(r['cells']).lower()
+            if ('وصف المؤشر' in blob or 'kpi description' in blob
+                    or 'القيمة المستهدفة' in blob
+                    or 'target value' in blob
+                    or 'المؤشر' in ' '.join(r['cells'])):
+                hdr_idx = i
+                break
+    if hdr_idx is None:
+        return 0
+    columns = _prcy26_locate_kpi_table_columns(rows[hdr_idx]['cells'] or [])
+    _desc_idx, target_idx, formula_idx, _src, _own, _frq = columns
+    if target_idx < 0 or formula_idx < 0:
+        return 0
+    fixed = 0
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] != 'data' or not r['cells']:
+            if r['kind'] == 'sep':
+                continue
+            if r['kind'] == 'other':
+                continue
+            break
+        cells = r['cells']
+        if target_idx >= len(cells) or formula_idx >= len(cells):
+            continue
+        target_val = cells[target_idx] or ''
+        formula_val = cells[formula_idx] or ''
+        if _prcy30_detect_kpi_column_shift(
+                target_val, formula_val,
+                marker_token=_PRCY26_KPI_TARGET_MARKER):
+            # Move formula text into the formula column and stamp the
+            # target column with the canonical marker so PR-CY26 can
+            # derive the correct catalog target.
+            cells[formula_idx] = target_val.strip()
+            cells[target_idx] = _PRCY26_KPI_TARGET_MARKER
+            fixed += 1
+    if fixed:
+        sections['kpis'] = _prcy19_emit_md_table(rows)
+        try:
+            print(
+                f'[CYBER-KPI-COLUMN-SHIFT-NORMALIZED] rows={fixed}',
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return fixed
+
+
+def _prcy30_roadmap_destructive_shrink_guard(sections, roadmap_before,
+                                             diag):
+    """PR-CY30 spec section B — Reject a destructive roadmap mutation.
+
+    If the audit chain has reduced the roadmap section length below
+    40% of its pre-audit length (and the pre-audit roadmap was longer
+    than 500 chars), restore the pre-audit roadmap into ``sections``
+    and record the rejection in ``diag``. Emits the structured
+    ``[CYBER-ROADMAP-MUTATION-REJECTED]`` diagnostic so operators can
+    confirm the guard fired.
+    """
+    if not isinstance(sections, dict) or roadmap_before is None:
+        return False
+    before_len = len(roadmap_before or '')
+    after_val = sections.get('roadmap', '') or ''
+    after_len = len(after_val)
+    if before_len <= 500:
+        return False
+    if after_len >= int(0.4 * before_len):
+        return False
+    # Restore the original roadmap; never silently drop it.
+    sections['roadmap'] = roadmap_before
+    info = {
+        'reason': 'destructive_shrink',
+        'before_len': before_len,
+        'after_len': after_len,
+        'threshold_pct': 40,
+    }
+    try:
+        diag['prcy30_roadmap_mutation_rejected'] = info
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        print(
+            f'[CYBER-ROADMAP-MUTATION-REJECTED] {info}',
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
                                 selected_frameworks, domain, metadata=None):
     """PR-CY25 / PR-CY26 — single targeted-repair pass. Performs the
@@ -37515,6 +37762,13 @@ def _cyber_final_export_contract(markdown, metadata=None,
         'domain': dcode,
         'frameworks': [str(f).strip().upper()
                        for f in (selected_frameworks or [])],
+        # PR-CY30 — canonical lower-case framework IDs so the saved
+        # strategy metadata / preview / PDF / DOCX routes can adopt
+        # them as a single source of truth without having to re-run
+        # the inference chain.
+        'selected_frameworks_canonical': list(selected_frameworks or []),
+        'framework_context_source': (
+            (fw_ctx or {}).get('inference_source') if fw_ctx else 'none'),
     }
     try:
         print(
@@ -37531,6 +37785,9 @@ def _cyber_final_export_contract(markdown, metadata=None,
         'content_hash': after_hash,
         'sections': sections if isinstance(sections, dict) else {},
         'diag': diag,
+        # PR-CY30 — Expose the canonical framework list at the top
+        # level so callers do not have to dig through ``diag``.
+        'selected_frameworks_canonical': list(selected_frameworks or []),
     }
 
 
