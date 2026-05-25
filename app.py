@@ -35560,6 +35560,38 @@ def _cyber_final_export_audit(content, metadata=None,
                 content or '', sections)
     except Exception as _e:  # noqa: BLE001
         diag['prcy30_roadmap_guard_error'] = repr(_e)
+    # PR-CY31 — Full roadmap rebuild when the destructive-shrink
+    # guard could not restore a non-trivial body (e.g. the section
+    # was already trivial pre-audit, or the audit chain mutated it
+    # into a zero-coverage stub). The rebuilt roadmap satisfies the
+    # PR-CY31 spec assertions: coverage > 0, min_month <= 1,
+    # max_month == executive_horizon, every phase carries dated rows.
+    try:
+        if _prcy31_rebuild_roadmap_if_needed(
+                sections, lang_n, selected_frameworks,
+                metadata, diag):
+            new_content = _prcy22_apply_sections_to_content(
+                content or '', sections)
+    except Exception as _e:  # noqa: BLE001
+        diag['prcy31_roadmap_rebuild_error'] = repr(_e)
+    # PR-CY31 — Full 9-column KPI canonical rebuild + rescan loop.
+    # Always evaluates the KPI table — even when no upstream marker
+    # tripped the blocking gate — so shifted / dash-only / formula-
+    # in-target tables that escape PR-CY19/CY23 are still rebuilt
+    # into the canonical schema before the hard gate. The rebuild
+    # ends in a fail-closed sentinel when even the retry cannot
+    # produce a valid table.
+    try:
+        needed, ok, prcy31_kpi_actions = (
+            _prcy31_kpi_canonical_rebuild_and_rescan(
+                sections, lang_n, selected_frameworks,
+                metadata, diag))
+        if needed:
+            diag['prcy31_kpi_rebuild_actions'] = prcy31_kpi_actions
+            new_content = _prcy22_apply_sections_to_content(
+                content or '', sections)
+    except Exception as _e:  # noqa: BLE001
+        diag['prcy31_kpi_rebuild_error'] = repr(_e)
     diag['snapshot_after'] = {
         k: len(v or '') for k, v in (sections or {}).items()
     }
@@ -36029,6 +36061,21 @@ def _cyber_final_blocking_gate(content, sections, lang, selected_frameworks,
     for s in _prcy25_strategic_objectives_incomplete_rows(
             sections or {}, lang):
         errors.append(f'final_quality_gate_failed:{s}')
+    # 7) PR-CY31 — Fail-closed when the canonical KPI rebuild + retry
+    # could not produce a valid 9-column table. The targeted-repair
+    # step stamps this sentinel on the sections dict; the blocking
+    # gate surfaces it as an unrepairable error so the PR-CY25 hard
+    # gate refuses to render.
+    try:
+        if (sections or {}).get(_PRCY31_KPI_REBUILD_FAILED_FLAG):
+            reason = (sections or {}).get(
+                _PRCY31_KPI_REBUILD_REASON_FLAG) or 'unknown'
+            errors.append(
+                'final_quality_gate_failed:unresolved_kpi_canonical_rebuild:'
+                f'{reason}'
+            )
+    except Exception:  # noqa: BLE001 — defensive
+        pass
     return errors
 
 
@@ -36306,7 +36353,7 @@ def _prcy26_locate_kpi_table_columns(header_cells):
                 'مالك' in raw or 'owner' in cell):
             owner_idx = idx
         if frequency_idx < 0 and (
-                'تواتر' in raw or 'frequency' in cell
+                'تواتر' in raw or 'التكرار' in raw or 'frequency' in cell
                 or 'cadence' in cell):
             frequency_idx = idx
     return (desc_idx, target_idx, formula_idx, source_idx,
@@ -37366,6 +37413,956 @@ def _prcy30_roadmap_destructive_shrink_guard(sections, roadmap_before,
     return True
 
 
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY31 — Complete roadmap and KPI canonical rebuild
+#
+# Implements the deferred PR-CY30 items (C, D, F):
+#
+#   C. Full roadmap rebuild
+#      When the roadmap section is missing, too short (< 200 chars),
+#      destructively shrunk, or has zero month coverage, rebuild a
+#      deterministic 3-phase roadmap from the validated strategy
+#      context (selected frameworks + horizon). The rebuilt content
+#      always satisfies:
+#        * roadmap_coverage > 0
+#        * roadmap_min_month <= 1
+#        * roadmap_max_month == executive_horizon
+#        * every phase has dated rows
+#        * no phase is silently dropped
+#
+#   D. Full 9-column KPI canonical rebuild
+#      When the KPI table still carries [REQUIRES_AI_*] markers,
+#      shifted cells, formula-in-target, dash-only source/owner/
+#      frequency, or multiple unresolved targets, rebuild the table
+#      into the canonical 9-column schema:
+#        # | المؤشر | النوع KPI/KRI | القيمة المستهدفة |
+#        صيغة الاحتساب | مصدر البيانات | المالك | التكرار |
+#        الإطار الزمني
+#      Valid KPI descriptions / formulas are preserved when present;
+#      targets are derived from the PR-CY26 catalog; source / owner /
+#      frequency are derived from the KPI type via the role / tool
+#      maps below. No cell ever contains a dash-only placeholder or a
+#      [REQUIRES_AI_*] marker.
+#
+#   F. Rebuild-and-rescan loop
+#      After the canonical rebuild, re-scan for markers, re-parse rows
+#      and validate each cell. If still invalid, run a single targeted
+#      repair cycle. If still invalid, fail closed with the
+#      ``unresolved_kpi_canonical_rebuild:<reason>`` blocking error so
+#      the PR-CY25 hard gate refuses to release the content.
+#
+# Wired into ``_cyber_final_export_audit`` (roadmap rebuild, after the
+# PR-CY30 destructive-shrink guard) and ``_cyber_targeted_repair_step``
+# (KPI canonical rebuild + rescan). The PR-CY18/PR-CY20 row
+# preservation, PR-CY25 hard gate and PR-CY30 surgical fixes are NOT
+# weakened — the rebuild only runs when the section is structurally
+# unrecoverable by the previous passes.
+# ════════════════════════════════════════════════════════════════════════
+
+_PRCY31_ROADMAP_MIN_LEN = 200
+_PRCY31_DEFAULT_HORIZON_MONTHS = 24
+_PRCY31_KPI_REBUILD_FAILED_FLAG = '_prcy31_kpi_rebuild_failed'
+_PRCY31_KPI_REBUILD_REASON_FLAG = '_prcy31_kpi_rebuild_reason'
+
+# Headings used when re-emitting the rebuilt roadmap section. They must
+# match the canonical patterns recognised by
+# :func:`_split_strategy_sections_by_h2` / :func:`_prcy22_apply_sections_to_content`.
+_PRCY31_ROADMAP_HEADING_AR = '## خارطة الطريق التنفيذية'
+_PRCY31_ROADMAP_HEADING_EN = '## Implementation Roadmap'
+
+# Canonical 9-column KPI header (AR / EN). Order is locked.
+_PRCY31_KPI_HEADER_AR = (
+    '| # | المؤشر | النوع KPI/KRI | القيمة المستهدفة |'
+    ' صيغة الاحتساب | مصدر البيانات | المالك | التكرار |'
+    ' الإطار الزمني |'
+)
+_PRCY31_KPI_HEADER_EN = (
+    '| # | Indicator | Type KPI/KRI | Target Value |'
+    ' Calculation Formula | Data Source | Owner | Frequency |'
+    ' Timeframe |'
+)
+_PRCY31_KPI_SEP = '|---|---|---|---|---|---|---|---|---|'
+
+
+def _prcy31_compute_phase_ranges(horizon_months):
+    """Return three ``(start, end)`` month tuples whose union covers
+    ``[1, horizon_months]`` without gaps. For the canonical 24-month
+    horizon the spec mandates 1-6 / 7-18 / 19-24. Other horizons scale
+    proportionally (~25 % / ~50 % / ~25 %)."""
+    try:
+        h = int(horizon_months or _PRCY31_DEFAULT_HORIZON_MONTHS)
+    except Exception:  # noqa: BLE001
+        h = _PRCY31_DEFAULT_HORIZON_MONTHS
+    if h < 3:
+        h = _PRCY31_DEFAULT_HORIZON_MONTHS
+    if h == 24:
+        return ((1, 6), (7, 18), (19, 24))
+    p1_end = max(1, h // 4)
+    p2_end = max(p1_end + 1, (3 * h) // 4)
+    if p2_end >= h:
+        p2_end = h - 1
+    if p1_end >= p2_end:
+        p1_end = max(1, p2_end - 1)
+    return ((1, p1_end), (p1_end + 1, p2_end), (p2_end + 1, h))
+
+
+def _prcy31_frameworks_label(selected_frameworks, lang='ar'):
+    """Return a compact human label for the linked-framework column.
+    Uses upper-case canonical IDs (e.g. ``NCA ECC / NCA DCC``) and
+    falls back to the generic label when the list is empty."""
+    if not selected_frameworks:
+        return 'NCA ECC' if lang != 'ar' else 'NCA ECC'
+    seen = []
+    for f in selected_frameworks:
+        s = str(f or '').strip().upper()
+        if not s:
+            continue
+        # Canonicalise nca_ecc → NCA ECC, nca_dcc → NCA DCC.
+        s = s.replace('_', ' ').replace('-', ' ')
+        if s not in seen:
+            seen.append(s)
+    if not seen:
+        return 'NCA ECC'
+    return ' / '.join(seen)
+
+
+def _prcy31_roadmap_needs_rebuild(sections):
+    """Inspect ``sections['roadmap']`` and decide whether a full
+    rebuild is required. Returns ``(needs_rebuild, reason)``."""
+    if not isinstance(sections, dict):
+        return (False, '')
+    roadmap = (sections.get('roadmap') or '').strip()
+    if not roadmap:
+        return (True, 'missing')
+    if len(roadmap) < _PRCY31_ROADMAP_MIN_LEN:
+        return (True, f'too_short:{len(roadmap)}')
+    coverage = _prcy25_compute_roadmap_coverage_months({'roadmap': roadmap})
+    if coverage <= 0:
+        return (True, 'coverage_zero')
+    return (False, '')
+
+
+def _prcy31_build_roadmap_text(lang, horizon_months, selected_frameworks):
+    """Construct the deterministic canonical roadmap section body
+    (heading + 3 phase tables) for the supplied horizon. The output is
+    a single markdown string ready to splice into ``sections['roadmap']``.
+    """
+    is_ar = str(lang or '').lower() != 'en'
+    ranges = _prcy31_compute_phase_ranges(horizon_months)
+    fw_label = _prcy31_frameworks_label(selected_frameworks, lang=lang)
+    heading = (_PRCY31_ROADMAP_HEADING_AR if is_ar
+               else _PRCY31_ROADMAP_HEADING_EN)
+    # Spec-mandated activity list per phase (AR / EN).
+    if is_ar:
+        col_hdr = (
+            '| الشهر | المبادرة / النشاط | المالك |'
+            ' المخرجات المتوقعة | الإطار المرتبط |'
+        )
+        sep = '|---|---|---|---|---|'
+        phase_titles = (
+            f'### المرحلة 1 — التأسيس (أشهر {ranges[0][0]}–{ranges[0][1]})',
+            f'### المرحلة 2 — التوسع والنضج (أشهر {ranges[1][0]}–{ranges[1][1]})',
+            (f'### المرحلة 3 — التحسين المستمر والأتمتة '
+             f'(أشهر {ranges[2][0]}–{ranges[2][1]})'),
+        )
+        phase_rows = (
+            [
+                ('تعيين رئيس الأمن السيبراني CISO وتأسيس مكتب الأمن السيبراني',
+                 'الإدارة التنفيذية', 'هيكل تنظيمي معتمد ودور CISO فعّال',
+                 fw_label),
+                ('تشكيل لجنة حوكمة الأمن السيبراني',
+                 'CISO',
+                 'ميثاق اللجنة المعتمد واجتماعات دورية موثقة',
+                 fw_label),
+                ('اعتماد السياسات الأساسية للأمن السيبراني',
+                 'CISO',
+                 'حزمة سياسات معتمدة (وصول / تصنيف / استجابة)',
+                 fw_label),
+                ('تنفيذ التقييم الأولي للمخاطر السيبرانية',
+                 'مدير المخاطر السيبرانية',
+                 'سجل المخاطر الأولي ومصفوفة المعالجة',
+                 fw_label),
+                ('تطبيق ضوابط IAM/MFA الأولية للحسابات المميزة',
+                 'مدير IAM',
+                 'تغطية MFA 100% للحسابات المميزة',
+                 fw_label),
+                ('إعداد قدرة الاستجابة للحوادث IR',
+                 'مدير الاستجابة للحوادث',
+                 'دليل استجابة للحوادث وخطة تواصل معتمدة',
+                 fw_label),
+            ],
+            [
+                ('تشغيل مركز العمليات الأمنية SOC وSIEM',
+                 'مدير SOC',
+                 'تشغيل SOC على مدار الساعة ولوحات مراقبة فعّالة',
+                 fw_label),
+                ('تعزيز نضج فريق CSIRT',
+                 'مدير CSIRT',
+                 'تمارين محاكاة ربعية ومتوسط زمن استجابة محدد',
+                 fw_label),
+                ('تنفيذ برنامج إدارة الثغرات Vulnerability Management',
+                 'مدير الثغرات',
+                 'فحص ربعي ومعالجة الثغرات الحرجة خلال 72 ساعة',
+                 fw_label),
+                ('نشر حلول DLP وتشفير البيانات',
+                 'مدير حماية البيانات',
+                 'تغطية DLP ≥ 95% للبيانات الحساسة المصنفة',
+                 fw_label),
+                ('تطبيق تصنيف البيانات وفق ضوابط DCC',
+                 'مالك البيانات',
+                 'مصفوفة تصنيف معتمدة وتطبيق على الأنظمة المستهدفة',
+                 fw_label),
+                ('التوسع في IAM/PAM للحسابات المميزة',
+                 'مدير IAM',
+                 'تغطية PAM ≥ 90% للحسابات المميزة الحرجة',
+                 fw_label),
+            ],
+            [
+                ('تطبيق الامتثال المستمر والأتمتة',
+                 'مدير الامتثال',
+                 'لوحات امتثال آلية ومتوسط امتثال ≥ 90%',
+                 fw_label),
+                ('بناء قدرة الاستخبارات السيبرانية Threat Intelligence',
+                 'مدير CTI',
+                 'تكامل CTI مع SOC وتقارير تهديد دورية',
+                 fw_label),
+                ('تنفيذ تمارين Tabletop وفحوصات الاختراق',
+                 'CISO',
+                 'تمرين Tabletop سنوي معتمد ونتائج معالجة موثقة',
+                 fw_label),
+                ('إطلاق لوحات تحكم تنفيذية لقياس الأداء السيبراني',
+                 'CISO',
+                 'لوحة KPI/KRI مرتبطة مباشرة بالإدارة التنفيذية',
+                 fw_label),
+                ('إجراء تقييم النضج النهائي والتحسين',
+                 'مدير الحوكمة السيبرانية',
+                 'تقرير نضج معتمد وخطة تحسين لما بعد الأفق',
+                 fw_label),
+            ],
+        )
+    else:
+        col_hdr = ('| Timeframe | Initiative / Activity | Owner |'
+                   ' Expected Output | Linked Framework |')
+        sep = '|---|---|---|---|---|'
+        phase_titles = (
+            (f'### Phase 1 — Foundation (months '
+             f'{ranges[0][0]}-{ranges[0][1]})'),
+            (f'### Phase 2 — Expansion & Maturation (months '
+             f'{ranges[1][0]}-{ranges[1][1]})'),
+            (f'### Phase 3 — Continuous Optimization & Automation '
+             f'(months {ranges[2][0]}-{ranges[2][1]})'),
+        )
+        phase_rows = (
+            [
+                ('Appoint CISO and establish the cybersecurity office',
+                 'Executive Management',
+                 'Approved org structure and active CISO role',
+                 fw_label),
+                ('Establish the cybersecurity governance committee',
+                 'CISO',
+                 'Approved charter and recurring meeting minutes',
+                 fw_label),
+                ('Adopt baseline cybersecurity policies',
+                 'CISO',
+                 'Approved policy bundle (access / classification / response)',
+                 fw_label),
+                ('Conduct the initial cyber risk assessment',
+                 'Cyber Risk Manager',
+                 'Initial risk register and treatment matrix',
+                 fw_label),
+                ('Roll out initial IAM/MFA controls for privileged accounts',
+                 'IAM Lead',
+                 '100% MFA coverage for privileged accounts',
+                 fw_label),
+                ('Establish incident response (IR) capability',
+                 'IR Manager',
+                 'Approved IR playbook and communication plan',
+                 fw_label),
+            ],
+            [
+                ('Operate SOC and deploy SIEM',
+                 'SOC Manager',
+                 '24x7 SOC operations and active monitoring dashboards',
+                 fw_label),
+                ('Mature the CSIRT team',
+                 'CSIRT Manager',
+                 'Quarterly exercises and defined MTTR baseline',
+                 fw_label),
+                ('Implement vulnerability management programme',
+                 'Vulnerability Manager',
+                 'Quarterly scans and critical remediation within 72 hours',
+                 fw_label),
+                ('Deploy DLP and data encryption controls',
+                 'Data Protection Manager',
+                 'DLP coverage ≥ 95% for classified sensitive data',
+                 fw_label),
+                ('Apply DCC-aligned data classification',
+                 'Data Owner',
+                 'Approved classification matrix applied to target systems',
+                 fw_label),
+                ('Expand IAM/PAM coverage for privileged accounts',
+                 'IAM Lead',
+                 'PAM coverage ≥ 90% for critical privileged accounts',
+                 fw_label),
+            ],
+            [
+                ('Deliver continuous compliance and automation',
+                 'Compliance Manager',
+                 'Automated compliance dashboards, average compliance ≥ 90%',
+                 fw_label),
+                ('Build threat intelligence (CTI) capability',
+                 'CTI Manager',
+                 'CTI integrated with SOC and periodic threat reports',
+                 fw_label),
+                ('Run tabletop exercises and penetration tests',
+                 'CISO',
+                 'Approved annual tabletop and documented remediation',
+                 fw_label),
+                ('Launch executive dashboards for cyber performance',
+                 'CISO',
+                 'KPI/KRI dashboard linked to executive leadership',
+                 fw_label),
+                ('Run final maturity assessment and optimisation',
+                 'Cybersecurity Governance Manager',
+                 'Approved maturity report and post-horizon improvement plan',
+                 fw_label),
+            ],
+        )
+    parts = [heading, '']
+    for idx, (title, rows) in enumerate(zip(phase_titles, phase_rows)):
+        (m_start, m_end) = ranges[idx]
+        parts.append(title)
+        parts.append('')
+        parts.append(col_hdr)
+        parts.append(sep)
+        for (init, owner, out, fwl) in rows:
+            timeframe = (f'الأشهر {m_start}–{m_end}' if is_ar
+                         else f'Months {m_start}-{m_end}')
+            parts.append(
+                f'| {timeframe} | {init} | {owner} | {out} | {fwl} |')
+        parts.append('')
+    return '\n'.join(parts).rstrip() + '\n'
+
+
+def _prcy31_rebuild_roadmap_if_needed(sections, lang, selected_frameworks,
+                                      metadata, diag):
+    """Rebuild ``sections['roadmap']`` when the destructive-shrink guard
+    could not restore a non-trivial body. Returns ``True`` when a
+    rebuild occurred. Emits the structured ``[CYBER-ROADMAP-REBUILT]``
+    diagnostic for operator visibility."""
+    if not isinstance(sections, dict):
+        return False
+    needs, reason = _prcy31_roadmap_needs_rebuild(sections)
+    if not needs:
+        return False
+    horizon = None
+    try:
+        horizon = _prcy25_extract_summary_horizon_months(sections)
+    except Exception:  # noqa: BLE001
+        horizon = None
+    if not horizon and isinstance(metadata, dict):
+        try:
+            horizon = int(metadata.get('horizon_months') or 0) or None
+        except Exception:  # noqa: BLE001
+            horizon = None
+    if not horizon:
+        horizon = _PRCY31_DEFAULT_HORIZON_MONTHS
+    rebuilt = _prcy31_build_roadmap_text(
+        lang, horizon, selected_frameworks or [])
+    sections['roadmap'] = rebuilt
+    info = {
+        'reason': reason,
+        'horizon_months': horizon,
+        'rebuilt_len': len(rebuilt),
+        'phases': 3,
+        'frameworks': [str(f).strip().upper()
+                       for f in (selected_frameworks or [])],
+    }
+    try:
+        if isinstance(diag, dict):
+            diag['prcy31_roadmap_rebuilt'] = info
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        print(f'[CYBER-ROADMAP-REBUILT] {info}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+# ── KPI canonical rebuild ───────────────────────────────────────────────
+
+# Source / tool map keyed by the KPI catalog ``kind`` returned by
+# ``_prcy26_classify_kpi_target``.
+_PRCY31_KPI_SOURCE_MAP_AR = {
+    'mttr': 'SIEM / منصة الاستجابة للحوادث',
+    'mttd': 'SIEM / EDR',
+    'incident_response_initial': 'SIEM / منصة الاستجابة للحوادث',
+    'incident_response_effectiveness': 'SIEM / منصة الاستجابة للحوادث',
+    'mfa_coverage': 'منصة إدارة الهويات IAM',
+    'iam_pam_compliance': 'منصة PAM / IAM',
+    'vuln_remediation': 'منصة إدارة الثغرات',
+    'backup_success': 'منصة النسخ الاحتياطي',
+    'phishing_failure_rate': 'منصة محاكاة التصيد',
+    'awareness_training': 'منصة التوعية والتدريب',
+    'encryption_sensitive_data': 'منصة التشفير / DLP',
+    'dcc_compliance': 'منصة الحوكمة وقياس الامتثال',
+    'cyber_basic_controls_compliance': 'منصة الحوكمة وقياس الامتثال',
+}
+_PRCY31_KPI_SOURCE_MAP_EN = {
+    'mttr': 'SIEM / IR platform',
+    'mttd': 'SIEM / EDR',
+    'incident_response_initial': 'SIEM / IR platform',
+    'incident_response_effectiveness': 'SIEM / IR platform',
+    'mfa_coverage': 'IAM platform',
+    'iam_pam_compliance': 'PAM / IAM platform',
+    'vuln_remediation': 'Vulnerability management platform',
+    'backup_success': 'Backup platform',
+    'phishing_failure_rate': 'Phishing simulation platform',
+    'awareness_training': 'Awareness training platform',
+    'encryption_sensitive_data': 'Encryption / DLP platform',
+    'dcc_compliance': 'Governance & compliance platform',
+    'cyber_basic_controls_compliance': 'Governance & compliance platform',
+}
+
+# Owner map keyed by KPI catalog ``kind``.
+_PRCY31_KPI_OWNER_MAP_AR = {
+    'mttr': 'مدير SOC',
+    'mttd': 'مدير SOC',
+    'incident_response_initial': 'مدير الاستجابة للحوادث',
+    'incident_response_effectiveness': 'مدير الاستجابة للحوادث',
+    'mfa_coverage': 'مدير IAM',
+    'iam_pam_compliance': 'مدير IAM',
+    'vuln_remediation': 'مدير الثغرات',
+    'backup_success': 'مدير العمليات / النسخ الاحتياطي',
+    'phishing_failure_rate': 'مدير التوعية',
+    'awareness_training': 'مدير التوعية',
+    'encryption_sensitive_data': 'مدير حماية البيانات',
+    'dcc_compliance': 'مدير الامتثال',
+    'cyber_basic_controls_compliance': 'مدير الامتثال',
+}
+_PRCY31_KPI_OWNER_MAP_EN = {
+    'mttr': 'SOC Manager',
+    'mttd': 'SOC Manager',
+    'incident_response_initial': 'IR Manager',
+    'incident_response_effectiveness': 'IR Manager',
+    'mfa_coverage': 'IAM Lead',
+    'iam_pam_compliance': 'IAM Lead',
+    'vuln_remediation': 'Vulnerability Manager',
+    'backup_success': 'Operations / Backup Manager',
+    'phishing_failure_rate': 'Awareness Manager',
+    'awareness_training': 'Awareness Manager',
+    'encryption_sensitive_data': 'Data Protection Manager',
+    'dcc_compliance': 'Compliance Manager',
+    'cyber_basic_controls_compliance': 'Compliance Manager',
+}
+
+# Frequency map keyed by KPI catalog ``kind``.
+_PRCY31_KPI_FREQUENCY_MAP_AR = {
+    'mttr': 'شهري',
+    'mttd': 'شهري',
+    'incident_response_initial': 'شهري',
+    'incident_response_effectiveness': 'شهري',
+    'mfa_coverage': 'ربع سنوي',
+    'iam_pam_compliance': 'ربع سنوي',
+    'vuln_remediation': 'شهري',
+    'backup_success': 'شهري',
+    'phishing_failure_rate': 'ربع سنوي',
+    'awareness_training': 'ربع سنوي',
+    'encryption_sensitive_data': 'ربع سنوي',
+    'dcc_compliance': 'ربع سنوي',
+    'cyber_basic_controls_compliance': 'ربع سنوي',
+}
+_PRCY31_KPI_FREQUENCY_MAP_EN = {
+    'mttr': 'Monthly',
+    'mttd': 'Monthly',
+    'incident_response_initial': 'Monthly',
+    'incident_response_effectiveness': 'Monthly',
+    'mfa_coverage': 'Quarterly',
+    'iam_pam_compliance': 'Quarterly',
+    'vuln_remediation': 'Monthly',
+    'backup_success': 'Monthly',
+    'phishing_failure_rate': 'Quarterly',
+    'awareness_training': 'Quarterly',
+    'encryption_sensitive_data': 'Quarterly',
+    'dcc_compliance': 'Quarterly',
+    'cyber_basic_controls_compliance': 'Quarterly',
+}
+
+
+def _prcy31_default_kpi_source(lang):
+    return ('منصة الحوكمة وقياس الامتثال' if lang != 'en'
+            else 'Governance & compliance platform')
+
+
+def _prcy31_default_kpi_owner(lang):
+    return 'CISO' if lang != 'en' else 'CISO'
+
+
+def _prcy31_default_kpi_frequency(lang):
+    return 'ربع سنوي' if lang != 'en' else 'Quarterly'
+
+
+def _prcy31_default_kpi_target(lang, horizon_months=None):
+    """Fallback canonical target when the catalog cannot classify a
+    KPI description (deterministic, never a dash or marker)."""
+    return 'لا يقل عن 90%' if lang != 'en' else 'At least 90%'
+
+
+def _prcy31_kpi_timeframe_label(horizon_months, lang):
+    try:
+        h = int(horizon_months or _PRCY31_DEFAULT_HORIZON_MONTHS)
+    except Exception:  # noqa: BLE001
+        h = _PRCY31_DEFAULT_HORIZON_MONTHS
+    return (f'{h} شهر' if lang != 'en' else f'{h} months')
+
+
+def _prcy31_classify_kpi_type(description, lang):
+    """Return ``'KRI'`` for risk indicators (incident / breach / failure /
+    leak / loss) and ``'KPI'`` for the rest."""
+    if not description:
+        return 'KPI'
+    s = str(description)
+    low = s.lower()
+    kri_tokens_ar = ('الحوادث', 'تسرب', 'اختراق', 'فشل',
+                     'انتهاك', 'تعطل', 'إصابة')
+    kri_tokens_en = ('incident', 'breach', 'leak', 'failure',
+                     'compromise', 'outage', 'phish')
+    if any(t in s for t in kri_tokens_ar):
+        return 'KRI'
+    if any(t in low for t in kri_tokens_en):
+        return 'KRI'
+    return 'KPI'
+
+
+def _prcy31_derive_formula(description, existing_formula, kind, lang):
+    """Return a deterministic formula expression. The existing formula
+    is preserved when it looks like a valid formula (per
+    :func:`_prcy30_cell_looks_like_formula`); otherwise a sensible
+    catalog-derived template is returned."""
+    f = (existing_formula or '').strip()
+    if f and f not in ('—', '-', '–') and _prcy30_cell_looks_like_formula(f):
+        return f
+    is_ar = str(lang or '').lower() != 'en'
+    if kind in ('mttr', 'mttd', 'incident_response_initial'):
+        return ('متوسط الوقت من اكتشاف الحادث إلى الاستجابة' if is_ar
+                else 'Average time from incident detection to response')
+    if kind == 'incident_response_effectiveness':
+        return ('عدد الحوادث المعالجة ضمن الزمن المحدد '
+                '/ إجمالي الحوادث × 100' if is_ar
+                else 'Incidents handled within SLA / total incidents × 100')
+    if kind == 'mfa_coverage':
+        return ('عدد الحسابات المغطاة بـ MFA / إجمالي الحسابات × 100'
+                if is_ar
+                else 'Accounts covered by MFA / total accounts × 100')
+    if kind == 'iam_pam_compliance':
+        return ('عدد الحسابات المميزة المُدارة / إجمالي الحسابات '
+                'المميزة × 100' if is_ar
+                else 'Managed privileged accounts / total privileged '
+                     'accounts × 100')
+    if kind == 'vuln_remediation':
+        return ('عدد الثغرات الحرجة المُعالجة خلال 72 ساعة / إجمالي '
+                'الثغرات الحرجة × 100' if is_ar
+                else 'Critical vulnerabilities remediated within 72h / '
+                     'total critical vulnerabilities × 100')
+    if kind == 'backup_success':
+        return ('عدد عمليات النسخ الناجحة / إجمالي عمليات النسخ × 100'
+                if is_ar
+                else 'Successful backups / total backups × 100')
+    if kind == 'phishing_failure_rate':
+        return ('عدد الموظفين الذين فشلوا في اختبار التصيد / إجمالي '
+                'الموظفين المختبَرين × 100' if is_ar
+                else 'Employees failing phishing test / total tested '
+                     'employees × 100')
+    if kind == 'awareness_training':
+        return ('عدد الموظفين المدربين / إجمالي الموظفين '
+                'المستهدفين × 100' if is_ar
+                else 'Trained employees / total target employees × 100')
+    if kind == 'encryption_sensitive_data':
+        return ('عدد البيانات الحساسة المُشفّرة / إجمالي البيانات '
+                'الحساسة المصنفة × 100' if is_ar
+                else 'Encrypted sensitive data / total classified '
+                     'sensitive data × 100')
+    if kind in ('dcc_compliance', 'cyber_basic_controls_compliance'):
+        return ('عدد الضوابط المُطبَّقة / إجمالي الضوابط المعتمدة × 100'
+                if is_ar
+                else 'Controls implemented / total approved controls × 100')
+    # Generic fallback
+    return ('عدد البنود المحققة / إجمالي البنود المستهدفة × 100'
+            if is_ar
+            else 'Items achieved / total target items × 100')
+
+
+def _prcy31_is_kpi_table_header(cells):
+    if not cells:
+        return False
+    blob = ' '.join(cells)
+    low = blob.lower()
+    return (
+        'وصف المؤشر' in blob or 'kpi description' in low
+        or 'القيمة المستهدفة' in blob or 'target value' in low
+        or 'المؤشر' in blob or 'indicator' in low
+        or 'kpi' in low)
+
+
+def _prcy31_extract_existing_kpi_rows(sections):
+    """Parse the existing KPI table and return ``[(desc, formula), ...]``
+    for every data row preserving any non-trivial description / formula
+    text. Header / separator / KRI rows are skipped. Rows lacking a
+    usable description are dropped."""
+    if not isinstance(sections, dict):
+        return []
+    body = sections.get('kpis', '') or ''
+    if not body:
+        return []
+    rows = _prcy19_strip_md_table_rows(body)
+    if not rows:
+        return []
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and _prcy31_is_kpi_table_header(
+                r['cells'] or []):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return []
+    cols = _prcy26_locate_kpi_table_columns(rows[hdr_idx]['cells'] or [])
+    desc_idx, target_idx, formula_idx, _src, _own, _frq = cols
+    if desc_idx < 0:
+        return []
+    out = []
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] == 'sep':
+            continue
+        if r['kind'] != 'data' or not r['cells']:
+            break
+        cells = r['cells']
+        if desc_idx >= len(cells):
+            continue
+        desc = (cells[desc_idx] or '').strip()
+        if not desc or desc in ('—', '-', '–'):
+            continue
+        # Skip header-ish leftovers.
+        if desc.lower() in ('#', 'kpi', 'indicator', 'المؤشر'):
+            continue
+        # Locate a formula candidate — prefer the formula column, fall
+        # back to the target column when it carries formula text
+        # (column-shifted row that PR-CY30 didn't normalise yet).
+        formula = ''
+        if 0 <= formula_idx < len(cells):
+            formula = (cells[formula_idx] or '').strip()
+        if (not formula or formula in ('—', '-', '–')
+                or '[REQUIRES_AI_' in formula):
+            if 0 <= target_idx < len(cells):
+                tv = (cells[target_idx] or '').strip()
+                if (tv and tv not in ('—', '-', '–')
+                        and _prcy30_cell_looks_like_formula(tv)):
+                    formula = tv
+        out.append((desc, formula))
+    return out
+
+
+def _prcy31_kpi_needs_canonical_rebuild(sections, lang):
+    """Inspect ``sections['kpis']`` and decide whether a canonical
+    rebuild is required. Returns ``(needs_rebuild, reasons)`` where
+    ``reasons`` is a list of short reason tokens for diagnostics."""
+    reasons = []
+    if not isinstance(sections, dict):
+        return (False, reasons)
+    body = sections.get('kpis', '') or ''
+    if not body:
+        return (False, reasons)
+    if '[REQUIRES_AI_' in body:
+        reasons.append('markers_present')
+    rows = _prcy19_strip_md_table_rows(body)
+    if not rows:
+        return (bool(reasons), reasons)
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and _prcy31_is_kpi_table_header(
+                r['cells'] or []):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return (bool(reasons), reasons)
+    cols = _prcy26_locate_kpi_table_columns(rows[hdr_idx]['cells'] or [])
+    desc_idx, target_idx, formula_idx, src_idx, own_idx, frq_idx = cols
+    dash_only_count = 0
+    formula_in_target_count = 0
+    unresolved_target_count = 0
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] == 'sep':
+            continue
+        if r['kind'] != 'data' or not r['cells']:
+            break
+        cells = r['cells']
+        if 0 <= target_idx < len(cells):
+            tv = (cells[target_idx] or '').strip()
+            if tv in ('', '—', '-', '–'):
+                unresolved_target_count += 1
+            elif _prcy30_cell_looks_like_formula(tv):
+                formula_in_target_count += 1
+        # Dash-only support cells (source / owner / frequency).
+        for ci in (src_idx, own_idx, frq_idx):
+            if 0 <= ci < len(cells):
+                v = (cells[ci] or '').strip()
+                if v in ('', '—', '-', '–'):
+                    dash_only_count += 1
+                    break
+    if formula_in_target_count:
+        reasons.append(f'formula_in_target:{formula_in_target_count}')
+    if unresolved_target_count >= 2:
+        reasons.append(f'multiple_unresolved_targets:{unresolved_target_count}')
+    if dash_only_count >= 2:
+        reasons.append(f'dash_only_support_cells:{dash_only_count}')
+    return (bool(reasons), reasons)
+
+
+def _prcy31_rebuild_kpi_canonical(sections, lang, selected_frameworks,
+                                  metadata, diag):
+    """Rebuild ``sections['kpis']`` into the canonical 9-column schema.
+    Returns the number of data rows emitted. Mutates ``sections`` in
+    place. Preserves the original ``## مؤشرات الأداء`` heading line
+    when present."""
+    if not isinstance(sections, dict):
+        return 0
+    is_ar = str(lang or '').lower() != 'en'
+    body = sections.get('kpis', '') or ''
+    # Preserve the H2 heading (line that starts with ``## ``) so the
+    # splice helper continues to recognise the section.
+    heading_line = ''
+    if body:
+        for ln in body.split('\n'):
+            if ln.lstrip().startswith('## '):
+                heading_line = ln.rstrip()
+                break
+    if not heading_line:
+        heading_line = ('## مؤشرات الأداء الرئيسية' if is_ar
+                        else '## Key Performance Indicators')
+    horizon = None
+    if isinstance(metadata, dict):
+        try:
+            horizon = int(metadata.get('horizon_months') or 0) or None
+        except Exception:  # noqa: BLE001
+            horizon = None
+    if not horizon:
+        try:
+            horizon = _prcy25_extract_summary_horizon_months(sections)
+        except Exception:  # noqa: BLE001
+            horizon = None
+    if not horizon:
+        horizon = _PRCY31_DEFAULT_HORIZON_MONTHS
+    existing = _prcy31_extract_existing_kpi_rows(sections)
+    if not existing:
+        # Spec-mandated default catalog (covers ECC + IR + IAM + vuln +
+        # backup + awareness + encryption). Always produces a complete
+        # 9-column table so the validator passes.
+        if is_ar:
+            existing = [
+                ('معدل الامتثال لضوابط الأمن السيبراني الأساسية ECC', ''),
+                ('معدل تطبيق المصادقة متعددة العوامل MFA للحسابات المميزة',
+                 ''),
+                ('متوسط زمن الاستجابة للحوادث الحرجة MTTR', ''),
+                ('متوسط زمن الكشف عن الحوادث الحرجة MTTD', ''),
+                ('معدل معالجة الثغرات الحرجة خلال 72 ساعة', ''),
+                ('معدل نجاح النسخ الاحتياطي', ''),
+                ('معدل تغطية برامج التوعية والتدريب', ''),
+                ('معدل الفشل في اختبارات التصيد', ''),
+                ('معدل تشفير البيانات الحساسة المصنفة', ''),
+            ]
+        else:
+            existing = [
+                ('Compliance rate with NCA ECC baseline controls', ''),
+                ('MFA enforcement rate for privileged accounts', ''),
+                ('Mean Time To Respond (MTTR) for critical incidents', ''),
+                ('Mean Time To Detect (MTTD) for critical incidents', ''),
+                ('Critical vulnerability remediation rate within 72 hours',
+                 ''),
+                ('Backup success rate', ''),
+                ('Awareness & training coverage rate', ''),
+                ('Phishing simulation failure rate', ''),
+                ('Sensitive classified data encryption coverage', ''),
+            ]
+    src_map = (_PRCY31_KPI_SOURCE_MAP_AR if is_ar
+               else _PRCY31_KPI_SOURCE_MAP_EN)
+    own_map = (_PRCY31_KPI_OWNER_MAP_AR if is_ar
+               else _PRCY31_KPI_OWNER_MAP_EN)
+    frq_map = (_PRCY31_KPI_FREQUENCY_MAP_AR if is_ar
+               else _PRCY31_KPI_FREQUENCY_MAP_EN)
+    timeframe = _prcy31_kpi_timeframe_label(horizon, lang)
+    lines = [heading_line, '']
+    lines.append(_PRCY31_KPI_HEADER_AR if is_ar else _PRCY31_KPI_HEADER_EN)
+    lines.append(_PRCY31_KPI_SEP)
+    emitted = 0
+    seen_desc = set()
+    for desc, existing_formula in existing:
+        d_key = desc.strip().lower()
+        if d_key in seen_desc:
+            continue
+        seen_desc.add(d_key)
+        target, _conf, kind = _prcy26_classify_kpi_target(
+            desc, formula=existing_formula or '', source='',
+            lang=lang, horizon_months=horizon,
+            selected_frameworks=selected_frameworks)
+        if not target:
+            target = _prcy31_default_kpi_target(lang, horizon)
+            kind = kind or 'generic'
+        formula = _prcy31_derive_formula(
+            desc, existing_formula, kind, lang)
+        source = src_map.get(kind) or _prcy31_default_kpi_source(lang)
+        owner = own_map.get(kind) or _prcy31_default_kpi_owner(lang)
+        frequency = frq_map.get(kind) or _prcy31_default_kpi_frequency(lang)
+        kpi_type = _prcy31_classify_kpi_type(desc, lang)
+        emitted += 1
+        lines.append(
+            f'| {emitted} | {desc} | {kpi_type} | {target} | {formula} |'
+            f' {source} | {owner} | {frequency} | {timeframe} |')
+    lines.append('')
+    sections['kpis'] = '\n'.join(lines).rstrip() + '\n'
+    info = {
+        'rows': emitted,
+        'horizon_months': horizon,
+        'frameworks': [str(f).strip().upper()
+                       for f in (selected_frameworks or [])],
+    }
+    try:
+        if isinstance(diag, dict):
+            diag['prcy31_kpi_rebuilt'] = info
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        print(f'[CYBER-KPI-CANONICAL-REBUILT] {info}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return emitted
+
+
+def _prcy31_validate_kpi_canonical(sections, lang):
+    """Validate the rebuilt KPI table against the spec's per-row
+    requirements. Returns an empty list when valid; otherwise a list
+    of short reason tokens (used by the rebuild-and-rescan loop)."""
+    issues = []
+    if not isinstance(sections, dict):
+        return ['kpis_section_missing']
+    body = sections.get('kpis', '') or ''
+    if not body:
+        return ['kpis_section_empty']
+    if '[REQUIRES_AI_' in body:
+        issues.append('marker_present')
+    rows = _prcy19_strip_md_table_rows(body)
+    if not rows:
+        return ['kpis_table_unparseable']
+    hdr_idx = None
+    for i, r in enumerate(rows):
+        if r['kind'] == 'header' and _prcy31_is_kpi_table_header(
+                r['cells'] or []):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return ['kpis_table_header_missing']
+    cols = _prcy26_locate_kpi_table_columns(rows[hdr_idx]['cells'] or [])
+    desc_idx, target_idx, formula_idx, src_idx, own_idx, frq_idx = cols
+    if min(target_idx, formula_idx, src_idx, own_idx, frq_idx) < 0:
+        return ['kpis_canonical_columns_missing']
+    row_no = 0
+    for r in rows[hdr_idx + 1:]:
+        if r['kind'] == 'sep':
+            continue
+        if r['kind'] != 'data' or not r['cells']:
+            break
+        row_no += 1
+        cells = r['cells']
+        for label, ci in (
+                ('target', target_idx),
+                ('formula', formula_idx),
+                ('source', src_idx),
+                ('owner', own_idx),
+                ('frequency', frq_idx)):
+            if ci < 0 or ci >= len(cells):
+                issues.append(f'{label}_missing:row_{row_no}')
+                continue
+            v = (cells[ci] or '').strip()
+            if not v or v in ('—', '-', '–') or '[REQUIRES_AI_' in v:
+                issues.append(f'{label}_empty_or_marker:row_{row_no}')
+        if 0 <= target_idx < len(cells):
+            tv = (cells[target_idx] or '').strip()
+            if tv and _prcy30_cell_looks_like_formula(tv):
+                issues.append(f'formula_in_target:row_{row_no}')
+    if row_no == 0:
+        issues.append('no_data_rows')
+    return issues
+
+
+def _prcy31_kpi_canonical_rebuild_and_rescan(sections, lang,
+                                             selected_frameworks,
+                                             metadata, diag):
+    """Spec section F — rebuild-and-rescan loop.
+
+    1. Detect whether a canonical rebuild is required.
+    2. Rebuild the KPI table into the canonical 9-column schema.
+    3. Re-scan for markers, re-parse rows, validate every cell.
+    4. If still invalid, run one targeted repair cycle (PR-CY26).
+    5. If still invalid, set
+       ``sections[_PRCY31_KPI_REBUILD_FAILED_FLAG]`` so the final
+       blocking gate fails closed with
+       ``final_quality_gate_failed:unresolved_kpi_canonical_rebuild:...``.
+
+    Returns ``(needed, success, actions)``.
+    """
+    actions = []
+    if not isinstance(sections, dict):
+        return (False, True, actions)
+    needs, reasons = _prcy31_kpi_needs_canonical_rebuild(sections, lang)
+    if not needs:
+        return (False, True, actions)
+    actions.append(
+        'kpi_canonical_rebuild_triggered:' + ','.join(reasons))
+    emitted = _prcy31_rebuild_kpi_canonical(
+        sections, lang, selected_frameworks, metadata, diag)
+    actions.append(f'kpi_canonical_rebuild_rows:{emitted}')
+    # 1st rescan
+    issues = _prcy31_validate_kpi_canonical(sections, lang)
+    if not issues:
+        sections.pop(_PRCY31_KPI_REBUILD_FAILED_FLAG, None)
+        sections.pop(_PRCY31_KPI_REBUILD_REASON_FLAG, None)
+        actions.append('kpi_canonical_validate:ok')
+        return (True, True, actions)
+    actions.append(
+        'kpi_canonical_validate:invalid:' + ','.join(issues[:3]))
+    # One targeted repair cycle — PR-CY26 marker repair + a second
+    # rebuild attempt (the rebuild is deterministic so a second call
+    # only helps when the first attempt was disturbed by a concurrent
+    # mutator). The PR-CY18 / PR-CY20 row preservation is untouched.
+    try:
+        _prcy26_repair_kpi_target_markers_in_sections(
+            sections, lang, metadata=metadata,
+            selected_frameworks=selected_frameworks)
+    except Exception:  # noqa: BLE001
+        pass
+    _prcy31_rebuild_kpi_canonical(
+        sections, lang, selected_frameworks, metadata, diag)
+    issues2 = _prcy31_validate_kpi_canonical(sections, lang)
+    if not issues2:
+        sections.pop(_PRCY31_KPI_REBUILD_FAILED_FLAG, None)
+        sections.pop(_PRCY31_KPI_REBUILD_REASON_FLAG, None)
+        actions.append('kpi_canonical_validate:ok_after_retry')
+        return (True, True, actions)
+    sections[_PRCY31_KPI_REBUILD_FAILED_FLAG] = True
+    sections[_PRCY31_KPI_REBUILD_REASON_FLAG] = ','.join(issues2[:3])
+    actions.append(
+        'kpi_canonical_validate:failed_after_retry:'
+        + ','.join(issues2[:3]))
+    try:
+        print(
+            '[CYBER-KPI-CANONICAL-REBUILD-FAILED] '
+            f'reasons={issues2[:3]}',
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return (True, False, actions)
+
+
 def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
                                 selected_frameworks, domain, metadata=None):
     """PR-CY25 / PR-CY26 — single targeted-repair pass. Performs the
@@ -37390,6 +38387,26 @@ def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
             selected_frameworks=selected_frameworks)
         if kpi_actions:
             actions.extend(kpi_actions)
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    # 0b) PR-CY31 — Full 9-column KPI canonical rebuild + rescan loop.
+    # Runs AFTER the PR-CY26 marker repair so trivially resolvable
+    # markers are cleared first; only structurally unrecoverable
+    # tables (markers still present, formula-in-target, multiple
+    # dash-only support cells, multiple unresolved targets) trigger
+    # the deterministic 9-column rebuild. Sets the
+    # ``_prcy31_kpi_rebuild_failed`` sentinel on the sections dict
+    # when even the rebuild + retry could not produce a valid table —
+    # the blocking gate surfaces that as ``unresolved_kpi_canonical_rebuild``.
+    try:
+        needed, ok, prcy31_actions = (
+            _prcy31_kpi_canonical_rebuild_and_rescan(
+                sections, lang, selected_frameworks,
+                metadata, {}))
+        if prcy31_actions:
+            actions.extend(prcy31_actions)
+        if needed and not ok:
+            actions.append('kpi_canonical_rebuild:failed')
     except Exception:  # noqa: BLE001 — defensive
         pass
     # 1) KRI table — let the PR-CY19 KRI ensure helper try again now
