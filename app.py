@@ -35920,23 +35920,434 @@ def _prcy25_is_repairable(blocking_errors):
     return True
 
 
-def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
-                                selected_frameworks, domain, metadata=None):
-    """PR-CY25 — single targeted-repair pass. Invokes the PR-CY19 KRI
-    backfill and PR-CY23 quality-gate helpers a second time over the
-    section bodies that triggered a blocking error. The function
-    mutates ``sections`` in place and returns a list of repair actions
-    taken (for the diagnostic).
+# ────────────────────────────────────────────────────────────────────────
+# PR-CY26 — Targeted KPI target marker repair
+#
+# Resolves ``[REQUIRES_AI_TARGET_REPAIR]`` tokens that the upstream
+# PR-CY19 / PR-CY22 / PR-CY23 helpers left inside the KPI table BEFORE
+# the PR-CY25 final blocking gate fires. Deterministic, catalog-based
+# and read-only on every other cell of the KPI row so that the KPI
+# description / formula / source / owner / frequency cells are never
+# overwritten and the table structure is preserved exactly. When the
+# target cannot be derived the marker is left in place and the
+# PR-CY25 hard gate continues to block rendering with
+# ``unresolved_kpi_target_repair:`` diagnostics.
+# ════════════════════════════════════════════════════════════════════════
 
-    The only AI-marker repair we perform is to STRIP unresolved
-    ``[REQUIRES_AI_*]`` tokens from cells where the surrounding row is
-    otherwise complete — leaving an empty cell that the next gate run
-    will treat as ``kpi_target_dash_only``. AI repair calls are not
-    initiated here (the upstream PR-CY19 / PR-CY23 helpers already
-    attempted that during the first audit pass)."""
+_PRCY26_KPI_TARGET_MARKER = '[REQUIRES_AI_TARGET_REPAIR]'
+
+
+def _prcy26_strip_directional(text):
+    if not text:
+        return ''
+    return ''.join(
+        ch for ch in str(text)
+        if ch not in ('\u200e', '\u200f', '\u202a', '\u202b',
+                      '\u202c', '\u202d', '\u202e'))
+
+
+def _prcy26_classify_kpi_target(description, formula='', source='',
+                                lang='ar'):
+    """Deterministic catalog-based classifier mapping a KPI description
+    (with light hints from formula / source) to a target value.
+
+    Returns ``(target, confidence, kind)`` or ``(None, 'none', '')`` when
+    the description does not match any known KPI family."""
+    if not description:
+        return (None, 'none', '')
+    desc = _prcy26_strip_directional(description)
+    low = desc.lower()
+    fl = _prcy26_strip_directional(formula or '').lower()
+
+    # Incident response — must precede the generic IAM/PAM rule because
+    # incident KPIs sometimes mention privileged accounts in context.
+    has_mttr = (
+        'mttr' in low
+        or 'زمن الاستجابة' in desc
+        or 'متوسط زمن الاستجابة' in desc
+        or 'mean time to respond' in low
+        or 'mean time to response' in low
+    )
+    has_mttd = (
+        'mttd' in low
+        or 'زمن الكشف' in desc
+        or 'متوسط زمن الكشف' in desc
+        or 'mean time to detect' in low
+    )
+    has_initial_triage = (
+        'الاستجابة الأولية' in desc
+        or 'الفرز الأولي' in desc
+        or 'triage' in low
+        or 'initial response' in low
+    )
+    if has_mttr:
+        if has_initial_triage:
+            return (
+                'أقل من 30 دقيقة للاستجابة الأولية للحوادث الحرجة',
+                'high', 'incident_response_initial')
+        return ('أقل من 4 ساعات للحوادث الحرجة', 'high', 'mttr')
+    if has_mttd:
+        return ('أقل من 15 دقيقة للحوادث الحرجة', 'high', 'mttd')
+
+    # MFA coverage
+    if (
+        'mfa' in low
+        or 'multi-factor' in low
+        or 'multi factor' in low
+        or 'multifactor' in low
+        or 'التحقق متعدد العوامل' in desc
+        or 'المصادقة متعددة' in desc
+        or 'تغطية mfa' in low
+    ):
+        return (
+            ('100% للحسابات المميزة أو ≥ 95% '
+             'للمستخدمين المشمولين'),
+            'high', 'mfa_coverage')
+
+    # IAM / PAM compliance, coverage, application
+    if (
+        ('iam' in low or 'pam' in low
+         or 'إدارة الهويات' in desc
+         or 'إدارة الوصول المميز' in desc
+         or 'الحسابات المميزة' in desc
+         or 'privileged access' in low
+         or 'identity and access' in low)
+        and (
+            'compliance' in low or 'coverage' in low
+            or 'الامتثال' in desc or 'التطبيق' in desc
+            or 'التغطية' in desc or 'الالتزام' in desc
+        )
+    ):
+        return ('≥ 90%', 'high', 'iam_pam_compliance')
+
+    # High-risk / critical vulnerability remediation; patching coverage
+    if (
+        'vulnerab' in low
+        or 'الثغرات' in desc
+        or 'patch' in low
+        or 'الترقيع' in desc
+        or 'remediation' in low
+        or 'المعالجة' in desc
+    ):
+        if (
+            'critical' in low or 'high' in low
+            or 'حرجة' in desc or 'عالية' in desc
+            or 'patch' in low or 'الترقيع' in desc
+            or 'تغطية' in desc or 'coverage' in low
+            or 'remediation' in low or 'معالجة' in desc
+        ):
+            return ('≥ 95% خلال 72 ساعة', 'high', 'vuln_remediation')
+
+    # Backup success
+    if (
+        'backup' in low
+        or 'النسخ الاحتياطي' in desc
+        or 'النسخة الاحتياطية' in desc
+    ):
+        return ('≥ 99%', 'high', 'backup_success')
+
+    # Phishing failure / click rate (before generic awareness)
+    if (
+        'phish' in low or 'التصيد' in desc
+    ):
+        return ('أقل من 5%', 'high', 'phishing_failure_rate')
+
+    # Awareness training coverage
+    if (
+        'awareness' in low or 'training' in low
+        or 'التوعية' in desc or 'التدريب' in desc
+    ):
+        return ('≥ 95% من الموظفين المستهدفين',
+                'high', 'awareness_training')
+
+    # Encryption / sensitive data protection
+    if (
+        'encrypt' in low or 'cipher' in low
+        or 'التشفير' in desc or 'تشفير' in desc
+        or 'sensitive data' in low
+        or 'حماية البيانات الحساسة' in desc
+        or 'البيانات الحساسة' in desc
+    ):
+        return (
+            ('≥ 95% أو 100% للبيانات الحساسة '
+             'المصنفة حسب السياق'),
+            'medium', 'encryption_sensitive_data')
+
+    return (None, 'none', '')
+
+
+def _prcy26_locate_kpi_table_columns(header_cells):
+    """Return ``(desc_idx, target_idx, formula_idx, source_idx,
+    owner_idx, frequency_idx)`` resolved from KPI header cells. Missing
+    columns return ``-1``."""
+    desc_idx = target_idx = formula_idx = source_idx = -1
+    owner_idx = frequency_idx = -1
+    for idx, raw in enumerate(header_cells):
+        cell = (raw or '').strip().lower()
+        if desc_idx < 0 and (
+                'وصف' in raw or 'kpi description' in cell
+                or 'description' in cell or 'مؤشر' in raw
+                or 'kpi' in cell):
+            desc_idx = idx
+        if target_idx < 0 and (
+                'المستهدف' in raw or 'target' in cell
+                or 'القيمة المستهدفة' in raw):
+            target_idx = idx
+        if formula_idx < 0 and (
+                'صيغة' in raw or 'formula' in cell
+                or 'calculation' in cell):
+            formula_idx = idx
+        if source_idx < 0 and (
+                'مصدر' in raw or 'source' in cell
+                or 'tool' in cell or 'الأداة' in raw):
+            source_idx = idx
+        if owner_idx < 0 and (
+                'مالك' in raw or 'owner' in cell):
+            owner_idx = idx
+        if frequency_idx < 0 and (
+                'تواتر' in raw or 'frequency' in cell
+                or 'cadence' in cell):
+            frequency_idx = idx
+    return (desc_idx, target_idx, formula_idx, source_idx,
+            owner_idx, frequency_idx)
+
+
+def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
+                              metadata=None, selected_frameworks=None):
+    """PR-CY26 — Deterministic targeted repair for a single
+    ``[REQUIRES_AI_TARGET_REPAIR]`` marker inside the KPI table.
+
+    Parameters
+    ----------
+    markdown : str
+        Markdown text containing the KPI table (typically the kpis
+        section body, but a full document is also accepted).
+    marker : str
+        The exact marker token to resolve.
+    row_ref : int
+        1-based KPI row index (header / separator rows are NOT
+        counted). When ``0`` or ``None`` the helper repairs the FIRST
+        KPI row that contains the marker.
+    lang : str
+        ``'ar'`` (default) or ``'en'``.
+    metadata, selected_frameworks
+        Reserved for future heuristics; currently unused by the
+        deterministic classifier but emitted in the diagnostic.
+
+    Returns
+    -------
+    tuple
+        ``(new_markdown, diag)`` where ``diag`` is a dict with the
+        PR-CY26 telemetry fields (``row_ref``, ``kpi_description``,
+        ``original_target``, ``repaired_target``, ``formula_preview``,
+        ``source_preview``, ``selected_frameworks``, ``confidence``,
+        ``action_taken``, ``remaining_markers_count``).  When no
+        target could be derived the marker is left in place,
+        ``repaired_target`` is ``None`` and ``action_taken`` is
+        ``'unresolved_kpi_target_repair'``.
+    """
+    diag = {
+        'row_ref': row_ref or 0,
+        'kpi_description': '',
+        'original_target': '',
+        'repaired_target': None,
+        'formula_preview': '',
+        'source_preview': '',
+        'selected_frameworks': [
+            str(f).strip().upper() for f in (selected_frameworks or [])],
+        'confidence': 'none',
+        'action_taken': 'noop',
+        'remaining_markers_count': 0,
+    }
+    if not markdown or not isinstance(markdown, str):
+        return (markdown or '', diag)
+    tok = marker or _PRCY26_KPI_TARGET_MARKER
+    if tok not in markdown:
+        diag['action_taken'] = 'marker_absent'
+        return (markdown, diag)
+
+    lines = markdown.split('\n')
+    header_idx = -1
+    header_cells = []
+    columns = (-1, -1, -1, -1, -1, -1)
+    row_no = 0
+    target_line_idx = -1
+    for idx, ln in enumerate(lines):
+        if not ln.lstrip().startswith('|'):
+            # Table boundary — reset state when we leave a table.
+            if header_idx >= 0 and row_no > 0:
+                header_idx = -1
+                row_no = 0
+                columns = (-1, -1, -1, -1, -1, -1)
+            continue
+        stripped = ln.strip()
+        cells = [c.strip() for c in stripped.strip('|').split('|')]
+        if all(set(c) <= set('-: ') for c in cells if c):
+            continue
+        if header_idx < 0:
+            header_idx = idx
+            header_cells = cells
+            columns = _prcy26_locate_kpi_table_columns(cells)
+            # Require at minimum a description + target column to
+            # recognise this as a KPI table.
+            if columns[0] < 0 or columns[1] < 0:
+                header_idx = -1
+                header_cells = []
+                columns = (-1, -1, -1, -1, -1, -1)
+            continue
+        row_no += 1
+        if tok not in ln:
+            continue
+        if row_ref and row_ref > 0 and row_no != row_ref:
+            continue
+        target_line_idx = idx
+        break
+
+    if target_line_idx < 0:
+        diag['action_taken'] = 'row_not_found'
+        diag['remaining_markers_count'] = markdown.count(tok)
+        return (markdown, diag)
+
+    diag['row_ref'] = row_no
+    raw_row = lines[target_line_idx]
+    leading = raw_row[:len(raw_row) - len(raw_row.lstrip())]
+    stripped = raw_row.strip()
+    # Preserve possible trailing pipe by re-joining with '|' and
+    # re-attaching boundary pipes from the original row.
+    has_leading_pipe = stripped.startswith('|')
+    has_trailing_pipe = stripped.endswith('|')
+    core = stripped.strip('|')
+    cells = [c for c in core.split('|')]
+    cell_values = [c.strip() for c in cells]
+
+    desc_idx, target_idx, formula_idx, source_idx, _owner, _freq = columns
+    description = (cell_values[desc_idx]
+                   if 0 <= desc_idx < len(cell_values) else '')
+    formula = (cell_values[formula_idx]
+               if 0 <= formula_idx < len(cell_values) else '')
+    source = (cell_values[source_idx]
+              if 0 <= source_idx < len(cell_values) else '')
+    original_target = (cell_values[target_idx]
+                       if 0 <= target_idx < len(cell_values) else '')
+
+    diag['kpi_description'] = description[:160]
+    diag['original_target'] = original_target[:120]
+    diag['formula_preview'] = formula[:80]
+    diag['source_preview'] = source[:80]
+
+    repaired, confidence, kind = _prcy26_classify_kpi_target(
+        description, formula=formula, source=source, lang=lang)
+    diag['confidence'] = confidence
+
+    if not repaired:
+        diag['action_taken'] = 'unresolved_kpi_target_repair'
+        diag['remaining_markers_count'] = markdown.count(tok)
+        return (markdown, diag)
+
+    # Replace the marker INSIDE the target cell only; never overwrite
+    # formula / source / owner cells.
+    if 0 <= target_idx < len(cells):
+        original_cell = cells[target_idx]
+        if tok in original_cell:
+            new_cell = original_cell.replace(tok, repaired)
+        else:
+            # Defensive: marker landed in the wrong cell — substitute
+            # only the marker token itself anywhere in the row.
+            new_cell = original_cell
+        cells[target_idx] = (
+            (' ' if original_cell.startswith(' ') else '')
+            + new_cell.strip()
+            + (' ' if original_cell.endswith(' ') else ''))
+    new_core = '|'.join(cells)
+    new_row = (('|' if has_leading_pipe else '')
+               + new_core
+               + ('|' if has_trailing_pipe else ''))
+    new_row = leading + new_row
+    # If the marker still survives in the row (e.g. extra copy), swap
+    # in-place as a belt-and-suspenders measure.
+    if tok in new_row:
+        new_row = new_row.replace(tok, repaired)
+
+    lines[target_line_idx] = new_row
+    new_markdown = '\n'.join(lines)
+
+    diag['repaired_target'] = repaired
+    diag['action_taken'] = f'kpi_target_repaired:{kind}'
+    diag['remaining_markers_count'] = new_markdown.count(tok)
+    return (new_markdown, diag)
+
+
+def _prcy26_repair_kpi_target_markers_in_sections(
+        sections, lang, metadata=None, selected_frameworks=None):
+    """PR-CY26 — Repair every ``[REQUIRES_AI_TARGET_REPAIR]`` marker
+    found inside the kpis section body. Mutates ``sections['kpis']``
+    in place. Returns a list of action labels suitable for the
+    PR-CY25 repair_actions log."""
     actions = []
     if not isinstance(sections, dict):
         return actions
+    body = sections.get('kpis', '') or ''
+    if not body or _PRCY26_KPI_TARGET_MARKER not in body:
+        return actions
+    # Iterate row-by-row resolving one marker per pass to keep the
+    # row_ref / diagnostic numbering stable.
+    safety_limit = 32
+    for _ in range(safety_limit):
+        if _PRCY26_KPI_TARGET_MARKER not in body:
+            break
+        new_body, diag = _repair_kpi_target_marker(
+            body, _PRCY26_KPI_TARGET_MARKER, 0, lang=lang,
+            metadata=metadata,
+            selected_frameworks=selected_frameworks)
+        try:
+            print(f'[CYBER-KPI-TARGET-REPAIR] {diag}', flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        action = diag.get('action_taken') or 'noop'
+        if action.startswith('kpi_target_repaired'):
+            body = new_body
+            actions.append(
+                f"kpi_target_repair:row_{diag.get('row_ref', 0)}"
+                f":{action.split(':', 1)[1]}")
+            continue
+        if action == 'unresolved_kpi_target_repair':
+            # Cannot derive a target — leave the marker in place so
+            # the PR-CY25 hard gate continues to block rendering.
+            actions.append(
+                f"unresolved_kpi_target_repair:row_{diag.get('row_ref', 0)}")
+            break
+        # row_not_found / marker_absent / noop — nothing further to do.
+        break
+    sections['kpis'] = body
+    return actions
+
+
+def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
+                                selected_frameworks, domain, metadata=None):
+    """PR-CY25 / PR-CY26 — single targeted-repair pass. Performs the
+    deterministic PR-CY26 KPI target repair on ``sections['kpis']``,
+    re-invokes the PR-CY19 KRI backfill, and re-runs the PR-CY23
+    quality-gate helpers. The function mutates ``sections`` in place
+    and returns a list of repair actions taken (for the diagnostic).
+
+    Targeted KPI target repair runs BEFORE the quality gate / final
+    blocking gate is re-evaluated so resolved markers no longer
+    trigger ``unresolved_final_repair_marker``. Unresolvable markers
+    are left in place and the PR-CY25 hard gate continues to block."""
+    actions = []
+    if not isinstance(sections, dict):
+        return actions
+    # 0) PR-CY26 — Targeted KPI target marker repair. Must run BEFORE
+    # the quality gate so any resolved markers stop firing
+    # ``unresolved_final_repair_marker`` on the next cycle.
+    try:
+        kpi_actions = _prcy26_repair_kpi_target_markers_in_sections(
+            sections, lang, metadata=metadata,
+            selected_frameworks=selected_frameworks)
+        if kpi_actions:
+            actions.extend(kpi_actions)
+    except Exception:  # noqa: BLE001 — defensive
+        pass
     # 1) KRI table — let the PR-CY19 KRI ensure helper try again now
     # that any previous mutation has settled.
     try:
