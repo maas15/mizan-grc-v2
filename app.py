@@ -18662,6 +18662,14 @@ def api_strategy_status(task_id):
                                     lang=_cy25_lang_prev,
                                     domain=_cy25_domain_prev,
                                     output_type='preview',
+                                    request_context={
+                                        'payload': compact,
+                                        'selected_frameworks': (
+                                            compact.get('frameworks')
+                                            or compact.get(
+                                                'selected_frameworks')
+                                            or []),
+                                    },
                                 )
                             )
                             _cy25_prev_blockers = (
@@ -35709,22 +35717,41 @@ def _prcy25_scan_unresolved_markers(content):
 def _prcy25_locate_marker_rows(sections, marker):
     """Return a list of ``(section_key, row_index)`` tuples locating the
     given marker inside the audited section bodies. Best-effort — used
-    only to enrich the blocking-error diagnostic."""
+    only to enrich the blocking-error diagnostic.
+
+    PR-CY29 — row_index uses the 1-based **data-row** index (header and
+    separator rows are NOT counted) so the value reported by the hard
+    blocking gate matches the ``row_ref`` value emitted by
+    ``_repair_kpi_target_marker`` and the ``[CYBER-KPI-TARGET-REPAIR]``
+    diagnostic.  Multi-table sections reset the data-row counter on
+    every table boundary (blank line / non-pipe line)."""
     found = []
     if not isinstance(sections, dict):
         return found
     for key, body in sections.items():
         if not body or marker not in body:
             continue
-        # Walk markdown rows for KPI / KRI / traceability sections.
-        rows = [ln for ln in body.split('\n') if ln.lstrip().startswith('|')]
-        row_no = 0
-        for ln in rows:
-            if ln.strip().startswith('|---'):
+        data_row_no = 0
+        header_seen = False
+        for ln in body.split('\n'):
+            stripped = ln.strip()
+            if not stripped.startswith('|'):
+                # Table boundary — reset header / row counter.
+                data_row_no = 0
+                header_seen = False
                 continue
-            row_no += 1
+            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            if all(set(c) <= set('-: ') for c in cells if c):
+                # Separator row — also marks header presence.
+                header_seen = True
+                continue
+            if not header_seen:
+                # First non-separator row in a table is the header.
+                header_seen = True
+                continue
+            data_row_no += 1
             if marker in ln:
-                found.append((key, row_no))
+                found.append((key, data_row_no))
         if not found:
             found.append((key, 0))
     return found
@@ -35971,8 +35998,13 @@ def _cyber_final_blocking_gate(content, sections, lang, selected_frameworks,
                 f'final_quality_gate_failed:confidence_score_mismatch:{a}'
             )
     # 5) DCC generic traceability mapping.
-    if selected_frameworks and 'DCC' in {
-            str(f).strip().upper() for f in (selected_frameworks or [])}:
+    # PR-CY29 — also recognise canonical IDs such as ``nca_dcc`` that
+    # the resolved-frameworks list now emits in lower-case form.
+    _fw_upper_set = {
+        str(f).strip().upper() for f in (selected_frameworks or [])}
+    if selected_frameworks and (
+            'DCC' in _fw_upper_set
+            or any('DCC' in f for f in _fw_upper_set)):
         flagged = _prcy25_detect_dcc_generic_mapping(sections or {}, lang)
         for cap in flagged:
             errors.append(
@@ -36038,17 +36070,51 @@ def _prcy26_strip_directional(text):
 
 
 def _prcy26_classify_kpi_target(description, formula='', source='',
-                                lang='ar'):
+                                lang='ar', horizon_months=None,
+                                selected_frameworks=None):
     """Deterministic catalog-based classifier mapping a KPI description
     (with light hints from formula / source) to a target value.
 
     Returns ``(target, confidence, kind)`` or ``(None, 'none', '')`` when
-    the description does not match any known KPI family."""
+    the description does not match any known KPI family.
+
+    PR-CY29 — accepts optional ``horizon_months`` and
+    ``selected_frameworks`` so DCC compliance targets can be tightened
+    when the strategy horizon is long (>= 18 months) and so generic
+    compliance / incident-response-effectiveness descriptions resolve
+    to the catalog targets enumerated in the PR-CY29 spec."""
     if not description:
         return (None, 'none', '')
     desc = _prcy26_strip_directional(description)
     low = desc.lower()
     fl = _prcy26_strip_directional(formula or '').lower()
+
+    # PR-CY29 — Incident response *effectiveness* (percentage of
+    # incidents handled within SLA / on time). Must precede the MTTR
+    # branch so descriptions like "معدل فعالية الاستجابة للحوادث
+    # السيبرانية" with a percentage-style formula don't get misrouted
+    # to a duration target.
+    has_effectiveness = (
+        'فعالية الاستجابة' in desc
+        or 'الحوادث المعالجة في الوقت المحدد' in desc
+        or 'incidents handled within sla' in low
+        or 'incident response effectiveness' in low
+        or 'incidents handled on time' in low
+    )
+    formula_is_percentage = (
+        ('×' in (formula or '') or 'x' in fl or '*' in fl or 'مئوي' in fl)
+        and ('100' in fl or '%' in (formula or ''))
+    ) or (
+        '/ ' in fl and '100' in fl
+    ) or (
+        'إجمالي' in (formula or '') and '/' in (formula or '')
+    )
+    if has_effectiveness:
+        # Always a percentage — formula is conventionally
+        # (handled-on-time / total) × 100.
+        return (
+            'لا يقل عن 90% من الحوادث الحرجة ضمن الزمن المحدد',
+            'high', 'incident_response_effectiveness')
 
     # Incident response — must precede the generic IAM/PAM rule because
     # incident KPIs sometimes mention privileged accounts in context.
@@ -36163,6 +36229,36 @@ def _prcy26_classify_kpi_target(description, formula='', source='',
             ('≥ 95% أو 100% للبيانات الحساسة '
              'المصنفة حسب السياق'),
             'medium', 'encryption_sensitive_data')
+
+    # PR-CY29 — DCC / data cybersecurity compliance. Tightens when the
+    # strategy horizon is at least 18 months.
+    if (
+        'الامتثال لضوابط حماية البيانات' in desc
+        or 'الامتثال لضوابط الأمن السيبراني للبيانات' in desc
+        or 'dcc compliance' in low
+        or 'nca dcc compliance' in low
+        or 'data cybersecurity controls' in low
+    ):
+        if horizon_months is not None and horizon_months >= 18:
+            return ('≥ 90%', 'high', 'dcc_compliance')
+        return ('≥ 85%', 'high', 'dcc_compliance')
+
+    # PR-CY29 — Generic compliance with basic cybersecurity controls
+    # (NCA ECC family + Arabic catalog phrasings from the PR-CY29
+    # spec). Must come AFTER the IAM/PAM / DCC matches so it does not
+    # over-trigger on more specific KPI families.
+    if (
+        'معدل الامتثال لضوابط الأمن السيبراني الأساسية' in desc
+        or 'الامتثال لضوابط الأمن السيبراني الأساسية' in desc
+        or 'نسبة الامتثال للضوابط الأساسية' in desc
+        or 'nca ecc compliance' in low
+        or 'ecc compliance' in low
+        or (
+            'الامتثال' in desc
+            and ('الأساسية' in desc or 'الأمن السيبراني' in desc)
+        )
+    ):
+        return ('≥ 90%', 'high', 'cyber_basic_controls_compliance')
 
     return (None, 'none', '')
 
@@ -36415,7 +36511,9 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
         return (new_markdown, diag)
 
     repaired, confidence, kind = _prcy26_classify_kpi_target(
-        description, formula=formula, source=source, lang=lang)
+        description, formula=formula, source=source, lang=lang,
+        horizon_months=(metadata or {}).get('horizon_months'),
+        selected_frameworks=selected_frameworks)
     diag['confidence'] = confidence
 
     if not repaired:
@@ -36456,48 +36554,128 @@ def _repair_kpi_target_marker(markdown, marker, row_ref, lang='ar',
     return (new_markdown, diag)
 
 
+def _prcy29_marker_data_row_indices(body, marker):
+    """PR-CY29 — Return the list of 1-based KPI data-row indices that
+    contain ``marker`` inside ``body``. Header / separator rows are
+    skipped; multi-table sections reset the counter on every table
+    boundary."""
+    if not body or not marker or marker not in body:
+        return []
+    found = []
+    data_row_no = 0
+    header_seen = False
+    for ln in body.split('\n'):
+        stripped = ln.strip()
+        if not stripped.startswith('|'):
+            data_row_no = 0
+            header_seen = False
+            continue
+        cells = [c.strip() for c in stripped.strip('|').split('|')]
+        if all(set(c) <= set('-: ') for c in cells if c):
+            header_seen = True
+            continue
+        if not header_seen:
+            header_seen = True
+            continue
+        data_row_no += 1
+        if marker in ln:
+            found.append(data_row_no)
+    return found
+
+
 def _prcy26_repair_kpi_target_markers_in_sections(
         sections, lang, metadata=None, selected_frameworks=None):
     """PR-CY26 — Repair every ``[REQUIRES_AI_TARGET_REPAIR]`` marker
     found inside the kpis section body. Mutates ``sections['kpis']``
     in place. Returns a list of action labels suitable for the
-    PR-CY25 repair_actions log."""
+    PR-CY25 repair_actions log.
+
+    PR-CY29 — repairs ALL marker rows in a single pass. Previously the
+    loop short-circuited on the first unresolved row, leaving any
+    subsequent recognised KPI rows still carrying the marker. Now the
+    repair walks the full data-row marker index up-front and attempts
+    repair per row, collecting both repaired and unresolved row refs
+    so the ``[CYBER-KPI-TARGET-REPAIR-SUMMARY]`` diagnostic can be
+    emitted for operator visibility."""
     actions = []
     if not isinstance(sections, dict):
         return actions
     body = sections.get('kpis', '') or ''
     if not body or _PRCY26_KPI_TARGET_MARKER not in body:
         return actions
-    # Iterate row-by-row resolving one marker per pass to keep the
-    # row_ref / diagnostic numbering stable.
-    safety_limit = 32
-    for _ in range(safety_limit):
-        if _PRCY26_KPI_TARGET_MARKER not in body:
+    initial_marker_rows = _prcy29_marker_data_row_indices(
+        body, _PRCY26_KPI_TARGET_MARKER)
+    repaired_rows = []
+    unresolved_rows = []
+    fws_used = [str(f).strip().upper() for f in (selected_frameworks or [])]
+    safety_limit = max(len(initial_marker_rows) * 2, 8)
+    iteration = 0
+    while _PRCY26_KPI_TARGET_MARKER in body and iteration < safety_limit:
+        iteration += 1
+        # Recompute current marker rows so repaired rows are skipped.
+        current_rows = _prcy29_marker_data_row_indices(
+            body, _PRCY26_KPI_TARGET_MARKER)
+        # Skip rows already attempted and unresolved.
+        target_row = next(
+            (r for r in current_rows if r not in unresolved_rows), None)
+        if target_row is None:
             break
         new_body, diag = _repair_kpi_target_marker(
-            body, _PRCY26_KPI_TARGET_MARKER, 0, lang=lang,
+            body, _PRCY26_KPI_TARGET_MARKER, target_row, lang=lang,
             metadata=metadata,
             selected_frameworks=selected_frameworks)
+        # PR-CY29 — emit row-level diagnostic with locator strategy
+        # information for parity between scanner and repair.
         try:
+            diag = dict(diag)
+            diag['original_row_ref'] = f'kpis:row_{target_row}'
+            diag['resolved_row_ref'] = (
+                f"kpis:row_{diag.get('row_ref', target_row)}")
+            diag['locator_strategy'] = (
+                'data_row_scan'
+                if diag.get('row_ref', 0) == target_row
+                else 'marker_row_scan')
             print(f'[CYBER-KPI-TARGET-REPAIR] {diag}', flush=True)
         except Exception:  # noqa: BLE001
             pass
         action = diag.get('action_taken') or 'noop'
-        if action.startswith('kpi_target_repaired'):
+        if action.startswith('kpi_target_repaired') \
+                or action == 'kpi_target_marker_misplaced_stripped':
             body = new_body
+            repaired_rows.append(diag.get('row_ref', target_row))
+            tail = (action.split(':', 1)[1]
+                    if ':' in action else action)
             actions.append(
-                f"kpi_target_repair:row_{diag.get('row_ref', 0)}"
-                f":{action.split(':', 1)[1]}")
+                f"kpi_target_repair:row_{diag.get('row_ref', target_row)}"
+                f":{tail}")
             continue
         if action == 'unresolved_kpi_target_repair':
-            # Cannot derive a target — leave the marker in place so
-            # the PR-CY25 hard gate continues to block rendering.
+            unresolved_rows.append(target_row)
             actions.append(
-                f"unresolved_kpi_target_repair:row_{diag.get('row_ref', 0)}")
-            break
-        # row_not_found / marker_absent / noop — nothing further to do.
+                f"unresolved_kpi_target_repair:"
+                f"row_{diag.get('row_ref', target_row)}")
+            continue
+        # row_not_found / marker_absent / noop — nothing else to do.
+        unresolved_rows.append(target_row)
         break
     sections['kpis'] = body
+    # PR-CY29 — single summary diagnostic for the whole pass.
+    try:
+        summary = {
+            'markers_found': len(initial_marker_rows),
+            'rows_attempted': len(repaired_rows) + len(unresolved_rows),
+            'rows_repaired': len(repaired_rows),
+            'rows_unresolved': len(unresolved_rows),
+            'unresolved_row_refs': [
+                f'kpis:row_{r}' for r in unresolved_rows],
+            'remaining_markers_count': (
+                body or '').count(_PRCY26_KPI_TARGET_MARKER),
+            'frameworks_used': fws_used,
+        }
+        print(
+            f'[CYBER-KPI-TARGET-REPAIR-SUMMARY] {summary}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
     return actions
 
 
@@ -36707,25 +36885,238 @@ def _prcy27_repair_kpi_target_in_final_markdown(
                     f"row_{diag.get('row_ref', 0)}")
     # Broad fallback — repair any remaining markers regardless of
     # diagnostic context (PR-CY27 spec C: locate by marker only).
-    safety_limit = 16
-    while _PRCY26_KPI_TARGET_MARKER in md and safety_limit > 0:
-        safety_limit -= 1
+    # PR-CY29 — iterate by data-row index so a single unresolved row
+    # cannot stall the loop on its first iteration.
+    unresolved_seen = set()
+    safety_limit = 32
+    iteration = 0
+    while _PRCY26_KPI_TARGET_MARKER in md and iteration < safety_limit:
+        iteration += 1
+        rows = _prcy29_marker_data_row_indices(
+            md, _PRCY26_KPI_TARGET_MARKER)
+        target_row = next(
+            (r for r in rows if r not in unresolved_seen), None)
+        if target_row is None:
+            break
         new_md, diag = _repair_kpi_target_marker(
-            md, _PRCY26_KPI_TARGET_MARKER, 0, lang=lang,
+            md, _PRCY26_KPI_TARGET_MARKER, target_row, lang=lang,
             metadata=metadata, selected_frameworks=selected_frameworks)
         action = diag.get('action_taken') or 'noop'
-        if new_md == md:
-            if action == 'unresolved_kpi_target_repair':
-                actions.append(
-                    f"unresolved_kpi_target_repair:"
-                    f"row_{diag.get('row_ref', 0)}")
-            break
-        md = new_md
-        actions.append(
-            f"final_md_kpi_target_repair_fallback:"
-            f"row_{diag.get('row_ref', 0)}"
-            f":{action.split(':', 1)[-1] if ':' in action else action}")
+        if new_md != md and (
+                action.startswith('kpi_target_repaired')
+                or action == 'kpi_target_marker_misplaced_stripped'):
+            md = new_md
+            actions.append(
+                f"final_md_kpi_target_repair_fallback:"
+                f"row_{diag.get('row_ref', target_row)}"
+                f":{action.split(':', 1)[-1] if ':' in action else action}")
+            continue
+        # Unresolved / no-op — mark row to skip on next iteration so
+        # we can still attempt subsequent marker rows.
+        unresolved_seen.add(target_row)
+        if action == 'unresolved_kpi_target_repair':
+            actions.append(
+                f"unresolved_kpi_target_repair:"
+                f"row_{diag.get('row_ref', target_row)}")
     return (md, actions)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# PR-CY29 — Selected-frameworks resolution for the Cyber final export
+# contract.
+#
+# When the upstream caller hands the contract an empty / missing
+# ``selected_frameworks`` value, the contract infers the active
+# regulatory frameworks from a layered priority chain (metadata →
+# request payload → strategy context → document scope / appendix /
+# content text mentions). The inferred list is then used both by the
+# PR-CY26 / PR-CY27 KPI target repair catalog and by the hard
+# blocking gate so a Cyber strategy that clearly references NCA ECC /
+# NCA DCC cannot leave the contract with ``frameworks=[]``.
+# ════════════════════════════════════════════════════════════════════════
+
+# Canonical framework IDs and the text fragments (Arabic + English)
+# that a generated strategy may use to mention them.
+_PRCY29_FRAMEWORK_TEXT_TOKENS = (
+    ('nca_ecc', (
+        'NCA ECC',
+        'ECC NCA',
+        'Essential Cybersecurity Controls',
+        'الضوابط الأساسية للأمن السيبراني',
+    )),
+    ('nca_dcc', (
+        'NCA DCC',
+        'DCC NCA',
+        'Data Cybersecurity Controls',
+        'ضوابط الأمن السيبراني للبيانات',
+    )),
+    ('nca_cscc', (
+        'NCA CSCC',
+        'CSCC NCA',
+        'Cloud Cybersecurity Controls',
+        'ضوابط الأمن السيبراني السحابي',
+    )),
+    ('nca_tcc', (
+        'NCA TCC',
+        'TCC NCA',
+        'Telecom Cybersecurity Controls',
+        'ضوابط الأمن السيبراني للاتصالات',
+    )),
+)
+
+
+def _prcy29_normalize_framework_id(fw):
+    """Normalize a framework identifier to its canonical lower-case
+    form (``nca_ecc``, ``nca_dcc``, ...). Accepts a wide range of
+    common aliases. Returns the original value lower-cased / trimmed
+    when no canonical mapping is known so callers can still inspect
+    unknown frameworks."""
+    if fw is None:
+        return ''
+    s = str(fw).strip()
+    if not s:
+        return ''
+    low = s.lower().replace('-', '_').replace(' ', '_')
+    if low in ('ecc', 'nca_ecc', 'nca_ecc_1.0', 'ncaecc'):
+        return 'nca_ecc'
+    if low in ('dcc', 'nca_dcc', 'ncadcc'):
+        return 'nca_dcc'
+    if low in ('cscc', 'nca_cscc', 'cccc'):
+        return 'nca_cscc'
+    if low in ('tcc', 'nca_tcc'):
+        return 'nca_tcc'
+    return low
+
+
+def _prcy29_collect_known_framework_ids(value):
+    """Coerce ``value`` (str / list / tuple / dict) into a deduplicated
+    list of canonical framework IDs. Empty / unknown entries are
+    dropped silently."""
+    out = []
+    if value is None:
+        return out
+    if isinstance(value, dict):
+        # Accept ``{'nca_ecc': True, ...}`` or ``{'selected': [...]}``.
+        if 'selected' in value:
+            return _prcy29_collect_known_framework_ids(value.get('selected'))
+        for k, v in value.items():
+            if v:
+                fid = _prcy29_normalize_framework_id(k)
+                if fid and fid not in out:
+                    out.append(fid)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            fid = _prcy29_normalize_framework_id(item)
+            if fid and fid not in out:
+                out.append(fid)
+        return out
+    fid = _prcy29_normalize_framework_id(value)
+    if fid:
+        out.append(fid)
+    return out
+
+
+def _prcy29_infer_frameworks_from_text(markdown):
+    """Return the list of canonical framework IDs whose textual tokens
+    appear inside ``markdown``. Order matches
+    ``_PRCY29_FRAMEWORK_TEXT_TOKENS`` so the resulting list is
+    deterministic across invocations."""
+    out = []
+    if not markdown:
+        return out
+    text = str(markdown)
+    low = text.lower()
+    for fw_id, tokens in _PRCY29_FRAMEWORK_TEXT_TOKENS:
+        for tok in tokens:
+            if not tok:
+                continue
+            if tok in text or tok.lower() in low:
+                if fw_id not in out:
+                    out.append(fw_id)
+                break
+    return out
+
+
+def _prcy29_resolve_selected_frameworks(
+        markdown, metadata=None, request_context=None,
+        input_frameworks=None):
+    """PR-CY29 — Resolve the canonical ``selected_frameworks`` list
+    that the Cyber final export contract should consume.
+
+    Priority chain:
+      1. ``input_frameworks`` (the value the caller explicitly passed
+         to the contract).
+      2. ``metadata.selected_frameworks`` / ``metadata.frameworks``.
+      3. ``request_context.selected_frameworks`` /
+         ``request_context.frameworks`` / ``request_context.payload``.
+      4. ``request_context.strategy_context`` (scope / appendix /
+         frameworks).
+      5. Inference from ``markdown`` content tokens (NCA ECC / NCA
+         DCC / NCA CSCC / NCA TCC).
+
+    Returns ``(final_frameworks, context_dict)``. ``context_dict``
+    carries the per-layer findings so callers can emit the
+    ``[CYBER-FRAMEWORK-CONTEXT]`` diagnostic."""
+    md = markdown or ''
+    metadata = metadata if isinstance(metadata, dict) else {}
+    request_context = (
+        request_context if isinstance(request_context, dict) else {})
+
+    layer_input = _prcy29_collect_known_framework_ids(input_frameworks)
+    md_meta = metadata.get('selected_frameworks')
+    if not md_meta:
+        md_meta = metadata.get('frameworks')
+    layer_meta = _prcy29_collect_known_framework_ids(md_meta)
+
+    req_payload = (
+        request_context.get('selected_frameworks')
+        or request_context.get('frameworks')
+        or (request_context.get('payload') or {}).get(
+            'selected_frameworks')
+        or (request_context.get('payload') or {}).get('frameworks')
+    )
+    layer_request = _prcy29_collect_known_framework_ids(req_payload)
+
+    strat_ctx = (
+        request_context.get('strategy_context') or {})
+    layer_strat = _prcy29_collect_known_framework_ids(
+        (strat_ctx.get('selected_frameworks')
+         if isinstance(strat_ctx, dict) else None)
+        or (strat_ctx.get('frameworks')
+            if isinstance(strat_ctx, dict) else None))
+
+    layer_inferred = _prcy29_infer_frameworks_from_text(md)
+
+    final = []
+    inference_source = 'none'
+    for label, candidates in (
+        ('input', layer_input),
+        ('metadata', layer_meta),
+        ('request', layer_request),
+        ('strategy_context', layer_strat),
+        ('text_inference', layer_inferred),
+    ):
+        if candidates and not final:
+            final = list(candidates)
+            inference_source = label
+    # When the explicit layers all came up empty but the document text
+    # clearly references frameworks, the inference layer becomes the
+    # authoritative source (PR-CY29 spec section A).
+    if not final and layer_inferred:
+        final = list(layer_inferred)
+        inference_source = 'text_inference'
+
+    ctx = {
+        'input_frameworks': layer_input,
+        'metadata_frameworks': layer_meta,
+        'request_frameworks': layer_request,
+        'strategy_context_frameworks': layer_strat,
+        'inferred_frameworks': layer_inferred,
+        'final_frameworks': list(final),
+        'inference_source': inference_source,
+    }
+    return (final, ctx)
 
 
 def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
@@ -36777,7 +37168,8 @@ def _cyber_targeted_repair_step(content, sections, blocking_errors, lang,
 def _cyber_final_export_contract(markdown, metadata=None,
                                  selected_frameworks=None,
                                  lang='ar', domain=None,
-                                 output_type='unknown'):
+                                 output_type='unknown',
+                                 request_context=None):
     """PR-CY25 — single canonical final-export contract used by PDF,
     DOCX and Preview routes.
 
@@ -36803,7 +37195,16 @@ def _cyber_final_export_contract(markdown, metadata=None,
     canonical ``[REQUIRES_AI_TARGET_REPAIR]`` token is absent from the
     single mutable ``final_markdown`` variable immediately after the
     PR-CY27 last-chance repair so the hard blocking gate observes the
-    same repaired bytes."""
+    same repaired bytes.
+
+    PR-CY29 — when the caller passes an empty ``selected_frameworks``
+    the contract resolves the active frameworks from the layered
+    ``_prcy29_resolve_selected_frameworks`` chain (metadata → request
+    context → text-inference of NCA ECC / NCA DCC mentions) and emits
+    a ``[CYBER-FRAMEWORK-CONTEXT]`` diagnostic. The hard blocking
+    gate raises ``missing_framework_context:cyber`` when the cyber
+    document carries framework-specific requirements but no
+    frameworks can be inferred."""
     try:
         dcode = (normalize_domain(domain or (metadata or {}).get('domain')
                                   or '') or '').strip().lower()
@@ -36843,11 +37244,36 @@ def _cyber_final_export_contract(markdown, metadata=None,
                 'has_kri_table': False,
                 'confidence_consistent': True,
                 'kpi_schema_valid': True,
+                'kpi_targets_resolved': True,
+                'kpi_unresolved_marker_count': 0,
                 'kri_schema_valid': True,
                 'dcc_traceability_valid': True,
                 'domain': dcode or 'unknown',
             },
         }
+
+    # ── PR-CY29 — Resolve selected frameworks BEFORE any repair so the
+    # KPI target catalog and the hard blocking gate consume the same
+    # framework context. Emits the [CYBER-FRAMEWORK-CONTEXT] diagnostic
+    # for operator visibility.
+    resolved_frameworks, fw_ctx = _prcy29_resolve_selected_frameworks(
+        markdown or '', metadata=metadata,
+        request_context=request_context,
+        input_frameworks=selected_frameworks)
+    try:
+        fw_ctx_out = dict(fw_ctx)
+        fw_ctx_out['domain'] = dcode
+        fw_ctx_out['output_type'] = output_type
+        print(f'[CYBER-FRAMEWORK-CONTEXT] {fw_ctx_out}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    # Use the resolved list everywhere downstream (catalog, gates,
+    # diagnostics). Preserve original caller list as ``input`` only.
+    selected_frameworks = resolved_frameworks
+    # PR-CY29 — wrap caller metadata in a private mutable copy so we
+    # can layer in derived hints (``horizon_months``) for the KPI
+    # target catalog without leaking back to the caller.
+    _meta_local = dict(metadata) if isinstance(metadata, dict) else {}
 
     # PR-CY28 — single mutable ``final_markdown`` variable threaded
     # through every audit/repair step. ``current`` is retained as a
@@ -36893,9 +37319,16 @@ def _cyber_final_export_contract(markdown, metadata=None,
         # Targeted repair, then re-splice the mutated sections back
         # into ``current`` so the next audit cycle observes them.
         try:
+            # PR-CY29 — derive horizon now that sections are populated
+            # so the catalog can pick the correct DCC compliance target
+            # (≥ 85% vs ≥ 90%) and propagate other horizon-aware values.
+            if 'horizon_months' not in _meta_local:
+                _h = _prcy25_extract_summary_horizon_months(sections or {})
+                if _h:
+                    _meta_local['horizon_months'] = _h
             actions = _cyber_targeted_repair_step(
                 current, sections, blocking_errors, lang_n,
-                selected_frameworks, dcode, metadata=metadata)
+                selected_frameworks, dcode, metadata=_meta_local)
             repair_actions.extend(
                 f'cycle_{cycle + 1}:{a}' for a in (actions or []))
         except Exception:  # noqa: BLE001
@@ -36936,7 +37369,7 @@ def _cyber_final_export_contract(markdown, metadata=None,
             repaired_md, last_chance_actions = (
                 _prcy27_repair_kpi_target_in_final_markdown(
                     final_markdown, blocking_errors, lang=lang_n,
-                    metadata=metadata,
+                    metadata=_meta_local,
                     selected_frameworks=selected_frameworks))
             if repaired_md and repaired_md != final_markdown:
                 final_markdown = repaired_md
@@ -37001,6 +37434,19 @@ def _cyber_final_export_contract(markdown, metadata=None,
     except Exception:  # noqa: BLE001
         pass
 
+    # PR-CY29 — Fail-closed when a cyber document carries framework-
+    # specific requirements but the framework context could not be
+    # resolved from any layer. ``selected_frameworks`` has already
+    # been replaced with the resolved list above, so an empty list
+    # here means the inference layer also came up dry.
+    if not selected_frameworks:
+        # Only block when the content actually mentions a framework
+        # token — otherwise generic cyber strategies (e.g. test
+        # fixtures) remain unaffected.
+        if _prcy29_infer_frameworks_from_text(final_markdown or ''):
+            blocking_errors.append(
+                'final_quality_gate_failed:missing_framework_context:cyber')
+
     after_hash = _prcy25_compute_content_hash(final_markdown)
 
     # Final unresolved-marker scan — applied even if the gate already
@@ -37028,12 +37474,26 @@ def _cyber_final_export_contract(markdown, metadata=None,
     except Exception:
         pass
     try:
-        if selected_frameworks and 'DCC' in {
-                str(f).strip().upper() for f in (selected_frameworks or [])}:
+        _fw_upper_set_diag = {
+            str(f).strip().upper() for f in (selected_frameworks or [])}
+        if selected_frameworks and (
+                'DCC' in _fw_upper_set_diag
+                or any('DCC' in f for f in _fw_upper_set_diag)):
             if _prcy25_detect_dcc_generic_mapping(sections or {}, lang_n):
                 dcc_ok = False
     except Exception:
         pass
+
+    # PR-CY29 — kpi_targets_resolved + kpi_unresolved_marker_count
+    # surface the real KPI-target repair state so a contract that still
+    # carries a [REQUIRES_AI_TARGET_REPAIR] marker is never reported
+    # with ``kpi_schema_valid: True``. ``kpi_schema_valid`` is also
+    # downgraded to False whenever a target marker survives.
+    kpi_unresolved_marker_count = (
+        (final_markdown or '').count(_PRCY26_KPI_TARGET_MARKER))
+    kpi_targets_resolved = kpi_unresolved_marker_count == 0
+    if not kpi_targets_resolved:
+        kpi_schema_ok = False
 
     diag = {
         'output_type': output_type,
@@ -37048,6 +37508,8 @@ def _cyber_final_export_contract(markdown, metadata=None,
         'has_kri_table': has_kri,
         'confidence_consistent': confidence_ok,
         'kpi_schema_valid': kpi_schema_ok,
+        'kpi_targets_resolved': kpi_targets_resolved,
+        'kpi_unresolved_marker_count': kpi_unresolved_marker_count,
         'kri_schema_valid': kri_schema_ok,
         'dcc_traceability_valid': dcc_ok,
         'domain': dcode,
@@ -57592,6 +58054,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                             lang=('ar' if lang == 'ar' else 'en'),
                             domain=data.get('domain'),
                             output_type='generation',
+                            request_context={
+                                'payload': data,
+                                'selected_frameworks': (
+                                    data.get('frameworks')
+                                    or data.get('selected_frameworks')
+                                    or []),
+                            },
                         )
                         _cy28_blockers = (
                             _cy28_contract.get('blocking_errors', []) or [])
@@ -61792,6 +62261,11 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 lang='ar' if is_arabic else 'en',
                 domain=domain,
                 output_type='docx',
+                request_context={
+                    'payload': data if isinstance(
+                        locals().get('data'), dict) else {},
+                    'selected_frameworks': selected_frameworks or [],
+                },
             )
             content = _cy25_contract_docx.get('final_markdown', content)
             _cy22_docx_sections = _cy25_contract_docx.get('sections', {})
@@ -63616,6 +64090,11 @@ def api_generate_pdf():
                 lang='ar' if is_arabic else 'en',
                 domain=domain_pdf,
                 output_type='pdf',
+                request_context={
+                    'payload': data if isinstance(
+                        locals().get('data'), dict) else {},
+                    'selected_frameworks': _cy22_fws_in or [],
+                },
             )
             content = _cy25_contract_pdf.get('final_markdown', content)
             _cy22_sections = _cy25_contract_pdf.get('sections', {})
