@@ -183,7 +183,12 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
         )
         self.assertTrue(out['blocking_errors'])
         joined = ' | '.join(out['blocking_errors'])
-        self.assertIn('unresolved_final_repair_marker', joined)
+        # PR-CY36 (spec E) — KPI section markers now route to the
+        # canonical ``unresolved_kpi_canonical_rebuild`` blocking code
+        # so operators observe the architectural failure of the
+        # canonical-rebuild path instead of the generic row-by-row
+        # marker code.
+        self.assertIn('unresolved_kpi_canonical_rebuild', joined)
         self.assertIn('REQUIRES_AI_TARGET_REPAIR', joined)
         self.assertTrue(out['diag']['has_unresolved_markers'])
 
