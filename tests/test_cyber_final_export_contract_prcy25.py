@@ -248,6 +248,11 @@ class RoadmapHorizonTests(unittest.TestCase):
 
     @_skip_if_no_app
     def test_roadmap_only_covers_12_of_24_months(self):
+        # PR-CY34 — the contract now RECONCILES the mismatch by
+        # extending the roadmap to cover the declared 24-month summary
+        # horizon instead of blocking the render with
+        # ``roadmap_horizon_mismatch:summary_24:roadmap_12``. The
+        # blocking gate must NOT see the legacy mismatch error.
         out = _APP._cyber_final_export_contract(
             self._MISMATCH,
             metadata={'domain': 'cyber'},
@@ -257,9 +262,10 @@ class RoadmapHorizonTests(unittest.TestCase):
             output_type='pdf',
         )
         joined = ' | '.join(out['blocking_errors'])
-        self.assertIn('roadmap_horizon_mismatch', joined)
-        self.assertIn('summary_24', joined)
-        self.assertIn('roadmap_12', joined)
+        self.assertNotIn('roadmap_horizon_mismatch', joined)
+        # Reconciliation must have brought the coverage up to (or near)
+        # the declared summary horizon.
+        self.assertGreaterEqual(out['diag']['roadmap_coverage'], 24 - 2)
 
 
 # ── E. Missing standalone KRI table ───────────────────────────────
