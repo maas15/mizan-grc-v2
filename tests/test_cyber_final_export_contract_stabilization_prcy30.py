@@ -138,8 +138,12 @@ class PRCY30Tests(unittest.TestCase):
         fixed = _APP._prcy30_normalize_shifted_kpi_row(sections, 'ar')
         self.assertEqual(fixed, 2)
         out = sections['kpis']
-        # Target column now carries the marker.
-        self.assertGreaterEqual(out.count(MARKER), 2)
+        # PR-CY38 — the target column may NEVER carry a repair marker
+        # anymore. The schema-first composer now resolves the target
+        # directly (typed catalogue / neutral fallback / dash for
+        # canonical rebuild) when the column shift is normalised.
+        self.assertEqual(out.count(MARKER), 0)
+        self.assertNotIn('[REQUIRES_AI_', out)
         # Formula text moved into the formula column (dashes consumed).
         self.assertIn('عدد الحسابات المغطاة', out)
         self.assertNotIn('| — | SIEM |', out)
@@ -159,13 +163,15 @@ class PRCY30Tests(unittest.TestCase):
                     sections, 'ar',
                     metadata={'horizon_months': 24},
                     selected_frameworks=['nca_ecc']))
-        # Every marker resolved.
+        # PR-CY38 — no marker may exist in user-facing markdown.
         self.assertNotIn(MARKER, sections['kpis'])
-        # Shift normalisation logged + per-row repair logged.
-        joined_actions = ' '.join(actions)
-        self.assertIn('kpi_column_shift_normalized:2', joined_actions)
-        self.assertIn('kpi_target_repair:row_1', joined_actions)
-        self.assertIn('kpi_target_repair:row_2', joined_actions)
+        self.assertNotIn('[REQUIRES_AI_', sections['kpis'])
+        # The shift normalisation pass still fires; per-row marker
+        # repair entries no longer appear because the marker is never
+        # stamped in the first place (schema-first composer resolved
+        # the target before any marker could enter the cell).
+        joined_actions = ' '.join(actions or [])
+        self.assertIn('kpi_column_shift_normalized', joined_actions)
 
     def test_09_target_already_valid_rejects_formula_cell(self):
         # When the marker is in column 2 (Type cell) but target is a

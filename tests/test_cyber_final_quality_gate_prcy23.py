@@ -150,7 +150,11 @@ class KpiSchemaTests(unittest.TestCase):
         )}
         diag = _APP._prcy23_kpi_schema_enforce(sections, 'ar')
         self.assertGreaterEqual(diag['dash_only_marked'], 1)
-        self.assertIn('[REQUIRES_AI_TARGET_REPAIR]', sections['kpis'])
+        # PR-CY38 — schema-first composer replaces the marker with a
+        # typed cyber target (or a neutral fallback / dash); never a
+        # ``[REQUIRES_AI_*]`` marker in user-facing markdown.
+        self.assertNotIn('[REQUIRES_AI_TARGET_REPAIR]', sections['kpis'])
+        self.assertNotIn('[REQUIRES_AI_', sections['kpis'])
 
     @_skip_if_no_app
     def test_duplicated_formula_in_target_cleared(self):
