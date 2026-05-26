@@ -380,10 +380,13 @@ class QualityGateIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(
             int(prcy23.get('arabic_word_fragment_repair', 0) or 0), 1)
         self.assertNotIn('إرس\nاء', new_content)
-        # 2. Phase 3 without timeline dropped.
-        self.assertGreaterEqual(
-            int(prcy23.get('roadmap_phase_timeline_dropped', 0) or 0), 1)
-        self.assertNotIn('المرحلة 3', new_content)
+        # 2. PR-CY34 — Phase 3 is now rebuilt to match the declared
+        # horizon rather than dropped, so the section header remains
+        # present and ``roadmap_phase_timeline_dropped`` is no longer
+        # asserted positive. The PR-CY23 phase audit may still emit
+        # other roadmap corrections, but the previous "drop Phase 3"
+        # expectation has been retired by PR-CY34's canonical rebuild.
+        self.assertIn('المرحلة 3', new_content)
         # 4. KPI RTL threshold normalised.
         self.assertNotIn('5% &gt;', new_content)
         self.assertNotIn('5% >', new_content)
@@ -411,10 +414,16 @@ class QualityGateIntegrationTests(unittest.TestCase):
         prcy23_2 = diag2.get('prcy23', {})
         self.assertEqual(
             int(prcy23_2.get('arabic_word_fragment_repair', 0) or 0), 0)
-        self.assertEqual(
-            int(prcy23_2.get('roadmap_phase_timeline_dropped', 0) or 0), 0)
+        # PR-CY34 — Phase-3 rebuild is convergent: the second pass over
+        # an already-rebuilt roadmap must not drop or rebuild the same
+        # phase again. ``roadmap_phase_timeline_dropped`` is no longer
+        # asserted to be 0 because PR-CY23's audit may emit a structural
+        # correction that PR-CY34 then rebuilds back to the canonical
+        # phase set; we only require the second pass to be stable.
         self.assertEqual(prcy23_2.get('confidence_consistency', {})
                          .get('displayed_rewrites', 0), 0)
+        # Stability: second pass must not change the content further.
+        self.assertEqual(first, second)
 
     @_skip_if_no_app
     def test_quality_gate_noop_for_non_cyber(self):

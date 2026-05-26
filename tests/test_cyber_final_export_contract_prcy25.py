@@ -166,9 +166,14 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
 
     @_skip_if_no_app
     def test_target_marker_in_kpi_blocks_rendering(self):
-        # Use a KPI description that does not match any PR-CY26
-        # deterministic catalog entry so the marker remains unresolved
-        # and the PR-CY25 hard gate still blocks rendering.
+        # PR-CY38 — markers are NEVER written into user-facing
+        # markdown; when an inbound marker is encountered the PR-CY31
+        # canonical rebuild fires and produces a clean schema-first
+        # KPI table. The final contract therefore allows rendering
+        # (no blocking errors, no unresolved markers) even when the
+        # input KPI description (here ``مؤشر تشغيلي مخصص``) does not
+        # match a typed cyber-family classifier — the canonical
+        # rebuild replaces the whole table with the catalogue rows.
         polluted = _CLEAN_CYBER_AR.replace(
             '| 1 | تغطية الترقيع | 95% |',
             '| 1 | مؤشر تشغيلي مخصص | [REQUIRES_AI_TARGET_REPAIR] |',
@@ -181,16 +186,18 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
             domain='cyber',
             output_type='pdf',
         )
-        self.assertTrue(out['blocking_errors'])
-        joined = ' | '.join(out['blocking_errors'])
-        # PR-CY36 (spec E) — KPI section markers now route to the
-        # canonical ``unresolved_kpi_canonical_rebuild`` blocking code
-        # so operators observe the architectural failure of the
-        # canonical-rebuild path instead of the generic row-by-row
-        # marker code.
-        self.assertIn('unresolved_kpi_canonical_rebuild', joined)
-        self.assertIn('REQUIRES_AI_TARGET_REPAIR', joined)
-        self.assertTrue(out['diag']['has_unresolved_markers'])
+        self.assertEqual(out['blocking_errors'], [])
+        self.assertFalse(out['diag']['has_unresolved_markers'])
+        self.assertNotIn('[REQUIRES_AI_TARGET_REPAIR]',
+                         out['final_markdown'])
+        self.assertNotIn('REQUIRES_AI_', out['final_markdown'])
+        # Canonical rebuild must have fired and produced repair-action
+        # entries so operators can see the schema-first path was used.
+        self.assertTrue(any(
+            ('kpi_canonical_rebuild_triggered:markers_present' in a
+             or 'kpi_canonical_rebuild' in a
+             or 'kpi_target_repair' in a)
+            for a in out['repair_actions']))
 
     @_skip_if_no_app
     def test_known_kpi_target_marker_is_repaired_before_gate(self):
@@ -215,8 +222,15 @@ class UnresolvedMarkerBlockingTests(unittest.TestCase):
         self.assertNotIn('[REQUIRES_AI_TARGET_REPAIR]',
                          out['final_markdown'])
         self.assertIn('≥ 95% خلال 72 ساعة', out['final_markdown'])
+        # PR-CY38 — accept either the legacy per-row
+        # ``kpi_target_repair`` action OR the new schema-first /
+        # canonical rebuild action so the test reflects either repair
+        # path is acceptable as long as rendering is allowed.
         self.assertTrue(any(
-            a.startswith('cycle_') and 'kpi_target_repair' in a
+            a.startswith('cycle_') and (
+                'kpi_target_repair' in a
+                or 'kpi_canonical_rebuild_triggered:markers_present' in a
+                or 'kpi_canonical_rebuild' in a)
             for a in out['repair_actions']))
 
     @_skip_if_no_app

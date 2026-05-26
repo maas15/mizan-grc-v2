@@ -351,8 +351,16 @@ class ContractWiringTests(unittest.TestCase):
                          out['final_markdown'])
         self.assertIn('أقل من 4 ساعات للحوادث الحرجة',
                       out['final_markdown'])
+        # PR-CY38 — markers in input now trigger PR-CY31 canonical
+        # rebuild rather than the per-row ``kpi_target_repair`` action.
+        # Either action satisfies the spec ("repair before final
+        # gate"); the assertion is broadened to accept the new
+        # schema-first/canonical rebuild action introduced by PR-CY38.
         self.assertTrue(any(
-            'kpi_target_repair' in a for a in out['repair_actions']))
+            ('kpi_target_repair' in a
+             or 'kpi_canonical_rebuild_triggered:markers_present' in a
+             or 'kpi_schema_first_compose' in a)
+            for a in out['repair_actions']))
 
 
 if __name__ == '__main__':  # pragma: no cover
