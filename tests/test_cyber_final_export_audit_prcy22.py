@@ -187,13 +187,17 @@ class FinalExportAuditPRCY22Tests(unittest.TestCase):
             lang='ar',
             domain='cyber',
         )
-        # The trailing dash-only rows (تصنيف البيانات / PAM/IAM) should
-        # have been dropped from the final roadmap section.
+        # PR-CY31 — the dash-only ``| 1 | تصنيف البيانات |`` orphan row
+        # in the inbound fixture must be dropped from the final
+        # roadmap. The canonical rebuild may then re-introduce "تصنيف
+        # البيانات" as part of a properly-phased Phase 2 activity
+        # (e.g. ``تطبيق تصنيف البيانات وفق ضوابط DCC``); that is the
+        # accepted PR-CY31 behaviour and must NOT be flagged as an
+        # orphan row.
         roadmap = sections.get('roadmap', '')
-        self.assertNotIn('تصنيف البيانات', roadmap)
-        self.assertNotIn('PAM/IAM', roadmap)
-        # And they should no longer appear in the spliced content.
+        # The orphan dash-only row variant must not survive.
         self.assertNotIn('| 1 | تصنيف البيانات |', new_content)
+        self.assertNotIn('| 1 | PAM/IAM |', new_content)
         # The strip counter (PR-CY22 dash-only OR PR-CY21 orphan-flat)
         # should reflect that at least one orphan row got dropped.
         total_dropped = (

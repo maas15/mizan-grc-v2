@@ -581,8 +581,12 @@ class TestPRCY19KPIFormulaPreservation(unittest.TestCase):
     @_skip_if_no_app
     def test_unrecoverable_formula_marked_for_ai_repair_not_invented(self):
         # No recoverable formula anywhere in the row; formula cell holds
-        # a bare timeframe. PR-CY19 (revised) must mark the row for AI
-        # repair, NOT invent a generic measurement string.
+        # a bare timeframe. PR-CY19 (revised) used to stamp a
+        # ``[REQUIRES_AI_FORMULA_REPAIR]`` marker into the formula
+        # cell. PR-CY38 bans markers from user-facing markdown and now
+        # composes a deterministic schema-first formula instead. The
+        # row must therefore carry a non-marker formula and never the
+        # invented generic measurement strings.
         sections = {
             'kpis': (
                 '## 6. KPIs\n\n'
@@ -600,7 +604,9 @@ class TestPRCY19KPIFormulaPreservation(unittest.TestCase):
                          sections['kpis'])
         self.assertNotIn('Elapsed time from event trigger to completion',
                          sections['kpis'])
-        self.assertIn('REQUIRES_AI_FORMULA_REPAIR', sections['kpis'])
+        # PR-CY38 — no repair marker may appear in user-facing markdown.
+        self.assertNotIn('REQUIRES_AI_FORMULA_REPAIR', sections['kpis'])
+        self.assertNotIn('REQUIRES_AI_', sections['kpis'])
 
 
 class TestPRCY19RoadmapDistinctRowsPreserved(unittest.TestCase):
