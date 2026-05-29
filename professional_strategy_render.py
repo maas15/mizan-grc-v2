@@ -255,8 +255,16 @@ def normalize_roadmap_table(
         if len(tbl) < 2:
             continue
         hdr_blob = ' '.join(tbl[0]).lower()
+        # PR-CY46 — accept the canonical Arabic/English roadmap column names.
+        # The generator emits roadmap tables headed by النشاط (activity) /
+        # المخرج (deliverable) / الإطار الزمني (timeframe) rather than
+        # مبادرة/مرحلة, so the previous keyword set silently dropped valid
+        # roadmap tables and produced ``roadmap_table_not_rendered``.
         if not any(k in hdr_blob for k in (
-                'مبادرة', 'initiative', 'مرحلة', 'phase', 'بند', 'item')):
+                'مبادرة', 'initiative', 'مرحلة', 'phase', 'بند', 'item',
+                'النشاط', 'نشاط', 'activity', 'المخرج', 'مخرج',
+                'deliverable', 'الإطار الزمني', 'الزمني', 'timeframe',
+                'timeline')):
             continue
         for r in tbl[1:]:
             cells = _normalize_row(r, len(schema))
