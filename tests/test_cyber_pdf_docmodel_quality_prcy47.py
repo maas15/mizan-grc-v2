@@ -104,6 +104,13 @@ def _build_model():
                     'بناء قدرات الأمن السيبراني وإنشاء إدارة متخصصة.',
                     '#### دليل تطبيق الفجوة رقم 1\n| 1 | اعتماد | CISO |'],
             },
+            'scope_frameworks': {
+                'frameworks': [{'key': 'NCA ECC', 'display': 'NCA ECC'}],
+            },
+            'methodology': {
+                'rows': [('المنهجية', 'تفاصيل المنهج')],
+            },
+            'appendices': {'entries': [('A', 'ملحق')]},
             'governance_ownership': {
                 'rows': [['CISO', 'إدارة الأمن السيبراني', 'مساءلة',
                           'مجلس الإدارة', 'NCA ECC']]},

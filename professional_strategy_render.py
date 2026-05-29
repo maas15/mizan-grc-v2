@@ -34,6 +34,9 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('الحساباتمن', 'الحسابات من'),
     ('الكاملمع', 'الكامل مع'),
     ('الموظفينمع', 'الموظفين مع'),
+    ('ساعةمن', 'ساعة من'),
+    ('72 ساعةمن', '72 ساعة من'),
+    ('الناشئةعن', 'الناشئة عن'),
 )
 
 PRCY41_PROTECTED_ACRONYMS = (
@@ -256,12 +259,20 @@ def _clean_framework_labels(labels: List[str]) -> List[str]:
 
 def _normalize_gap_header(cell: str) -> str:
     """Ensure gap-guide headers render as ``الخطوة`` not split fragments."""
-    s = prcy47_fix_ar_fragments(str(cell or '').strip())
+    s = str(cell or '').strip()
+    if s in ('الخ', 'طوة', 'طوة الخ') or 'طوة الخ' in s:
+        return 'الخطوة'
     if 'طوة' in s and 'خطوة' not in s:
         return 'الخطوة'
-    if s in ('الخ', 'طوة', 'طوة الخ'):
+    return prcy47_fix_ar_fragments(s)
+
+
+def _normalize_gap_cell(cell: str) -> str:
+    """PR-CY50 — repair gap-guide table cells (step/action fragments)."""
+    s = _normalize_gap_header(str(cell or '').strip())
+    if s in ('الخ', 'طوة'):
         return 'الخطوة'
-    return s
+    return prcy47_fix_ar_fragments(s)
 
 
 def _is_dash_heavy_row(row: List[str], threshold: float = 0.6) -> bool:
@@ -289,21 +300,48 @@ def _phase_bucket(period_or_phase: str) -> int:
     return 3
 
 
+def _infer_roadmap_framework(
+        init: str, period: str, phase_num: int, raw_fw: str,
+        lang: str = 'ar') -> str:
+    """PR-CY50 — map roadmap rows to NCA ECC vs NCA DCC by initiative content."""
+    blob = f'{init} {period}'.lower()
+    dcc_keys = (
+        'dcc', 'dlp', 'تصنيف', 'بيانات', 'data', 'حماية البيانات',
+        'privacy', 'priv', 'خصوص', 'تصنيف البيانات',
+    )
+    if any(k in blob for k in dcc_keys):
+        return 'NCA DCC'
+    if raw_fw and not _is_dash_cell(raw_fw):
+        fw = str(raw_fw).strip()
+        if 'DCC' in fw.upper():
+            return 'NCA DCC'
+        if 'ECC' in fw.upper():
+            return 'NCA ECC'
+        return fw
+    if phase_num >= 3:
+        return 'NCA DCC'
+    return 'NCA ECC'
+
+
 def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
     """Ensure a roadmap row has meaningful owner/output/framework defaults."""
     cells = list(row) + ['—'] * (6 - len(row))
     period = cells[1] if not _is_dash_cell(cells[1]) else (
         '1-6 أشهر' if _phase_bucket(cells[0]) == 1 else
         '7-18 شهر' if _phase_bucket(cells[0]) == 2 else '19-24 شهر')
+    phase_num = _phase_bucket(period or cells[0])
+    init = cells[2] if not _is_dash_cell(cells[2]) else (
+        'مبادرة تنفيذية' if lang == 'ar' else 'Implementation initiative')
+    fw = _infer_roadmap_framework(
+        init, period, phase_num, cells[5] if len(cells) > 5 else '', lang)
     return [
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
-        cells[2] if not _is_dash_cell(cells[2]) else (
-            'مبادرة تنفيذية' if lang == 'ar' else 'Implementation initiative'),
+        init,
         cells[3] if not _is_dash_cell(cells[3]) else 'CISO',
         cells[4] if not _is_dash_cell(cells[4]) else (
             'مخرج معتمد' if lang == 'ar' else 'Approved deliverable'),
-        cells[5] if not _is_dash_cell(cells[5]) else 'NCA ECC',
+        fw,
     ]
 
 
@@ -360,7 +398,8 @@ def build_roadmap_render_spec(
         if phase_rows:
             result.extend(phase_rows[:3])
         else:
-            result.append(_synth_phase_row(phase_num, lang))
+            result.append(_fill_roadmap_row(
+                _synth_phase_row(phase_num, lang), lang))
     return result
 
 
@@ -381,13 +420,32 @@ def _sanitize_table_spec(
     """Apply final render cleanup to every table header/cell."""
     if not tbl:
         return tbl
-    hdr = [_normalize_gap_header(prepare_final_render_text(h, lang))
-           for h in (tbl.get('header') or [])]
+    schema = tbl.get('schema', '')
+    hdr = []
+    for h in (tbl.get('header') or []):
+        ht = prepare_final_render_text(h, lang)
+        if schema == 'gap_action':
+            ht = _normalize_gap_header(ht)
+        hdr.append(ht)
     rows = []
     for r in tbl.get('rows') or []:
-        if tbl.get('schema') == 'roadmap' and _is_dash_heavy_row(r):
+        if schema == 'roadmap' and _is_dash_heavy_row(r):
             continue
-        rows.append([prepare_final_render_text(c, lang) for c in r])
+        if schema == 'gap_action':
+            cells = [_normalize_gap_cell(prepare_final_render_text(c, lang))
+                     for c in r]
+            # Merge split step columns (طوة | الخ → الخطوة).
+            if (len(cells) >= 2
+                    and cells[0] in ('الخطوة', '1', '2', '3', '4', '5')
+                    and cells[1] in ('الخطوة', '—')):
+                cells = [cells[0]] + cells[2:]
+            if cells and cells[0] not in ('الخطوة',) and str(cells[0]).isdigit():
+                pass
+            elif cells:
+                cells[0] = _normalize_gap_cell(cells[0])
+            rows.append(cells)
+        else:
+            rows.append([prepare_final_render_text(c, lang) for c in r])
     out = dict(tbl)
     out['header'] = hdr
     out['rows'] = rows
@@ -431,6 +489,15 @@ def _finalize_professional_blocks(
             blk['split_tables'] = [
                 _sanitize_table_spec(st, lang)
                 for st in blk['split_tables']]
+        if kind == 'governance_ownership' and blk.get('rows'):
+            blk['rows'] = [
+                [prepare_final_render_text(c, lang) for c in r]
+                for r in blk['rows']]
+        if kind == 'methodology' and blk.get('rows'):
+            blk['rows'] = [
+                (prepare_final_render_text(lbl, lang),
+                 prepare_final_render_text(body, lang))
+                for lbl, body in blk['rows']]
     return out
 
 
@@ -575,6 +642,14 @@ def build_renderer_parity_check(
         'final_arabic_spacing_issues': count_model_arabic_spacing_issues(model),
         'parity_with_preview': parity_with_preview,
         'action_taken': action_taken,
+        'docx_professional_sections_present': all(
+            k in export_keys for k in DOCX_REQUIRED_PROFESSIONAL_SECTIONS),
+        'docx_no_raw_1_to_7_fallback': bool(
+            model and model.get('render_layer') == 'prcy41_professional'),
+        'preview_pdf_docx_parity_passed': bool(
+            model and model.get('render_layer') == 'prcy41_professional'
+            and 'executive_summary' in export_keys
+            and 'governance_ownership' in export_keys),
     }
 
 
@@ -687,7 +762,15 @@ def normalize_roadmap_table(
                                     'period', 'timeframe', 'timeline'))
         i_deliver = _col_index(hdr, ('المخرج', 'الناتج', 'deliverable',
                                      'output'))
-        i_fw = _col_index(hdr, ('الإطار المرتبط', 'framework', 'الإطار'))
+        i_fw = _col_index(hdr, (
+            'الإطار المرتبط', 'linked framework', 'framework link'))
+        if i_fw < 0:
+            for i, h in enumerate(hdr):
+                blob = str(h).lower()
+                if ('framework' in blob or 'مرتبط' in blob):
+                    if 'زمن' not in blob and 'time' not in blob:
+                        i_fw = i
+                        break
         i_phase = _col_index(hdr, ('المرحلة', 'phase'))
         for r in tbl[1:]:
             init = _cell(r, i_init if i_init >= 0 else 1)
@@ -718,13 +801,53 @@ def normalize_roadmap_table(
     return {'schema': 'roadmap', 'header': schema, 'rows': rows_out}
 
 
+def _is_time_based_metric(name: str) -> bool:
+    """True when KPI measures duration/time, not a percentage rate."""
+    n = (name or '').strip().lower()
+    if any(k in n for k in ('ثغر', 'vulnerability', 'vm')):
+        return False
+    return any(k in n for k in (
+        'زمن', 'time', 'mttr', 'mttd', 'response', 'استجاب',
+        'ساعة', 'hour', 'دقيقة', 'minute', 'أيام', 'days',
+    ))
+
+
+def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
+    """PR-CY50 — time-based metrics use time thresholds, not percentages."""
+    t = (raw_target or '').strip()
+    if not _is_time_based_metric(name):
+        return t if t and t != '—' else '100%'
+    if t and t != '—' and '%' not in t:
+        return t
+    if lang == 'ar':
+        if any(k in (name or '') for k in ('استجاب', 'response', 'حادث')):
+            return '< 4 ساعات'
+        return '≤ 72 ساعة'
+    if any(k in (name or '').lower() for k in ('response', 'incident')):
+        return '< 4 hours'
+    return '≤ 72 hours'
+
+
 def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
-    """PR-CY48 — professional calculation expression derived from metric name."""
+    """PR-CY48/50 — professional calculation expression derived from metric name."""
     n = (name or '').strip()
     if not n or n == '—':
         return ('(المنجز ÷ المخطط) × 100' if lang == 'ar'
                 else '(Done ÷ Planned) × 100')
     nu = n.lower()
+    # Vulnerability metrics BEFORE generic incident-response matching.
+    if any(k in n for k in ('ثغر', 'vulnerability', 'Vulnerability', 'VM')):
+        if _is_time_based_metric(n):
+            return ('متوسط زمن إغلاق الثغرات الحرجة ضمن SLA'
+                    if lang == 'ar' else
+                    'Average critical vulnerability closure time within SLA')
+        return ('(عدد الثغرات المغلقة ضمن SLA / إجمالي الثغرات الحرجة) × 100'
+                if lang == 'ar' else
+                '(SLA-closed vulnerabilities / critical vulnerabilities) × 100')
+    if _is_time_based_metric(n):
+        return ('متوسط زمن الاستجابة للحوادث الحرجة'
+                if lang == 'ar' else
+                'Average critical incident response time')
     if any(k in n for k in ('MFA', 'mfa', 'مصادقة', 'مصادقة ثنائية')):
         return ('(عدد الحسابات المفعلة عليها MFA / إجمالي الحسابات المستهدفة) × 100'
                 if lang == 'ar' else
@@ -733,10 +856,6 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
         return ('مجموع أزمنة الاستجابة للحوادث الحرجة / عدد الحوادث الحرجة'
                 if lang == 'ar' else
                 'Sum critical incident response times / critical incident count')
-    if any(k in n for k in ('ثغر', 'vulnerability', 'Vulnerability', 'VM')):
-        return ('(عدد الثغرات المغلقة ضمن SLA / إجمالي الثغرات الحرجة) × 100'
-                if lang == 'ar' else
-                '(SLA-closed vulnerabilities / critical vulnerabilities) × 100')
     if any(k in n for k in ('نسخ', 'backup', 'Backup', 'DR', 'تعاف')):
         return ('(عدد النسخ الناجحة / إجمالي عمليات النسخ) × 100'
                 if lang == 'ar' else
@@ -827,7 +946,7 @@ def split_kpi_tables(
             main_rows.append([
                 idx, name,
                 _cell(r, i_type, 'KPI'),
-                _cell(r, i_target),
+                _derive_kpi_target(name, _cell(r, i_target), lang),
                 _cell(r, i_freq),
                 _cell(r, i_owner, 'CISO'),
                 _cell(r, i_horizon),
@@ -867,10 +986,17 @@ def normalize_gap_tables(
             })
         elif 'إجراء' in hdr_blob or 'action' in hdr_blob or 'خطوة' in hdr_blob:
             schema = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else SCHEMA_GAP_ACTION_AR)
+            fixed_rows = []
+            for r in tbl[1:]:
+                row = _normalize_row(r, len(schema))
+                if len(row) >= 2 and row[0] in ('طوة', 'الخ'):
+                    row[0] = 'الخطوة'
+                row[0] = _normalize_gap_cell(row[0])
+                fixed_rows.append(row)
             result.append({
                 'schema': 'gap_action',
-                'header': schema,
-                'rows': [_normalize_row(r, len(schema)) for r in tbl[1:]],
+                'header': [_normalize_gap_header(h) for h in schema],
+                'rows': fixed_rows,
             })
     return result
 
@@ -917,12 +1043,21 @@ def normalize_pillar_blocks(
 PRCY47_AR_FRAGMENT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('طوة الخ', 'الخطوة'),
     ('الخ طوة', 'الخطوة'),
+    ('| طوة |', '| الخطوة |'),
+    ('|الخ|', '|الخطوة|'),
     ('جراء الإ', 'الإجراء'),
     ('الإ جراء', 'الإجراء'),
     ('ناتج ال', 'الناتج'),
     ('ال ناتج', 'الناتج'),
     ('مسؤول ال', 'المسؤول'),
     ('ال مسؤول', 'المسؤول'),
+)
+
+# PR-CY50 — sections that must appear in DOCX/PDF professional exports.
+DOCX_REQUIRED_PROFESSIONAL_SECTIONS = (
+    'executive_summary', 'scope_frameworks', 'methodology',
+    'governance_ownership', 'traceability_matrix', 'appendices',
+    'roadmap', 'kpi_kri_framework', 'confidence_risk_register',
 )
 
 # Heading-residue / separator detectors.
@@ -1210,8 +1345,11 @@ def normalize_gap_action_guides(
                              ('حسب الخطة' if lang == 'ar' else 'Per plan'),
                              ('مكتمل' if lang == 'ar' else 'Completed')])
         if rows:
-            out.append({'schema': 'gap_action', 'header': schema,
-                        'rows': rows, 'title': title})
+            out.append({'schema': 'gap_action',
+                        'header': [_normalize_gap_header(h) for h in schema],
+                        'rows': [[_normalize_gap_cell(c) for c in r]
+                                 for r in rows],
+                        'title': title})
     return out
 
 
@@ -1478,6 +1616,35 @@ def enrich_professional_blocks(
     return model
 
 
+def ensure_strategy_professional_model(
+        model: Optional[Dict[str, Any]],
+        *,
+        content: str = '',
+        metadata: Optional[Dict[str, Any]] = None,
+        sections: Optional[Dict[str, str]] = None,
+        selected_frameworks: Optional[List[str]] = None,
+        lang: str = 'ar',
+        domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
+    if model and model.get('render_layer') == 'prcy41_professional':
+        return model
+    if not model:
+        raise ValueError('strategy_professional_model_missing_base')
+    metadata = dict(metadata or {})
+    metadata.setdefault('content', content or '')
+    lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
+    content_sections = sections if isinstance(sections, dict) else {}
+    if not content_sections and content:
+        try:
+            from app import _split_strategy_sections_by_h2
+            content_sections = _split_strategy_sections_by_h2(content)
+        except Exception:
+            content_sections = {}
+    return enrich_professional_blocks(
+        model, content_sections, metadata, lang_n)
+
+
 def build_professional_strategy_document_model(
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
@@ -1661,6 +1828,61 @@ def prcy47_docmodel_professional_checks(
         (not _post_body_present(k) or k in export_keys)
         for k in ('governance_ownership', 'traceability_matrix', 'appendices'))
 
+    # PR-CY50 — extended export parity gates.
+    docx_professional_sections_present = all(
+        k in export_keys for k in DOCX_REQUIRED_PROFESSIONAL_SECTIONS
+        if k in ('executive_summary', 'governance_ownership',
+                 'traceability_matrix', 'appendices', 'roadmap',
+                 'kpi_kri_framework', 'confidence_risk_register'))
+    gap_guide_header_final_clean = (
+        gap_guide_headers_clean
+        and not any(
+            str(c).strip() in ('طوة', 'الخ') or 'طوة الخ' in str(c)
+            for t in gap_tables if t.get('schema') == 'gap_action'
+            for r in (t.get('rows') or []) for c in r))
+    final_table_cell_arabic_cleanup_passed = not any(
+        bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
+    roadmap_framework_mapping_valid = True
+    dcc_init_keys = ('dcc', 'dlp', 'data', 'privacy')
+    for r in road_rows:
+        if len(r) < 6:
+            continue
+        init, fw = str(r[2] or ''), str(r[5] or '')
+        blob = init.lower()
+        if any(k in blob for k in dcc_init_keys) and fw:
+            if 'DCC' not in fw.upper():
+                roadmap_framework_mapping_valid = False
+        if ('DLP' in init or 'dlp' in blob) and fw:
+            if 'DCC' not in fw.upper():
+                roadmap_framework_mapping_valid = False
+
+    kpi_metric_semantics_valid = True
+    for t in kpi_main:
+        for r in t.get('rows') or []:
+            name = r[1] if len(r) > 1 else ''
+            target = r[3] if len(r) > 3 else ''
+            if _is_time_based_metric(name) and '%' in str(target):
+                kpi_metric_semantics_valid = False
+    for t in kpi_formula:
+        for r in t.get('rows') or []:
+            name = r[1] if len(r) > 1 else ''
+            formula = r[2] if len(r) > 2 else ''
+            if _is_time_based_metric(name) and '× 100' in str(formula):
+                kpi_metric_semantics_valid = False
+            if any(k in (name or '') for k in ('ثغر', 'vulnerability')):
+                if any(k in str(formula) for k in ('حادث', 'incident')):
+                    kpi_metric_semantics_valid = False
+    confidence_table_layout_valid = bool(conf_factor_tbl)
+    if confidence_table_layout_valid:
+        for r in conf_factor_tbl[0].get('rows') or []:
+            fname = str(r[0] if r else '')
+            if len(fname) < 4 or fname in ('ال', 'عامل', 'اك'):
+                confidence_table_layout_valid = False
+            if len(r) < 4:
+                confidence_table_layout_valid = False
+    preview_pdf_docx_parity_passed = (
+        pdf_docx_section_parity and docx_professional_sections_present)
+
     docmodel_professional_passed = (
         executive_summary_clean
         and markdown_residue_after_docmodel == 0
@@ -1675,7 +1897,13 @@ def prcy47_docmodel_professional_checks(
         and roadmap_rows_meaningful
         and confidence_factor_table_valid
         and risk_register_separate
-        and pdf_docx_section_parity)
+        and pdf_docx_section_parity
+        and gap_guide_header_final_clean
+        and final_table_cell_arabic_cleanup_passed
+        and roadmap_framework_mapping_valid
+        and kpi_metric_semantics_valid
+        and confidence_table_layout_valid
+        and preview_pdf_docx_parity_passed)
 
     return {
         'executive_summary_clean': executive_summary_clean,
@@ -1694,6 +1922,14 @@ def prcy47_docmodel_professional_checks(
         'kpi_formula_source_valid': kpi_formula_source_valid,
         'confidence_factor_table_valid': confidence_factor_table_valid,
         'risk_register_separate': risk_register_separate,
+        'docx_professional_sections_present': docx_professional_sections_present,
+        'final_table_cell_arabic_cleanup_passed': (
+            final_table_cell_arabic_cleanup_passed),
+        'gap_guide_header_final_clean': gap_guide_header_final_clean,
+        'roadmap_framework_mapping_valid': roadmap_framework_mapping_valid,
+        'kpi_metric_semantics_valid': kpi_metric_semantics_valid,
+        'confidence_table_layout_valid': confidence_table_layout_valid,
+        'preview_pdf_docx_parity_passed': preview_pdf_docx_parity_passed,
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
