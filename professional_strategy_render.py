@@ -32,6 +32,8 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('الناتجةعن', 'الناتجة عن'),
     ('الحساسةمن', 'الحساسة من'),
     ('الحساباتمن', 'الحسابات من'),
+    ('الكاملمع', 'الكامل مع'),
+    ('الموظفينمع', 'الموظفين مع'),
 )
 
 PRCY41_PROTECTED_ACRONYMS = (
@@ -492,6 +494,97 @@ def executive_summary_grid_rows(
             ('Key risks', sep.join(grid.get('key_risks') or []) or '—'),
         )
     return [(lbl, val) for lbl, val in spec if val and val != '—']
+
+
+def get_roadmap_spec_rows(
+        model: Optional[Dict[str, Any]]) -> List[List[str]]:
+    """Return all roadmap table rows from the professional model."""
+    blocks = (model or {}).get('blocks') or {}
+    rows: List[List[str]] = []
+    for tbl in ((blocks.get('roadmap') or {}).get('tables') or []):
+        rows.extend(tbl.get('rows') or [])
+    return rows
+
+
+def roadmap_phase_coverage_valid(rows: Optional[List[List[str]]]) -> bool:
+    """True when roadmap rows span 1–6 / 7–18 / 19–24 phases."""
+    phases_text = roadmap_phase_coverage_text(rows or [])
+    has_p1 = any(k in phases_text for k in ('تأسيس', '1-6', 'Establish'))
+    has_p2 = any(k in phases_text for k in ('تمكين', '7-18', 'Enable'))
+    has_p3 = any(k in phases_text for k in (
+        'تحسين', '19-24', 'Optimize', 'استدامة'))
+    return has_p1 and has_p2 and has_p3
+
+
+def roadmap_phase_coverage_text(rows: List[List[str]]) -> str:
+    return ' '.join(str(r[0]) if r else '' for r in rows)
+
+
+def count_model_arabic_spacing_issues(
+        model: Optional[Dict[str, Any]]) -> int:
+    """Count remaining Arabic concat defects anywhere in the model blob."""
+    blob = str((model or {}).get('blocks') or {})
+    return sum(1 for bad, _ in PRCY41_AR_CONCAT_FIXES if bad in blob)
+
+
+def kpi_split_table_count(model: Optional[Dict[str, Any]]) -> int:
+    blocks = (model or {}).get('blocks') or {}
+    kpi = blocks.get('kpi_kri_framework') or {}
+    return len(kpi.get('tables') or [])
+
+
+def confidence_model_valid(model: Optional[Dict[str, Any]]) -> bool:
+    blocks = (model or {}).get('blocks') or {}
+    conf = blocks.get('confidence_risk_register') or {}
+    factors = [t for t in (conf.get('tables') or [])
+               if t.get('schema') == 'conf_factor']
+    return bool(factors) and len(factors[0].get('rows') or []) >= 6
+
+
+def build_renderer_parity_check(
+        model: Optional[Dict[str, Any]],
+        *,
+        route_name: str = '',
+        output_type: str = '',
+        live_commit: str = '',
+        parity_with_preview: bool = True,
+        action_taken: str = 'render',
+) -> Dict[str, Any]:
+    """Build [RENDERER-PARITY-CHECK] diagnostic payload."""
+    road_rows = get_roadmap_spec_rows(model)
+    export_keys = get_professional_export_section_keys(model)
+    blocks = (model or {}).get('blocks') or {}
+    return {
+        'strategy_id': '',
+        'route_name': route_name,
+        'output_type': output_type,
+        'live_commit': live_commit,
+        'professional_model_used': bool(
+            model and model.get('render_layer') == 'prcy41_professional'),
+        'professional_renderer_module': 'professional_strategy_render',
+        'section_order': list(
+            model.get('professional_section_order')
+            or PROFESSIONAL_EXPORT_SECTION_ORDER),
+        'executive_summary_present': 'executive_summary' in export_keys,
+        'roadmap_spec_rows': len(road_rows),
+        'roadmap_phase_coverage': roadmap_phase_coverage_valid(road_rows),
+        'kpi_split_tables': kpi_split_table_count(model),
+        'confidence_model_valid': confidence_model_valid(model),
+        'governance_present': 'governance_ownership' in export_keys,
+        'traceability_present': 'traceability_matrix' in export_keys,
+        'final_arabic_spacing_issues': count_model_arabic_spacing_issues(model),
+        'parity_with_preview': parity_with_preview,
+        'action_taken': action_taken,
+    }
+
+
+def emit_renderer_parity_check(**kwargs) -> Dict[str, Any]:
+    payload = build_renderer_parity_check(**kwargs)
+    try:
+        print(f'[RENDERER-PARITY-CHECK] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
 
 
 def parse_markdown_tables(section_text: str) -> List[List[List[str]]]:
@@ -1278,9 +1371,22 @@ def enrich_professional_blocks(
     # Roadmap — mandatory structured table (header-aware + phase coverage).
     road = _sec('roadmap')
     road_tbl = normalize_roadmap_table(road, lang_n)
+    _road_schema = list(SCHEMA_ROADMAP_AR if lang_n == 'ar' else (
+        'Phase', 'Period', 'Initiative', 'Owner',
+        'Deliverable', 'Linked Framework'))
+    if not road_tbl or not (road_tbl.get('rows')):
+        _seed = (road_tbl or {}).get('rows') or []
+        road_tbl = {
+            'schema': 'roadmap',
+            'header': _road_schema,
+            'rows': build_roadmap_render_spec(_seed, lang_n),
+        }
+    road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
     blocks['roadmap'] = {
         **(blocks.get('roadmap') or {}),
-        'tables': [road_tbl] if road_tbl else [],
+        'paragraphs': _clean_paras(road, 1) if road.strip() else [],
+        'tables': [road_tbl],
+        'content': '',
         'content_present': bool(road.strip()),
     }
 
@@ -1610,10 +1716,17 @@ def run_pdf_quality_gate(
             tracker.arabic_spacing_issues_count += 1
 
     if require_roadmap:
-        road_blk = tracker.sections_present.get('roadmap', False)
-        if road_blk and tracker.roadmap_rows_rendered < 1:
-            tracker.blockers.append(
-                'pdf_render_failed:roadmap_table_not_rendered')
+        model_road_rows = get_roadmap_spec_rows(model) if model else []
+        road_sec = tracker.sections_present.get('roadmap', False)
+        rendered = tracker.roadmap_rows_rendered
+        if road_sec or model_road_rows:
+            if model_road_rows and rendered < 1:
+                tracker.blockers.append(
+                    'pdf_render_failed:build_failed:'
+                    'roadmap_rows_lost_in_render')
+            elif not model_road_rows and rendered < 1:
+                tracker.blockers.append(
+                    'pdf_render_failed:roadmap_table_not_rendered')
 
     if tracker.kpi_tables_rendered < 1:
         tracker.blockers.append(
