@@ -37,6 +37,10 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ساعةمن', 'ساعة من'),
     ('72 ساعةمن', '72 ساعة من'),
     ('الناشئةعن', 'الناشئة عن'),
+    # PR-CY51 — additional Arabic concatenation defects.
+    ('اختراقمن', 'اختراق من'),
+    ('التهديداتفي', 'التهديدات في'),
+    ('المخاطرمن', 'المخاطر من'),
 )
 
 PRCY41_PROTECTED_ACRONYMS = (
@@ -1060,6 +1064,141 @@ DOCX_REQUIRED_PROFESSIONAL_SECTIONS = (
     'roadmap', 'kpi_kri_framework', 'confidence_risk_register',
 )
 
+# PR-CY51 — doc_type tokens that identify a strategy export (DOCX/PDF).
+STRATEGY_EXPORT_DOC_TYPE_TOKENS = (
+    'strategy document', 'strategy', 'استراتيجية', 'وثيقة استراتيجية',
+    'وثيقة الاستراتيجية', 'cyber strategy',
+)
+
+# PR-CY51 — ordered docmodel sub-gates (first failure wins for diagnostics).
+DOCMODEL_PROFESSIONAL_SUBGATES = (
+    'docx_professional_sections_present',
+    'docx_no_raw_1_to_7_fallback',
+    'final_table_cell_arabic_cleanup_passed',
+    'gap_guide_header_final_clean',
+    'roadmap_framework_mapping_valid',
+    'kpi_metric_semantics_valid',
+    'confidence_table_layout_valid',
+    'preview_pdf_docx_parity_passed',
+    'executive_summary_clean',
+    'markdown_residue_after_docmodel',
+    'environment_table_clean',
+    'gap_guides_clean',
+    'roadmap_phase_coverage_valid',
+    'kpi_formula_source_valid',
+    'confidence_factor_table_valid',
+    'arabic_spacing_final_passed',
+    'pdf_docx_section_parity',
+)
+
+
+def is_strategy_export_doc_type(doc_type: str, domain: str = '') -> bool:
+    """True when the export should use the professional strategy document model."""
+    dt = (doc_type or '').strip().lower()
+    if not dt:
+        return False
+    if dt in STRATEGY_EXPORT_DOC_TYPE_TOKENS:
+        return True
+    if 'strategy' in dt or 'استراتيج' in dt:
+        return True
+    return False
+
+
+def find_sample_bad_arabic_concat(
+        model: Optional[Dict[str, Any]] = None,
+        text: str = '') -> str:
+    """Return the first known Arabic concat defect still present."""
+    blob = text or str((model or {}).get('blocks') or {})
+    for bad, _ in PRCY41_AR_CONCAT_FIXES:
+        if bad in blob:
+            return bad
+    return ''
+
+
+def identify_docmodel_failing_subgate(
+        docchecks: Optional[Dict[str, Any]]) -> str:
+    """Return the first failing PR-CY50/51 docmodel sub-gate key."""
+    checks = docchecks or {}
+    if checks.get('docmodel_professional_passed'):
+        return ''
+    for key in DOCMODEL_PROFESSIONAL_SUBGATES:
+        if key not in checks:
+            continue
+        val = checks.get(key)
+        if key == 'markdown_residue_after_docmodel':
+            if (val or 0) > 0:
+                return key
+        elif not val:
+            return key
+    return 'docmodel_professional_unknown'
+
+
+def subgate_to_failure_suffix(subgate: str) -> str:
+    """Map a docmodel sub-gate key to a stable failure suffix."""
+    if not subgate:
+        return 'unknown'
+    if subgate.endswith('_present'):
+        return subgate.replace('_present', '_missing')
+    if subgate.endswith('_passed'):
+        return subgate.replace('_passed', '_failed')
+    if subgate.endswith('_valid'):
+        return subgate.replace('_valid', '_invalid')
+    if subgate == 'markdown_residue_after_docmodel':
+        return 'markdown_residue_remaining'
+    return subgate
+
+
+def build_docmodel_professional_failure_diag(
+        docchecks: Optional[Dict[str, Any]],
+        *,
+        model: Optional[Dict[str, Any]] = None,
+        output_type: str = '',
+        route_name: str = '',
+        action_taken: str = '',
+        extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build [DOCMODEL-PROFESSIONAL-FAILURE] diagnostic payload."""
+    checks = docchecks or {}
+    subgate = identify_docmodel_failing_subgate(checks)
+    sample = find_sample_bad_arabic_concat(model)
+    payload = {
+        'output_type': output_type,
+        'route_name': route_name,
+        'failing_subgate': subgate,
+        'failing_subgate_suffix': subgate_to_failure_suffix(subgate),
+        'docx_professional_sections_present': checks.get(
+            'docx_professional_sections_present'),
+        'docx_no_raw_1_to_7_fallback': checks.get(
+            'docx_no_raw_1_to_7_fallback'),
+        'final_table_cell_arabic_cleanup_passed': checks.get(
+            'final_table_cell_arabic_cleanup_passed'),
+        'gap_guide_header_final_clean': checks.get(
+            'gap_guide_header_final_clean'),
+        'roadmap_framework_mapping_valid': checks.get(
+            'roadmap_framework_mapping_valid'),
+        'kpi_metric_semantics_valid': checks.get(
+            'kpi_metric_semantics_valid'),
+        'confidence_table_layout_valid': checks.get(
+            'confidence_table_layout_valid'),
+        'preview_pdf_docx_parity_passed': checks.get(
+            'preview_pdf_docx_parity_passed'),
+        'sample_bad_text': sample,
+        'action_taken': action_taken,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def emit_docmodel_professional_failure(**kwargs) -> Dict[str, Any]:
+    """Emit [DOCMODEL-PROFESSIONAL-FAILURE] to server logs."""
+    payload = build_docmodel_professional_failure_diag(**kwargs)
+    try:
+        print(f'[DOCMODEL-PROFESSIONAL-FAILURE] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
 # Heading-residue / separator detectors.
 PRCY47_HEADING_RESIDUE_RE = re.compile(r'(?m)^\s*#{1,6}\s*\.?\d*[\s\.\)]*')
 PRCY47_TABLE_SEP_RE = re.compile(r'(?m)^\s*\|?\s*:?-{2,}.*$')
@@ -1923,6 +2062,8 @@ def prcy47_docmodel_professional_checks(
         'confidence_factor_table_valid': confidence_factor_table_valid,
         'risk_register_separate': risk_register_separate,
         'docx_professional_sections_present': docx_professional_sections_present,
+        'docx_no_raw_1_to_7_fallback': (
+            (model or {}).get('render_layer') == 'prcy41_professional'),
         'final_table_cell_arabic_cleanup_passed': (
             final_table_cell_arabic_cleanup_passed),
         'gap_guide_header_final_clean': gap_guide_header_final_clean,
@@ -1981,8 +2122,17 @@ def run_pdf_quality_gate(
         docchecks = prcy47_docmodel_professional_checks(model, lang)
         payload.update(docchecks)
         if not docchecks['docmodel_professional_passed']:
+            _subgate = identify_docmodel_failing_subgate(docchecks)
+            _suffix = subgate_to_failure_suffix(_subgate)
             tracker.blockers.append(
-                'pdf_render_failed:docmodel_professional_quality')
+                f'pdf_render_failed:docmodel_professional_quality:{_suffix}')
+            emit_docmodel_professional_failure(
+                docchecks=docchecks,
+                model=model,
+                output_type='pdf',
+                route_name='pdf',
+                action_taken='pdf_quality_gate_blocked',
+            )
 
     payload['blockers'] = list(tracker.blockers)
     if tracker.blockers:
