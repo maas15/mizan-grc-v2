@@ -51,6 +51,106 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
 ROADMAP_CELL_MAX_LEN = 72
 
+# PR-CY53 — generic roadmap phrases that must be rewritten or rejected.
+ROADMAP_GENERIC_INITIATIVES = (
+    'تنفيذ حلول', 'مبادرة تنفيذية', 'Implementation initiative',
+    'solution implementation', 'implement solutions',
+)
+ROADMAP_GENERIC_OUTPUTS = (
+    'مخرج معتمد', 'Approved deliverable',
+)
+ROADMAP_WEAK_OWNERS = ('خبير', 'Expert', 'expert')
+
+# PR-CY53 — PDF table layout profiles (rendering-only).
+PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
+    'strategic_objectives': {
+        'col_weights': [0.04, 0.28, 0.24, 0.28, 0.16],
+        'font_size': 9, 'header_font_size': 9, 'padding': 6,
+        'max_cell_len': 120, 'render_mode': 'table',
+    },
+    'pillar_initiatives': {
+        'col_weights': [0.06, 0.30, 0.34, 0.30],
+        'font_size': 9, 'header_font_size': 9, 'padding': 6,
+        'max_cell_len': 100, 'render_mode': 'table',
+    },
+    'gap_main': {
+        'col_weights': [0.05, 0.22, 0.38, 0.15, 0.20],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+    'gap_action': {
+        'col_weights': [0.10, 0.34, 0.16, 0.18, 0.22],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 80, 'render_mode': 'table',
+    },
+    'roadmap': {
+        'col_weights': [0.14, 0.12, 0.28, 0.12, 0.20, 0.14],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
+    },
+    'kpi_main': {
+        'col_weights': [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 72, 'render_mode': 'table',
+    },
+    'kpi_formula': {
+        'col_weights': [0.08, 0.30, 0.32, 0.30],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 110, 'render_mode': 'table',
+    },
+    'conf_factor': {
+        'render_mode': 'cards', 'font_size': 9, 'padding': 4,
+        'max_cell_len': 48,
+    },
+    'risk_register': {
+        'col_weights': [0.05, 0.24, 0.14, 0.12, 0.28, 0.17],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+    'governance': {
+        'col_weights': [0.14, 0.28, 0.22, 0.18, 0.18],
+        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'max_cell_len': 100, 'render_mode': 'table',
+        'split_if_wide': True, 'split_at_cols': 3,
+    },
+    'traceability': {
+        'col_weights': [0.20, 0.26, 0.27, 0.27],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+    'trace_fw_gap': {
+        'col_weights': [0.22, 0.38, 0.40],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+    'trace_fw_init': {
+        'col_weights': [0.20, 0.26, 0.27, 0.27],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+    'env': {
+        'col_weights': [0.28, 0.18, 0.14, 0.40],
+        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'max_cell_len': 90, 'render_mode': 'table',
+    },
+}
+
+# Schema aliases → profile keys.
+_PDF_LAYOUT_SCHEMA_ALIASES = {
+    'gap_table': 'gap_main',
+    'kpi_summary': 'kpi_main',
+    'kpi_details': 'kpi_formula',
+    'confidence_factors': 'conf_factor',
+    'environment': 'env',
+}
+
+# Known table schemas that must have a layout profile (PR-CY53 gate).
+PDF_LAYOUT_REQUIRED_SCHEMAS = (
+    'strategic_objectives', 'pillar_initiatives', 'gap_main', 'gap_action',
+    'roadmap', 'kpi_main', 'kpi_formula', 'conf_factor', 'risk_register',
+    'governance', 'traceability',
+)
+
 # Forbidden gap-guide header fragments (must never appear in exports).
 GAP_HEADER_FORBIDDEN_FRAGMENTS = ('طوة', 'الخ', 'طوة الخ')
 
@@ -160,6 +260,8 @@ class PDFRenderTracker:
         self.internal_marker_count = 0
         self.arabic_spacing_issues_count = 0
         self.table_overflow_warnings: List[str] = []
+        self.table_vertical_stack_warnings: List[str] = []
+        self.layout_profiles_applied: List[str] = []
         self.blockers: List[str] = []
 
     def to_gate_payload(self, lang: str) -> Dict[str, Any]:
@@ -188,6 +290,9 @@ class PDFRenderTracker:
             'internal_marker_count': self.internal_marker_count,
             'arabic_spacing_issues_count': self.arabic_spacing_issues_count,
             'table_overflow_warnings': list(self.table_overflow_warnings),
+            'table_vertical_stack_warnings': list(
+                self.table_vertical_stack_warnings),
+            'layout_profiles_applied': list(self.layout_profiles_applied),
             'passed': passed,
             'lang': lang,
         }
@@ -324,8 +429,25 @@ def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
     return 'KPI'
 
 
-def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
-    """PR-CY52 — PDF column weight hints per table schema."""
+def get_pdf_table_layout_profile(
+        schema: str, ncols: int = 0) -> Dict[str, Any]:
+    """PR-CY53 — return PDF table layout profile for a schema."""
+    key = _PDF_LAYOUT_SCHEMA_ALIASES.get(schema, schema)
+    prof = dict(PDF_TABLE_LAYOUT_PROFILES.get(key) or {})
+    if not prof:
+        prof = {
+            'render_mode': 'table', 'font_size': 8, 'header_font_size': 9,
+            'padding': 5, 'max_cell_len': 100,
+        }
+    weights = prof.get('col_weights')
+    if not weights and ncols:
+        weights = schema_table_col_weights_fallback(schema, ncols)
+        prof['col_weights'] = weights
+    return prof
+
+
+def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
+    """Legacy column-weight fallback when profile has no explicit weights."""
     if schema == 'conf_factor' and ncols == 4:
         return [0.40, 0.18, 0.18, 0.24]
     if schema == 'gap_action' and ncols == 5:
@@ -336,6 +458,10 @@ def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
         return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.08, 0.30, 0.32, 0.30]
+    if schema == 'strategic_objectives' and ncols == 5:
+        return [0.04, 0.28, 0.24, 0.28, 0.16]
+    if schema == 'pillar_initiatives' and ncols == 4:
+        return [0.06, 0.30, 0.34, 0.30]
     if ncols == 5:
         return [0.06, 0.28, 0.22, 0.22, 0.22]
     if ncols == 6:
@@ -343,6 +469,95 @@ def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
     if ncols == 4:
         return [0.08, 0.32, 0.30, 0.30]
     return [1.0 / max(ncols, 1)] * max(ncols, 1)
+
+
+def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
+    """PR-CY52/53 — PDF column weight hints per table schema."""
+    prof = get_pdf_table_layout_profile(schema, ncols)
+    return list(prof.get('col_weights') or schema_table_col_weights_fallback(
+        schema, ncols))
+
+
+def _truncate_cell_for_profile(text: str, profile: Dict[str, Any]) -> str:
+    """Trim cell text to profile max length."""
+    max_len = profile.get('max_cell_len') or 120
+    s = str(text or '').strip()
+    if len(s) <= max_len:
+        return s
+    return s[:max_len - 1].rstrip() + '…'
+
+
+def estimate_table_vertical_stack_warnings(
+        model: Optional[Dict[str, Any]],
+        page_width: float = 480.0) -> List[str]:
+    """PR-CY53 — detect cells likely to stack excessively in PDF columns."""
+    warnings: List[str] = []
+    blocks = (model or {}).get('blocks') or {}
+    for kind, blk in blocks.items():
+        tables = list(blk.get('tables') or [])
+        if kind == 'strategic_pillars':
+            for pb in blk.get('pillar_blocks') or []:
+                if pb.get('table'):
+                    tables.append(pb['table'])
+        if kind == 'governance_ownership' and blk.get('rows'):
+            header = blk.get('header') or list(SCHEMA_GOVERNANCE_AR)
+            tables.append({
+                'schema': 'governance', 'header': header,
+                'rows': blk.get('rows') or [],
+            })
+        for tbl in tables:
+            schema = tbl.get('schema', kind)
+            ncols = len(tbl.get('header') or [])
+            if not ncols:
+                continue
+            prof = get_pdf_table_layout_profile(schema, ncols)
+            if prof.get('render_mode') == 'cards':
+                continue
+            weights = prof.get('col_weights') or schema_table_col_weights(
+                schema, ncols)
+            fs = prof.get('font_size', 8)
+            max_len = prof.get('max_cell_len', 120)
+            for ri, row in enumerate(tbl.get('rows') or []):
+                for ci, cell in enumerate(row):
+                    if ci >= len(weights):
+                        break
+                    s = str(cell or '').strip()
+                    if not s or s == '—':
+                        continue
+                    if len(s) > max_len:
+                        warnings.append(f'{schema}:r{ri}c{ci}:overflow')
+                    col_w = weights[ci] * page_width
+                    chars_per_line = max(14, int(col_w / (fs * 0.52)))
+                    est_lines = max(1, (len(s) + chars_per_line - 1) // chars_per_line)
+                    if est_lines >= 5:
+                        warnings.append(f'{schema}:r{ri}c{ci}:stack')
+    return warnings
+
+
+def pdf_table_layout_profiles_applied(
+        model: Optional[Dict[str, Any]]) -> bool:
+    """True when every present table schema has a known layout profile."""
+    blocks = (model or {}).get('blocks') or {}
+    seen: set = set()
+    for kind, blk in blocks.items():
+        for tbl in blk.get('tables') or []:
+            schema = tbl.get('schema', '')
+            if schema:
+                seen.add(schema)
+        if kind == 'strategic_pillars':
+            for pb in blk.get('pillar_blocks') or []:
+                s = (pb.get('table') or {}).get('schema', '')
+                if s:
+                    seen.add(s)
+        if kind == 'governance_ownership' and blk.get('rows'):
+            seen.add('governance')
+    if not seen:
+        return True
+    for schema in seen:
+        key = _PDF_LAYOUT_SCHEMA_ALIASES.get(schema, schema)
+        if key not in PDF_TABLE_LAYOUT_PROFILES:
+            return False
+    return True
 
 
 def contains_forbidden_gap_fragments(text: str) -> bool:
@@ -443,6 +658,85 @@ def _infer_roadmap_framework(
     return 'NCA ECC'
 
 
+def _roadmap_has_concrete_capability(init: str, fw: str = '') -> bool:
+    """PR-CY53 — True when initiative names a concrete ECC/DCC capability."""
+    blob = f'{init} {fw}'.lower()
+    keys = (
+        'soc', 'siem', 'iam', 'pam', 'mfa', 'csirt', 'ثغر', 'vulnerability',
+        'حوكمة', 'governance', 'ciso', 'dcc', 'dlp', 'تصنيف', 'تشفير',
+        'encryption', 'حماية', 'بيانات', 'data', 'iam/', 'soc/',
+    )
+    return any(k in blob for k in keys)
+
+
+def _rewrite_weak_roadmap_initiative(
+        init: str, fw: str, phase_num: int, lang: str = 'ar') -> str:
+    """Replace generic roadmap initiatives with concrete capabilities."""
+    s = str(init or '').strip()
+    if s and s not in ROADMAP_GENERIC_INITIATIVES and _roadmap_has_concrete_capability(s, fw):
+        return s
+    is_dcc = 'DCC' in str(fw).upper() or phase_num >= 3
+    if lang == 'ar':
+        if is_dcc:
+            dcc_by_phase = {
+                1: 'تصنيف البيانات وحماية الأصول',
+                2: 'DLP وحماية البيانات الحساسة',
+                3: 'التشفير ومراقبة تسريب البيانات',
+            }
+            return dcc_by_phase.get(phase_num, 'حماية البيانات الحساسة')
+        ecc_by_phase = {
+            1: 'تأسيس حوكمة الأمن السيبراني وتعيين CISO',
+            2: 'تمكين SOC/SIEM وIAM/PAM/MFA',
+            3: 'تحسين إدارة الثغرات والاستجابة CSIRT',
+        }
+        return ecc_by_phase.get(phase_num, 'تمكين SOC/SIEM وIAM/PAM/MFA')
+    if is_dcc:
+        return 'Data classification & sensitive data protection'
+    return 'Enable SOC/SIEM and IAM/PAM/MFA'
+
+
+def _rewrite_weak_roadmap_output(
+        output: str, init: str, phase_num: int, lang: str = 'ar') -> str:
+    """Replace generic roadmap outputs with concrete deliverables."""
+    s = str(output or '').strip()
+    if s and s not in ROADMAP_GENERIC_OUTPUTS:
+        return s
+    if lang == 'ar':
+        by_phase = {
+            1: 'إدارة ولجنة حوكمة فاعلة',
+            2: 'قدرات SOC/SIEM تشغيلية',
+            3: 'نضج CSIRT وإدارة الثغرات',
+        }
+        if any(k in init for k in ('DLP', 'تصنيف', 'بيانات', 'تشفير')):
+            return 'سياسات DLP وتصنيف بيانات معتمدة'
+        return by_phase.get(phase_num, 'قدرات تشغيلية فعّالة')
+    return 'Operational SOC/SIEM capability'
+
+
+def _is_generic_roadmap_row(row: List[str]) -> bool:
+    """True when roadmap row uses forbidden generic phrases."""
+    if len(row) < 5:
+        return False
+    init = str(row[2] or '').strip()
+    out = str(row[4] or '').strip()
+    owner = str(row[3] or '').strip()
+    if init in ROADMAP_GENERIC_INITIATIVES:
+        return True
+    if out in ROADMAP_GENERIC_OUTPUTS:
+        return True
+    if owner in ROADMAP_WEAK_OWNERS:
+        return True
+    if init and not _roadmap_has_concrete_capability(init, row[5] if len(row) > 5 else ''):
+        if len(init) < 10:
+            return True
+    return False
+
+
+def roadmap_generic_rows_absent(rows: List[List[str]]) -> bool:
+    """PR-CY53 — no generic roadmap rows in the model."""
+    return not any(_is_generic_roadmap_row(r) for r in (rows or []))
+
+
 def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
     """Ensure a roadmap row has meaningful owner/output/framework defaults."""
     cells = list(row) + ['—'] * (6 - len(row))
@@ -454,13 +748,20 @@ def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         'مبادرة تنفيذية' if lang == 'ar' else 'Implementation initiative')
     fw = _infer_roadmap_framework(
         init, period, phase_num, cells[5] if len(cells) > 5 else '', lang)
+    init = _rewrite_weak_roadmap_initiative(init, fw, phase_num, lang)
+    fw = _infer_roadmap_framework(init, period, phase_num, fw, lang)
+    owner = cells[3] if not _is_dash_cell(cells[3]) else 'CISO'
+    if str(owner).strip() in ROADMAP_WEAK_OWNERS:
+        owner = 'CISO'
+    out = cells[4] if not _is_dash_cell(cells[4]) else (
+        'مخرج معتمد' if lang == 'ar' else 'Approved deliverable')
+    out = _rewrite_weak_roadmap_output(out, init, phase_num, lang)
     return _compact_roadmap_row([
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
         init,
-        cells[3] if not _is_dash_cell(cells[3]) else 'CISO',
-        cells[4] if not _is_dash_cell(cells[4]) else (
-            'مخرج معتمد' if lang == 'ar' else 'Approved deliverable'),
+        owner,
+        out,
         fw,
     ], lang)
 
@@ -506,6 +807,15 @@ def build_roadmap_render_spec(
         if _is_dash_heavy_row(r):
             continue
         filled = _fill_roadmap_row(r, lang)
+        if _is_generic_roadmap_row(filled):
+            phase_num = _phase_bucket(filled[1] or filled[0])
+            fw = filled[5] if len(filled) > 5 else ''
+            filled[2] = _rewrite_weak_roadmap_initiative(
+                filled[2], fw, phase_num, lang)
+            filled[4] = _rewrite_weak_roadmap_output(
+                filled[4], filled[2], phase_num, lang)
+            if str(filled[3]).strip() in ROADMAP_WEAK_OWNERS:
+                filled[3] = 'CISO'
         init_key = (filled[2] or '').strip()[:60]
         if init_key in seen_inits:
             continue
@@ -567,6 +877,14 @@ def _sanitize_table_spec(
                 pass
             elif cells:
                 cells[0] = _normalize_gap_cell(cells[0])
+            rows.append(cells)
+        elif schema == 'kpi_main':
+            cells = [prepare_final_render_text(c, lang) for c in r]
+            if len(cells) > 3:
+                name = cells[1] if len(cells) > 1 else ''
+                cells[2] = _derive_kpi_type(
+                    name, cells[2] if len(cells) > 2 else '', lang)
+                cells[3] = _derive_kpi_target(name, cells[3], lang)
             rows.append(cells)
         else:
             rows.append([prepare_final_render_text(c, lang) for c in r])
@@ -936,20 +1254,77 @@ def _is_time_based_metric(name: str) -> bool:
     ))
 
 
+def _is_formula_like_target(val: str) -> bool:
+    """PR-CY53 — True when a KPI target cell holds formula text, not a target."""
+    s = (val or '').strip()
+    if not s or s == '—':
+        return False
+    if '×' in s or '÷' in s:
+        return True
+    if s.count('(') >= 1 and s.count(')') >= 1:
+        return True
+    formula_keys = (
+        'المنجز', 'Done', 'Planned', 'المخطط', 'إجمالي', 'total',
+        'Average', 'متوسط', 'عدد', 'count', 'Sum ', 'مجموع',
+        '/ ', ' SLA-closed', 'closed vulnerabilities',
+    )
+    if any(k in s for k in formula_keys):
+        return True
+    if len(s) > 60 and ('/' in s or '×' in s):
+        return True
+    return False
+
+
 def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
-    """PR-CY50 — time-based metrics use time thresholds, not percentages."""
+    """PR-CY50/53 — measurable target only; never formula text."""
     t = (raw_target or '').strip()
-    if not _is_time_based_metric(name):
-        return t if t and t != '—' else '100%'
-    if t and t != '—' and '%' not in t:
-        return t
+    if t in ('—', '-', '--', '–'):
+        t = ''
+    if _is_formula_like_target(t):
+        t = ''
+    n = (name or '').strip()
+    nu = n.lower()
     if lang == 'ar':
-        if any(k in (name or '') for k in ('استجاب', 'response', 'حادث')):
-            return '< 4 ساعات'
-        return '≤ 72 ساعة'
-    if any(k in (name or '').lower() for k in ('response', 'incident')):
-        return '< 4 hours'
-    return '≤ 72 hours'
+        if any(k in n for k in ('استجاب', 'response', 'حادث', 'incident')):
+            return '< 4 ساعات' if not t or _is_formula_like_target(t) else t
+        if any(k in n for k in ('ثغر', 'vulnerability', 'VM')):
+            if t and not _is_formula_like_target(t) and '%' in t:
+                return t
+            return '95% خلال 72 ساعة'
+        if any(k in nu for k in ('phishing', 'تصيد', 'failure')):
+            return 'أقل من 5%'
+        if any(k in nu for k in ('mfa', 'مصادقة')):
+            return '100% للحسابات المميزة أو ≥95% للمستخدمين'
+        if any(k in nu for k in ('backup', 'نسخ', 'dr')):
+            return '≥99%'
+        if any(k in nu for k in ('encrypt', 'تشفير', 'dlp', 'بيانات')):
+            return '≥95% أو 100% للبيانات الحساسة المصنفة'
+    else:
+        if any(k in nu for k in ('response', 'incident', 'mttr', 'mttd')):
+            return '< 4 hours' if not t or _is_formula_like_target(t) else t
+        if any(k in nu for k in ('vulnerability', 'vuln')):
+            return '95% within 72 hours'
+        if any(k in nu for k in ('phishing', 'failure')):
+            return '< 5%'
+        if 'mfa' in nu:
+            return '100% privileged or ≥95% users'
+        if any(k in nu for k in ('backup', 'dr')):
+            return '≥99%'
+        if any(k in nu for k in ('encrypt', 'dlp', 'sensitive')):
+            return '≥95% or 100% classified sensitive data'
+    if _is_time_based_metric(name):
+        if t and t != '—' and '%' not in t and not _is_formula_like_target(t):
+            return t
+        if lang == 'ar':
+            if any(k in n for k in ('استجاب', 'response', 'حادث')):
+                return '< 4 ساعات'
+            return '≤ 72 ساعة'
+        if any(k in nu for k in ('response', 'incident')):
+            return '< 4 hours'
+        return '≤ 72 hours'
+    if t and t != '—' and not _is_formula_like_target(t):
+        return t
+    return '100%'
 
 
 def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
@@ -1205,6 +1580,12 @@ DOCMODEL_PROFESSIONAL_SUBGATES = (
     'pdf_kpi_type_column_valid',
     'confidence_table_layout_valid',
     'pdf_confidence_factor_labels_intact',
+    'pdf_table_layout_profiles_applied',
+    'pdf_confidence_factor_layout_valid',
+    'pdf_governance_split_if_wide',
+    'pdf_roadmap_generic_rows_absent',
+    'pdf_kpi_target_column_valid',
+    'pdf_table_vertical_stack_warnings',
     'preview_pdf_docx_parity_passed',
     'executive_summary_clean',
     'markdown_residue_after_docmodel',
@@ -2014,6 +2395,42 @@ def kpi_type_column_valid(kpi_main: List[Dict[str, Any]]) -> bool:
     return True
 
 
+def kpi_target_column_valid(kpi_main: List[Dict[str, Any]]) -> bool:
+    """PR-CY53 — KPI summary target column must not contain formula text."""
+    for t in kpi_main or []:
+        for r in t.get('rows') or []:
+            target = str(r[3] if len(r) > 3 else '').strip()
+            if _is_formula_like_target(target):
+                return False
+            if not target or target in ('—', '-', '--', '–'):
+                return False
+    return True
+
+
+def governance_pdf_split_valid(blocks: Dict[str, Any]) -> bool:
+    """PR-CY53 — wide governance tables must be splittable (5 cols → 3+2)."""
+    gov = blocks.get('governance_ownership') or {}
+    rows = gov.get('rows') or []
+    if not rows:
+        return True
+    max_cols = max((len(r) for r in rows), default=0)
+    if max_cols <= 4:
+        return True
+    prof = get_pdf_table_layout_profile('governance', max_cols)
+    return bool(prof.get('split_if_wide'))
+
+
+def pdf_confidence_factor_layout_valid(
+        conf_factor_tbl: List[Dict[str, Any]]) -> bool:
+    """PR-CY53 — confidence factors use card layout; labels intact."""
+    if not conf_factor_tbl:
+        return True
+    prof = get_pdf_table_layout_profile('conf_factor', 4)
+    if prof.get('render_mode') != 'cards':
+        return False
+    return confidence_factor_labels_intact(conf_factor_tbl)
+
+
 def pdf_gap_headers_clean(gap_tables: List[Dict[str, Any]]) -> bool:
     """PR-CY52 — gap action headers canonical; no forbidden fragments."""
     action_tbls = [t for t in (gap_tables or [])
@@ -2220,6 +2637,18 @@ def prcy47_docmodel_professional_checks(
     pdf_kpi_type_column_valid = kpi_type_column_valid(kpi_main)
     final_arabic_spacing_pdf_passed = final_table_cell_arabic_cleanup_passed
 
+    # PR-CY53 — PDF table layout hardening gates.
+    pdf_table_layout_profiles_applied_val = pdf_table_layout_profiles_applied(
+        model)
+    pdf_confidence_factor_layout_valid_val = (
+        pdf_confidence_factor_layout_valid(conf_factor_tbl))
+    pdf_governance_split_if_wide_val = governance_pdf_split_valid(blocks)
+    pdf_roadmap_generic_rows_absent_val = roadmap_generic_rows_absent(
+        road_rows)
+    pdf_kpi_target_column_valid_val = kpi_target_column_valid(kpi_main)
+    _stack_warnings = estimate_table_vertical_stack_warnings(model)
+    pdf_table_vertical_stack_warnings_val = len(_stack_warnings) == 0
+
     docmodel_professional_passed = (
         executive_summary_clean
         and markdown_residue_after_docmodel == 0
@@ -2245,6 +2674,12 @@ def prcy47_docmodel_professional_checks(
         and pdf_kpi_type_column_valid
         and confidence_table_layout_valid
         and pdf_confidence_factor_labels_intact
+        and pdf_table_layout_profiles_applied_val
+        and pdf_confidence_factor_layout_valid_val
+        and pdf_governance_split_if_wide_val
+        and pdf_roadmap_generic_rows_absent_val
+        and pdf_kpi_target_column_valid_val
+        and pdf_table_vertical_stack_warnings_val
         and preview_pdf_docx_parity_passed)
 
     return {
@@ -2280,6 +2715,16 @@ def prcy47_docmodel_professional_checks(
         'pdf_roadmap_cell_density_valid': pdf_roadmap_cell_density_valid,
         'pdf_kpi_type_column_valid': pdf_kpi_type_column_valid,
         'final_arabic_spacing_pdf_passed': final_arabic_spacing_pdf_passed,
+        'pdf_table_layout_profiles_applied': (
+            pdf_table_layout_profiles_applied_val),
+        'pdf_confidence_factor_layout_valid': (
+            pdf_confidence_factor_layout_valid_val),
+        'pdf_governance_split_if_wide': pdf_governance_split_if_wide_val,
+        'pdf_roadmap_generic_rows_absent': pdf_roadmap_generic_rows_absent_val,
+        'pdf_kpi_target_column_valid': pdf_kpi_target_column_valid_val,
+        'pdf_table_vertical_stack_warnings': (
+            pdf_table_vertical_stack_warnings_val),
+        'table_vertical_stack_warning_count': len(_stack_warnings),
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
