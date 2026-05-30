@@ -46,6 +46,13 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('المخاطرمع', 'المخاطر مع'),
     ('الاستثمارفي', 'الاستثمار في'),
     ('التدريبفي', 'التدريب في'),
+    # PR-CY57 — additional Arabic concatenation defects.
+    ('مكتملمع', 'مكتمل مع'),
+    ('البرنامجمع', 'البرنامج مع'),
+    ('الثغراتكل', 'الثغرات كل'),
+    ('التعافيمن', 'التعافي من'),
+    ('الحيويةفي', 'الحيوية في'),
+    ('الأضعففي', 'الأضعف في'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -60,7 +67,7 @@ ROADMAP_GENERIC_OUTPUTS = (
     'مخرج معتمد', 'Approved deliverable',
     'قدرات تشغيلية فعّالة', 'Operational SOC/SIEM capability',
 )
-ROADMAP_WEAK_OWNERS = ('خبير', 'Expert', 'expert')
+ROADMAP_WEAK_OWNERS = ('خبير', 'Expert', 'expert', 'Mgr', 'mgr', 'Manager', 'manager')
 
 # PR-CY53 — PDF table layout profiles (rendering-only).
 PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -76,7 +83,7 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     'gap_main': {
         'col_weights': [0.05, 0.22, 0.38, 0.15, 0.20],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 8, 'header_font_size': 9, 'padding': 6,
         'max_cell_len': 90, 'render_mode': 'table',
     },
     'gap_action': {
@@ -86,21 +93,21 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     'roadmap': {
         'col_weights': [0.14, 0.12, 0.28, 0.12, 0.20, 0.14],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 8, 'header_font_size': 9, 'padding': 6,
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
         'col_weights': [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 8, 'header_font_size': 9, 'padding': 6,
         'max_cell_len': 72, 'render_mode': 'table',
     },
     'kpi_formula': {
         'col_weights': [0.08, 0.30, 0.32, 0.30],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 8, 'header_font_size': 9, 'padding': 6,
         'max_cell_len': 110, 'render_mode': 'table',
     },
     'conf_factor': {
-        'render_mode': 'cards', 'font_size': 9, 'padding': 4,
+        'render_mode': 'cards', 'font_size': 9, 'padding': 6,
         'max_cell_len': 48,
     },
     'risk_register': {
@@ -378,18 +385,20 @@ def _repair_gap_header_fragments(text: str) -> str:
 
 
 def _compact_roadmap_cell(text: str, lang: str = 'ar',
-                          max_len: int = ROADMAP_CELL_MAX_LEN) -> str:
+                          max_len: int = ROADMAP_CELL_MAX_LEN,
+                          strip_dcc_clauses: bool = True) -> str:
     """PR-CY52 — shorten roadmap cells; strip long DCC explanatory clauses."""
     s = str(text or '').strip()
     if not s or s == '—':
         return s
     # Remove repeated DCC narrative fragments — details belong in traceability.
-    for pat in (
-        r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]*',
-        r'(?:Data\s+Cybersecurity|data\s+classification)[^,\.;|]*',
-        r'(?:وفق|بموجب)\s+(?:NCA\s+)?DCC[^،\.|;]*',
-    ):
-        s = re.sub(pat, '', s, flags=re.IGNORECASE)
+    if strip_dcc_clauses:
+        for pat in (
+            r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]*',
+            r'(?:Data\s+Cybersecurity|data\s+classification)[^,\.;|]*',
+            r'(?:وفق|بموجب)\s+(?:NCA\s+)?DCC[^،\.|;]*',
+        ):
+            s = re.sub(pat, '', s, flags=re.IGNORECASE)
     s = re.sub(r'\s{2,}', ' ', s).strip(' ،|,;')
     if len(s) > max_len:
         s = s[:max_len - 1].rstrip() + '…'
@@ -403,7 +412,8 @@ def _compact_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         _compact_roadmap_cell(cells[0], lang, max_len=48),
         _compact_roadmap_cell(cells[1], lang, max_len=24),
         _compact_roadmap_cell(cells[2], lang),
-        _compact_roadmap_cell(cells[3], lang, max_len=24),
+        _compact_roadmap_cell(cells[3], lang, max_len=24,
+                              strip_dcc_clauses=False),
         _compact_roadmap_cell(cells[4], lang),
         cells[5],
     ]
@@ -949,6 +959,87 @@ def _roadmap_output_for_initiative(
     return 'Approved implementation deliverables'
 
 
+def _roadmap_owner_for_initiative(init: str, lang: str = 'ar') -> str:
+    """PR-CY57 — initiative-specific accountable owner."""
+    blob = f'{init}'.lower()
+    if lang == 'ar':
+        if any(k in blob for k in ('csirt', 'حادث', 'incident')):
+            return 'قائد CSIRT'
+        if any(k in blob for k in ('soc', 'siem')):
+            return 'مدير SOC'
+        if any(k in blob for k in ('iam', 'pam', 'mfa', 'مصادقة')):
+            return 'مسؤول IAM'
+        if any(k in blob for k in (
+                'dlp', 'تصنيف', 'بيانات', 'تشفير', 'encryption', 'data')):
+            return 'مسؤول حماية البيانات'
+        if any(k in blob for k in ('ثغر', 'vulnerability', 'vuln')):
+            return 'مسؤول إدارة الثغرات'
+        return 'CISO'
+    if any(k in blob for k in ('csirt', 'incident')):
+        return 'CSIRT Lead'
+    if any(k in blob for k in ('soc', 'siem')):
+        return 'SOC Manager'
+    if any(k in blob for k in ('iam', 'pam', 'mfa')):
+        return 'IAM Owner'
+    if any(k in blob for k in ('dlp', 'classification', 'encrypt', 'data')):
+        return 'Data Protection Owner'
+    if any(k in blob for k in ('vulnerability', 'vuln')):
+        return 'Vulnerability Manager'
+    return 'CISO'
+
+
+def _roadmap_owner_mismatches_initiative(owner: str, init: str) -> bool:
+    """True when owner is weak or inconsistent with initiative type."""
+    o = str(owner or '').strip()
+    if not o or _is_dash_cell(o) or o in ROADMAP_WEAK_OWNERS:
+        return True
+    canonical = _roadmap_owner_for_initiative(init, 'ar').lower()
+    ol = o.lower()
+    if ol == canonical:
+        return False
+    blob = f'{init}'.lower()
+    if any(k in blob for k in ('soc', 'siem')) and 'soc' not in ol:
+        return True
+    if any(k in blob for k in ('csirt',)) and 'csirt' not in ol:
+        return True
+    if any(k in blob for k in ('iam', 'pam', 'mfa')) and 'iam' not in ol:
+        return True
+    if any(k in blob for k in ('dlp', 'بيانات', 'تصنيف', 'تشفير')):
+        if not any(k in ol for k in ('بيانات', 'data', 'dlp', 'dcc')):
+            if ol == 'ciso':
+                return True
+    return False
+
+
+def _roadmap_output_matches_initiative(
+        output: str, init: str, lang: str = 'ar') -> bool:
+    """PR-CY57 — True when output is a concrete deliverable for the initiative."""
+    out = str(output or '').strip().lower()
+    if not out or _is_dash_cell(out):
+        return False
+    if out in ROADMAP_GENERIC_OUTPUTS:
+        return False
+    tailored = _roadmap_output_for_initiative(init, lang).lower()
+    if out == tailored:
+        return True
+    blob = f'{init}'.lower()
+    domain_checks = (
+        (('soc', 'siem'), ('soc', 'siem', 'مراقبة', 'monitor')),
+        (('csirt', 'حادث', 'incident'), ('csirt', 'حادث', 'incident', 'استجاب')),
+        (('dlp', 'تسرب'), ('dlp', 'تصنيف', 'classification')),
+        (('iam', 'pam', 'mfa'), ('iam', 'pam', 'mfa', 'مصادقة')),
+        (('ثغر', 'vulnerability', 'vuln'), ('ثغر', 'vulnerability', 'vuln')),
+        (('تشفير', 'encryption'), ('تشفير', 'encrypt')),
+        (('تصنيف', 'classification', 'بيانات'), (
+            'تصنيف', 'classification', 'بيانات', 'dlp')),
+        (('حوكمة', 'governance', 'ciso'), ('حوكمة', 'governance', 'ciso')),
+    )
+    for init_keys, out_keys in domain_checks:
+        if any(k in blob for k in init_keys):
+            return any(k in out for k in out_keys)
+    return len(out) >= 12
+
+
 def _rewrite_weak_roadmap_output(
         output: str, init: str, phase_num: int, lang: str = 'ar') -> str:
     """Replace generic roadmap outputs with concrete deliverables."""
@@ -1006,12 +1097,16 @@ def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         init, period, phase_num, cells[5] if len(cells) > 5 else '', lang)
     init = _rewrite_weak_roadmap_initiative(init, fw, phase_num, lang)
     fw = _infer_roadmap_framework(init, period, phase_num, fw, lang)
-    owner = cells[3] if not _is_dash_cell(cells[3]) else 'CISO'
-    if str(owner).strip() in ROADMAP_WEAK_OWNERS:
-        owner = 'CISO'
+    canonical_owner = _roadmap_owner_for_initiative(init, lang)
+    owner = (canonical_owner if _is_dash_cell(cells[3])
+             or _roadmap_owner_mismatches_initiative(cells[3], init)
+             else cells[3])
     out = cells[4] if not _is_dash_cell(cells[4]) else (
         'مخرج معتمد' if lang == 'ar' else 'Approved deliverable')
-    out = _rewrite_weak_roadmap_output(out, init, phase_num, lang)
+    if not _roadmap_output_matches_initiative(out, init, lang):
+        out = _roadmap_output_for_initiative(init, lang)
+    else:
+        out = _rewrite_weak_roadmap_output(out, init, phase_num, lang)
     return _compact_roadmap_row([
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
@@ -1071,7 +1166,7 @@ def build_roadmap_render_spec(
             filled[4] = _rewrite_weak_roadmap_output(
                 filled[4], filled[2], phase_num, lang)
             if str(filled[3]).strip() in ROADMAP_WEAK_OWNERS:
-                filled[3] = 'CISO'
+                filled[3] = _roadmap_owner_for_initiative(filled[2], lang)
         init_key = (filled[2] or '').strip()[:60]
         if init_key in seen_inits:
             continue
@@ -1751,18 +1846,52 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
 def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
     """Professional fallback data source/tool derived from a metric name."""
     n = (name or '').strip()
+    nu = n.lower()
+    if _is_time_based_metric(n):
+        return 'SIEM / SOC'
     table = (
-        ('SOC', 'SIEM / SOC'), ('SIEM', 'SIEM'), ('MFA', 'IAM / IdP'),
+        ('SOC', 'SIEM / SOC'), ('SIEM', 'SIEM / SOC'), ('MFA', 'IAM / IdP'),
         ('IAM', 'IAM / PAM'), ('PAM', 'PAM'), ('ثغر', 'Vulnerability Mgmt'),
         ('vulnerability', 'Vulnerability Mgmt'), ('تشفير', 'DLP / DP'),
         ('DLP', 'DLP'), ('نسخ', 'Backup / DR'), ('backup', 'Backup / DR'),
-        ('توعية', 'LMS / HR'), ('phishing', 'Phishing platform'),
-        ('تصيد', 'Phishing platform'),
+        ('تعاف', 'Backup / DR'), ('توعية', 'LMS / HR'), ('تدريب', 'LMS / HR'),
+        ('phishing', 'Phishing platform'), ('تصيد', 'Phishing platform'),
+        ('استجاب', 'SIEM / SOC'), ('response', 'SIEM / SOC'),
+        ('حادث', 'SIEM / SOC'), ('incident', 'SIEM / SOC'),
     )
     for key, tool in table:
-        if key in n:
+        if key in n or key.lower() in nu:
             return tool
     return 'مكتب CISO / نظام الحوكمة' if lang == 'ar' else 'CISO office / GRC'
+
+
+def _align_kpi_source_with_metric(
+        name: str, formula: str, source: str, lang: str = 'ar') -> str:
+    """PR-CY57 — align KPI data source with metric semantics."""
+    derived = _derive_kpi_source(name, lang)
+    s = str(source or '').strip()
+    if s in ('—', '-', '--', ''):
+        return derived
+    if _is_freq_or_timeframe(s):
+        return derived
+    sl = s.lower()
+    n = (name or '').lower()
+    f = (formula or '').lower()
+    if _is_time_based_metric(name) or any(
+            k in f for k in ('حادث', 'incident', 'response', 'استجاب', 'زمن')):
+        if any(k in sl for k in ('grc', 'حوكمة', 'ciso office', 'lms', 'hr')):
+            return derived
+    if any(k in n for k in ('ثغر', 'vulnerability', 'vuln')):
+        if any(k in sl for k in ('grc', 'lms', 'hr', 'phishing', 'siem')):
+            if 'vulnerability' not in sl and 'ثغر' not in s:
+                return derived
+    if any(k in n for k in ('توعية', 'awareness', 'تدريب', 'training', 'تصيد')):
+        if any(k in sl for k in ('siem', 'soc', 'vulnerability', 'grc')):
+            return derived
+    if any(k in n for k in ('نسخ', 'backup', 'dr', 'تعاف')):
+        if 'backup' not in sl and 'نسخ' not in s and 'dr' not in sl:
+            return derived
+    return s
 
 
 _KPI_FREQ_TOKENS = ('شهري', 'ربع', 'سنوي', 'يومي', 'أسبوعي', 'daily',
@@ -1830,7 +1959,8 @@ def split_kpi_tables(
                 _cell(r, i_horizon),
             ])
             source = _cell(r, i_source) if i_source >= 0 else '—'
-            if source == '—' or _is_freq_or_timeframe(source):
+            source = _align_kpi_source_with_metric(name, formula, source, lang)
+            if source == '—':
                 source = _derive_kpi_source(name, lang)
             formula_rows.append([idx, name, formula, source])
         if not main_rows:
@@ -2422,6 +2552,118 @@ def normalize_gap_action_guides(
     return out
 
 
+CANONICAL_CYBER_EXEC_PRIORITIES_AR = (
+    'حوكمة الأمن السيبراني',
+    'حماية البيانات والامتثال',
+    'SOC/SIEM والمراقبة',
+    'IAM/PAM/MFA',
+    'إدارة الثغرات والاستجابة',
+)
+CANONICAL_CYBER_EXEC_PRIORITIES_EN = (
+    'Cybersecurity governance',
+    'Data protection & compliance',
+    'SOC/SIEM monitoring',
+    'IAM/PAM/MFA',
+    'Vulnerability management & response',
+)
+CANONICAL_CYBER_EXEC_RISKS_AR = (
+    'اختراق البيانات الحساسة',
+    'فشل الامتثال التنظيمي',
+    'تعطل الخدمات الحيوية',
+)
+CANONICAL_CYBER_EXEC_RISKS_EN = (
+    'Sensitive data breach',
+    'Regulatory non-compliance',
+    'Critical service outage',
+)
+_RISK_HEADER_TOKENS = frozenset({
+    'الخطر', 'المخاطر', 'Risk', 'risk', '#', 'م', '—',
+})
+
+
+def _derive_executive_priorities(
+        content_sections: Dict[str, str],
+        metadata: Dict[str, Any],
+        lang: str = 'ar') -> List[str]:
+    """PR-CY57 — fill executive-summary priorities from themes, roadmap, pillars."""
+    seen: set = set()
+    out: List[str] = []
+    for t in (metadata or {}).get('mandatory_themes', []):
+        label = prcy47_fix_ar_fragments(str(t).strip())
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    roadmap_text = (content_sections or {}).get('roadmap', '') or ''
+    for tbl in parse_markdown_tables(roadmap_text):
+        if len(tbl) < 2:
+            continue
+        hdr = tbl[0]
+        i_init = _col_index(hdr, (
+            'النشاط', 'المبادرة', 'initiative', 'activity', 'البرنامج'))
+        col = i_init if i_init >= 0 else (
+            2 if len(tbl[1]) > 2 else 1)
+        for r in tbl[1:]:
+            init = prcy47_fix_ar_fragments(_cell(r, col, ''))
+            if init and init not in seen and init not in _RISK_HEADER_TOKENS:
+                seen.add(init)
+                out.append(init[:80])
+    pillars_text = (content_sections or {}).get('pillars', '') or ''
+    for ln in pillars_text.split('\n'):
+        s = ln.strip()
+        if not s.startswith('|'):
+            continue
+        cells = [c.strip() for c in s.strip('|').split('|')]
+        if len(cells) >= 2 and cells[1] and cells[1] not in (
+                '#', 'العمود', 'Pillar', '—'):
+            label = prcy47_fix_ar_fragments(cells[1])
+            if label not in seen:
+                seen.add(label)
+                out.append(label[:80])
+    defaults = (CANONICAL_CYBER_EXEC_PRIORITIES_AR if lang == 'ar'
+                else CANONICAL_CYBER_EXEC_PRIORITIES_EN)
+    if len(out) < 3:
+        for d in defaults:
+            if d not in seen and len(out) < 5:
+                seen.add(d)
+                out.append(d)
+    return out[:5]
+
+
+def _derive_executive_risks(conf_text: str, lang: str = 'ar') -> List[str]:
+    """PR-CY57 — extract risk register rows for executive summary."""
+    risks: List[str] = []
+    for tbl in parse_markdown_tables(conf_text or ''):
+        if len(tbl) < 2:
+            continue
+        hdr = tbl[0]
+        hdr_blob = ' '.join(hdr)
+        if 'نجاح' in hdr_blob:
+            continue
+        i_risk = _col_index(hdr, ('الخطر', 'المخاطر', 'risk'))
+        if i_risk < 0:
+            continue
+        for r in tbl[1:]:
+            risk = prcy47_fix_ar_fragments(_cell(r, i_risk, ''))
+            if risk and risk not in _RISK_HEADER_TOKENS and not risk.isdigit():
+                risks.append(risk[:80])
+    if not risks:
+        for ln in (conf_text or '').split('\n'):
+            s = ln.strip()
+            if not s.startswith('|'):
+                continue
+            cells = [c.strip() for c in s.strip('|').split('|')]
+            if len(cells) < 3:
+                continue
+            candidate = cells[2] if cells[0].isdigit() or cells[1].isdigit() else cells[1]
+            if candidate and candidate not in _RISK_HEADER_TOKENS:
+                risks.append(prcy47_fix_ar_fragments(candidate)[:80])
+    if not risks:
+        defaults = (CANONICAL_CYBER_EXEC_RISKS_AR if lang == 'ar'
+                    else CANONICAL_CYBER_EXEC_RISKS_EN)
+        risks = list(defaults)
+    return [r for r in risks if r][:5]
+
+
 def enhance_executive_summary(
         exec_block: Dict[str, Any],
         content_sections: Dict[str, str],
@@ -2467,27 +2709,17 @@ def enhance_executive_summary(
     if not fw_labels:
         fw_labels = list(FRAMEWORK_ORDER)
     fw_labels = _clean_framework_labels(fw_labels)
-    key_risks = []
-    for ln in conf_text.split('\n'):
-        s = ln.strip()
-        if s.startswith('|'):
-            cells = [c.strip() for c in s.strip('|').split('|')]
-            if len(cells) >= 2 and ('خطر' in cells[1] or 'risk' in
-                                    cells[1].lower()):
-                if cells[1] not in ('الخطر', 'المخاطر', 'Risk'):
-                    key_risks.append(prcy47_fix_ar_fragments(cells[1])[:80])
-        elif 'خطر' in s or 'risk' in s.lower():
-            c = prcy47_clean_prose(s, lang_n)
-            if c:
-                key_risks.append(c[:80])
+    key_risks = _derive_executive_risks(conf_text, lang_n)
+    priorities = _derive_executive_priorities(
+        content_sections, metadata, lang_n)
     grid = {
         'purpose': paras[0] if paras else '',
         'frameworks': fw_labels,
-        'priorities': (metadata or {}).get('mandatory_themes', [])[:5],
+        'priorities': priorities,
         'top_gaps': gap_top5,
         'horizon': (metadata or {}).get('horizon_months') or '24',
         'confidence_score': conf_score,
-        'key_risks': [r for r in key_risks if r][:5],
+        'key_risks': key_risks,
     }
     return {
         **exec_block,
