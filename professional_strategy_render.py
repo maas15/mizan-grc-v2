@@ -53,6 +53,12 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('التعافيمن', 'التعافي من'),
     ('الحيويةفي', 'الحيوية في'),
     ('الأضعففي', 'الأضعف في'),
+    # PR-CY58 — additional Arabic concatenation defects.
+    ('بناءخط', 'بناء خط'),
+    ('الأولضد', 'الأول ضد'),
+    ('البياناتفي', 'البيانات في'),
+    ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
+    ('متخصصةللأمن', 'متخصصة للأمن'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -62,10 +68,23 @@ ROADMAP_CELL_MAX_LEN = 72
 ROADMAP_GENERIC_INITIATIVES = (
     'تنفيذ حلول', 'مبادرة تنفيذية', 'Implementation initiative',
     'solution implementation', 'implement solutions',
+    'تطبيق ضوابط', 'تنفيذ ضوابط', 'ضوابط',
 )
 ROADMAP_GENERIC_OUTPUTS = (
     'مخرج معتمد', 'Approved deliverable',
     'قدرات تشغيلية فعّالة', 'Operational SOC/SIEM capability',
+    'سياسة', 'إجراء', 'مخرج',
+)
+ROADMAP_GENERIC_INIT_PHRASES = frozenset({
+    'تطبيق ضوابط', 'تنفيذ ضوابط', 'ضوابط', 'تنفيذ حلول',
+    'مبادرة تنفيذية', 'Implementation initiative',
+})
+ROADMAP_GENERIC_OUTPUT_PHRASES = frozenset({
+    'سياسة', 'إجراء', 'مخرج', 'مخرج معتمد', 'Approved deliverable',
+})
+ROADMAP_CAPABILITY_FAMILIES = (
+    'governance', 'soc', 'iam', 'pam', 'mfa', 'csirt', 'vulnerability',
+    'data_classification', 'encryption', 'dlp', 'sensitive_data',
 )
 ROADMAP_WEAK_OWNERS = ('خبير', 'Expert', 'expert', 'Mgr', 'mgr', 'Manager', 'manager')
 
@@ -829,48 +848,288 @@ def _initiative_needs_ecc(init: str) -> bool:
     return any(p in (init or '') for p in _ROADMAP_ECC_AR)
 
 
+def _is_generic_roadmap_init(init: str) -> bool:
+    """PR-CY58 — True when initiative text is too generic for framework inference."""
+    s = str(init or '').strip()
+    if not s or _is_dash_cell(s):
+        return True
+    if s in ROADMAP_GENERIC_INITIATIVES or s in ROADMAP_GENERIC_INIT_PHRASES:
+        return True
+    return len(s) <= 12 and not _roadmap_has_concrete_capability(s)
+
+
+def _is_generic_roadmap_output(output: str) -> bool:
+    """PR-CY58 — True when output text is too generic for framework inference."""
+    s = str(output or '').strip()
+    if not s or _is_dash_cell(s):
+        return True
+    if s in ROADMAP_GENERIC_OUTPUTS or s in ROADMAP_GENERIC_OUTPUT_PHRASES:
+        return True
+    return len(s) <= 8
+
+
+def _framework_for_capability_family(family: str) -> str:
+    """Map capability family to NCA ECC or NCA DCC."""
+    if family in ('data_classification', 'encryption', 'dlp', 'sensitive_data'):
+        return 'NCA DCC'
+    return 'NCA ECC'
+
+
+def _roadmap_spec_for_family(family: str, lang: str = 'ar') -> Dict[str, str]:
+    """PR-CY58 — concrete initiative/output/owner/framework per capability."""
+    if lang != 'ar':
+        en_specs = {
+            'data_classification': {
+                'init': 'Implement sensitive data classification & labelling',
+                'output': 'Approved data-classification policy & asset inventory',
+                'owner': 'Data Protection Owner', 'fw': 'NCA DCC'},
+            'encryption': {
+                'init': 'Implement encryption controls & key management',
+                'output': 'Encryption controls & key management in place',
+                'owner': 'Data Protection Owner', 'fw': 'NCA DCC'},
+            'dlp': {
+                'init': 'Enable DLP & data-leak monitoring',
+                'output': 'Operational DLP platform & monitoring rules',
+                'owner': 'Data Protection Owner', 'fw': 'NCA DCC'},
+            'sensitive_data': {
+                'init': 'Control sensitive data processing',
+                'output': 'Approved sensitive-data handling procedures',
+                'owner': 'Data Protection Owner', 'fw': 'NCA DCC'},
+            'governance': {
+                'init': 'Establish cyber governance',
+                'output': 'Approved governance structure & policies',
+                'owner': 'CISO', 'fw': 'NCA ECC'},
+            'soc': {
+                'init': 'Enable & operate SOC/SIEM',
+                'output': 'Operational SOC/SIEM capability',
+                'owner': 'SOC Manager', 'fw': 'NCA ECC'},
+            'iam': {
+                'init': 'Implement IAM/PAM/MFA controls',
+                'output': 'IAM/PAM/MFA enforced',
+                'owner': 'IAM Owner', 'fw': 'NCA ECC'},
+            'pam': {
+                'init': 'Implement IAM/PAM/MFA controls',
+                'output': 'IAM/PAM/MFA enforced',
+                'owner': 'IAM Owner', 'fw': 'NCA ECC'},
+            'mfa': {
+                'init': 'Implement IAM/PAM/MFA controls',
+                'output': 'IAM/PAM/MFA enforced',
+                'owner': 'IAM Owner', 'fw': 'NCA ECC'},
+            'csirt': {
+                'init': 'Establish CSIRT & incident response',
+                'output': 'Operational CSIRT & approved response plan',
+                'owner': 'CSIRT Lead', 'fw': 'NCA ECC'},
+            'vulnerability': {
+                'init': 'Improve vulnerability management programme',
+                'output': 'Effective vulnerability SLA programme',
+                'owner': 'Vulnerability Manager', 'fw': 'NCA ECC'},
+        }
+        return en_specs.get(family, en_specs['governance'])
+    ar_specs = {
+        'data_classification': {
+            'init': 'تطبيق تصنيف ووسم البيانات الحساسة',
+            'output': 'سياسة تصنيف بيانات وجرد أصول معتمد',
+            'owner': 'مسؤول حماية البيانات', 'fw': 'NCA DCC'},
+        'encryption': {
+            'init': 'تطبيق ضوابط التشفير وإدارة المفاتيح',
+            'output': 'ضوابط تشفير ومفاتيح مطبقة',
+            'owner': 'مسؤول حماية البيانات', 'fw': 'NCA DCC'},
+        'dlp': {
+            'init': 'تفعيل DLP ومراقبة تسريب البيانات',
+            'output': 'منصة DLP وقواعد مراقبة مفعلة',
+            'owner': 'مسؤول حماية البيانات', 'fw': 'NCA DCC'},
+        'sensitive_data': {
+            'init': 'ضبط معالجة البيانات الحساسة',
+            'output': 'إجراءات معالجة بيانات حساسة معتمدة',
+            'owner': 'مسؤول حماية البيانات', 'fw': 'NCA DCC'},
+        'governance': {
+            'init': 'تأسيس حوكمة الأمن السيبراني',
+            'output': 'هيكل حوكمة وسياسات معتمدة',
+            'owner': 'CISO', 'fw': 'NCA ECC'},
+        'soc': {
+            'init': 'تمكين وتشغيل SOC/SIEM',
+            'output': 'SOC/SIEM تشغيلي',
+            'owner': 'مدير SOC', 'fw': 'NCA ECC'},
+        'iam': {
+            'init': 'تطبيق ضوابط IAM/PAM/MFA',
+            'output': 'IAM/PAM/MFA مطبق',
+            'owner': 'مدير IAM', 'fw': 'NCA ECC'},
+        'pam': {
+            'init': 'تطبيق ضوابط IAM/PAM/MFA',
+            'output': 'IAM/PAM/MFA مطبق',
+            'owner': 'مدير IAM', 'fw': 'NCA ECC'},
+        'mfa': {
+            'init': 'تطبيق ضوابط IAM/PAM/MFA',
+            'output': 'IAM/PAM/MFA مطبق',
+            'owner': 'مدير IAM', 'fw': 'NCA ECC'},
+        'csirt': {
+            'init': 'تأسيس CSIRT والاستجابة للحوادث',
+            'output': 'فريق CSIRT وخطة استجابة معتمدة',
+            'owner': 'قائد CSIRT', 'fw': 'NCA ECC'},
+        'vulnerability': {
+            'init': 'تحسين برنامج إدارة الثغرات',
+            'output': 'برنامج إدارة ثغرات وتشغيل SLA',
+            'owner': 'مدير الثغرات', 'fw': 'NCA ECC'},
+    }
+    return ar_specs.get(family, ar_specs['governance'])
+
+
+def _infer_capability_family(
+        raw_init: str, raw_output: str, raw_fw: str = '',
+        phase_num: int = 1, lang: str = 'ar') -> Tuple[str, str]:
+    """PR-CY58 — derive capability family and inference source."""
+    blob = f'{raw_init} {raw_output} {raw_fw}'.lower()
+    ar_blob = f'{raw_init} {raw_output} {raw_fw}'
+    if any(k in blob for k in ('dlp',)) or 'تسرب' in ar_blob:
+        return 'dlp', 'raw_text_keyword'
+    if any(k in blob for k in ('encryption', 'encrypt')) or 'تشفير' in ar_blob:
+        return 'encryption', 'raw_text_keyword'
+    if any(k in blob for k in ('classification',)) or any(
+            k in ar_blob for k in ('تصنيف', 'وسم', 'جرد')):
+        return 'data_classification', 'raw_text_keyword'
+    if any(k in blob for k in ('sensitive',)) or 'حساس' in ar_blob:
+        return 'sensitive_data', 'raw_text_keyword'
+    if any(_roadmap_blob_has_en_word(blob, w) for w in ('soc', 'siem')):
+        return 'soc', 'raw_text_keyword'
+    if any(_roadmap_blob_has_en_word(blob, w) for w in ('iam',)):
+        return 'iam', 'raw_text_keyword'
+    if any(_roadmap_blob_has_en_word(blob, w) for w in ('pam',)):
+        return 'pam', 'raw_text_keyword'
+    if any(_roadmap_blob_has_en_word(blob, w) for w in ('mfa',)):
+        return 'mfa', 'raw_text_keyword'
+    if 'csirt' in blob or 'حادث' in ar_blob or 'incident' in blob:
+        return 'csirt', 'raw_text_keyword'
+    if 'vulnerability' in blob or 'vuln' in blob or 'ثغر' in ar_blob:
+        return 'vulnerability', 'raw_text_keyword'
+    if any(k in blob for k in ('governance', 'ciso')) or 'حوكمة' in ar_blob:
+        return 'governance', 'raw_text_keyword'
+    if 'DCC' in str(raw_fw).upper():
+        dcc_by_phase = {1: 'data_classification', 2: 'dlp', 3: 'encryption'}
+        return dcc_by_phase.get(phase_num, 'data_classification'), 'framework_hint'
+    if 'ECC' in str(raw_fw).upper():
+        ecc_by_phase = {1: 'governance', 2: 'soc', 3: 'vulnerability'}
+        return ecc_by_phase.get(phase_num, 'governance'), 'framework_hint'
+    if _is_generic_roadmap_init(raw_init) or _is_generic_roadmap_output(raw_output):
+        if _initiative_needs_dcc(f'{raw_init} {raw_output}'):
+            return 'data_classification', 'phase_default'
+        ecc_by_phase = {1: 'governance', 2: 'soc', 3: 'vulnerability'}
+        return ecc_by_phase.get(phase_num, 'governance'), 'phase_default'
+    if _initiative_needs_dcc(f'{raw_init} {raw_output}'):
+        return 'data_classification', 'raw_text_keyword'
+    if _initiative_needs_ecc(f'{raw_init} {raw_output}'):
+        return 'governance', 'raw_text_keyword'
+    return 'governance', 'phase_default'
+
+
 def collect_roadmap_framework_violations(
-        rows: List[List[str]], lang: str = 'ar') -> List[Dict[str, str]]:
-    """PR-CY55 — roadmap rows that fail framework/output mapping rules."""
+        rows: List[List[str]], lang: str = 'ar',
+        row_meta: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, str]]:
+    """PR-CY55/58 — roadmap rows that fail framework/output mapping rules."""
     violations: List[Dict[str, str]] = []
-    for r in rows or []:
+    meta_list = row_meta or [{} for _ in rows]
+    for r, meta in zip(rows or [], meta_list):
         if len(r) < 6:
             continue
         phase = str(r[0] or '')
-        init = str(r[2] or '')
-        out = str(r[4] or '')
+        display_init = str(r[2] or '')
+        display_out = str(r[4] or '')
         fw = str(r[5] or '')
         period = str(r[1] or '')
-        inferred = _infer_roadmap_framework(
-            init, period, _phase_bucket(period or phase), '', lang)
-        expected = inferred
+        raw_init = str(meta.get('raw_initiative') or display_init)
+        raw_out = str(meta.get('raw_output') or display_out)
+        family = meta.get('capability_family') or _infer_capability_family(
+            raw_init, raw_out,
+            meta.get('raw_framework') or fw,
+            _phase_bucket(period or phase), lang)[0]
+        expected = _framework_for_capability_family(family)
+        inferred = expected
         reasons: List[str] = []
         if fw and expected:
             if 'DCC' in expected.upper() and 'DCC' not in fw.upper():
                 reasons.append('assigned_framework_missing_dcc')
             if 'ECC' in expected.upper() and 'ECC' not in fw.upper():
                 reasons.append('assigned_framework_missing_ecc')
-        tailored_out = _roadmap_output_for_initiative(init, lang)
-        if (out == 'إدارة ولجنة حوكمة فاعلة'
-                and tailored_out != out):
+        tailored_out = _roadmap_output_for_initiative(
+            _roadmap_spec_for_family(family, lang)['init'], lang)
+        if (display_out == 'إدارة ولجنة حوكمة فاعلة'
+                and tailored_out != display_out):
             reasons.append('generic_governance_output_on_capability_initiative')
+        if (_is_generic_roadmap_init(display_init)
+                or _is_generic_roadmap_output(display_out)) and not family:
+            reasons.append('generic_row_missing_capability_family')
         if reasons:
             violations.append({
                 'phase': phase,
-                'initiative': init,
-                'output': out,
+                'initiative': display_init,
+                'output': display_out,
+                'raw_initiative': raw_init,
+                'raw_output': raw_out,
+                'display_initiative': display_init,
+                'display_output': display_out,
+                'capability_family': family,
                 'assigned_framework': fw,
                 'inferred_framework': inferred,
                 'expected_framework': expected,
+                'inference_source': meta.get('inference_source', 'capability_family'),
                 'reason': '; '.join(reasons),
             })
     return violations
 
 
+def build_roadmap_framework_mapping_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY58 — [ROADMAP-FRAMEWORK-MAPPING-DIAG] payload."""
+    rows = get_roadmap_spec_rows(model)
+    meta = get_roadmap_row_meta(model)
+    violations = collect_roadmap_framework_violations(rows, lang, meta)
+    by_family: Dict[str, int] = {}
+    for m in meta:
+        fam = str(m.get('capability_family') or 'unknown')
+        by_family[fam] = by_family.get(fam, 0) + 1
+    dcc_rows = sum(
+        1 for m in meta
+        if 'DCC' in str(m.get('assigned_framework', '')).upper())
+    ecc_rows = sum(
+        1 for m in meta
+        if 'ECC' in str(m.get('assigned_framework', '')).upper())
+    action = 'validated'
+    if any(_is_generic_roadmap_init(m.get('raw_initiative', ''))
+           or _is_generic_roadmap_output(m.get('raw_output', ''))
+           for m in meta):
+        action = 'rewrote_generic_rows'
+    if violations:
+        action = 'violations_remain'
+    return {
+        'row_count': len(rows),
+        'rows_by_capability_family': by_family,
+        'dcc_rows': dcc_rows,
+        'ecc_rows': ecc_rows,
+        'violations': violations,
+        'action_taken': action,
+    }
+
+
+def emit_roadmap_framework_mapping_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
+    """Emit [ROADMAP-FRAMEWORK-MAPPING-DIAG] to server logs."""
+    payload = build_roadmap_framework_mapping_diag(model, lang)
+    try:
+        print(f'[ROADMAP-FRAMEWORK-MAPPING-DIAG] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
 def _infer_roadmap_framework(
         init: str, period: str, phase_num: int, raw_fw: str,
-        lang: str = 'ar') -> str:
-    """PR-CY50/55 — map roadmap rows to NCA ECC vs NCA DCC by initiative content."""
+        lang: str = 'ar', capability_family: str = '') -> str:
+    """PR-CY50/55/58 — map roadmap rows to NCA ECC vs NCA DCC."""
+    if capability_family:
+        return _framework_for_capability_family(capability_family)
+    family, _ = _infer_capability_family(
+        init, '', raw_fw, phase_num, lang)
+    if family:
+        return _framework_for_capability_family(family)
     if _initiative_needs_dcc(init):
         return 'NCA DCC'
     if _initiative_needs_ecc(init):
@@ -1061,6 +1320,8 @@ def _is_generic_roadmap_row(row: List[str]) -> bool:
     init = str(row[2] or '').strip()
     out = str(row[4] or '').strip()
     owner = str(row[3] or '').strip()
+    if _is_generic_roadmap_init(init) or _is_generic_roadmap_output(out):
+        return True
     if init in ROADMAP_GENERIC_INITIATIVES:
         return True
     if out in ROADMAP_GENERIC_OUTPUTS:
@@ -1084,30 +1345,34 @@ def roadmap_generic_rows_absent(rows: List[List[str]]) -> bool:
     return not any(_is_generic_roadmap_row(r) for r in (rows or []))
 
 
-def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
+def _fill_roadmap_row(
+        row: List[str], lang: str = 'ar') -> Tuple[List[str], Dict[str, Any]]:
     """Ensure a roadmap row has meaningful owner/output/framework defaults."""
     cells = list(row) + ['—'] * (6 - len(row))
+    raw_init = str(cells[2] or '').strip()
+    raw_out = str(cells[4] or '').strip()
+    raw_fw = str(cells[5] or '').strip()
     period = cells[1] if not _is_dash_cell(cells[1]) else (
         '1-6 أشهر' if _phase_bucket(cells[0]) == 1 else
         '7-18 شهر' if _phase_bucket(cells[0]) == 2 else '19-24 شهر')
     phase_num = _phase_bucket(period or cells[0])
-    init = cells[2] if not _is_dash_cell(cells[2]) else (
-        'مبادرة تنفيذية' if lang == 'ar' else 'Implementation initiative')
-    fw = _infer_roadmap_framework(
-        init, period, phase_num, cells[5] if len(cells) > 5 else '', lang)
-    init = _rewrite_weak_roadmap_initiative(init, fw, phase_num, lang)
-    fw = _infer_roadmap_framework(init, period, phase_num, fw, lang)
-    canonical_owner = _roadmap_owner_for_initiative(init, lang)
-    owner = (canonical_owner if _is_dash_cell(cells[3])
-             or _roadmap_owner_mismatches_initiative(cells[3], init)
-             else cells[3])
-    out = cells[4] if not _is_dash_cell(cells[4]) else (
-        'مخرج معتمد' if lang == 'ar' else 'Approved deliverable')
-    if not _roadmap_output_matches_initiative(out, init, lang):
-        out = _roadmap_output_for_initiative(init, lang)
-    else:
-        out = _rewrite_weak_roadmap_output(out, init, phase_num, lang)
-    return _compact_roadmap_row([
+    family, inference_source = _infer_capability_family(
+        raw_init if not _is_dash_cell(raw_init) else '',
+        raw_out if not _is_dash_cell(raw_out) else '',
+        raw_fw, phase_num, lang)
+    spec = _roadmap_spec_for_family(family, lang)
+    init = (raw_init if not _is_generic_roadmap_init(raw_init)
+            and _roadmap_has_concrete_capability(raw_init, raw_fw)
+            else spec['init'])
+    out = (raw_out if not _is_generic_roadmap_output(raw_out)
+           and _roadmap_output_matches_initiative(raw_out, init, lang)
+           else spec['output'])
+    fw = spec['fw']
+    owner = spec['owner']
+    if not _is_dash_cell(cells[3]) and not _roadmap_owner_mismatches_initiative(
+            cells[3], init):
+        owner = cells[3]
+    display = _compact_roadmap_row([
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
         init,
@@ -1115,6 +1380,18 @@ def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         out,
         fw,
     ], lang)
+    meta = {
+        'raw_initiative': raw_init if raw_init else spec['init'],
+        'raw_output': raw_out if raw_out else spec['output'],
+        'raw_framework': raw_fw,
+        'display_initiative': display[2],
+        'display_output': display[4],
+        'capability_family': family,
+        'assigned_framework': fw,
+        'expected_framework': _framework_for_capability_family(family),
+        'inference_source': inference_source,
+    }
+    return display, meta
 
 
 def _phase_label(phase_num: int, lang: str = 'ar') -> str:
@@ -1146,42 +1423,54 @@ def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
 
 
 def build_roadmap_render_spec(
-        rows: List[List[str]], lang: str = 'ar') -> List[List[str]]:
-    """PR-CY48 — build meaningful roadmap rows grouped by phase coverage.
-
-    Filters dash-heavy rows, deduplicates by initiative text, guarantees
-    1–6 / 7–18 / 19–24 phase coverage with owner/output/framework filled.
-    """
-    buckets: Dict[int, List[List[str]]] = {1: [], 2: [], 3: []}
+        rows: List[List[str]], lang: str = 'ar') -> Tuple[
+            List[List[str]], List[Dict[str, Any]]]:
+    """PR-CY48/58 — build meaningful roadmap rows grouped by phase coverage."""
+    buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]] = {
+        1: [], 2: [], 3: []}
     seen_inits: set = set()
     for r in rows or []:
         if _is_dash_heavy_row(r):
             continue
-        filled = _fill_roadmap_row(r, lang)
+        filled, meta = _fill_roadmap_row(r, lang)
         if _is_generic_roadmap_row(filled):
             phase_num = _phase_bucket(filled[1] or filled[0])
-            fw = filled[5] if len(filled) > 5 else ''
-            filled[2] = _rewrite_weak_roadmap_initiative(
-                filled[2], fw, phase_num, lang)
-            filled[4] = _rewrite_weak_roadmap_output(
-                filled[4], filled[2], phase_num, lang)
-            if str(filled[3]).strip() in ROADMAP_WEAK_OWNERS:
-                filled[3] = _roadmap_owner_for_initiative(filled[2], lang)
+            family, inference_source = _infer_capability_family(
+                meta.get('raw_initiative', ''), meta.get('raw_output', ''),
+                meta.get('raw_framework', ''), phase_num, lang)
+            spec = _roadmap_spec_for_family(family, lang)
+            filled[2] = spec['init']
+            filled[4] = spec['output']
+            filled[3] = spec['owner']
+            filled[5] = spec['fw']
+            meta.update({
+                'capability_family': family,
+                'inference_source': inference_source,
+                'assigned_framework': spec['fw'],
+                'expected_framework': _framework_for_capability_family(family),
+                'display_initiative': filled[2],
+                'display_output': filled[4],
+            })
         init_key = (filled[2] or '').strip()[:60]
         if init_key in seen_inits:
             continue
         seen_inits.add(init_key)
         bucket = _phase_bucket(filled[1] or filled[0])
-        buckets[bucket].append(filled)
+        buckets[bucket].append((filled, meta))
     result: List[List[str]] = []
+    result_meta: List[Dict[str, Any]] = []
     for phase_num in (1, 2, 3):
         phase_rows = buckets[phase_num]
         if phase_rows:
-            result.extend(phase_rows[:3])
+            for filled, meta in phase_rows[:3]:
+                result.append(filled)
+                result_meta.append(meta)
         else:
-            result.append(_fill_roadmap_row(
-                _synth_phase_row(phase_num, lang), lang))
-    return result
+            filled, meta = _fill_roadmap_row(
+                _synth_phase_row(phase_num, lang), lang)
+            result.append(filled)
+            result_meta.append(meta)
+    return result, result_meta
 
 
 def _is_formula_echo(formula: str, metric_name: str) -> bool:
@@ -1421,6 +1710,16 @@ def get_roadmap_spec_rows(
     return rows
 
 
+def get_roadmap_row_meta(
+        model: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """PR-CY58 — return capability-family metadata for roadmap validation."""
+    blocks = (model or {}).get('blocks') or {}
+    meta: List[Dict[str, Any]] = []
+    for tbl in ((blocks.get('roadmap') or {}).get('tables') or []):
+        meta.extend(tbl.get('row_meta') or [])
+    return meta
+
+
 def roadmap_phase_coverage_valid(rows: Optional[List[List[str]]]) -> bool:
     """True when roadmap rows span 1–6 / 7–18 / 19–24 phases."""
     phases_text = roadmap_phase_coverage_text(rows or [])
@@ -1645,18 +1944,44 @@ def normalize_roadmap_table(
                     [ph, '—', body[:120], 'CISO', '—', '—'], len(schema)))
     if not rows_out:
         return None
-    rows_out = build_roadmap_render_spec(rows_out, lang)
-    return {'schema': 'roadmap', 'header': schema, 'rows': rows_out}
+    rows_out, row_meta = build_roadmap_render_spec(rows_out, lang)
+    return {'schema': 'roadmap', 'header': schema, 'rows': rows_out,
+            'row_meta': row_meta}
 
 
 def _is_time_based_metric(name: str) -> bool:
     """True when KPI measures duration/time, not a percentage rate."""
+    if _is_soc_detection_metric(name):
+        return False
     n = (name or '').strip().lower()
     if any(k in n for k in ('ثغر', 'vulnerability', 'vm')):
         return False
     return any(k in n for k in (
         'زمن', 'time', 'mttr', 'mttd', 'response', 'استجاب',
         'ساعة', 'hour', 'دقيقة', 'minute', 'أيام', 'days',
+    ))
+
+
+def _is_soc_detection_metric(name: str) -> bool:
+    """PR-CY58 — SOC/SIEM coverage or threat-detection effectiveness."""
+    n = (name or '').strip().lower()
+    if not any(k in n for k in ('soc', 'siem')):
+        return False
+    if any(k in n for k in (
+            'coverage', 'تغطية', 'كشف', 'detection', 'detect',
+            'تهديد', 'threat', 'effectiveness', 'فعالية', 'alert',
+            'تنبيه', 'monitor', 'مراقبة')):
+        return True
+    if not _is_incident_response_metric(name):
+        return True
+    return False
+
+
+def _is_incident_response_metric(name: str) -> bool:
+    """PR-CY58 — incident response time metrics (not SOC detection)."""
+    n = (name or '').strip().lower()
+    return any(k in n for k in (
+        'استجاب', 'response', 'حادث', 'incident', 'mttr', 'mttd',
     ))
 
 
@@ -1752,10 +2077,18 @@ def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
         t = ''
     n = (name or '').strip()
     nu = n.lower()
+    if _is_soc_detection_metric(n):
+        return '≥95%' if lang == 'ar' else '≥95%'
     if lang == 'ar':
-        if any(k in n for k in ('استجاب', 'response', 'حادث', 'incident')):
-            return '< 4 ساعات' if not t or _is_formula_like_target(t) else t
+        if _is_incident_response_metric(n):
+            if any(k in n for k in ('دقيقة', 'minute', '30')):
+                return '≤ 30 دقيقة'
+            if t and '%' not in t and not _is_formula_like_target(t):
+                return t
+            return '< 4 ساعات'
         if any(k in n for k in ('ثغر', 'vulnerability', 'VM')):
+            if t in ('100%', '100'):
+                t = ''
             if t and not _is_formula_like_target(t) and '%' in t:
                 return t
             return '95% خلال 72 ساعة'
@@ -1768,8 +2101,12 @@ def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
         if any(k in nu for k in ('encrypt', 'تشفير', 'dlp', 'بيانات')):
             return '≥95% أو 100% للبيانات الحساسة المصنفة'
     else:
-        if any(k in nu for k in ('response', 'incident', 'mttr', 'mttd')):
-            return '< 4 hours' if not t or _is_formula_like_target(t) else t
+        if _is_incident_response_metric(n):
+            if any(k in nu for k in ('minute', '30')):
+                return '≤ 30 minutes'
+            if t and '%' not in t and not _is_formula_like_target(t):
+                return t
+            return '< 4 hours'
         if any(k in nu for k in ('vulnerability', 'vuln')):
             return '95% within 72 hours'
         if any(k in nu for k in ('phishing', 'failure')):
@@ -1802,6 +2139,12 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
         return ('(المنجز ÷ المخطط) × 100' if lang == 'ar'
                 else '(Done ÷ Planned) × 100')
     nu = n.lower()
+    if _is_soc_detection_metric(n):
+        return (
+            '(عدد التنبيهات/التهديدات المكتشفة الصحيحة / '
+            'إجمالي التهديدات أو التنبيهات المؤكدة) × 100'
+            if lang == 'ar' else
+            '(True positive alerts/threats / confirmed alerts or threats) × 100')
     # Vulnerability metrics BEFORE generic incident-response matching.
     if any(k in n for k in ('ثغر', 'vulnerability', 'Vulnerability', 'VM')):
         if _is_time_based_metric(n):
@@ -1819,6 +2162,10 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
         return ('(عدد الحسابات المفعلة عليها MFA / إجمالي الحسابات المستهدفة) × 100'
                 if lang == 'ar' else
                 '(MFA-enabled accounts / target accounts) × 100')
+    if _is_incident_response_metric(n):
+        return ('مجموع أزمنة الاستجابة للحوادث الحرجة / عدد الحوادث الحرجة'
+                if lang == 'ar' else
+                'Sum critical incident response times / critical incident count')
     if any(k in n for k in ('استجاب', 'response', 'SOC', 'soc', 'حادث')):
         return ('مجموع أزمنة الاستجابة للحوادث الحرجة / عدد الحوادث الحرجة'
                 if lang == 'ar' else
@@ -1847,17 +2194,33 @@ def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
     """Professional fallback data source/tool derived from a metric name."""
     n = (name or '').strip()
     nu = n.lower()
+    if _is_soc_detection_metric(n):
+        return 'SIEM / SOC / SOAR'
+    if _is_incident_response_metric(n):
+        return 'ITSM / SOAR / SIEM'
     if _is_time_based_metric(n):
-        return 'SIEM / SOC'
+        return 'ITSM / SOAR / SIEM'
+    if any(k in nu for k in ('mfa', 'مصادقة')):
+        return ('منصة إدارة الهويات IAM' if lang == 'ar'
+                else 'IAM / IdP platform')
+    if any(k in nu for k in ('ثغر', 'vulnerability', 'vuln')):
+        return ('منصة إدارة الثغرات' if lang == 'ar'
+                else 'Vulnerability Management platform')
+    if any(k in nu for k in ('نسخ', 'backup', 'dr', 'تعاف')):
+        return ('منصة النسخ الاحتياطي' if lang == 'ar'
+                else 'Backup platform')
+    if any(k in nu for k in ('dlp',)):
+        return 'DLP / منصة DLP' if lang == 'ar' else 'DLP platform'
+    if any(k in nu for k in ('تشفير', 'encrypt')):
+        return ('منصة التشفير' if lang == 'ar' else 'Encryption platform')
+    if any(k in nu for k in ('تصنيف', 'classification', 'بيانات')):
+        return ('منصة تصنيف البيانات' if lang == 'ar'
+                else 'Data classification platform')
     table = (
-        ('SOC', 'SIEM / SOC'), ('SIEM', 'SIEM / SOC'), ('MFA', 'IAM / IdP'),
-        ('IAM', 'IAM / PAM'), ('PAM', 'PAM'), ('ثغر', 'Vulnerability Mgmt'),
-        ('vulnerability', 'Vulnerability Mgmt'), ('تشفير', 'DLP / DP'),
-        ('DLP', 'DLP'), ('نسخ', 'Backup / DR'), ('backup', 'Backup / DR'),
-        ('تعاف', 'Backup / DR'), ('توعية', 'LMS / HR'), ('تدريب', 'LMS / HR'),
+        ('SOC', 'SIEM / SOC / SOAR'), ('SIEM', 'SIEM / SOC / SOAR'),
+        ('IAM', 'IAM / PAM'), ('PAM', 'PAM'),
+        ('توعية', 'LMS / HR'), ('تدريب', 'LMS / HR'),
         ('phishing', 'Phishing platform'), ('تصيد', 'Phishing platform'),
-        ('استجاب', 'SIEM / SOC'), ('response', 'SIEM / SOC'),
-        ('حادث', 'SIEM / SOC'), ('incident', 'SIEM / SOC'),
     )
     for key, tool in table:
         if key in n or key.lower() in nu:
@@ -1877,6 +2240,12 @@ def _align_kpi_source_with_metric(
     sl = s.lower()
     n = (name or '').lower()
     f = (formula or '').lower()
+    if _is_soc_detection_metric(name):
+        if not any(k in sl for k in ('siem', 'soc', 'soar')):
+            return derived
+    if _is_incident_response_metric(name):
+        if not any(k in sl for k in ('itsm', 'soar', 'siem')):
+            return derived
     if _is_time_based_metric(name) or any(
             k in f for k in ('حادث', 'incident', 'response', 'استجاب', 'زمن')):
         if any(k in sl for k in ('grc', 'حوكمة', 'ciso office', 'lms', 'hr')):
@@ -1892,6 +2261,20 @@ def _align_kpi_source_with_metric(
         if 'backup' not in sl and 'نسخ' not in s and 'dr' not in sl:
             return derived
     return s
+
+
+def kpi_formula_source_row_valid(
+        name: str, formula: str, source: str, lang: str = 'ar') -> bool:
+    """PR-CY58 — KPI formula/source row passes detail-table gate."""
+    if _is_freq_or_timeframe(formula) or _is_freq_or_timeframe(source):
+        return False
+    if _is_formula_echo(formula, name):
+        return False
+    if _is_soc_detection_metric(name):
+        f = (formula or '').lower()
+        if any(k in f for k in ('حادث', 'incident', 'response', 'استجاب')):
+            return False
+    return True
 
 
 _KPI_FREQ_TOKENS = ('شهري', 'ربع', 'سنوي', 'يومي', 'أسبوعي', 'daily',
@@ -1960,8 +2343,10 @@ def split_kpi_tables(
             ])
             source = _cell(r, i_source) if i_source >= 0 else '—'
             source = _align_kpi_source_with_metric(name, formula, source, lang)
-            if source == '—':
+            if source == '—' or _is_freq_or_timeframe(source):
                 source = _derive_kpi_source(name, lang)
+            if _is_freq_or_timeframe(formula) or _is_formula_echo(formula, name):
+                formula = _derive_kpi_formula(name, lang)
             formula_rows.append([idx, name, formula, source])
         if not main_rows:
             continue
@@ -2242,7 +2627,8 @@ def build_docmodel_professional_failure_diag(
         try:
             violations = collect_roadmap_framework_violations(
                 get_roadmap_spec_rows(model),
-                (model or {}).get('lang') or 'ar')
+                (model or {}).get('lang') or 'ar',
+                get_roadmap_row_meta(model))
             if violations:
                 payload['roadmap_framework_violations'] = violations
         except Exception:
@@ -2815,12 +3201,17 @@ def enrich_professional_blocks(
         'Deliverable', 'Linked Framework'))
     if not road_tbl or not (road_tbl.get('rows')):
         _seed = (road_tbl or {}).get('rows') or []
+        _rows, _meta = build_roadmap_render_spec(_seed, lang_n)
         road_tbl = {
             'schema': 'roadmap',
             'header': _road_schema,
-            'rows': build_roadmap_render_spec(_seed, lang_n),
+            'rows': _rows,
+            'row_meta': _meta,
         }
     road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
+    emit_roadmap_framework_mapping_diag(
+        {'blocks': {**blocks, 'roadmap': {'tables': [road_tbl]}}},
+        lang_n)
     blocks['roadmap'] = {
         **(blocks.get('roadmap') or {}),
         'paragraphs': _clean_paras(road, 1) if road.strip() else [],
@@ -3175,8 +3566,7 @@ def prcy47_docmodel_professional_checks(
             formula = r[2] if len(r) > 2 else ''
             source = r[3] if len(r) > 3 else ''
             name = r[1] if len(r) > 1 else ''
-            if (_is_freq_or_timeframe(formula) or _is_freq_or_timeframe(source)
-                    or _is_formula_echo(formula, name)):
+            if not kpi_formula_source_row_valid(name, formula, source, lang):
                 kpi_detail_table_valid = False
                 kpi_formula_source_valid = False
                 break
@@ -3244,7 +3634,8 @@ def prcy47_docmodel_professional_checks(
             for r in (t.get('rows') or []) for c in r))
     final_table_cell_arabic_cleanup_passed = not any(
         bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
-    _roadmap_violations = collect_roadmap_framework_violations(road_rows, lang)
+    _roadmap_violations = collect_roadmap_framework_violations(
+        road_rows, lang, get_roadmap_row_meta(model))
     roadmap_framework_mapping_valid = not _roadmap_violations
 
     kpi_metric_semantics_valid = True
@@ -3265,6 +3656,10 @@ def prcy47_docmodel_professional_checks(
                     kpi_metric_semantics_valid = False
             if not kpi_name_formula_aligned(name, formula, lang):
                 kpi_metric_semantics_valid = False
+            if _is_soc_detection_metric(name):
+                if any(k in str(formula) for k in (
+                        'حادث', 'incident', 'response', 'استجاب', 'زمن')):
+                    kpi_metric_semantics_valid = False
     confidence_table_layout_valid = bool(conf_factor_tbl)
     if confidence_table_layout_valid:
         for r in conf_factor_tbl[0].get('rows') or []:

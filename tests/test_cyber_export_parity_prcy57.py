@@ -100,7 +100,7 @@ class ExportParityPrcy57Tests(unittest.TestCase):
         self.assertNotIn('%', main['rows'][0][3])
         self.assertIn('ساع', main['rows'][0][3])
         self.assertIn('SIEM', formula['rows'][0][3])
-        self.assertIn('Vulnerability', formula['rows'][1][3])
+        self.assertIn('ثغر', formula['rows'][1][3])
         self.assertNotIn('LMS', formula['rows'][1][3])
 
     @_skip
