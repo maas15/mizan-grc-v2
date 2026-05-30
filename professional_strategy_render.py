@@ -1604,9 +1604,10 @@ def _sanitize_table_spec(
             cells = [prepare_final_render_text(c, lang) for c in r]
             if len(cells) > 3:
                 name = cells[1] if len(cells) > 1 else ''
-                cells[2] = _derive_kpi_type(
-                    name, cells[2] if len(cells) > 2 else '', lang)
-                cells[3] = _derive_kpi_target(name, cells[3], lang)
+                kpi_type = cells[2] if len(cells) > 2 else ''
+                target = cells[3] if len(cells) > 3 else ''
+                cells[2] = _derive_kpi_type(name, kpi_type, lang)
+                cells[3] = _derive_kpi_target(name, target, lang)
             rows.append(cells)
         else:
             rows.append([prepare_final_render_text(c, lang) for c in r])
@@ -1676,6 +1677,7 @@ def _finalize_professional_blocks(
                     str(fw.get('display') or ''), lang)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
+    out = _normalize_kpi_tables_semantics(out, lang)
     if lang == 'ar':
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
     return out
@@ -2133,15 +2135,27 @@ def _align_kpi_name_with_formula(
 
 
 def kpi_name_formula_aligned(name: str, formula: str, lang: str = 'ar') -> bool:
-    """PR-CY55 — KPI name must not contradict its formula."""
+    """PR-CY55/61 — KPI name must not contradict its formula."""
     n = (name or '').lower()
     f = (formula or '').lower()
     if any(k in f for k in ('closed', 'remediation', 'مغلقة', 'إغلاق')):
         if 'discovery' in n or 'اكتشاف' in n:
             return False
+        if 'زمن' in n and _is_percentage_formula(formula):
+            return False
     if any(k in f for k in ('trained', 'completion', 'مجتازين', 'إكمال')):
         if 'effectiveness' in n or 'فعالية' in n:
             return False
+    if _is_percentage_formula(formula):
+        if _is_time_based_metric(name) and 'ثغر' not in name:
+            return False
+        if 'زمن' in (name or '') and any(
+                k in n for k in ('ثغر', 'vulnerability')):
+            return False
+    if not _is_percentage_formula(formula):
+        if any(k in n for k in ('نسبة', 'rate', '%')) and 'زمن' not in n:
+            if 'mttr' not in n and 'mttd' not in n:
+                pass
     return True
 
 
@@ -2361,6 +2375,424 @@ def _align_kpi_source_with_metric(
     return s
 
 
+def _is_percentage_formula(formula: str) -> bool:
+    """PR-CY61 — True when formula computes a percentage rate."""
+    f = (formula or '').lower()
+    return any(k in f for k in ('× 100', 'x 100', '* 100', '×100', 'x100'))
+
+
+def _is_time_target(target: str) -> bool:
+    """PR-CY61 — True when target expresses duration, not a percentage."""
+    t = (target or '').strip().lower()
+    if not t or '%' in t:
+        return False
+    return any(k in t for k in (
+        'ساع', 'hour', 'minute', 'دقيقة', 'دقائق', 'min',
+        '<', '≤', '>', 'mttr', 'mttd', 'أيام', 'days',
+    ))
+
+
+def _target_repeats_metric_name(name: str, target: str) -> bool:
+    """PR-CY61 — target cell echoes the metric name instead of a value."""
+    n = (name or '').strip()
+    t = (target or '').strip()
+    if not n or not t or t in ('—', '-'):
+        return False
+    if t == n:
+        return True
+    if len(n) >= 12 and n in t:
+        return True
+    if len(t) >= 12 and t in n and '%' not in t:
+        return True
+    return False
+
+
+def _is_iam_pam_metric(name: str) -> bool:
+    n = (name or '').lower()
+    return any(k in n for k in (
+        'iam', 'pam', 'identity', 'الهوية', 'الوصول المميز', 'privileged',
+    ))
+
+
+def _detect_kpi_metric_family(
+        name: str, target: str = '', formula: str = '',
+        kpi_type: str = '', lang: str = 'ar') -> str:
+    """PR-CY61 — classify KPI row into a semantic family for normalization."""
+    n = (name or '').strip()
+    nu = n.lower()
+    t = (target or '').strip()
+    pct = _is_percentage_formula(formula)
+    if any(k in nu for k in ('تصيد', 'phishing')):
+        if ((kpi_type or '').upper() == 'KRI'
+                or '5%' in t or 'أقل' in t or '< 5' in t.lower()
+                or 'فشل' in n or 'failure' in nu):
+            return 'phishing_failure_kri'
+    if _is_iam_pam_metric(n):
+        return 'iam_pam_coverage'
+    if any(k in nu for k in ('mfa', 'مصادقة متعددة', 'multi-factor')):
+        return 'mfa_coverage'
+    if any(k in nu for k in ('ثغر', 'vulnerability', 'vuln')):
+        return 'vulnerability_sla'
+    if _is_incident_response_metric(n) or (
+            _is_soc_detection_metric(n) and pct):
+        sla_name = any(k in n for k in (
+            'ضمن SLA', 'within SLA', 'معالجة الحوادث', 'حل الحوادث',
+            'SLA resolution', 'resolution rate'))
+        time_name = any(k in n for k in (
+            'زمن الاستجابة', 'زمن الاستجاب', 'response time',
+            'MTTR', 'MTTD', 'mttr', 'mttd')) or (
+            'زمن' in n and not sla_name)
+        effectiveness_name = any(k in n for k in (
+            'فعالية', 'effectiveness', 'معدل فعالية'))
+        if sla_name or (effectiveness_name and pct):
+            return 'incident_response_sla'
+        if time_name and not (effectiveness_name and pct):
+            return 'incident_response_time'
+        if pct or ('%' in t and not _is_time_target(t)):
+            return 'incident_response_sla'
+        if _is_time_target(t) or (_is_time_based_metric(n) and not pct):
+            return 'incident_response_time'
+        return 'incident_response_sla' if pct else 'incident_response_time'
+    if any(k in nu for k in ('نسخ', 'backup', 'dr', 'تعاف')):
+        return 'backup_success'
+    if any(k in nu for k in (
+            'تشفير', 'encrypt', 'dlp', 'بيانات حساسة', 'حماية البيانات',
+            'encryption')):
+        return 'data_protection_encryption_dlp'
+    if any(k in nu for k in (
+            'امتثال', 'compliance', 'ecc', 'dcc', 'ضوابط')):
+        return 'compliance_ecc_dcc'
+    return 'generic_percentage' if pct else 'generic'
+
+
+def _apply_kpi_metric_family_spec(
+        family: str, name: str, kpi_type: str, target: str,
+        formula: str, source: str, lang: str = 'ar') -> Tuple[
+            str, str, str, str, str]:
+    """PR-CY61 — return aligned (name, type, target, formula, source)."""
+    n, kt, t, f, s = name, kpi_type, target, formula, source
+    ar = lang == 'ar'
+    if family == 'incident_response_sla':
+        n = ('نسبة معالجة الحوادث الحرجة ضمن SLA' if ar else
+             'Critical incident SLA resolution rate')
+        kt = 'KPI'
+        t = '≥95%'
+        f = (('(عدد الحوادث المعالجة ضمن SLA ÷ إجمالي الحوادث) × 100')
+             if ar else
+             '(Incidents resolved within SLA ÷ total incidents) × 100')
+        s = 'ITSM / SOAR / SIEM'
+    elif family == 'incident_response_time':
+        if ar:
+            if any(k in n for k in ('فعالية', 'نسبة', 'معدل')):
+                n = 'زمن الاستجابة للحوادث الحرجة'
+        else:
+            if any(k in n.lower() for k in ('effectiveness', 'rate', '%')):
+                n = 'Critical incident response time'
+        kt = 'KPI'
+        if not _is_time_target(t):
+            t = '< 4 ساعات' if ar else '< 4 hours'
+        f = (('مجموع أزمنة الاستجابة للحوادث الحرجة / عدد الحوادث الحرجة')
+             if ar else
+             'Sum critical incident response times / critical incident count')
+        s = 'ITSM / SOAR / SIEM'
+    elif family == 'iam_pam_coverage':
+        kt = 'KPI'
+        if _target_repeats_metric_name(n, t) or not t or t == '—':
+            t = ('≥95% للأنظمة الحرجة أو 100% للحسابات المميزة' if ar else
+                 '≥95% critical systems or 100% privileged accounts')
+        f = (('(عدد الحسابات أو الأنظمة المغطاة بضوابط IAM/PAM ÷ '
+              'إجمالي الحسابات أو الأنظمة المستهدفة) × 100')
+             if ar else
+             '(IAM/PAM-covered accounts or systems ÷ target accounts or '
+             'systems) × 100')
+        s = ('منصة إدارة الهويات IAM / PAM' if ar else
+             'IAM / PAM platform')
+    elif family == 'mfa_coverage':
+        kt = 'KPI'
+        t = ('100% للحسابات المميزة أو ≥95% للمستخدمين' if ar else
+             '100% privileged or ≥95% users')
+        f = (('(عدد الحسابات المفعلة عليها MFA ÷ إجمالي الحسابات المستهدفة) '
+              '× 100') if ar else
+             '(MFA-enabled accounts ÷ target accounts) × 100')
+        s = ('منصة إدارة الهويات IAM' if ar else 'IAM / IdP platform')
+    elif family == 'vulnerability_sla':
+        n = _normalize_kpi_name(n, lang)
+        if ar and ('زمن' in n or 'time' in n.lower()):
+            n = 'نسبة إغلاق الثغرات الحرجة ضمن SLA'
+        elif not ar and 'time' in n.lower():
+            n = 'Critical vulnerability SLA closure rate'
+        kt = 'KPI'
+        if not t or t == '—' or _target_repeats_metric_name(n, t):
+            t = '95% خلال 72 ساعة' if ar else '95% within 72 hours'
+        f = (('(عدد الثغرات الحرجة المغلقة ضمن SLA ÷ إجمالي الثغرات الحرجة) '
+              '× 100') if ar else
+             '(SLA-closed critical vulnerabilities ÷ total critical '
+             'vulnerabilities) × 100')
+        s = ('منصة إدارة الثغرات' if ar else
+             'Vulnerability Management platform')
+    elif family == 'phishing_failure_kri':
+        n = ('معدل فشل اختبارات التصيد الاحتيالي' if ar else
+             'Phishing simulation failure rate')
+        kt = 'KRI'
+        t = 'أقل من 5%' if ar else '< 5%'
+        f = (('(عدد الموظفين الذين فشلوا في اختبار التصيد ÷ '
+              'إجمالي الموظفين المختبَرين) × 100') if ar else
+             '(Employees failing phishing test ÷ employees tested) × 100')
+        s = ('منصة محاكاة التصيد' if ar else 'Phishing simulation platform')
+    elif family == 'backup_success':
+        kt = 'KPI'
+        t = '≥99%'
+        f = (('(عدد عمليات النسخ الناجحة ÷ إجمالي عمليات النسخ) × 100')
+             if ar else
+             '(Successful backups ÷ total backup operations) × 100')
+        s = ('منصة النسخ الاحتياطي' if ar else 'Backup platform')
+    elif family == 'data_protection_encryption_dlp':
+        kt = 'KPI'
+        t = ('≥95% أو 100% للبيانات الحساسة المصنفة' if ar else
+             '≥95% or 100% classified sensitive data')
+        f = (('(عدد الأصول أو البيانات الحساسة المحمية بالتشفير وDLP ÷ '
+              'إجمالي الأصول أو البيانات الحساسة المستهدفة) × 100')
+             if ar else
+             '(Sensitive assets/data protected by encryption and DLP ÷ '
+             'target sensitive assets/data) × 100')
+        s = ('منصة التشفير / DLP / منصة تصنيف البيانات' if ar else
+             'Encryption / DLP / data classification platform')
+    elif family == 'compliance_ecc_dcc':
+        kt = 'KPI'
+        if not t or t == '—':
+            t = '≥90%'
+        f = (('(عدد الضوابط المحققة ÷ إجمالي الضوابط المستهدفة) × 100')
+             if ar else
+             '(Controls achieved ÷ target controls) × 100')
+        s = ('منصة الحوكمة وقياس الامتثال' if ar else
+             'GRC / compliance platform')
+    return n, kt, t, f, s
+
+
+def _normalize_kpi_semantic_row(
+        name: str, kpi_type: str, target: str, formula: str,
+        source: str, lang: str = 'ar') -> Tuple[
+            str, str, str, str, str, str]:
+    """PR-CY61 — align KPI name/type/target/formula/source to one family."""
+    family = _detect_kpi_metric_family(
+        name, target, formula, kpi_type, lang)
+    if family in (
+            'incident_response_sla', 'incident_response_time',
+            'iam_pam_coverage', 'mfa_coverage', 'vulnerability_sla',
+            'phishing_failure_kri', 'backup_success',
+            'data_protection_encryption_dlp', 'compliance_ecc_dcc',
+    ):
+        name, kpi_type, target, formula, source = _apply_kpi_metric_family_spec(
+            family, name, kpi_type, target, formula, source, lang)
+    else:
+        name = _normalize_kpi_name(name, lang)
+        if _is_formula_like_target(target) or _target_repeats_metric_name(
+                name, target):
+            target = _derive_kpi_target(name, '', lang)
+        elif not target or target == '—':
+            target = _derive_kpi_target(name, target, lang)
+        if (not formula or formula == '—'
+                or _is_freq_or_timeframe(formula)
+                or _is_formula_echo(formula, name)):
+            formula = _derive_kpi_formula(name, lang)
+        name = _align_kpi_name_with_formula(name, formula, lang)
+        source = _align_kpi_source_with_metric(name, formula, source, lang)
+        if source == '—' or _is_freq_or_timeframe(source):
+            source = _derive_kpi_source(name, lang)
+        kpi_type = _derive_kpi_type(name, kpi_type, lang)
+    return name, kpi_type, target, formula, source, family
+
+
+def _kpi_metric_semantics_row_issue(
+        name: str, kpi_type: str, target: str, formula: str,
+        source: str, lang: str = 'ar',
+        row_index: int = 0) -> Optional[Dict[str, Any]]:
+    """PR-CY61 — return issue dict when row fails semantic gate, else None."""
+    family = _detect_kpi_metric_family(
+        name, target, formula, kpi_type, lang)
+    reason = ''
+    if _is_time_based_metric(name) and '%' in str(target):
+        reason = 'time_metric_percentage_target'
+    elif _is_time_based_metric(name) and _is_percentage_formula(formula):
+        reason = 'time_metric_percentage_formula'
+    elif any(k in (name or '') for k in ('ثغر', 'vulnerability')) and any(
+            k in str(formula) for k in ('حادث', 'incident')):
+        reason = 'vulnerability_incident_formula_mix'
+    elif not kpi_name_formula_aligned(name, formula, lang):
+        reason = 'name_formula_mismatch'
+    elif _is_soc_detection_metric(name):
+        if any(k in str(formula) for k in (
+                'حادث', 'incident', 'response', 'استجاب', 'زمن')):
+            reason = 'soc_detection_incident_formula_mix'
+    elif _target_repeats_metric_name(name, target):
+        reason = 'target_repeats_metric_name'
+    elif family == 'incident_response_time' and _is_percentage_formula(formula):
+        reason = 'incident_time_percentage_formula'
+    elif family == 'vulnerability_sla' and 'زمن' in (name or ''):
+        reason = 'vulnerability_time_name_percentage_formula'
+    elif family == 'phishing_failure_kri':
+        if (kpi_type or '').upper() != 'KRI':
+            reason = 'phishing_kri_type_mismatch'
+        elif any(k in (name or '') for k in (
+                'فعالية', 'awareness', 'وعي')):
+            reason = 'phishing_awareness_not_failure_wording'
+    if not reason:
+        return None
+    nn, nt, ntar, nform, nsrc, _ = _normalize_kpi_semantic_row(
+        name, kpi_type, target, formula, source, lang)
+    return {
+        'row_index': row_index,
+        'metric_name': name,
+        'metric_type': kpi_type,
+        'target': target,
+        'formula': formula,
+        'source': source,
+        'detected_family': family,
+        'reason': reason,
+        'normalized_name': nn,
+        'normalized_target': ntar,
+        'normalized_formula': nform,
+        'normalized_source': nsrc,
+    }
+
+
+def collect_kpi_metric_semantics_issues(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> List[Dict[str, Any]]:
+    """PR-CY61 — invalid KPI rows for gate + diagnostics."""
+    blocks = (model or {}).get('blocks') or {}
+    kpi_blk = blocks.get('kpi_kri_framework') or {}
+    tables = kpi_blk.get('tables') or []
+    main_tbl = formula_tbl = None
+    for tbl in tables:
+        if tbl.get('schema') == 'kpi_main':
+            main_tbl = tbl
+        elif tbl.get('schema') == 'kpi_formula':
+            formula_tbl = tbl
+    if not main_tbl:
+        return []
+    formula_by_idx: Dict[str, List[str]] = {}
+    for fr in (formula_tbl or {}).get('rows') or []:
+        if fr:
+            formula_by_idx[str(fr[0])] = list(fr)
+    issues: List[Dict[str, Any]] = []
+    for ri, mr in enumerate(main_tbl.get('rows') or []):
+        idx = str(mr[0] if mr else ri + 1)
+        name = mr[1] if len(mr) > 1 else ''
+        kpi_type = mr[2] if len(mr) > 2 else ''
+        target = mr[3] if len(mr) > 3 else ''
+        fr = formula_by_idx.get(idx, [])
+        formula = fr[2] if len(fr) > 2 else ''
+        source = fr[3] if len(fr) > 3 else ''
+        issue = _kpi_metric_semantics_row_issue(
+            name, kpi_type, target, formula, source, lang, row_index=ri)
+        if issue:
+            issues.append(issue)
+    return issues
+
+
+def build_kpi_metric_semantics_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, action_taken: str = '') -> Dict[str, Any]:
+    """PR-CY61 — [KPI-METRIC-SEMANTICS-DIAG] payload."""
+    issues = collect_kpi_metric_semantics_issues(model, lang)
+    return {
+        'invalid_rows': len(issues),
+        'issues': issues,
+        'action_taken': action_taken or (
+            'validated' if not issues else 'violations_remain'),
+    }
+
+
+def emit_kpi_metric_semantics_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, action_taken: str = '') -> Dict[str, Any]:
+    """Emit [KPI-METRIC-SEMANTICS-DIAG] to server logs."""
+    issues = collect_kpi_metric_semantics_issues(model, lang)
+    payload = {
+        'invalid_rows': len(issues),
+        'action_taken': action_taken or (
+            'validated' if not issues else 'violations_remain'),
+    }
+    for iss in issues:
+        payload.setdefault('bad_text_samples', []).append(
+            iss.get('metric_name'))
+    for iss in issues:
+        for key in (
+                'row_index', 'metric_name', 'metric_type', 'target',
+                'formula', 'source', 'detected_family', 'reason',
+                'normalized_name', 'normalized_target', 'normalized_formula',
+                'normalized_source'):
+            if key in iss:
+                payload[f'row_{iss["row_index"]}_{key}'] = iss[key]
+    if issues:
+        first = issues[0]
+        payload.update({
+            'row_index': first.get('row_index'),
+            'metric_name': first.get('metric_name'),
+            'metric_type': first.get('metric_type'),
+            'target': first.get('target'),
+            'formula': first.get('formula'),
+            'source': first.get('source'),
+            'detected_family': first.get('detected_family'),
+            'reason': first.get('reason'),
+            'normalized_name': first.get('normalized_name'),
+            'normalized_target': first.get('normalized_target'),
+            'normalized_formula': first.get('normalized_formula'),
+            'normalized_source': first.get('normalized_source'),
+        })
+    try:
+        print(f'[KPI-METRIC-SEMANTICS-DIAG] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def _normalize_kpi_tables_semantics(
+        blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY61 — repair KPI main + formula tables before quality gates."""
+    kpi_blk = blocks.get('kpi_kri_framework') or {}
+    tables = kpi_blk.get('tables') or []
+    main_tbl = formula_tbl = None
+    for tbl in tables:
+        if tbl.get('schema') == 'kpi_main':
+            main_tbl = tbl
+        elif tbl.get('schema') == 'kpi_formula':
+            formula_tbl = tbl
+    if not main_tbl:
+        return blocks
+    formula_by_idx: Dict[str, List[str]] = {}
+    for fr in (formula_tbl or {}).get('rows') or []:
+        if fr:
+            formula_by_idx[str(fr[0])] = list(fr)
+    new_main: List[List[str]] = []
+    new_formula: List[List[str]] = []
+    for mr in main_tbl.get('rows') or []:
+        idx = str(mr[0] if mr else len(new_main) + 1)
+        name = mr[1] if len(mr) > 1 else ''
+        kpi_type = mr[2] if len(mr) > 2 else ''
+        target = mr[3] if len(mr) > 3 else ''
+        fr = formula_by_idx.get(idx, [])
+        formula = fr[2] if len(fr) > 2 else ''
+        source = fr[3] if len(fr) > 3 else ''
+        name, kpi_type, target, formula, source, _fam = (
+            _normalize_kpi_semantic_row(
+                name, kpi_type, target, formula, source, lang))
+        tail = list(mr[4:]) if len(mr) > 4 else []
+        new_main.append([idx, name, kpi_type, target] + tail)
+        new_formula.append([idx, name, formula, source])
+    main_tbl['rows'] = new_main
+    if formula_tbl:
+        formula_tbl['rows'] = new_formula
+    elif new_formula:
+        hdr = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
+            '#', 'Indicator', 'Formula', 'Data Source'))
+        tables.append({
+            'schema': 'kpi_formula', 'header': hdr, 'rows': new_formula})
+    kpi_blk['tables'] = tables
+    blocks['kpi_kri_framework'] = kpi_blk
+    return blocks
+
+
 def kpi_formula_source_row_valid(
         name: str, formula: str, source: str, lang: str = 'ar') -> bool:
     """PR-CY58 — KPI formula/source row passes detail-table gate."""
@@ -2421,30 +2853,23 @@ def split_kpi_tables(
                                     'data source'))
         main_rows, formula_rows = [], []
         for n, r in enumerate(tbl[1:], 1):
-            name = _normalize_kpi_name(
-                _cell(r, i_name if i_name >= 0 else 1), lang)
-            if name == '—':
-                continue
             idx = _cell(r, i_idx, str(n)) if i_idx >= 0 else str(n)
+            name = _cell(r, i_name if i_name >= 0 else 1)
+            if not name or name == '—':
+                continue
+            kpi_type = _cell(r, i_type, '')
+            target = _cell(r, i_target)
             formula = _cell(r, i_formula) if i_formula >= 0 else '—'
-            if (formula == '—' or _is_freq_or_timeframe(formula)
-                    or _is_formula_echo(formula, name)):
-                formula = _derive_kpi_formula(name, lang)
-            name = _align_kpi_name_with_formula(name, formula, lang)
+            source = _cell(r, i_source) if i_source >= 0 else '—'
+            name, kpi_type, target, formula, source, _fam = (
+                _normalize_kpi_semantic_row(
+                    name, kpi_type, target, formula, source, lang))
             main_rows.append([
-                idx, name,
-                _derive_kpi_type(name, _cell(r, i_type, ''), lang),
-                _derive_kpi_target(name, _cell(r, i_target), lang),
+                idx, name, kpi_type, target,
                 _cell(r, i_freq),
                 _cell(r, i_owner, 'CISO'),
                 _cell(r, i_horizon),
             ])
-            source = _cell(r, i_source) if i_source >= 0 else '—'
-            source = _align_kpi_source_with_metric(name, formula, source, lang)
-            if source == '—' or _is_freq_or_timeframe(source):
-                source = _derive_kpi_source(name, lang)
-            if _is_freq_or_timeframe(formula) or _is_formula_echo(formula, name):
-                formula = _derive_kpi_formula(name, lang)
             formula_rows.append([idx, name, formula, source])
         if not main_rows:
             continue
@@ -2739,6 +3164,9 @@ def build_docmodel_professional_failure_diag(
                 payload['roadmap_framework_violations'] = violations
         except Exception:
             pass
+    if (subgate == 'kpi_metric_semantics_valid' and model is not None):
+        payload['kpi_metric_semantics_diag'] = build_kpi_metric_semantics_diag(
+            model, lang=(model or {}).get('lang') or 'ar')
     return payload
 
 
@@ -2758,6 +3186,11 @@ def emit_docmodel_professional_failure(**kwargs) -> Dict[str, Any]:
             kwargs.get('model'),
             output_type=kwargs.get('output_type') or '',
             lang=((kwargs.get('model') or {}).get('lang') or 'ar'))
+    if _subgate == 'kpi_metric_semantics_valid':
+        emit_kpi_metric_semantics_diag(
+            kwargs.get('model'),
+            lang=((kwargs.get('model') or {}).get('lang') or 'ar'),
+            action_taken='gate_failed')
     return payload
 
 # Heading-residue / separator detectors.
@@ -3442,8 +3875,9 @@ def ensure_strategy_professional_model(
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
-        blocks = apply_final_arabic_cleanup_to_blocks(
-            model.get('blocks') or {}, lang_n)
+        blocks = deepcopy(model.get('blocks') or {})
+        blocks = _normalize_kpi_tables_semantics(blocks, lang_n)
+        blocks = apply_final_arabic_cleanup_to_blocks(blocks, lang_n)
         return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
@@ -3761,28 +4195,8 @@ def prcy47_docmodel_professional_checks(
         road_rows, lang, get_roadmap_row_meta(model))
     roadmap_framework_mapping_valid = not _roadmap_violations
 
-    kpi_metric_semantics_valid = True
-    for t in kpi_main:
-        for r in t.get('rows') or []:
-            name = r[1] if len(r) > 1 else ''
-            target = r[3] if len(r) > 3 else ''
-            if _is_time_based_metric(name) and '%' in str(target):
-                kpi_metric_semantics_valid = False
-    for t in kpi_formula:
-        for r in t.get('rows') or []:
-            name = r[1] if len(r) > 1 else ''
-            formula = r[2] if len(r) > 2 else ''
-            if _is_time_based_metric(name) and '× 100' in str(formula):
-                kpi_metric_semantics_valid = False
-            if any(k in (name or '') for k in ('ثغر', 'vulnerability')):
-                if any(k in str(formula) for k in ('حادث', 'incident')):
-                    kpi_metric_semantics_valid = False
-            if not kpi_name_formula_aligned(name, formula, lang):
-                kpi_metric_semantics_valid = False
-            if _is_soc_detection_metric(name):
-                if any(k in str(formula) for k in (
-                        'حادث', 'incident', 'response', 'استجاب', 'زمن')):
-                    kpi_metric_semantics_valid = False
+    kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)
+    kpi_metric_semantics_valid = not kpi_sem_issues
     confidence_table_layout_valid = bool(conf_factor_tbl)
     if confidence_table_layout_valid:
         for r in conf_factor_tbl[0].get('rows') or []:
