@@ -8,7 +8,15 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
+# Longest patterns first — shorter keys must not run before longer ones.
 PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
+    # PR-CY59 — executive-role and compound spacing defects (longest first).
+    ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
+    ('امتثاللا تقلعن', 'امتثال لا تقل عن'),
+    ('المسؤولتنفيذي', 'المسؤول التنفيذي'),
+    ('الالمسؤول', 'المسؤول'),
+    ('متخصصمن', 'متخصص من'),
+    ('الأساسيةفي', 'الأساسية في'),
     ('امتثاللا', 'امتثال لا'),
     ('تقلعن', 'تقل عن'),
     ('السيبرانيمع', 'السيبراني مع'),
@@ -57,7 +65,6 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('بناءخط', 'بناء خط'),
     ('الأولضد', 'الأول ضد'),
     ('البياناتفي', 'البيانات في'),
-    ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
     ('متخصصةللأمن', 'متخصصة للأمن'),
 )
 
@@ -335,6 +342,78 @@ def normalize_arabic_for_render(text: str) -> str:
     return out
 
 
+def find_arabic_concat_issues(text: str) -> List[Tuple[str, str]]:
+    """PR-CY59 — return (bad, replacement) pairs still present in text."""
+    issues: List[Tuple[str, str]] = []
+    blob = text or ''
+    for bad, good in PRCY41_AR_CONCAT_FIXES:
+        if bad in blob:
+            issues.append((bad, good))
+    return issues
+
+
+def apply_final_arabic_cleanup_to_value(val: Any, lang: str = 'ar') -> Any:
+    """PR-CY59 — recursively apply final Arabic cleanup to block values."""
+    if isinstance(val, str):
+        if lang == 'ar':
+            return prepare_final_render_text(val, lang)
+        return prepare_section_text(val, lang)
+    if isinstance(val, list):
+        return [apply_final_arabic_cleanup_to_value(v, lang) for v in val]
+    if isinstance(val, tuple):
+        return tuple(apply_final_arabic_cleanup_to_value(v, lang) for v in val)
+    if isinstance(val, dict):
+        return {
+            k: apply_final_arabic_cleanup_to_value(v, lang)
+            for k, v in val.items()}
+    return val
+
+
+def apply_final_arabic_cleanup_to_blocks(
+        blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY59 — walk all professional block text before quality gates."""
+    if lang != 'ar':
+        return blocks
+    return apply_final_arabic_cleanup_to_value(deepcopy(blocks), lang)
+
+
+def build_arabic_final_cleanup_diag(
+        model: Optional[Dict[str, Any]] = None,
+        *,
+        output_type: str = '',
+        lang: str = 'ar',
+        cleanup_applied_count: int = 0) -> Dict[str, Any]:
+    """PR-CY59 — [ARABIC-FINAL-CLEANUP-DIAG] payload."""
+    blob = str((model or {}).get('blocks') or {})
+    remaining = find_arabic_concat_issues(blob)
+    return {
+        'output_type': output_type,
+        'bad_text_samples': [bad for bad, _ in remaining],
+        'replacement_candidates': [good for _, good in remaining],
+        'cleanup_applied_count': cleanup_applied_count,
+        'remaining_issue_count': len(remaining),
+        'action_taken': (
+            'violations_remain' if remaining else 'validated'),
+    }
+
+
+def emit_arabic_final_cleanup_diag(
+        model: Optional[Dict[str, Any]] = None,
+        *,
+        output_type: str = '',
+        lang: str = 'ar',
+        cleanup_applied_count: int = 0) -> Dict[str, Any]:
+    """Emit [ARABIC-FINAL-CLEANUP-DIAG] to server logs."""
+    payload = build_arabic_final_cleanup_diag(
+        model, output_type=output_type, lang=lang,
+        cleanup_applied_count=cleanup_applied_count)
+    try:
+        print(f'[ARABIC-FINAL-CLEANUP-DIAG] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
 def strip_markdown_residue(text: str) -> str:
     if not text:
         return ''
@@ -386,6 +465,9 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
     out = re.sub(r'[\[\]]+', '', out)
     out = re.sub(r'\bECC\s*\+\s*DCC\b', 'NCA ECC, NCA DCC', out)
     out = re.sub(r'\s{2,}', ' ', out).strip()
+    # PR-CY59 — concat fixes must run last; fragment repair can revert them.
+    if lang == 'ar':
+        out = normalize_arabic_for_render(out)
     return out
 
 
@@ -1557,6 +1639,10 @@ def _finalize_professional_blocks(
                     grid.get('confidence_score', ''), lang)
                 grid['purpose'] = prepare_final_render_text(
                     grid.get('purpose', ''), lang)
+                for _gk in ('priorities', 'top_gaps', 'key_risks'):
+                    grid[_gk] = [
+                        prepare_final_render_text(str(x), lang)
+                        for x in (grid.get(_gk) or []) if str(x).strip()]
                 blk['summary_grid'] = grid
                 # Grid carries the narrative — no duplicate paragraphs.
                 blk['paragraphs'] = []
@@ -1580,6 +1666,18 @@ def _finalize_professional_blocks(
                 (prepare_final_render_text(lbl, lang),
                  prepare_final_render_text(body, lang))
                 for lbl, body in blk['rows']]
+        if kind == 'appendices' and blk.get('entries'):
+            blk['entries'] = [
+                (str(a), prepare_final_render_text(str(b), lang))
+                for a, b in (blk.get('entries') or [])]
+        if kind == 'scope_frameworks' and blk.get('frameworks'):
+            blk['frameworks'] = [
+                {**fw, 'display': prepare_final_render_text(
+                    str(fw.get('display') or ''), lang)}
+                if isinstance(fw, dict) else fw
+                for fw in (blk.get('frameworks') or [])]
+    if lang == 'ar':
+        out = apply_final_arabic_cleanup_to_blocks(out, lang)
     return out
 
 
@@ -2622,6 +2720,14 @@ def build_docmodel_professional_failure_diag(
     }
     if extra:
         payload.update(extra)
+    if (subgate in (
+            'final_table_cell_arabic_cleanup_passed',
+            'arabic_spacing_final_passed',
+            'final_arabic_spacing_pdf_passed',
+    ) and model is not None):
+        payload['arabic_final_cleanup_diag'] = build_arabic_final_cleanup_diag(
+            model, output_type=output_type,
+            lang=(model or {}).get('lang') or 'ar')
     if (subgate == 'roadmap_framework_mapping_valid'
             and model is not None):
         try:
@@ -2643,19 +2749,32 @@ def emit_docmodel_professional_failure(**kwargs) -> Dict[str, Any]:
         print(f'[DOCMODEL-PROFESSIONAL-FAILURE] {payload}', flush=True)
     except Exception:  # noqa: BLE001
         pass
+    _subgate = payload.get('failing_subgate') or ''
+    if _subgate in (
+            'final_table_cell_arabic_cleanup_passed',
+            'arabic_spacing_final_passed',
+            'final_arabic_spacing_pdf_passed'):
+        emit_arabic_final_cleanup_diag(
+            kwargs.get('model'),
+            output_type=kwargs.get('output_type') or '',
+            lang=((kwargs.get('model') or {}).get('lang') or 'ar'))
     return payload
 
 # Heading-residue / separator detectors.
 PRCY47_HEADING_RESIDUE_RE = re.compile(r'(?m)^\s*#{1,6}\s*\.?\d*[\s\.\)]*')
 PRCY47_TABLE_SEP_RE = re.compile(r'(?m)^\s*\|?\s*:?-{2,}.*$')
 PRCY47_GUIDE_HEADER_RE = re.compile(r'####\s*دليل\s*تنفيذ', re.IGNORECASE)
+# Avoid matching ``مسؤول ال`` inside ``المسؤول التنفيذي`` (``ال`` starts ``التنفيذ``).
+PRCY47_MASOUL_AL_FRAGMENT_RE = re.compile(r'مسؤول ال(?!ت)')
 
 
 def prcy47_fix_ar_fragments(text: str) -> str:
     """Repair split Arabic word fragments (e.g. ``طوة الخ`` → ``الخطوة``)."""
     out = text or ''
     for bad, good in PRCY47_AR_FRAGMENT_FIXES:
-        if bad in out:
+        if bad == 'مسؤول ال':
+            out = PRCY47_MASOUL_AL_FRAGMENT_RE.sub(good, out)
+        elif bad in out:
             out = out.replace(bad, good)
     return out
 
@@ -2691,6 +2810,7 @@ def prcy47_clean_prose(text: str, lang: str = 'ar') -> str:
     if lang == 'ar':
         out = normalize_arabic_for_render(out)
         out = prcy47_fix_ar_fragments(out)
+        out = normalize_arabic_for_render(out)
     out = fix_confidence_display(out)
     # Collapse blank runs.
     out = re.sub(r'\n{3,}', '\n\n', out).strip()
@@ -3321,7 +3441,10 @@ def ensure_strategy_professional_model(
 ) -> Dict[str, Any]:
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
     if model and model.get('render_layer') == 'prcy41_professional':
-        return model
+        lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
+        blocks = apply_final_arabic_cleanup_to_blocks(
+            model.get('blocks') or {}, lang_n)
+        return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
     metadata = dict(metadata or {})
