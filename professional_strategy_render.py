@@ -773,24 +773,97 @@ def _phase_bucket(period_or_phase: str) -> int:
     return 3
 
 
+# PR-CY55 — initiative keyword sets for NCA DCC vs NCA ECC (word-safe).
+_ROADMAP_DCC_EN_WORDS = ('dcc', 'dlp', 'encryption', 'classification', 'privacy', 'sensitive')
+_ROADMAP_DCC_EN_PHRASES = (
+    'data loss', 'data classification', 'data protection', 'loss prevention',
+    'sensitive data', 'sensitive-data',
+)
+_ROADMAP_DCC_AR = (
+    'تشفير', 'تصنيف البيانات', 'حماية البيانات', 'بيانات حساسة', 'خصوص', 'تسرب',
+)
+_ROADMAP_ECC_EN_WORDS = ('soc', 'siem', 'iam', 'pam', 'mfa', 'csirt', 'ciso')
+_ROADMAP_ECC_EN_PHRASES = (
+    'vulnerability', 'governance', 'privileged', 'incident response',
+)
+_ROADMAP_ECC_AR = ('ثغر', 'حوكمة', 'مصادقة', 'حادث', 'استجاب')
+
+
+def _roadmap_blob_has_en_word(blob: str, word: str) -> bool:
+    return bool(re.search(
+        rf'(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])', blob, flags=re.IGNORECASE))
+
+
+def _initiative_needs_dcc(init: str) -> bool:
+    """True when initiative text maps to NCA DCC (not substring false positives)."""
+    blob = (init or '').lower()
+    if any(p in blob for p in _ROADMAP_DCC_EN_PHRASES):
+        return True
+    if any(_roadmap_blob_has_en_word(blob, w) for w in _ROADMAP_DCC_EN_WORDS):
+        return True
+    if any(p in (init or '') for p in _ROADMAP_DCC_AR):
+        return True
+    if 'بيانات' in (init or ''):
+        if any(k in (init or '') for k in ('DLP', 'dlp', 'تصنيف', 'حساس', 'حماية', 'تشفير')):
+            return True
+    return False
+
+
+def _initiative_needs_ecc(init: str) -> bool:
+    """True when initiative text maps to NCA ECC."""
+    blob = (init or '').lower()
+    if any(p in blob for p in _ROADMAP_ECC_EN_PHRASES):
+        return True
+    if any(_roadmap_blob_has_en_word(blob, w) for w in _ROADMAP_ECC_EN_WORDS):
+        return True
+    return any(p in (init or '') for p in _ROADMAP_ECC_AR)
+
+
+def collect_roadmap_framework_violations(
+        rows: List[List[str]], lang: str = 'ar') -> List[Dict[str, str]]:
+    """PR-CY55 — roadmap rows that fail framework/output mapping rules."""
+    violations: List[Dict[str, str]] = []
+    for r in rows or []:
+        if len(r) < 6:
+            continue
+        phase = str(r[0] or '')
+        init = str(r[2] or '')
+        out = str(r[4] or '')
+        fw = str(r[5] or '')
+        period = str(r[1] or '')
+        inferred = _infer_roadmap_framework(
+            init, period, _phase_bucket(period or phase), '', lang)
+        expected = inferred
+        reasons: List[str] = []
+        if fw and expected:
+            if 'DCC' in expected.upper() and 'DCC' not in fw.upper():
+                reasons.append('assigned_framework_missing_dcc')
+            if 'ECC' in expected.upper() and 'ECC' not in fw.upper():
+                reasons.append('assigned_framework_missing_ecc')
+        tailored_out = _roadmap_output_for_initiative(init, lang)
+        if (out == 'إدارة ولجنة حوكمة فاعلة'
+                and tailored_out != out):
+            reasons.append('generic_governance_output_on_capability_initiative')
+        if reasons:
+            violations.append({
+                'phase': phase,
+                'initiative': init,
+                'output': out,
+                'assigned_framework': fw,
+                'inferred_framework': inferred,
+                'expected_framework': expected,
+                'reason': '; '.join(reasons),
+            })
+    return violations
+
+
 def _infer_roadmap_framework(
         init: str, period: str, phase_num: int, raw_fw: str,
         lang: str = 'ar') -> str:
     """PR-CY50/55 — map roadmap rows to NCA ECC vs NCA DCC by initiative content."""
-    blob = f'{init} {period}'.lower()
-    dcc_keys = (
-        'dcc', 'dlp', 'تصنيف', 'بيانات', 'data', 'حماية البيانات',
-        'privacy', 'priv', 'خصوص', 'تصنيف البيانات',
-        'encryption', 'تشفير', 'sensitive', 'حساس', 'classification',
-        'data classification', 'sensitive-data',
-    )
-    ecc_keys = (
-        'soc', 'siem', 'iam', 'pam', 'mfa', 'csirt',
-        'vulnerability', 'ثغر', 'governance', 'حوكمة', 'ciso',
-    )
-    if any(k in blob for k in dcc_keys):
+    if _initiative_needs_dcc(init):
         return 'NCA DCC'
-    if any(k in blob for k in ecc_keys):
+    if _initiative_needs_ecc(init):
         return 'NCA ECC'
     if raw_fw and not _is_dash_cell(raw_fw):
         fw = str(raw_fw).strip()
@@ -2034,6 +2107,16 @@ def build_docmodel_professional_failure_diag(
     }
     if extra:
         payload.update(extra)
+    if (subgate == 'roadmap_framework_mapping_valid'
+            and model is not None):
+        try:
+            violations = collect_roadmap_framework_violations(
+                get_roadmap_spec_rows(model),
+                (model or {}).get('lang') or 'ar')
+            if violations:
+                payload['roadmap_framework_violations'] = violations
+        except Exception:
+            pass
     return payload
 
 
@@ -2929,30 +3012,8 @@ def prcy47_docmodel_professional_checks(
             for r in (t.get('rows') or []) for c in r))
     final_table_cell_arabic_cleanup_passed = not any(
         bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
-    roadmap_framework_mapping_valid = True
-    dcc_init_keys = (
-        'dcc', 'dlp', 'data', 'privacy', 'encryption', 'تشفير',
-        'classification', 'تصنيف', 'sensitive', 'حساس',
-    )
-    ecc_init_keys = (
-        'soc', 'siem', 'iam', 'pam', 'mfa', 'csirt',
-        'vulnerability', 'ثغر', 'governance', 'حوكمة',
-    )
-    for r in road_rows:
-        if len(r) < 6:
-            continue
-        init, fw = str(r[2] or ''), str(r[5] or '')
-        blob = init.lower()
-        if any(k in blob for k in dcc_init_keys) and fw:
-            if 'DCC' not in fw.upper():
-                roadmap_framework_mapping_valid = False
-        if any(k in blob for k in ecc_init_keys) and fw:
-            if 'ECC' not in fw.upper():
-                roadmap_framework_mapping_valid = False
-        if out := str(r[4] or ''):
-            if out == 'إدارة ولجنة حوكمة فاعلة' and any(
-                    k in blob for k in ecc_init_keys + dcc_init_keys):
-                roadmap_framework_mapping_valid = False
+    _roadmap_violations = collect_roadmap_framework_violations(road_rows, lang)
+    roadmap_framework_mapping_valid = not _roadmap_violations
 
     kpi_metric_semantics_valid = True
     for t in kpi_main:
@@ -3073,6 +3134,7 @@ def prcy47_docmodel_professional_checks(
             final_table_cell_arabic_cleanup_passed),
         'gap_guide_header_final_clean': gap_guide_header_final_clean,
         'roadmap_framework_mapping_valid': roadmap_framework_mapping_valid,
+        'roadmap_framework_violations': _roadmap_violations,
         'kpi_metric_semantics_valid': kpi_metric_semantics_valid,
         'confidence_table_layout_valid': confidence_table_layout_valid,
         'preview_pdf_docx_parity_passed': preview_pdf_docx_parity_passed,
