@@ -2284,8 +2284,29 @@ def _is_soc_detection_metric(name: str) -> bool:
 def _is_incident_response_metric(name: str) -> bool:
     """PR-CY58 — incident response time metrics (not SOC detection)."""
     n = (name or '').strip().lower()
+    ar = name or ''
+    if _is_incident_detection_metric(name):
+        return False
     return any(k in n for k in (
         'استجاب', 'response', 'حادث', 'incident', 'mttr', 'mttd',
+    )) or any(k in ar for k in ('استجاب',))
+
+
+def _is_incident_detection_metric(name: str) -> bool:
+    """PR-CY68 — incident detection / MTTD metrics (not response)."""
+    n = (name or '').strip().lower()
+    ar = name or ''
+    if any(k in n for k in ('vuln', 'vulnerability')) or 'ثغر' in ar:
+        return False
+    if any(k in ar for k in ('استجاب',)) or any(
+            k in n for k in ('response', 'mttr')):
+        return False
+    if any(k in ar for k in ('اكتشاف',)):
+        return any(k in ar for k in ('حاد', 'أمن')) or any(
+            k in n for k in ('incident', 'security', 'mttd'))
+    return any(k in n for k in (
+        'mttd', 'time to detect', 'detection time',
+        'mean time to detect', 'detect security incident',
     ))
 
 
@@ -2635,6 +2656,8 @@ def _detect_kpi_metric_family(
         return 'iam_pam_coverage'
     if any(k in nu for k in ('mfa', 'مصادقة متعددة', 'multi-factor')):
         return 'mfa_coverage'
+    if _is_incident_detection_metric(n):
+        return 'incident_detection_time'
     if any(k in nu for k in ('ثغر', 'vulnerability', 'vuln')):
         return 'vulnerability_sla'
     if _is_incident_response_metric(n) or (
@@ -2699,6 +2722,16 @@ def _apply_kpi_metric_family_spec(
              if ar else
              'Sum critical incident response times / critical incident count')
         s = 'ITSM / SOAR / SIEM'
+    elif family == 'incident_detection_time':
+        n = ('متوسط زمن اكتشاف الحوادث الأمنية' if ar else
+             'Mean time to detect security incidents')
+        kt = 'KPI'
+        if not _is_time_target(t):
+            t = '< 4 ساعات' if ar else '< 4 hours'
+        f = (('مجموع أزمنة اكتشاف الحوادث / عدد الحوادث')
+             if ar else
+             'Sum incident detection times / incident count')
+        s = 'SIEM / SOC'
     elif family == 'iam_pam_coverage':
         kt = 'KPI'
         if _target_repeats_metric_name(n, t) or not t or t == '—':
@@ -2782,6 +2815,7 @@ def _normalize_kpi_semantic_row(
         name, target, formula, kpi_type, lang)
     if family in (
             'incident_response_sla', 'incident_response_time',
+            'incident_detection_time',
             'iam_pam_coverage', 'mfa_coverage', 'vulnerability_sla',
             'phishing_failure_kri', 'backup_success',
             'data_protection_encryption_dlp', 'compliance_ecc_dcc',
@@ -2824,6 +2858,11 @@ def _kpi_metric_semantics_row_issue(
         reason = 'vulnerability_incident_formula_mix'
     elif not kpi_name_formula_aligned(name, formula, lang):
         reason = 'name_formula_mismatch'
+    elif _is_incident_detection_metric(name):
+        if any(k in str(formula) for k in (
+                'استجاب', 'response', 'critical incident response',
+                'الاستجابة')):
+            reason = 'detection_response_formula_mix'
     elif _is_soc_detection_metric(name):
         if any(k in str(formula) for k in (
                 'حادث', 'incident', 'response', 'استجاب', 'زمن')):
