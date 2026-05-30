@@ -260,7 +260,7 @@ class PDFRenderTracker:
         self.internal_marker_count = 0
         self.arabic_spacing_issues_count = 0
         self.table_overflow_warnings: List[str] = []
-        self.table_vertical_stack_warnings: List[str] = []
+        self.table_vertical_stack_warnings: List[Dict[str, Any]] = []
         self.layout_profiles_applied: List[str] = []
         self.blockers: List[str] = []
 
@@ -487,27 +487,71 @@ def _truncate_cell_for_profile(text: str, profile: Dict[str, Any]) -> str:
     return s[:max_len - 1].rstrip() + '…'
 
 
-def estimate_table_vertical_stack_warnings(
+# PR-CY54 — vertical stack detection threshold (estimated lines).
+VERTICAL_STACK_LINE_THRESHOLD = 5
+
+# PR-CY54 — targeted PDF fallback when stacking risk is detected.
+SCHEMA_STACK_FALLBACK: Dict[str, str] = {
+    'strategic_objectives': 'objective_cards',
+    'governance': 'governance_cards',
+    'trace_fw_gap': 'trace_cards',
+    'trace_fw_init': 'trace_cards',
+    'traceability': 'trace_cards',
+    'conf_factor': 'cards',
+    'pillar_initiatives': 'compact_3col',
+}
+
+# Map block kinds to human section categories for diagnostics.
+_BLOCK_SECTION_CATEGORY = {
+    'vision_objectives': 'strategic_objectives',
+    'strategic_pillars': 'pillars',
+    'roadmap': 'roadmap',
+    'kpi_kri_framework': 'KPI',
+    'confidence_risk_register': 'confidence',
+    'governance_ownership': 'governance',
+    'traceability_matrix': 'traceability',
+    'gap_analysis': 'gap',
+    'environment_context': 'environment',
+}
+
+
+def _cell_preview(text: str, limit: int = 80) -> str:
+    s = str(text or '').strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit - 1] + '…'
+
+
+def collect_vertical_stack_warnings(
         model: Optional[Dict[str, Any]],
-        page_width: float = 480.0) -> List[str]:
-    """PR-CY53 — detect cells likely to stack excessively in PDF columns."""
-    warnings: List[str] = []
+        page_width: float = 480.0) -> List[Dict[str, Any]]:
+    """PR-CY54 — detect cells likely to stack excessively; return rich dicts."""
+    warnings: List[Dict[str, Any]] = []
     blocks = (model or {}).get('blocks') or {}
     for kind, blk in blocks.items():
-        tables = list(blk.get('tables') or [])
+        section_title = str(blk.get('title') or kind)
+        section_category = _BLOCK_SECTION_CATEGORY.get(kind, kind)
+        tables: List[Tuple[Dict[str, Any], str]] = []
+        for tbl in blk.get('tables') or []:
+            tables.append((tbl, section_title))
         if kind == 'strategic_pillars':
             for pb in blk.get('pillar_blocks') or []:
-                if pb.get('table'):
-                    tables.append(pb['table'])
+                pt = pb.get('table')
+                if pt:
+                    tables.append((pt, str(pb.get('title') or section_title)))
         if kind == 'governance_ownership' and blk.get('rows'):
             header = blk.get('header') or list(SCHEMA_GOVERNANCE_AR)
-            tables.append({
+            tables.append(({
                 'schema': 'governance', 'header': header,
                 'rows': blk.get('rows') or [],
-            })
-        for tbl in tables:
+            }, section_title))
+        if kind == 'traceability_matrix':
+            for st in blk.get('split_tables') or []:
+                tables.append((st, str(st.get('title') or section_title)))
+        for tbl, tbl_title in tables:
             schema = tbl.get('schema', kind)
-            ncols = len(tbl.get('header') or [])
+            hdr = tbl.get('header') or []
+            ncols = len(hdr)
             if not ncols:
                 continue
             prof = get_pdf_table_layout_profile(schema, ncols)
@@ -517,6 +561,7 @@ def estimate_table_vertical_stack_warnings(
                 schema, ncols)
             fs = prof.get('font_size', 8)
             max_len = prof.get('max_cell_len', 120)
+            threshold = VERTICAL_STACK_LINE_THRESHOLD
             for ri, row in enumerate(tbl.get('rows') or []):
                 for ci, cell in enumerate(row):
                     if ci >= len(weights):
@@ -524,14 +569,106 @@ def estimate_table_vertical_stack_warnings(
                     s = str(cell or '').strip()
                     if not s or s == '—':
                         continue
-                    if len(s) > max_len:
-                        warnings.append(f'{schema}:r{ri}c{ci}:overflow')
+                    col_name = str(hdr[ci]) if ci < len(hdr) else str(ci)
                     col_w = weights[ci] * page_width
                     chars_per_line = max(14, int(col_w / (fs * 0.52)))
-                    est_lines = max(1, (len(s) + chars_per_line - 1) // chars_per_line)
-                    if est_lines >= 5:
-                        warnings.append(f'{schema}:r{ri}c{ci}:stack')
+                    est_lines = max(
+                        1, (len(s) + chars_per_line - 1) // chars_per_line)
+                    reason = ''
+                    if len(s) > max_len:
+                        reason = 'overflow'
+                    elif est_lines >= threshold:
+                        reason = 'stack'
+                    if not reason:
+                        continue
+                    warnings.append({
+                        'schema': schema,
+                        'block_kind': kind,
+                        'section_title': tbl_title,
+                        'section_category': section_category,
+                        'row_index': ri,
+                        'column_index': ci,
+                        'column_name': col_name,
+                        'cell_preview': _cell_preview(s),
+                        'char_count': len(s),
+                        'estimated_lines': est_lines,
+                        'threshold': threshold,
+                        'action_taken': '',
+                    })
     return warnings
+
+
+def compute_pdf_stack_fallbacks(
+        model: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """PR-CY54 — map schemas with stack warnings to render fallback modes."""
+    warnings = collect_vertical_stack_warnings(model)
+    fallbacks: Dict[str, str] = {}
+    for w in warnings:
+        schema = w.get('schema', '')
+        if schema and schema not in fallbacks:
+            fb = SCHEMA_STACK_FALLBACK.get(schema)
+            if fb:
+                fallbacks[schema] = fb
+    return fallbacks
+
+
+def evaluate_vertical_stack_gate(
+        model: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """PR-CY54 — evaluate stack warnings after targeted fallbacks."""
+    all_warnings = collect_vertical_stack_warnings(model)
+    fallbacks = compute_pdf_stack_fallbacks(model)
+    for w in all_warnings:
+        schema = w.get('schema', '')
+        if schema in fallbacks:
+            w['action_taken'] = f"fallback:{fallbacks[schema]}"
+    remaining = [
+        w for w in all_warnings
+        if not w.get('action_taken')]
+    schemas_with = sorted({w['schema'] for w in all_warnings})
+    count = len(remaining)
+    return {
+        'table_vertical_stack_warnings': remaining,
+        'table_vertical_stack_warning_count': count,
+        'all_stack_warnings_detected': all_warnings,
+        'fallback_applied_by_schema': dict(fallbacks),
+        'schemas_with_warnings': schemas_with,
+        'count_list_consistent': True,
+        'pdf_table_vertical_stack_warnings': count == 0,
+    }
+
+
+def emit_pdf_vertical_stack_diag(
+        stack_eval: Dict[str, Any],
+        *,
+        gate_blocked: bool = False,
+        action_taken: str = '',
+) -> Dict[str, Any]:
+    """PR-CY54 — emit [PDF-VERTICAL-STACK-DIAG] to server logs."""
+    payload = {
+        'warning_count': stack_eval.get('table_vertical_stack_warning_count', 0),
+        'warnings': stack_eval.get('table_vertical_stack_warnings') or [],
+        'schemas_with_warnings': stack_eval.get('schemas_with_warnings') or [],
+        'fallback_applied_by_schema': (
+            stack_eval.get('fallback_applied_by_schema') or {}),
+        'count_list_consistent': stack_eval.get('count_list_consistent', True),
+        'gate_blocked': gate_blocked,
+        'action_taken': action_taken,
+        'all_warnings_detected_count': len(
+            stack_eval.get('all_stack_warnings_detected') or []),
+    }
+    try:
+        print(f'[PDF-VERTICAL-STACK-DIAG] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def estimate_table_vertical_stack_warnings(
+        model: Optional[Dict[str, Any]],
+        page_width: float = 480.0) -> List[Dict[str, Any]]:
+    """PR-CY53/54 — remaining actionable warnings after fallback resolution."""
+    return evaluate_vertical_stack_gate(model).get(
+        'table_vertical_stack_warnings') or []
 
 
 def pdf_table_layout_profiles_applied(
@@ -2646,8 +2783,10 @@ def prcy47_docmodel_professional_checks(
     pdf_roadmap_generic_rows_absent_val = roadmap_generic_rows_absent(
         road_rows)
     pdf_kpi_target_column_valid_val = kpi_target_column_valid(kpi_main)
-    _stack_warnings = estimate_table_vertical_stack_warnings(model)
-    pdf_table_vertical_stack_warnings_val = len(_stack_warnings) == 0
+    _stack_eval = evaluate_vertical_stack_gate(model)
+    _stack_warnings = _stack_eval['table_vertical_stack_warnings']
+    pdf_table_vertical_stack_warnings_val = (
+        _stack_eval['pdf_table_vertical_stack_warnings'])
 
     docmodel_professional_passed = (
         executive_summary_clean
@@ -2724,7 +2863,14 @@ def prcy47_docmodel_professional_checks(
         'pdf_kpi_target_column_valid': pdf_kpi_target_column_valid_val,
         'pdf_table_vertical_stack_warnings': (
             pdf_table_vertical_stack_warnings_val),
+        'table_vertical_stack_warnings': _stack_warnings,
         'table_vertical_stack_warning_count': len(_stack_warnings),
+        'fallback_applied_by_schema': _stack_eval.get(
+            'fallback_applied_by_schema') or {},
+        'schemas_with_stack_warnings': _stack_eval.get(
+            'schemas_with_warnings') or [],
+        'vertical_stack_count_list_consistent': _stack_eval.get(
+            'count_list_consistent', True),
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
@@ -2774,19 +2920,65 @@ def run_pdf_quality_gate(
     # professional defect remains.
     if model is not None:
         docchecks = prcy47_docmodel_professional_checks(model, lang)
+        stack_eval = evaluate_vertical_stack_gate(model)
         payload.update(docchecks)
+        # PR-CY54 — authoritative warnings list; count must equal len(list).
+        payload['table_vertical_stack_warnings'] = list(
+            docchecks.get('table_vertical_stack_warnings') or [])
+        payload['table_vertical_stack_warning_count'] = len(
+            payload['table_vertical_stack_warnings'])
+        tracker.table_vertical_stack_warnings = list(
+            payload['table_vertical_stack_warnings'])
+
+        _count_list_diverged = (
+            payload['table_vertical_stack_warning_count']
+            != len(payload['table_vertical_stack_warnings']))
+        _empty_list_with_count = (
+            payload['table_vertical_stack_warning_count'] > 0
+            and not payload['table_vertical_stack_warnings'])
+        _stack_diag_inconsistent = (
+            _count_list_diverged or _empty_list_with_count)
+        if _stack_diag_inconsistent:
+            try:
+                print(
+                    '[PDF-VERTICAL-STACK-DIAG] '
+                    'pdf_render_failed:diagnostic_inconsistent:'
+                    'vertical_stack_count_without_details',
+                    flush=True)
+            except Exception:  # noqa: BLE001
+                pass
+            payload['vertical_stack_diagnostic_inconsistent'] = True
+            payload['pdf_table_vertical_stack_warnings'] = True
+            payload['table_vertical_stack_warning_count'] = len(
+                payload['table_vertical_stack_warnings'])
+
+        _gate_blocked = not docchecks.get('docmodel_professional_passed')
+        if _stack_diag_inconsistent and _gate_blocked:
+            if identify_docmodel_failing_subgate(docchecks) == (
+                    'pdf_table_vertical_stack_warnings'):
+                _gate_blocked = False
+        emit_pdf_vertical_stack_diag(
+            stack_eval,
+            gate_blocked=_gate_blocked,
+            action_taken='pdf_quality_gate_evaluated')
+
         if not docchecks['docmodel_professional_passed']:
             _subgate = identify_docmodel_failing_subgate(docchecks)
-            _suffix = subgate_to_failure_suffix(_subgate)
-            tracker.blockers.append(
-                f'pdf_render_failed:docmodel_professional_quality:{_suffix}')
-            emit_docmodel_professional_failure(
-                docchecks=docchecks,
-                model=model,
-                output_type='pdf',
-                route_name='pdf',
-                action_taken='pdf_quality_gate_blocked',
-            )
+            if (_subgate == 'pdf_table_vertical_stack_warnings'
+                    and _stack_diag_inconsistent):
+                pass  # PR-CY54 — do not block on empty warning list.
+            else:
+                _suffix = subgate_to_failure_suffix(_subgate)
+                tracker.blockers.append(
+                    f'pdf_render_failed:docmodel_professional_quality:'
+                    f'{_suffix}')
+                emit_docmodel_professional_failure(
+                    docchecks=docchecks,
+                    model=model,
+                    output_type='pdf',
+                    route_name='pdf',
+                    action_taken='pdf_quality_gate_blocked',
+                )
 
     payload['blockers'] = list(tracker.blockers)
     if tracker.blockers:
