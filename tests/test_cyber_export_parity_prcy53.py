@@ -97,7 +97,7 @@ class ExportParityPrcy53Tests(unittest.TestCase):
             out = str(r[4])
             self.assertNotIn(init, _P41.ROADMAP_GENERIC_INITIATIVES)
             self.assertNotIn(out, _P41.ROADMAP_GENERIC_OUTPUTS)
-        weak = _P41._fill_roadmap_row(
+        weak, _meta = _P41._fill_roadmap_row(
             ['P', '1-6', 'تنفيذ حلول', 'خبير', 'مخرج معتمد', 'NCA ECC'], 'ar')
         self.assertNotIn(weak[2], _P41.ROADMAP_GENERIC_INITIATIVES)
         self.assertNotIn(weak[4], _P41.ROADMAP_GENERIC_OUTPUTS)
