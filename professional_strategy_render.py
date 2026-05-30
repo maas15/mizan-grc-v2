@@ -58,6 +58,7 @@ ROADMAP_GENERIC_INITIATIVES = (
 )
 ROADMAP_GENERIC_OUTPUTS = (
     'مخرج معتمد', 'Approved deliverable',
+    'قدرات تشغيلية فعّالة', 'Operational SOC/SIEM capability',
 )
 ROADMAP_WEAK_OWNERS = ('خبير', 'Expert', 'expert')
 
@@ -775,14 +776,22 @@ def _phase_bucket(period_or_phase: str) -> int:
 def _infer_roadmap_framework(
         init: str, period: str, phase_num: int, raw_fw: str,
         lang: str = 'ar') -> str:
-    """PR-CY50 — map roadmap rows to NCA ECC vs NCA DCC by initiative content."""
+    """PR-CY50/55 — map roadmap rows to NCA ECC vs NCA DCC by initiative content."""
     blob = f'{init} {period}'.lower()
     dcc_keys = (
         'dcc', 'dlp', 'تصنيف', 'بيانات', 'data', 'حماية البيانات',
         'privacy', 'priv', 'خصوص', 'تصنيف البيانات',
+        'encryption', 'تشفير', 'sensitive', 'حساس', 'classification',
+        'data classification', 'sensitive-data',
+    )
+    ecc_keys = (
+        'soc', 'siem', 'iam', 'pam', 'mfa', 'csirt',
+        'vulnerability', 'ثغر', 'governance', 'حوكمة', 'ciso',
     )
     if any(k in blob for k in dcc_keys):
         return 'NCA DCC'
+    if any(k in blob for k in ecc_keys):
+        return 'NCA ECC'
     if raw_fw and not _is_dash_cell(raw_fw):
         fw = str(raw_fw).strip()
         if 'DCC' in fw.upper():
@@ -790,8 +799,6 @@ def _infer_roadmap_framework(
         if 'ECC' in fw.upper():
             return 'NCA ECC'
         return fw
-    if phase_num >= 3:
-        return 'NCA DCC'
     return 'NCA ECC'
 
 
@@ -832,22 +839,55 @@ def _rewrite_weak_roadmap_initiative(
     return 'Enable SOC/SIEM and IAM/PAM/MFA'
 
 
+def _roadmap_output_for_initiative(
+        init: str, lang: str = 'ar') -> str:
+    """PR-CY55 — initiative-specific deliverable (never generic governance)."""
+    blob = f'{init}'.lower()
+    if lang == 'ar':
+        if any(k in blob for k in ('csirt', 'حادث', 'incident')):
+            return 'قدرة CSIRT تشغيلية'
+        if any(k in blob for k in ('dlp', 'تسرب')):
+            return 'سياسات DLP وتصنيف بيانات معتمدة'
+        if any(k in blob for k in ('soc', 'siem')):
+            return 'قدرات SOC/SIEM تشغيلية'
+        if any(k in blob for k in ('iam', 'pam', 'mfa', 'مصادقة')):
+            return 'سياسات IAM/PAM/MFA مطبقة'
+        if any(k in blob for k in ('ثغر', 'vulnerability')):
+            return 'برنامج إدارة الثغرات فعّال'
+        if any(k in blob for k in ('تشفير', 'encryption')):
+            return 'تشفير البيانات الحساسة مطبق'
+        if any(k in blob for k in ('تصنيف', 'classification', 'بيانات')):
+            return 'سياسة تصنيف البيانات معتمدة'
+        if any(k in blob for k in ('حوكمة', 'governance', 'ciso')):
+            return 'إدارة ولجنة حوكمة فاعلة'
+        return 'مخرجات تنفيذية معتمدة'
+    if any(k in blob for k in ('csirt', 'incident')):
+        return 'Operational CSIRT capability'
+    if any(k in blob for k in ('dlp',)):
+        return 'Approved DLP and data-classification policies'
+    if any(k in blob for k in ('soc', 'siem')):
+        return 'Operational SOC/SIEM capability'
+    if any(k in blob for k in ('iam', 'pam', 'mfa')):
+        return 'IAM/PAM/MFA policies enforced'
+    if any(k in blob for k in ('vulnerability', 'vuln')):
+        return 'Effective vulnerability management programme'
+    if any(k in blob for k in ('encrypt', 'classification', 'sensitive')):
+        return 'Sensitive data encryption and classification in place'
+    return 'Approved implementation deliverables'
+
+
 def _rewrite_weak_roadmap_output(
         output: str, init: str, phase_num: int, lang: str = 'ar') -> str:
     """Replace generic roadmap outputs with concrete deliverables."""
     s = str(output or '').strip()
+    tailored = _roadmap_output_for_initiative(init, lang)
     if s and s not in ROADMAP_GENERIC_OUTPUTS:
+        if s == 'إدارة ولجنة حوكمة فاعلة' and tailored != s:
+            return tailored
+        if s == 'قدرات تشغيلية فعّالة' and tailored != s:
+            return tailored
         return s
-    if lang == 'ar':
-        by_phase = {
-            1: 'إدارة ولجنة حوكمة فاعلة',
-            2: 'قدرات SOC/SIEM تشغيلية',
-            3: 'نضج CSIRT وإدارة الثغرات',
-        }
-        if any(k in init for k in ('DLP', 'تصنيف', 'بيانات', 'تشفير')):
-            return 'سياسات DLP وتصنيف بيانات معتمدة'
-        return by_phase.get(phase_num, 'قدرات تشغيلية فعّالة')
-    return 'Operational SOC/SIEM capability'
+    return tailored
 
 
 def _is_generic_roadmap_row(row: List[str]) -> bool:
@@ -861,6 +901,12 @@ def _is_generic_roadmap_row(row: List[str]) -> bool:
         return True
     if out in ROADMAP_GENERIC_OUTPUTS:
         return True
+    if out == 'إدارة ولجنة حوكمة فاعلة':
+        blob = init.lower()
+        if any(k in blob for k in (
+                'csirt', 'dlp', 'soc', 'siem', 'iam', 'pam', 'mfa',
+                'ثغر', 'vulnerability', 'تشفير', 'encryption')):
+            return True
     if owner in ROADMAP_WEAK_OWNERS:
         return True
     if init and not _roadmap_has_concrete_capability(init, row[5] if len(row) > 5 else ''):
@@ -923,7 +969,7 @@ def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
         2: ('7-18 شهر', 'تمكين SOC/SIEM وIAM/PAM/MFA',
             'CISO', 'قدرات تشغيلية فعّالة', 'NCA ECC'),
         3: ('19-24 شهر', 'تحسين إدارة الثغرات والاستجابة للحوادث CSIRT',
-            'CISO', 'نضج وتحسين مستمر', 'NCA DCC'),
+            'CISO', 'نضج CSIRT وإدارة الثغرات', 'NCA ECC'),
     }
     period, init, owner, out, fw = synth.get(phase_num, synth[2])
     if lang != 'ar':
@@ -1078,6 +1124,61 @@ def _finalize_professional_blocks(
                  prepare_final_render_text(body, lang))
                 for lbl, body in blk['rows']]
     return out
+
+
+def sync_professional_toc_entries(
+        blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY55 — ensure TOC lists every professional section being rendered."""
+    toc_blk = dict(blocks.get('toc') or {})
+    existing = toc_blk.get('entries') or []
+    if existing and len(existing) >= 10:
+        return blocks
+    entries: List[Tuple[str, str]] = []
+    for n, (key, lbl_ar, lbl_en) in enumerate(_PROFESSIONAL_TOC_LABELS, 1):
+        lbl = lbl_ar if lang == 'ar' else lbl_en
+        blk = blocks.get(key) or {}
+        title = str(blk.get('title') or lbl).strip()
+        entries.append((str(n), title or lbl))
+    toc_blk['entries'] = entries
+    blocks['toc'] = toc_blk
+    return blocks
+
+
+def get_toc_entries_from_model(
+        model: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """PR-CY55 — TOC entries from the document model (PDF/DOCX parity)."""
+    blocks = (model or {}).get('blocks') or {}
+    toc = blocks.get('toc') or {}
+    entries = toc.get('entries') or []
+    if entries:
+        return [(str(a), str(b)) for a, b in entries]
+    return []
+
+
+def professional_toc_includes_required_sections(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """PR-CY55 — TOC must list executive summary through appendices."""
+    entries = get_toc_entries_from_model(model)
+    if not entries:
+        return False
+    blob = ' '.join(str(t) for _, t in entries).lower()
+    if lang == 'ar':
+        required = (
+            'الملخص', 'النطاق', 'المنهجية', 'الحوكمة',
+            'تتبع', 'الملاحق',
+        )
+    else:
+        required = (
+            'executive summary', 'scope', 'methodology', 'governance',
+            'traceability', 'appendices',
+        )
+    return all(k in blob for k in required)
+
+
+def pdf_confidence_card_labels_readable(text: str = '') -> bool:
+    """PR-CY55 — confidence card labels must not contain reversed Arabic."""
+    blob = text or ''
+    return not any(f in blob for f in REVERSED_CONFIDENCE_LABEL_FRAGMENTS)
 
 
 def get_professional_export_section_keys(
@@ -1391,6 +1492,68 @@ def _is_time_based_metric(name: str) -> bool:
     ))
 
 
+def _normalize_kpi_name(name: str, lang: str = 'ar') -> str:
+    """PR-CY55 — align KPI names with remediation/completion semantics."""
+    n = (name or '').strip()
+    if not n or n == '—':
+        return n
+    nu = n.lower()
+    if lang == 'ar':
+        if any(k in nu for k in ('ثغر', 'vulnerability', 'remediation', 'إغلاق', 'closure')):
+            if 'اكتشاف' in n:
+                n = n.replace('اكتشاف', 'إغلاق')
+            if 'discovery' in nu:
+                n = re.sub(r'discovery', 'closure', n, flags=re.IGNORECASE)
+        if any(k in nu for k in ('توعية', 'awareness', 'تدريب', 'training')):
+            if 'فعالية' in n:
+                n = n.replace('فعالية', 'إكمال')
+            if 'effectiveness' in nu:
+                n = re.sub(r'effectiveness', 'completion', n, flags=re.IGNORECASE)
+    else:
+        if any(k in nu for k in ('vulnerability', 'vuln', 'remediation', 'closure')):
+            if 'discovery' in nu:
+                n = re.sub(r'discovery', 'closure', n, flags=re.IGNORECASE)
+        if any(k in nu for k in ('awareness', 'training')):
+            if 'effectiveness' in nu:
+                n = re.sub(r'effectiveness', 'completion', n, flags=re.IGNORECASE)
+    return n
+
+
+def _align_kpi_name_with_formula(
+        name: str, formula: str, lang: str = 'ar') -> str:
+    """PR-CY55 — ensure KPI name matches formula semantics."""
+    n = (name or '').strip()
+    f = (formula or '').lower()
+    if not n or not f:
+        return n
+    if lang == 'ar':
+        if any(k in f for k in ('مغلقة', 'إغلاق', 'closed', 'remediation')):
+            if 'اكتشاف' in n:
+                n = n.replace('اكتشاف', 'إغلاق')
+        if any(k in f for k in ('مجتازين', 'trained', 'completion', 'إكمال')):
+            if 'فعالية' in n:
+                n = n.replace('فعالية', 'إكمال')
+    else:
+        if any(k in f for k in ('closed', 'remediation', 'closure')):
+            n = re.sub(r'discovery', 'closure', n, flags=re.IGNORECASE)
+        if any(k in f for k in ('trained', 'completion')):
+            n = re.sub(r'effectiveness', 'completion', n, flags=re.IGNORECASE)
+    return n
+
+
+def kpi_name_formula_aligned(name: str, formula: str, lang: str = 'ar') -> bool:
+    """PR-CY55 — KPI name must not contradict its formula."""
+    n = (name or '').lower()
+    f = (formula or '').lower()
+    if any(k in f for k in ('closed', 'remediation', 'مغلقة', 'إغلاق')):
+        if 'discovery' in n or 'اكتشاف' in n:
+            return False
+    if any(k in f for k in ('trained', 'completion', 'مجتازين', 'إكمال')):
+        if 'effectiveness' in n or 'فعالية' in n:
+            return False
+    return True
+
+
 def _is_formula_like_target(val: str) -> bool:
     """PR-CY53 — True when a KPI target cell holds formula text, not a target."""
     s = (val or '').strip()
@@ -1575,10 +1738,16 @@ def split_kpi_tables(
                                     'data source'))
         main_rows, formula_rows = [], []
         for n, r in enumerate(tbl[1:], 1):
-            name = _cell(r, i_name if i_name >= 0 else 1)
+            name = _normalize_kpi_name(
+                _cell(r, i_name if i_name >= 0 else 1), lang)
             if name == '—':
                 continue
             idx = _cell(r, i_idx, str(n)) if i_idx >= 0 else str(n)
+            formula = _cell(r, i_formula) if i_formula >= 0 else '—'
+            if (formula == '—' or _is_freq_or_timeframe(formula)
+                    or _is_formula_echo(formula, name)):
+                formula = _derive_kpi_formula(name, lang)
+            name = _align_kpi_name_with_formula(name, formula, lang)
             main_rows.append([
                 idx, name,
                 _derive_kpi_type(name, _cell(r, i_type, ''), lang),
@@ -1587,11 +1756,7 @@ def split_kpi_tables(
                 _cell(r, i_owner, 'CISO'),
                 _cell(r, i_horizon),
             ])
-            formula = _cell(r, i_formula) if i_formula >= 0 else '—'
             source = _cell(r, i_source) if i_source >= 0 else '—'
-            if (formula == '—' or _is_freq_or_timeframe(formula)
-                    or _is_formula_echo(formula, name)):
-                formula = _derive_kpi_formula(name, lang)
             if source == '—' or _is_freq_or_timeframe(source):
                 source = _derive_kpi_source(name, lang)
             formula_rows.append([idx, name, formula, source])
@@ -1690,6 +1855,42 @@ PRCY47_AR_FRAGMENT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ال مسؤول', 'المسؤول'),
 )
 
+# PR-CY55 — reversed Arabic label fragments from broken Bidi confidence cards.
+REVERSED_CONFIDENCE_LABEL_FRAGMENTS = (
+    'ةمهاسملا', 'ةجردلا', 'نزولا', 'لماعلا',
+)
+
+# PR-CY55 — TOC section keys that must appear in professional exports.
+PROFESSIONAL_TOC_SECTION_KEYS = (
+    'executive_summary', 'scope_frameworks', 'methodology',
+    'governance_ownership', 'traceability_matrix', 'appendices',
+)
+
+# PR-CY55 — canonical TOC labels (matches ``_STRATEGY_DOC_SECTION_LABELS``).
+_PROFESSIONAL_TOC_LABELS: Tuple[Tuple[str, str, str], ...] = (
+    ('executive_summary', 'الملخص التنفيذي', 'Executive Summary'),
+    ('scope_frameworks', 'النطاق والأطر المرجعية المعتمدة',
+     'Scope and Selected Frameworks'),
+    ('methodology', 'المنهجية', 'Methodology'),
+    ('current_state', 'ملخص الوضع الراهن ومستوى النضج',
+     'Current-State and Maturity Summary'),
+    ('vision_objectives', 'الرؤية والأهداف الاستراتيجية',
+     'Strategic Vision and Objectives'),
+    ('strategic_pillars', 'الركائز الاستراتيجية', 'Strategic Pillars'),
+    ('environment_context', 'البيئة التنظيمية والتهديدات',
+     'Regulatory Environment and Threat Landscape'),
+    ('gap_analysis', 'تحليل الفجوات', 'Gap Analysis'),
+    ('roadmap', 'خارطة الطريق التنفيذية', 'Implementation Roadmap'),
+    ('kpi_kri_framework', 'مؤشرات الأداء الرئيسية', 'KPI / KRI Framework'),
+    ('confidence_risk_register', 'تقييم الثقة والمخاطر',
+     'Confidence Score and Risk Register'),
+    ('governance_ownership', 'نموذج الحوكمة والمسؤوليات',
+     'Governance and Ownership Model'),
+    ('traceability_matrix', 'مصفوفة تتبع الأطر المرجعية',
+     'Framework Traceability Matrix'),
+    ('appendices', 'الملاحق', 'Appendices'),
+)
+
 # PR-CY50 — sections that must appear in DOCX/PDF professional exports.
 DOCX_REQUIRED_PROFESSIONAL_SECTIONS = (
     'executive_summary', 'scope_frameworks', 'methodology',
@@ -1724,6 +1925,8 @@ DOCMODEL_PROFESSIONAL_SUBGATES = (
     'pdf_kpi_target_column_valid',
     'pdf_table_vertical_stack_warnings',
     'preview_pdf_docx_parity_passed',
+    'docx_toc_professional_sections',
+    'pdf_confidence_card_labels_readable',
     'executive_summary_clean',
     'markdown_residue_after_docmodel',
     'environment_table_clean',
@@ -2388,6 +2591,7 @@ def enrich_professional_blocks(
         }
 
     blocks = _finalize_professional_blocks(blocks, lang_n)
+    blocks = sync_professional_toc_entries(blocks, lang_n)
     model['blocks'] = blocks
     model['render_layer'] = 'prcy41_professional'
     model['professional_section_order'] = list(PROFESSIONAL_EXPORT_SECTION_ORDER)
@@ -2726,7 +2930,14 @@ def prcy47_docmodel_professional_checks(
     final_table_cell_arabic_cleanup_passed = not any(
         bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
     roadmap_framework_mapping_valid = True
-    dcc_init_keys = ('dcc', 'dlp', 'data', 'privacy')
+    dcc_init_keys = (
+        'dcc', 'dlp', 'data', 'privacy', 'encryption', 'تشفير',
+        'classification', 'تصنيف', 'sensitive', 'حساس',
+    )
+    ecc_init_keys = (
+        'soc', 'siem', 'iam', 'pam', 'mfa', 'csirt',
+        'vulnerability', 'ثغر', 'governance', 'حوكمة',
+    )
     for r in road_rows:
         if len(r) < 6:
             continue
@@ -2735,8 +2946,12 @@ def prcy47_docmodel_professional_checks(
         if any(k in blob for k in dcc_init_keys) and fw:
             if 'DCC' not in fw.upper():
                 roadmap_framework_mapping_valid = False
-        if ('DLP' in init or 'dlp' in blob) and fw:
-            if 'DCC' not in fw.upper():
+        if any(k in blob for k in ecc_init_keys) and fw:
+            if 'ECC' not in fw.upper():
+                roadmap_framework_mapping_valid = False
+        if out := str(r[4] or ''):
+            if out == 'إدارة ولجنة حوكمة فاعلة' and any(
+                    k in blob for k in ecc_init_keys + dcc_init_keys):
                 roadmap_framework_mapping_valid = False
 
     kpi_metric_semantics_valid = True
@@ -2755,6 +2970,8 @@ def prcy47_docmodel_professional_checks(
             if any(k in (name or '') for k in ('ثغر', 'vulnerability')):
                 if any(k in str(formula) for k in ('حادث', 'incident')):
                     kpi_metric_semantics_valid = False
+            if not kpi_name_formula_aligned(name, formula, lang):
+                kpi_metric_semantics_valid = False
     confidence_table_layout_valid = bool(conf_factor_tbl)
     if confidence_table_layout_valid:
         for r in conf_factor_tbl[0].get('rows') or []:
@@ -2788,6 +3005,15 @@ def prcy47_docmodel_professional_checks(
     pdf_table_vertical_stack_warnings_val = (
         _stack_eval['pdf_table_vertical_stack_warnings'])
 
+    # PR-CY55 — TOC parity and confidence card label readability.
+    docx_toc_professional_sections = professional_toc_includes_required_sections(
+        model, lang)
+    _conf_card_blob = ' '.join(
+        str(c) for t in conf_factor_tbl for r in (t.get('rows') or [])
+        for c in r)
+    pdf_confidence_card_labels_readable_val = pdf_confidence_card_labels_readable(
+        _conf_card_blob)
+
     docmodel_professional_passed = (
         executive_summary_clean
         and markdown_residue_after_docmodel == 0
@@ -2819,7 +3045,9 @@ def prcy47_docmodel_professional_checks(
         and pdf_roadmap_generic_rows_absent_val
         and pdf_kpi_target_column_valid_val
         and pdf_table_vertical_stack_warnings_val
-        and preview_pdf_docx_parity_passed)
+        and preview_pdf_docx_parity_passed
+        and docx_toc_professional_sections
+        and pdf_confidence_card_labels_readable_val)
 
     return {
         'executive_summary_clean': executive_summary_clean,
@@ -2871,6 +3099,9 @@ def prcy47_docmodel_professional_checks(
             'schemas_with_warnings') or [],
         'vertical_stack_count_list_consistent': _stack_eval.get(
             'count_list_consistent', True),
+        'docx_toc_professional_sections': docx_toc_professional_sections,
+        'pdf_confidence_card_labels_readable': (
+            pdf_confidence_card_labels_readable_val),
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
