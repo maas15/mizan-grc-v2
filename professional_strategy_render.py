@@ -41,7 +41,18 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('اختراقمن', 'اختراق من'),
     ('التهديداتفي', 'التهديدات في'),
     ('المخاطرمن', 'المخاطر من'),
+    # PR-CY52 — additional Arabic concatenation defects.
+    ('كاملمع', 'كامل مع'),
+    ('المخاطرمع', 'المخاطر مع'),
+    ('الاستثمارفي', 'الاستثمار في'),
+    ('التدريبفي', 'التدريب في'),
 )
+
+# PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
+ROADMAP_CELL_MAX_LEN = 72
+
+# Forbidden gap-guide header fragments (must never appear in exports).
+GAP_HEADER_FORBIDDEN_FRAGMENTS = ('طوة', 'الخ', 'طوة الخ')
 
 PRCY41_PROTECTED_ACRONYMS = (
     'NCA ECC', 'NCA DCC', 'CISO', 'SOC', 'SIEM', 'IAM', 'PAM', 'DLP',
@@ -228,21 +239,126 @@ def prepare_section_text(text: str, lang: str = 'ar') -> str:
 
 
 def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
-    """PR-CY48 — last-mile cleanup applied to every PDF/DOCX cell/paragraph.
+    """PR-CY48/52 — last-mile cleanup applied to every PDF/DOCX cell/paragraph.
 
-    Combines markdown residue stripping, Arabic spacing fixes (PRCY41/48),
-    split-word fragment repair, confidence display normalisation, and
-    framework bracket artifact removal.
+    Combines markdown residue stripping, Arabic spacing fixes (PRCY41/48/52),
+    split-word fragment repair, confidence display normalisation, gap-header
+    repair, and framework bracket artifact removal.
     """
     if text is None:
         return ''
     out = prepare_section_text(str(text), lang)
     out = prcy47_fix_ar_fragments(out)
+    out = _repair_gap_header_fragments(out)
     # Strip reversed framework bracket artifacts (e.g. ``ECC + DCC]``).
     out = re.sub(r'[\[\]]+', '', out)
     out = re.sub(r'\bECC\s*\+\s*DCC\b', 'NCA ECC, NCA DCC', out)
     out = re.sub(r'\s{2,}', ' ', out).strip()
     return out
+
+
+def _repair_gap_header_fragments(text: str) -> str:
+    """PR-CY52 — repair split gap-guide headers (``طوة`` / ``الخ``)."""
+    s = str(text or '').strip()
+    if not s:
+        return s
+    if s in GAP_HEADER_FORBIDDEN_FRAGMENTS or 'طوة الخ' in s:
+        return 'الخطوة'
+    if s == 'طوة' or s == 'الخ':
+        return 'الخطوة'
+    if 'طوة' in s and 'خطوة' not in s:
+        return 'الخطوة'
+    return s
+
+
+def _compact_roadmap_cell(text: str, lang: str = 'ar',
+                          max_len: int = ROADMAP_CELL_MAX_LEN) -> str:
+    """PR-CY52 — shorten roadmap cells; strip long DCC explanatory clauses."""
+    s = str(text or '').strip()
+    if not s or s == '—':
+        return s
+    # Remove repeated DCC narrative fragments — details belong in traceability.
+    for pat in (
+        r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]*',
+        r'(?:Data\s+Cybersecurity|data\s+classification)[^,\.;|]*',
+        r'(?:وفق|بموجب)\s+(?:NCA\s+)?DCC[^،\.|;]*',
+    ):
+        s = re.sub(pat, '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s{2,}', ' ', s).strip(' ،|,;')
+    if len(s) > max_len:
+        s = s[:max_len - 1].rstrip() + '…'
+    return s or ('—' if lang == 'ar' else '—')
+
+
+def _compact_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
+    """Apply cell compaction to a roadmap row (keep framework column short)."""
+    cells = list(row) + [''] * (6 - len(row))
+    out = [
+        _compact_roadmap_cell(cells[0], lang, max_len=48),
+        _compact_roadmap_cell(cells[1], lang, max_len=24),
+        _compact_roadmap_cell(cells[2], lang),
+        _compact_roadmap_cell(cells[3], lang, max_len=24),
+        _compact_roadmap_cell(cells[4], lang),
+        cells[5],
+    ]
+    fw = str(out[5] or '').strip()
+    if fw.upper().startswith('NCA'):
+        out[5] = 'NCA DCC' if 'DCC' in fw.upper() else 'NCA ECC'
+    elif len(fw) > 24:
+        out[5] = _compact_roadmap_cell(fw, lang, max_len=24)
+    return out
+
+
+def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
+    """PR-CY52 — infer KPI vs KRI; never return dash/empty type."""
+    t = (raw_type or '').strip().upper()
+    if t in ('KPI', 'KRI'):
+        return t
+    n = (name or '').lower()
+    kri_keys = (
+        'kri', 'risk', 'مخاطر', 'phishing', 'تصيد', 'exposure', 'تعرض',
+        'risk exposure', 'failure rate', 'حساس', 'sensitive data',
+    )
+    if any(k in n for k in kri_keys):
+        return 'KRI'
+    return 'KPI'
+
+
+def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
+    """PR-CY52 — PDF column weight hints per table schema."""
+    if schema == 'conf_factor' and ncols == 4:
+        return [0.40, 0.18, 0.18, 0.24]
+    if schema == 'gap_action' and ncols == 5:
+        return [0.10, 0.34, 0.16, 0.18, 0.22]
+    if schema == 'roadmap' and ncols == 6:
+        return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
+    if schema == 'kpi_main' and ncols == 7:
+        return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
+    if schema == 'kpi_formula' and ncols == 4:
+        return [0.08, 0.30, 0.32, 0.30]
+    if ncols == 5:
+        return [0.06, 0.28, 0.22, 0.22, 0.22]
+    if ncols == 6:
+        return [0.14, 0.14, 0.22, 0.16, 0.18, 0.16]
+    if ncols == 4:
+        return [0.08, 0.32, 0.30, 0.30]
+    return [1.0 / max(ncols, 1)] * max(ncols, 1)
+
+
+def contains_forbidden_gap_fragments(text: str) -> bool:
+    """True when text contains forbidden gap-guide header fragments."""
+    s = str(text or '')
+    if 'طوة الخ' in s:
+        return True
+    for part in re.split(r'[\s|,;]+', s):
+        part = part.strip()
+        if not part:
+            continue
+        if part in ('طوة', 'الخ'):
+            return True
+        if part != 'الخطوة' and 'طوة' in part and 'خطوة' not in part:
+            return True
+    return False
 
 
 def _clean_framework_labels(labels: List[str]) -> List[str]:
@@ -338,7 +454,7 @@ def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         'مبادرة تنفيذية' if lang == 'ar' else 'Implementation initiative')
     fw = _infer_roadmap_framework(
         init, period, phase_num, cells[5] if len(cells) > 5 else '', lang)
-    return [
+    return _compact_roadmap_row([
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
         init,
@@ -346,7 +462,7 @@ def _fill_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         cells[4] if not _is_dash_cell(cells[4]) else (
             'مخرج معتمد' if lang == 'ar' else 'Approved deliverable'),
         fw,
-    ]
+    ], lang)
 
 
 def _phase_label(phase_num: int, lang: str = 'ar') -> str:
@@ -366,7 +482,7 @@ def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
     synth = {
         1: ('1-6 أشهر', 'تأسيس حوكمة الأمن السيبراني وتعيين CISO',
             'CISO', 'إدارة ولجنة حوكمة فاعلة', 'NCA ECC'),
-        2: ('7-18 شهر', 'تمكين SOC/SIEM وIAM/PAM/MFA وحماية البيانات DLP',
+        2: ('7-18 شهر', 'تمكين SOC/SIEM وIAM/PAM/MFA',
             'CISO', 'قدرات تشغيلية فعّالة', 'NCA ECC'),
         3: ('19-24 شهر', 'تحسين إدارة الثغرات والاستجابة للحوادث CSIRT',
             'CISO', 'نضج وتحسين مستمر', 'NCA DCC'),
@@ -425,17 +541,21 @@ def _sanitize_table_spec(
     if not tbl:
         return tbl
     schema = tbl.get('schema', '')
-    hdr = []
-    for h in (tbl.get('header') or []):
-        ht = prepare_final_render_text(h, lang)
-        if schema == 'gap_action':
-            ht = _normalize_gap_header(ht)
-        hdr.append(ht)
+    if schema == 'gap_action':
+        hdr = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else (
+            'Step', 'Action', 'Owner', 'Timeframe', 'Output'))
+    else:
+        hdr = []
+        for h in (tbl.get('header') or []):
+            hdr.append(prepare_final_render_text(h, lang))
     rows = []
     for r in tbl.get('rows') or []:
         if schema == 'roadmap' and _is_dash_heavy_row(r):
             continue
-        if schema == 'gap_action':
+        if schema == 'roadmap':
+            rows.append(_compact_roadmap_row(
+                [prepare_final_render_text(c, lang) for c in r], lang))
+        elif schema == 'gap_action':
             cells = [_normalize_gap_cell(prepare_final_render_text(c, lang))
                      for c in r]
             # Merge split step columns (طوة | الخ → الخطوة).
@@ -949,7 +1069,7 @@ def split_kpi_tables(
             idx = _cell(r, i_idx, str(n)) if i_idx >= 0 else str(n)
             main_rows.append([
                 idx, name,
-                _cell(r, i_type, 'KPI'),
+                _derive_kpi_type(name, _cell(r, i_type, ''), lang),
                 _derive_kpi_target(name, _cell(r, i_target), lang),
                 _cell(r, i_freq),
                 _cell(r, i_owner, 'CISO'),
@@ -989,7 +1109,8 @@ def normalize_gap_tables(
                 'rows': [_normalize_row(r, len(schema)) for r in tbl[1:]],
             })
         elif 'إجراء' in hdr_blob or 'action' in hdr_blob or 'خطوة' in hdr_blob:
-            schema = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else SCHEMA_GAP_ACTION_AR)
+            schema = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else (
+                'Step', 'Action', 'Owner', 'Timeframe', 'Output'))
             fixed_rows = []
             for r in tbl[1:]:
                 row = _normalize_row(r, len(schema))
@@ -999,7 +1120,7 @@ def normalize_gap_tables(
                 fixed_rows.append(row)
             result.append({
                 'schema': 'gap_action',
-                'header': [_normalize_gap_header(h) for h in schema],
+                'header': list(schema),
                 'rows': fixed_rows,
             })
     return result
@@ -1075,10 +1196,15 @@ DOCMODEL_PROFESSIONAL_SUBGATES = (
     'docx_professional_sections_present',
     'docx_no_raw_1_to_7_fallback',
     'final_table_cell_arabic_cleanup_passed',
+    'final_arabic_spacing_pdf_passed',
     'gap_guide_header_final_clean',
+    'pdf_gap_headers_clean',
     'roadmap_framework_mapping_valid',
+    'pdf_roadmap_cell_density_valid',
     'kpi_metric_semantics_valid',
+    'pdf_kpi_type_column_valid',
     'confidence_table_layout_valid',
+    'pdf_confidence_factor_labels_intact',
     'preview_pdf_docx_parity_passed',
     'executive_summary_clean',
     'markdown_residue_after_docmodel',
@@ -1485,7 +1611,7 @@ def normalize_gap_action_guides(
                              ('مكتمل' if lang == 'ar' else 'Completed')])
         if rows:
             out.append({'schema': 'gap_action',
-                        'header': [_normalize_gap_header(h) for h in schema],
+                        'header': list(schema),
                         'rows': [[_normalize_gap_cell(c) for c in r]
                                  for r in rows],
                         'title': title})
@@ -1845,6 +1971,70 @@ def build_professional_strategy_document_model(
         model, content_sections, metadata, lang_n)
 
 
+def confidence_factor_labels_intact(
+        conf_factor_tbl: List[Dict[str, Any]]) -> bool:
+    """PR-CY52 — canonical factor names must appear whole, never fragmented."""
+    if not conf_factor_tbl:
+        return True
+    rows = conf_factor_tbl[0].get('rows') or []
+    canonical = [f[0] for f in CANONICAL_CONFIDENCE_FACTORS_AR]
+    if len(rows) < len(canonical):
+        return False
+    for canon, r in zip(canonical, rows):
+        fname = str(r[0] if r else '').strip()
+        if fname != canon:
+            return False
+        if fname in ('ال', 'عامل', 'اك', 'مدخلات') or len(fname) < 4:
+            return False
+    return True
+
+
+def roadmap_cell_density_valid(
+        road_rows: List[List[str]]) -> bool:
+    """PR-CY52 — roadmap cells must stay within safe length; no long DCC prose."""
+    for r in road_rows or []:
+        for c in r or []:
+            s = str(c or '').strip()
+            if len(s) > ROADMAP_CELL_MAX_LEN:
+                return False
+            if re.search(
+                    r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]{24,}',
+                    s, flags=re.IGNORECASE):
+                return False
+    return True
+
+
+def kpi_type_column_valid(kpi_main: List[Dict[str, Any]]) -> bool:
+    """PR-CY52 — every KPI summary row must have KPI or KRI type, never dash."""
+    for t in kpi_main or []:
+        for r in t.get('rows') or []:
+            tcol = str(r[2] if len(r) > 2 else '').strip().upper()
+            if tcol not in ('KPI', 'KRI'):
+                return False
+    return True
+
+
+def pdf_gap_headers_clean(gap_tables: List[Dict[str, Any]]) -> bool:
+    """PR-CY52 — gap action headers canonical; no forbidden fragments."""
+    action_tbls = [t for t in (gap_tables or [])
+                   if t.get('schema') == 'gap_action']
+    if not action_tbls:
+        return True
+    canon = list(SCHEMA_GAP_ACTION_AR)
+    for tbl in action_tbls:
+        hdr = tbl.get('header') or []
+        if list(hdr) != canon:
+            return False
+        for r in (tbl.get('rows') or []):
+            for c in r:
+                cs = str(c).strip()
+                if cs in ('طوة', 'الخ') or 'طوة الخ' in cs:
+                    return False
+                if cs != 'الخطوة' and 'طوة' in cs and 'خطوة' not in cs:
+                    return False
+    return True
+
+
 def prcy47_docmodel_professional_checks(
         model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
     """PR-CY47 Part I — professional document-model quality checks computed
@@ -2022,6 +2212,14 @@ def prcy47_docmodel_professional_checks(
     preview_pdf_docx_parity_passed = (
         pdf_docx_section_parity and docx_professional_sections_present)
 
+    # PR-CY52 — PDF table-cell rendering gates.
+    pdf_gap_headers_clean_val = pdf_gap_headers_clean(gap_tables)
+    pdf_confidence_factor_labels_intact = confidence_factor_labels_intact(
+        conf_factor_tbl)
+    pdf_roadmap_cell_density_valid = roadmap_cell_density_valid(road_rows)
+    pdf_kpi_type_column_valid = kpi_type_column_valid(kpi_main)
+    final_arabic_spacing_pdf_passed = final_table_cell_arabic_cleanup_passed
+
     docmodel_professional_passed = (
         executive_summary_clean
         and markdown_residue_after_docmodel == 0
@@ -2039,9 +2237,14 @@ def prcy47_docmodel_professional_checks(
         and pdf_docx_section_parity
         and gap_guide_header_final_clean
         and final_table_cell_arabic_cleanup_passed
+        and final_arabic_spacing_pdf_passed
+        and pdf_gap_headers_clean_val
         and roadmap_framework_mapping_valid
+        and pdf_roadmap_cell_density_valid
         and kpi_metric_semantics_valid
+        and pdf_kpi_type_column_valid
         and confidence_table_layout_valid
+        and pdf_confidence_factor_labels_intact
         and preview_pdf_docx_parity_passed)
 
     return {
@@ -2071,6 +2274,12 @@ def prcy47_docmodel_professional_checks(
         'kpi_metric_semantics_valid': kpi_metric_semantics_valid,
         'confidence_table_layout_valid': confidence_table_layout_valid,
         'preview_pdf_docx_parity_passed': preview_pdf_docx_parity_passed,
+        'pdf_gap_headers_clean': pdf_gap_headers_clean_val,
+        'pdf_confidence_factor_labels_intact': (
+            pdf_confidence_factor_labels_intact),
+        'pdf_roadmap_cell_density_valid': pdf_roadmap_cell_density_valid,
+        'pdf_kpi_type_column_valid': pdf_kpi_type_column_valid,
+        'final_arabic_spacing_pdf_passed': final_arabic_spacing_pdf_passed,
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
