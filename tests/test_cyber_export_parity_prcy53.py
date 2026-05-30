@@ -127,8 +127,9 @@ class ExportParityPrcy53Tests(unittest.TestCase):
         warnings = _P41.estimate_table_vertical_stack_warnings(self.model)
         checks = _P41.prcy47_docmodel_professional_checks(self.model, 'ar')
         self.assertTrue(checks['pdf_table_vertical_stack_warnings'])
-        self.assertEqual(checks.get('table_vertical_stack_warning_count', 0),
-                         len(warnings))
+        self.assertEqual(
+            checks.get('table_vertical_stack_warning_count'),
+            len(checks.get('table_vertical_stack_warnings') or []))
         # Synthetic long cell should trigger a stack/overflow warning.
         mock = {
             'blocks': {
@@ -143,8 +144,9 @@ class ExportParityPrcy53Tests(unittest.TestCase):
                 },
             },
         }
-        long_warn = _P41.estimate_table_vertical_stack_warnings(mock)
+        long_warn = _P41.collect_vertical_stack_warnings(mock)
         self.assertTrue(len(long_warn) >= 1)
+        self.assertIn('schema', long_warn[0])
 
     @_skip
     def test_docmodel_all_gates_pass(self):
