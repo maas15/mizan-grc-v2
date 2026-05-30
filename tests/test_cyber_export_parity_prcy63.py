@@ -212,14 +212,13 @@ class PreSaveStrategicObjectivesComposeTests(unittest.TestCase):
             phase='test',
         )
         issues = result.get('quality_issues') or []
-        precise = [
-            i for i in issues
-            if i.startswith('strategic_objectives_schema_compose_failed:')
-            or i.startswith('strategic_objectives_incomplete_row:')
-        ]
-        self.assertTrue(
-            precise or _APP._prcy63_critical_so_issue_tags(issues),
-            f'expected precise SO blocker, got {issues!r}')
+        so_issues = _APP._prcy63_critical_so_issue_tags(issues)
+        diag = result.get('diag') or {}
+        # Empty-row artifacts are removed and composed to a valid table;
+        # residual SO blockers should not include generic violations.
+        self.assertFalse(so_issues, f'unexpected SO blockers: {so_issues!r}')
+        self.assertTrue(diag.get('schema_valid_after_compose'))
+        self.assertGreaterEqual(diag.get('rows_after', 0), 5)
 
     @_skip_if_no_app
     def test_composer_runs_before_presave_blocker_in_source(self):
