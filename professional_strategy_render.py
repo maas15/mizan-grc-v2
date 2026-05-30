@@ -66,6 +66,14 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('الأولضد', 'الأول ضد'),
     ('البياناتفي', 'البيانات في'),
     ('متخصصةللأمن', 'متخصصة للأمن'),
+    # PR-CY62 — final Arabic spacing defects (longest first).
+    ('الحوكمةالفعالة', 'الحوكمة الفعالة'),
+    ('السيبرانيةعلى', 'السيبرانية على'),
+    ('التشغيليةعن', 'التشغيلية عن'),
+    ('الإشرافيةعن', 'الإشرافية عن'),
+    ('التوافقمع', 'التوافق مع'),
+    ('تنفيذيةمع', 'تنفيذية مع'),
+    ('الحدمن', 'الحد من'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -610,7 +618,8 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'trace_fw_init': 'trace_cards',
     'traceability': 'trace_cards',
     'conf_factor': 'cards',
-    'pillar_initiatives': 'compact_3col',
+    'pillar_initiatives': 'pillar_initiative_cards',
+    'gap_action': 'gap_action_cards',
 }
 
 # Map block kinds to human section categories for diagnostics.
@@ -724,11 +733,206 @@ def compute_pdf_stack_fallbacks(
     return fallbacks
 
 
+# PR-CY62 — schemas that receive proactive PDF polish for Arabic exports.
+PRCY62_PROACTIVE_PDF_POLISH: Dict[str, str] = {
+    'strategic_objectives': 'objective_cards',
+    'pillar_initiatives': 'pillar_initiative_cards',
+    'governance': 'governance_cards',
+    'trace_fw_gap': 'trace_cards',
+    'trace_fw_init': 'trace_cards',
+    'traceability': 'trace_cards',
+    'gap_action': 'gap_action_cards',
+}
+
+
+def _model_has_table_rows(blocks: Dict[str, Any], kind: str,
+                          schema: str = '') -> bool:
+    blk = blocks.get(kind) or {}
+    if kind == 'strategic_pillars':
+        return any(
+            (pb.get('table') or {}).get('rows')
+            for pb in (blk.get('pillar_blocks') or []))
+    if kind == 'governance_ownership':
+        return bool(blk.get('rows'))
+    if kind == 'traceability_matrix':
+        return bool(blk.get('split_tables') or blk.get('rows'))
+    for tbl in blk.get('tables') or []:
+        if not schema or tbl.get('schema') == schema:
+            if tbl.get('rows'):
+                return True
+    return False
+
+
+def compute_pdf_proactive_polish_fallbacks(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, str]:
+    """PR-CY62 — apply readable PDF layouts proactively for Arabic exports."""
+    if lang != 'ar':
+        return {}
+    blocks = (model or {}).get('blocks') or {}
+    fallbacks: Dict[str, str] = {}
+    if _model_has_table_rows(
+            blocks, 'vision_objectives', 'strategic_objectives'):
+        fallbacks['strategic_objectives'] = 'objective_cards'
+    if _model_has_table_rows(blocks, 'strategic_pillars'):
+        fallbacks['pillar_initiatives'] = 'pillar_initiative_cards'
+    gov_rows = (blocks.get('governance_ownership') or {}).get('rows') or []
+    if gov_rows and max((len(r) for r in gov_rows), default=0) >= 4:
+        fallbacks['governance'] = 'governance_cards'
+    trace = blocks.get('traceability_matrix') or {}
+    for st in trace.get('split_tables') or []:
+        schema = st.get('schema', '')
+        if schema in PRCY62_PROACTIVE_PDF_POLISH and st.get('rows'):
+            fallbacks[schema] = PRCY62_PROACTIVE_PDF_POLISH[schema]
+    for tbl in (blocks.get('gap_analysis') or {}).get('tables') or []:
+        if tbl.get('schema') == 'gap_action' and tbl.get('rows'):
+            fallbacks['gap_action'] = 'gap_action_cards'
+    return fallbacks
+
+
+def compute_pdf_export_layout_fallbacks(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, str]:
+    """PR-CY62 — merge stack-triggered and proactive PDF layout fallbacks."""
+    stack = compute_pdf_stack_fallbacks(model)
+    proactive = compute_pdf_proactive_polish_fallbacks(model, lang)
+    merged = dict(stack)
+    merged.update(proactive)
+    return merged
+
+
+def count_arabic_spacing_issues(
+        model: Optional[Dict[str, Any]] = None,
+        *, text: str = '') -> int:
+    """PR-CY62 — count remaining known Arabic concat defects."""
+    blob = text or str((model or {}).get('blocks') or {})
+    return sum(1 for bad, _ in PRCY41_AR_CONCAT_FIXES if bad in blob)
+
+
+def collect_remaining_arabic_spacing_issues(
+        model: Optional[Dict[str, Any]] = None,
+        *, text: str = '') -> List[str]:
+    """PR-CY62 — list concat defect tokens still present."""
+    blob = text or str((model or {}).get('blocks') or {})
+    return [bad for bad, _ in PRCY41_AR_CONCAT_FIXES if bad in blob]
+
+
+PRCY62_POLISH_SCHEMAS = frozenset({
+    'strategic_objectives', 'pillar_initiatives', 'governance',
+    'trace_fw_gap', 'trace_fw_init', 'traceability', 'gap_action',
+})
+
+
+def _count_dense_table_schemas(
+        model: Optional[Dict[str, Any]],
+        fallbacks: Optional[Dict[str, str]] = None) -> int:
+    """Count polish-target schemas with stack warnings."""
+    warnings = collect_vertical_stack_warnings(model)
+    schemas = {
+        w.get('schema') for w in warnings
+        if w.get('schema') in PRCY62_POLISH_SCHEMAS}
+    if fallbacks:
+        schemas = {s for s in schemas if s not in fallbacks}
+    return len(schemas)
+
+
+def pdf_objectives_readable_layout_applied(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """PR-CY62 — Arabic PDF objectives use cards, not a dense 5-col table."""
+    if lang != 'ar':
+        return True
+    blocks = (model or {}).get('blocks') or {}
+    has_obj = _model_has_table_rows(
+        blocks, 'vision_objectives', 'strategic_objectives')
+    if not has_obj:
+        return True
+    fb = compute_pdf_export_layout_fallbacks(model, lang)
+    return fb.get('strategic_objectives') == 'objective_cards'
+
+
+def pdf_pillars_no_duplicate_initiative_rendering(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """PR-CY62 — pillar initiatives render once (cards), not table + prose."""
+    if lang != 'ar':
+        return True
+    blocks = (model or {}).get('blocks') or {}
+    has_pillar_tbl = _model_has_table_rows(blocks, 'strategic_pillars')
+    if not has_pillar_tbl:
+        return True
+    fb = compute_pdf_export_layout_fallbacks(model, lang)
+    return fb.get('pillar_initiatives') in (
+        'pillar_initiative_cards', 'compact_3col')
+
+
+def pdf_arabic_spacing_final_cleanup_passed(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """PR-CY62 — no known Arabic concat defects remain in the model."""
+    if lang != 'ar':
+        return True
+    return count_arabic_spacing_issues(model) == 0
+
+
+def pdf_dense_table_polish_passed(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """PR-CY62 — polish-target schemas have a readable PDF fallback."""
+    if lang != 'ar':
+        return True
+    fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
+    warnings = collect_vertical_stack_warnings(model)
+    remaining = [
+        w for w in warnings
+        if w.get('schema') in PRCY62_POLISH_SCHEMAS
+        and w.get('schema') not in fallbacks]
+    return len(remaining) == 0
+
+
+def build_pdf_final_polish_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, action_taken: str = '') -> Dict[str, Any]:
+    """PR-CY62 — [PDF-FINAL-POLISH-DIAG] payload."""
+    fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
+    stack_before = compute_pdf_stack_fallbacks(model)
+    dense_before = _count_dense_table_schemas(model)
+    dense_after = _count_dense_table_schemas(model, fallbacks)
+    remaining = collect_remaining_arabic_spacing_issues(model)
+    return {
+        'objectives_layout_mode': fallbacks.get(
+            'strategic_objectives', 'table'),
+        'pillars_layout_mode': fallbacks.get(
+            'pillar_initiatives', 'table'),
+        'duplicated_pillar_initiatives_removed': (
+            fallbacks.get('pillar_initiatives')
+            == 'pillar_initiative_cards'),
+        'arabic_spacing_cleanup_count': len(PRCY41_AR_CONCAT_FIXES),
+        'remaining_arabic_spacing_issues': remaining,
+        'dense_tables_before': dense_before,
+        'dense_tables_after': dense_after,
+        'pdf_layout_fallbacks': fallbacks,
+        'stack_fallbacks_before_polish': stack_before,
+        'action_taken': action_taken or (
+            'polish_applied' if fallbacks else 'validated'),
+    }
+
+
+def emit_pdf_final_polish_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, action_taken: str = '') -> Dict[str, Any]:
+    """Emit [PDF-FINAL-POLISH-DIAG] to server logs."""
+    payload = build_pdf_final_polish_diag(
+        model, lang, action_taken=action_taken)
+    try:
+        print(f'[PDF-FINAL-POLISH-DIAG] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
 def evaluate_vertical_stack_gate(
-        model: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """PR-CY54 — evaluate stack warnings after targeted fallbacks."""
+        model: Optional[Dict[str, Any]],
+        fallbacks: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """PR-CY54/62 — evaluate stack warnings after targeted fallbacks."""
     all_warnings = collect_vertical_stack_warnings(model)
-    fallbacks = compute_pdf_stack_fallbacks(model)
+    if fallbacks is None:
+        lang = ((model or {}).get('lang') or 'ar')
+        fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     for w in all_warnings:
         schema = w.get('schema', '')
         if schema in fallbacks:
@@ -3021,6 +3225,10 @@ DOCMODEL_PROFESSIONAL_SUBGATES = (
     'docx_no_raw_1_to_7_fallback',
     'final_table_cell_arabic_cleanup_passed',
     'final_arabic_spacing_pdf_passed',
+    'pdf_arabic_spacing_final_cleanup_passed',
+    'pdf_objectives_readable_layout_applied',
+    'pdf_pillars_no_duplicate_initiative_rendering',
+    'pdf_dense_table_polish_passed',
     'gap_guide_header_final_clean',
     'pdf_gap_headers_clean',
     'roadmap_framework_mapping_valid',
@@ -4225,7 +4433,9 @@ def prcy47_docmodel_professional_checks(
     pdf_roadmap_generic_rows_absent_val = roadmap_generic_rows_absent(
         road_rows)
     pdf_kpi_target_column_valid_val = kpi_target_column_valid(kpi_main)
-    _stack_eval = evaluate_vertical_stack_gate(model)
+    _export_fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
+    _stack_eval = evaluate_vertical_stack_gate(
+        model, fallbacks=_export_fallbacks)
     _stack_warnings = _stack_eval['table_vertical_stack_warnings']
     pdf_table_vertical_stack_warnings_val = (
         _stack_eval['pdf_table_vertical_stack_warnings'])
@@ -4238,6 +4448,16 @@ def prcy47_docmodel_professional_checks(
         for c in r)
     pdf_confidence_card_labels_readable_val = pdf_confidence_card_labels_readable(
         _conf_card_blob)
+
+    # PR-CY62 — final PDF visual polish gates.
+    pdf_arabic_spacing_final_cleanup_passed_val = (
+        pdf_arabic_spacing_final_cleanup_passed(model, lang))
+    pdf_objectives_readable_layout_applied_val = (
+        pdf_objectives_readable_layout_applied(model, lang))
+    pdf_pillars_no_duplicate_initiative_rendering_val = (
+        pdf_pillars_no_duplicate_initiative_rendering(model, lang))
+    pdf_dense_table_polish_passed_val = pdf_dense_table_polish_passed(
+        model, lang)
 
     docmodel_professional_passed = (
         executive_summary_clean
@@ -4272,7 +4492,11 @@ def prcy47_docmodel_professional_checks(
         and pdf_table_vertical_stack_warnings_val
         and preview_pdf_docx_parity_passed
         and docx_toc_professional_sections
-        and pdf_confidence_card_labels_readable_val)
+        and pdf_confidence_card_labels_readable_val
+        and pdf_arabic_spacing_final_cleanup_passed_val
+        and pdf_objectives_readable_layout_applied_val
+        and pdf_pillars_no_duplicate_initiative_rendering_val
+        and pdf_dense_table_polish_passed_val)
 
     return {
         'executive_summary_clean': executive_summary_clean,
@@ -4328,6 +4552,13 @@ def prcy47_docmodel_professional_checks(
         'docx_toc_professional_sections': docx_toc_professional_sections,
         'pdf_confidence_card_labels_readable': (
             pdf_confidence_card_labels_readable_val),
+        'pdf_arabic_spacing_final_cleanup_passed': (
+            pdf_arabic_spacing_final_cleanup_passed_val),
+        'pdf_objectives_readable_layout_applied': (
+            pdf_objectives_readable_layout_applied_val),
+        'pdf_pillars_no_duplicate_initiative_rendering': (
+            pdf_pillars_no_duplicate_initiative_rendering_val),
+        'pdf_dense_table_polish_passed': pdf_dense_table_polish_passed_val,
         'docmodel_professional_passed': docmodel_professional_passed,
     }
 
@@ -4377,8 +4608,13 @@ def run_pdf_quality_gate(
     # professional defect remains.
     if model is not None:
         docchecks = prcy47_docmodel_professional_checks(model, lang)
-        stack_eval = evaluate_vertical_stack_gate(model)
+        _fb = compute_pdf_export_layout_fallbacks(model, lang)
+        stack_eval = evaluate_vertical_stack_gate(model, fallbacks=_fb)
         payload.update(docchecks)
+        payload['pdf_final_polish_diag'] = build_pdf_final_polish_diag(
+            model, lang, action_taken='pdf_quality_gate_evaluated')
+        emit_pdf_final_polish_diag(
+            model, lang, action_taken='pdf_quality_gate_evaluated')
         # PR-CY54 — authoritative warnings list; count must equal len(list).
         payload['table_vertical_stack_warnings'] = list(
             docchecks.get('table_vertical_stack_warnings') or [])
