@@ -133,7 +133,7 @@ class Prcy69FinalArtifactParityTests(unittest.TestCase):
         self.assertGreaterEqual(
             diag.get('dcc_roadmap_rows_count_in_final_artifact', 0), 3)
         self.assertNotIn(
-            'prcy68_final_artifact_missing_dcc_roadmap_rows',
+            'prcy69_final_artifact_missing_dcc_roadmap_rows',
             '|'.join(result.get('blockers') or []))
 
     @_skip_if_no_app
