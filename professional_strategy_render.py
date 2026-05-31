@@ -620,6 +620,8 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'conf_factor': 'cards',
     'pillar_initiatives': 'pillar_initiative_cards',
     'gap_action': 'gap_action_cards',
+    'kpi_main': 'kpi_cards',
+    'kpi_formula': 'kpi_cards',
 }
 
 # Map block kinds to human section categories for diagnostics.
@@ -742,6 +744,8 @@ PRCY62_PROACTIVE_PDF_POLISH: Dict[str, str] = {
     'trace_fw_init': 'trace_cards',
     'traceability': 'trace_cards',
     'gap_action': 'gap_action_cards',
+    'kpi_main': 'kpi_cards',
+    'kpi_formula': 'kpi_cards',
 }
 
 
@@ -786,6 +790,10 @@ def compute_pdf_proactive_polish_fallbacks(
     for tbl in (blocks.get('gap_analysis') or {}).get('tables') or []:
         if tbl.get('schema') == 'gap_action' and tbl.get('rows'):
             fallbacks['gap_action'] = 'gap_action_cards'
+    for tbl in (blocks.get('kpi_kri_framework') or {}).get('tables') or []:
+        schema = tbl.get('schema', '')
+        if schema in ('kpi_main', 'kpi_formula') and tbl.get('rows'):
+            fallbacks[schema] = 'kpi_cards'
     return fallbacks
 
 
@@ -818,6 +826,7 @@ def collect_remaining_arabic_spacing_issues(
 PRCY62_POLISH_SCHEMAS = frozenset({
     'strategic_objectives', 'pillar_initiatives', 'governance',
     'trace_fw_gap', 'trace_fw_init', 'traceability', 'gap_action',
+    'kpi_main', 'kpi_formula',
 })
 
 
@@ -950,6 +959,9 @@ def evaluate_vertical_stack_gate(
         'schemas_with_warnings': schemas_with,
         'count_list_consistent': True,
         'pdf_table_vertical_stack_warnings': count == 0,
+        'warning_count_before': len(all_warnings),
+        'warning_count_after': count,
+        'actionable_warning_count_after': count,
     }
 
 
@@ -962,6 +974,10 @@ def emit_pdf_vertical_stack_diag(
     """PR-CY54 — emit [PDF-VERTICAL-STACK-DIAG] to server logs."""
     payload = {
         'warning_count': stack_eval.get('table_vertical_stack_warning_count', 0),
+        'warning_count_before': stack_eval.get('warning_count_before', 0),
+        'warning_count_after': stack_eval.get('warning_count_after', 0),
+        'actionable_warning_count_after': stack_eval.get(
+            'actionable_warning_count_after', 0),
         'warnings': stack_eval.get('table_vertical_stack_warnings') or [],
         'schemas_with_warnings': stack_eval.get('schemas_with_warnings') or [],
         'fallback_applied_by_schema': (
@@ -3765,6 +3781,27 @@ CANONICAL_CYBER_EXEC_RISKS_EN = (
 _RISK_HEADER_TOKENS = frozenset({
     'الخطر', 'المخاطر', 'Risk', 'risk', '#', 'م', '—',
 })
+_EXEC_PRIORITY_RESIDUE_TOKENS = frozenset({
+    'المبادرة', 'المبادرة؛', 'Initiative', 'Activity', 'النشاط',
+    'المرحلة', 'Phase', 'المدة', 'Duration', 'الإطار', 'Framework',
+})
+
+
+def _prcy70_is_exec_priority_residue(label: str) -> bool:
+    """PR-CY70 — detect artifact/separator residue in exec priorities."""
+    s = str(label or '').strip()
+    if not s or len(s) < 3:
+        return True
+    if '---------' in s or '--------' in s:
+        return True
+    if s in _EXEC_PRIORITY_RESIDUE_TOKENS:
+        return True
+    stripped = s.replace('؛', '').replace(';', '').replace('|', '').strip()
+    if not stripped or set(stripped) <= set('-—–: '):
+        return True
+    if re.match(r'^[\|\-\s؛:–—]+$', s):
+        return True
+    return False
 
 
 def _derive_executive_priorities(
@@ -3791,6 +3828,8 @@ def _derive_executive_priorities(
         for r in tbl[1:]:
             init = prcy47_fix_ar_fragments(_cell(r, col, ''))
             if init and init not in seen and init not in _RISK_HEADER_TOKENS:
+                if _prcy70_is_exec_priority_residue(init):
+                    continue
                 seen.add(init)
                 out.append(init[:80])
     pillars_text = (content_sections or {}).get('pillars', '') or ''
@@ -3803,6 +3842,8 @@ def _derive_executive_priorities(
                 '#', 'العمود', 'Pillar', '—'):
             label = prcy47_fix_ar_fragments(cells[1])
             if label not in seen:
+                if _prcy70_is_exec_priority_residue(label):
+                    continue
                 seen.add(label)
                 out.append(label[:80])
     defaults = (CANONICAL_CYBER_EXEC_PRIORITIES_AR if lang == 'ar'
@@ -3898,6 +3939,8 @@ def enhance_executive_summary(
     key_risks = _derive_executive_risks(conf_text, lang_n)
     priorities = _derive_executive_priorities(
         content_sections, metadata, lang_n)
+    priorities = [
+        p for p in priorities if not _prcy70_is_exec_priority_residue(p)]
     grid = {
         'purpose': paras[0] if paras else '',
         'frameworks': fw_labels,
@@ -4704,6 +4747,17 @@ def run_pdf_quality_gate(
                 tracker.blockers.append(
                     f'pdf_render_failed:docmodel_professional_quality:'
                     f'{_suffix}')
+                # PR-CY70 — precise unresolved stack blockers.
+                if _subgate == 'pdf_table_vertical_stack_warnings':
+                    for _sw in (
+                            stack_eval.get('table_vertical_stack_warnings')
+                            or []):
+                        _sschema = _sw.get('schema', 'unknown')
+                        _srow = _sw.get('row_index', 0)
+                        tracker.blockers.append(
+                            'pdf_render_failed:'
+                            f'pdf_table_vertical_stack_unresolved:'
+                            f'{_sschema}:{_srow}')
                 emit_docmodel_professional_failure(
                     docchecks=docchecks,
                     model=model,
