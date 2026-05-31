@@ -74,6 +74,11 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('التوافقمع', 'التوافق مع'),
     ('تنفيذيةمع', 'تنفيذية مع'),
     ('الحدمن', 'الحد من'),
+    # PR-CY71 — final Arabic residue cleanup.
+    ('المسؤولحوكمة السيبرانية', 'مسؤول حوكمة الأمن السيبراني'),
+    ('المسؤولحوكمة', 'مسؤول حوكمة'),
+    ('Trust Zero', 'Zero Trust'),
+    ('PAM/IAM', 'IAM/PAM'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -347,6 +352,8 @@ def normalize_arabic_for_render(text: str) -> str:
     for bad, good in PRCY41_AR_CONCAT_FIXES:
         if bad in out:
             out = out.replace(bad, good)
+    if re.search(r'CISO\s+CISO', out, re.IGNORECASE):
+        out = re.sub(r'CISO\s+CISO', 'CISO', out, flags=re.IGNORECASE)
     return out
 
 
