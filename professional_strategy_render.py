@@ -627,9 +627,40 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'conf_factor': 'cards',
     'pillar_initiatives': 'pillar_initiative_cards',
     'gap_action': 'gap_action_cards',
+    'gap_table': 'gap_action_cards',
     'kpi_main': 'kpi_cards',
     'kpi_formula': 'kpi_cards',
+    'kpi_summary': 'kpi_cards',
+    'kpi_details': 'kpi_cards',
 }
+
+# PR-CY72 — Arabic PDF schemas that must use card fallbacks before gate.
+PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
+    'kpi_main': 'kpi_cards',
+    'kpi_formula': 'kpi_cards',
+    'kpi_summary': 'kpi_cards',
+    'kpi_details': 'kpi_cards',
+    'governance': 'governance_cards',
+    'trace_fw_gap': 'trace_cards',
+    'trace_fw_init': 'trace_cards',
+    'traceability': 'trace_cards',
+    'gap_action': 'gap_action_cards',
+    'gap_table': 'gap_action_cards',
+}
+
+
+def _canonical_stack_schema(schema: str) -> str:
+    """Normalize schema aliases for stack fallback lookup."""
+    return _PDF_LAYOUT_SCHEMA_ALIASES.get(schema or '', schema or '')
+
+
+def _stack_fallback_for_schema(
+        schema: str, fallbacks: Dict[str, str]) -> Optional[str]:
+    """Resolve a stack fallback for raw or aliased schema keys."""
+    if not schema or not fallbacks:
+        return None
+    canon = _canonical_stack_schema(schema)
+    return fallbacks.get(schema) or fallbacks.get(canon)
 
 # Map block kinds to human section categories for diagnostics.
 _BLOCK_SECTION_CATEGORY = {
@@ -735,10 +766,17 @@ def compute_pdf_stack_fallbacks(
     fallbacks: Dict[str, str] = {}
     for w in warnings:
         schema = w.get('schema', '')
-        if schema and schema not in fallbacks:
-            fb = SCHEMA_STACK_FALLBACK.get(schema)
-            if fb:
-                fallbacks[schema] = fb
+        if not schema:
+            continue
+        canon = _canonical_stack_schema(schema)
+        if schema in fallbacks or canon in fallbacks:
+            continue
+        fb = (
+            SCHEMA_STACK_FALLBACK.get(schema)
+            or SCHEMA_STACK_FALLBACK.get(canon))
+        if fb:
+            fallbacks[schema] = fb
+            fallbacks[canon] = fb
     return fallbacks
 
 
@@ -787,7 +825,7 @@ def compute_pdf_proactive_polish_fallbacks(
     if _model_has_table_rows(blocks, 'strategic_pillars'):
         fallbacks['pillar_initiatives'] = 'pillar_initiative_cards'
     gov_rows = (blocks.get('governance_ownership') or {}).get('rows') or []
-    if gov_rows and max((len(r) for r in gov_rows), default=0) >= 4:
+    if gov_rows:
         fallbacks['governance'] = 'governance_cards'
     trace = blocks.get('traceability_matrix') or {}
     for st in trace.get('split_tables') or []:
@@ -804,6 +842,37 @@ def compute_pdf_proactive_polish_fallbacks(
     return fallbacks
 
 
+def _apply_prcy72_mandatory_ar_pdf_fallbacks(
+        model: Optional[Dict[str, Any]], lang: str,
+        fallbacks: Dict[str, str]) -> Dict[str, str]:
+    """PR-CY72 — force card fallbacks for dense Arabic PDF table schemas."""
+    if lang != 'ar':
+        return fallbacks
+    blocks = (model or {}).get('blocks') or {}
+    out = dict(fallbacks or {})
+    for schema, mode in PRCY72_MANDATORY_AR_PDF_FALLBACKS.items():
+        if schema in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _model_has_table_rows(
+                    blocks, 'kpi_kri_framework',
+                    _canonical_stack_schema(schema)):
+                out[schema] = mode
+                out[_canonical_stack_schema(schema)] = mode
+        elif schema == 'governance':
+            if _model_has_table_rows(blocks, 'governance_ownership'):
+                out['governance'] = mode
+        elif schema in ('gap_action', 'gap_table'):
+            if _model_has_table_rows(blocks, 'gap_analysis', 'gap_action'):
+                out['gap_action'] = mode
+                out['gap_table'] = mode
+        elif schema.startswith('trace'):
+            trace = blocks.get('traceability_matrix') or {}
+            for st in trace.get('split_tables') or []:
+                st_schema = st.get('schema', '')
+                if st_schema == schema and st.get('rows'):
+                    out[schema] = mode
+    return out
+
+
 def compute_pdf_export_layout_fallbacks(
         model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, str]:
     """PR-CY62 — merge stack-triggered and proactive PDF layout fallbacks."""
@@ -811,6 +880,7 @@ def compute_pdf_export_layout_fallbacks(
     proactive = compute_pdf_proactive_polish_fallbacks(model, lang)
     merged = dict(stack)
     merged.update(proactive)
+    merged = _apply_prcy72_mandatory_ar_pdf_fallbacks(model, lang, merged)
     return merged
 
 
@@ -896,7 +966,7 @@ def pdf_dense_table_polish_passed(
     remaining = [
         w for w in warnings
         if w.get('schema') in PRCY62_POLISH_SCHEMAS
-        and w.get('schema') not in fallbacks]
+        and not _stack_fallback_for_schema(w.get('schema', ''), fallbacks)]
     return len(remaining) == 0
 
 
@@ -951,8 +1021,9 @@ def evaluate_vertical_stack_gate(
         fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     for w in all_warnings:
         schema = w.get('schema', '')
-        if schema in fallbacks:
-            w['action_taken'] = f"fallback:{fallbacks[schema]}"
+        fb = _stack_fallback_for_schema(schema, fallbacks or {})
+        if fb:
+            w['action_taken'] = f'fallback:{fb}'
     remaining = [
         w for w in all_warnings
         if not w.get('action_taken')]
@@ -962,13 +1033,14 @@ def evaluate_vertical_stack_gate(
         'table_vertical_stack_warnings': remaining,
         'table_vertical_stack_warning_count': count,
         'all_stack_warnings_detected': all_warnings,
-        'fallback_applied_by_schema': dict(fallbacks),
+        'fallback_applied_by_schema': dict(fallbacks or {}),
         'schemas_with_warnings': schemas_with,
         'count_list_consistent': True,
         'pdf_table_vertical_stack_warnings': count == 0,
         'warning_count_before': len(all_warnings),
         'warning_count_after': count,
         'actionable_warning_count_after': count,
+        'unresolved_warnings': remaining,
     }
 
 
@@ -989,6 +1061,9 @@ def emit_pdf_vertical_stack_diag(
         'schemas_with_warnings': stack_eval.get('schemas_with_warnings') or [],
         'fallback_applied_by_schema': (
             stack_eval.get('fallback_applied_by_schema') or {}),
+        'unresolved_warnings': (
+            stack_eval.get('unresolved_warnings')
+            or stack_eval.get('table_vertical_stack_warnings') or []),
         'count_list_consistent': stack_eval.get('count_list_consistent', True),
         'gate_blocked': gate_blocked,
         'action_taken': action_taken,
