@@ -628,11 +628,15 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'pillar_initiatives': 'pillar_initiative_cards',
     'gap_action': 'gap_action_cards',
     'gap_table': 'gap_action_cards',
+    'roadmap': 'roadmap_cards',
     'kpi_main': 'kpi_cards',
     'kpi_formula': 'kpi_cards',
     'kpi_summary': 'kpi_cards',
     'kpi_details': 'kpi_cards',
 }
+
+# PR-CY77 — Arabic PDF fallback modes for warning-driven resolution.
+PRCY77_AR_PDF_FALLBACK_MODES: Dict[str, str] = dict(SCHEMA_STACK_FALLBACK)
 
 # PR-CY72 — Arabic PDF schemas that must use card fallbacks before gate.
 PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
@@ -647,6 +651,334 @@ PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
     'gap_action': 'gap_action_cards',
     'gap_table': 'gap_action_cards',
 }
+
+# PR-CY77 — Arabic PDF schemas always forced to card layouts.
+PRCY77_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
+    'strategic_objectives': 'objective_cards',
+    'roadmap': 'roadmap_cards',
+    'kpi_main': 'kpi_cards',
+    'kpi_formula': 'kpi_cards',
+    'kpi_summary': 'kpi_cards',
+    'kpi_details': 'kpi_cards',
+    'governance': 'governance_cards',
+    'trace_fw_gap': 'trace_cards',
+    'trace_fw_init': 'trace_cards',
+    'traceability': 'trace_cards',
+    'gap_action': 'gap_action_cards',
+    'gap_table': 'gap_action_cards',
+}
+
+_PRCY77_SO_SAFE_LABEL = 'هدف استراتيجي إضافي'
+_PRCY77_TARGET_LIKE_RE = re.compile(
+    r'^(?:≥|<=|>=|<|>\s*)?\s*\d|^\d+\s*[%٪]|^100\s*[%٪]')
+
+
+def _prcy77_strip_truncation_artifacts(text: str) -> str:
+    """Remove ellipsis/truncation artifacts from PDF render cells."""
+    s = str(text or '').strip()
+    if not s:
+        return s
+    s = s.replace('…', '').replace('...', '')
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    return s
+
+
+def _prcy77_objective_looks_target_only(text: str) -> bool:
+    s = str(text or '').strip()
+    if not s or s in ('—', '-'):
+        return False
+    if _PRCY77_TARGET_LIKE_RE.match(s):
+        return True
+    if len(s) <= 24 and any(ch in s for ch in ('%', '≥', '≤')):
+        return True
+    return False
+
+
+def _prcy77_period_looks_like_role(text: str) -> bool:
+    s = str(text or '').strip()
+    if not s:
+        return False
+    if len(s) > 28:
+        return True
+    role_markers = (
+        'خبراء', 'Expert', 'CISO', 'Manager', 'الإدارة', 'مسؤول',
+        'SOC', 'Owner', 'owner', 'Mgr',
+    )
+    return any(m in s for m in role_markers)
+
+
+def _prcy77_default_period_for_phase(phase: str) -> str:
+    p = str(phase or '').strip()
+    if any(k in p for k in ('3', 'تحسين', 'استدامة', 'Optimize', '19-24')):
+        return '19-24 شهر'
+    if any(k in p for k in ('2', 'تمكين', 'Enable', '7-18')):
+        return '7-18 شهر'
+    return '1-6 أشهر'
+
+
+def _prcy77_roadmap_row_non_canonical(row: List[str]) -> bool:
+    cells = list(row) + [''] * (6 - len(row))
+    period = str(cells[1] or '').strip()
+    init = str(cells[2] or '').strip()
+    if _prcy77_period_looks_like_role(period):
+        return True
+    if '…' in init or '...' in init:
+        return True
+    if len(init) > ROADMAP_CELL_MAX_LEN:
+        return True
+    return False
+
+
+def _prcy77_repair_strategic_objectives_row(row: List[str]) -> List[str]:
+    cells = list(row) + [''] * (5 - len(row))
+    obj = str(cells[1] or '').strip()
+    if not obj or obj in ('—', '-', '–'):
+        cells[1] = _PRCY77_SO_SAFE_LABEL
+    elif _prcy77_objective_looks_target_only(obj):
+        cells[1] = _PRCY77_SO_SAFE_LABEL
+    return cells[:5]
+
+
+def _prcy77_repair_roadmap_row(row: List[str]) -> Tuple[List[str], bool]:
+    cells = list(row) + [''] * (6 - len(row))
+    repaired_period = False
+    removed_trunc = False
+    for i, c in enumerate(cells):
+        cleaned = _prcy77_strip_truncation_artifacts(c)
+        if cleaned != str(c or '').strip():
+            removed_trunc = True
+        cells[i] = cleaned
+    period = str(cells[1] or '').strip()
+    if _prcy77_period_looks_like_role(period):
+        cells[1] = _prcy77_default_period_for_phase(cells[0])
+        repaired_period = True
+    return cells[:6], (repaired_period or removed_trunc)
+
+
+def _prcy77_resequence_kpi_table_rows(rows: List[List[str]]) -> int:
+    """Resequence KPI rows where ``#`` is em-dash; return count fixed."""
+    fixed = 0
+    seq = 0
+    for r in rows or []:
+        if not r:
+            continue
+        num = str(r[0] or '').strip()
+        if num.isdigit():
+            seq = max(seq, int(num))
+            continue
+        if num in ('—', '-', '–', ''):
+            seq += 1
+            r[0] = str(seq)
+            fixed += 1
+    return fixed
+
+
+def apply_pdf_final_table_fallback_cleanup(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY77 — PDF-only table cleanup before Arabic PDF render/gate."""
+    diag: Dict[str, Any] = {
+        'objective_cards_forced': False,
+        'roadmap_cards_forced': False,
+        'kpi_cards_forced': False,
+        'governance_cards_forced': False,
+        'traceability_cards_forced': False,
+        'kpi_rows_resequenced': 0,
+        'roadmap_period_cells_repaired': 0,
+        'truncation_artifacts_removed': 0,
+        'action_taken': 'skipped_non_arabic',
+    }
+    if lang != 'ar' or not model:
+        return diag
+    blocks = model.get('blocks') or {}
+    diag['action_taken'] = 'no_changes'
+
+    vo = blocks.get('vision_objectives') or {}
+    for tbl in vo.get('tables') or []:
+        if tbl.get('schema') != 'strategic_objectives':
+            continue
+        new_rows = []
+        for r in tbl.get('rows') or []:
+            repaired = _prcy77_repair_strategic_objectives_row(list(r))
+            if repaired != list(r) + [''] * max(0, 5 - len(r)):
+                diag['objective_cards_forced'] = True
+            new_rows.append(repaired)
+        if new_rows:
+            tbl['rows'] = new_rows
+            diag['action_taken'] = 'cleanup_applied'
+
+    road_blk = blocks.get('roadmap') or {}
+    for tbl in road_blk.get('tables') or []:
+        if tbl.get('schema') not in ('roadmap', '', None):
+            continue
+        if not tbl.get('schema'):
+            tbl['schema'] = 'roadmap'
+        new_rows = []
+        force_roadmap_cards = False
+        for r in tbl.get('rows') or []:
+            if _prcy77_roadmap_row_non_canonical(r):
+                force_roadmap_cards = True
+            repaired, changed = _prcy77_repair_roadmap_row(list(r))
+            if changed:
+                diag['truncation_artifacts_removed'] += 1
+            if repaired[1] != str((list(r) + [''] * 6)[1] or '').strip():
+                if _prcy77_period_looks_like_role(
+                        str((list(r) + [''] * 6)[1] or '')):
+                    diag['roadmap_period_cells_repaired'] += 1
+            new_rows.append(repaired)
+        if new_rows:
+            tbl['rows'] = new_rows
+            diag['action_taken'] = 'cleanup_applied'
+        if force_roadmap_cards:
+            diag['roadmap_cards_forced'] = True
+
+    kpi_blk = blocks.get('kpi_kri_framework') or {}
+    for tbl in kpi_blk.get('tables') or []:
+        schema = tbl.get('schema', '')
+        if schema not in (
+                'kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            continue
+        rows_copy = [list(r) for r in (tbl.get('rows') or [])]
+        n_fixed = _prcy77_resequence_kpi_table_rows(rows_copy)
+        if n_fixed:
+            tbl['rows'] = rows_copy
+            diag['kpi_rows_resequenced'] += n_fixed
+            diag['kpi_cards_forced'] = True
+            diag['action_taken'] = 'cleanup_applied'
+
+    gov = blocks.get('governance_ownership') or {}
+    if gov.get('rows'):
+        new_gov = []
+        for r in gov.get('rows') or []:
+            cells = [
+                _prcy77_strip_truncation_artifacts(c) for c in (r or [])]
+            if any('|' in str(c) for c in cells):
+                diag['governance_cards_forced'] = True
+            new_gov.append(cells)
+        gov['rows'] = new_gov
+        if diag['governance_cards_forced']:
+            diag['action_taken'] = 'cleanup_applied'
+
+    trace = blocks.get('traceability_matrix') or {}
+    for st in trace.get('split_tables') or []:
+        schema = st.get('schema', '')
+        if schema not in (
+                'trace_fw_gap', 'trace_fw_init', 'traceability'):
+            continue
+        dense = False
+        new_rows = []
+        for r in st.get('rows') or []:
+            cells = [
+                _prcy77_strip_truncation_artifacts(c) for c in (r or [])]
+            if any(len(str(c)) > 90 for c in cells):
+                dense = True
+            new_rows.append(cells)
+        if new_rows:
+            st['rows'] = new_rows
+        if dense:
+            diag['traceability_cards_forced'] = True
+            diag['action_taken'] = 'cleanup_applied'
+
+    model['_prcy77_pdf_cleanup'] = dict(diag)
+    return diag
+
+
+def build_pdf_final_table_fallback_cleanup_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, cleanup_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """PR-CY77 — [PDF-FINAL-TABLE-FALLBACK-CLEANUP] payload."""
+    if cleanup_result is not None:
+        return dict(cleanup_result)
+    cached = (model or {}).get('_prcy77_pdf_cleanup')
+    if cached:
+        return dict(cached)
+    return apply_pdf_final_table_fallback_cleanup(model, lang)
+
+
+def emit_pdf_final_table_fallback_cleanup_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar',
+        *, cleanup_result: Optional[Dict[str, Any]] = None,
+        action_taken: str = '') -> Dict[str, Any]:
+    """Emit [PDF-FINAL-TABLE-FALLBACK-CLEANUP] to server logs."""
+    payload = build_pdf_final_table_fallback_cleanup_diag(
+        model, lang, cleanup_result=cleanup_result)
+    if action_taken:
+        payload['action_taken'] = action_taken
+    try:
+        print(
+            f'[PDF-FINAL-TABLE-FALLBACK-CLEANUP] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def _apply_prcy77_mandatory_ar_pdf_fallbacks(
+        model: Optional[Dict[str, Any]], lang: str,
+        fallbacks: Dict[str, str]) -> Dict[str, str]:
+    """PR-CY77 — force card fallbacks for mandatory Arabic PDF schemas."""
+    if lang != 'ar':
+        return fallbacks
+    blocks = (model or {}).get('blocks') or {}
+    out = dict(fallbacks or {})
+    cleanup = (model or {}).get('_prcy77_pdf_cleanup') or {}
+    for schema, mode in PRCY77_MANDATORY_AR_PDF_FALLBACKS.items():
+        if schema == 'strategic_objectives':
+            if _model_has_table_rows(
+                    blocks, 'vision_objectives', 'strategic_objectives'):
+                out['strategic_objectives'] = mode
+        elif schema == 'roadmap':
+            if cleanup.get('roadmap_cards_forced'):
+                out['roadmap'] = mode
+        elif schema in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _model_has_table_rows(
+                    blocks, 'kpi_kri_framework',
+                    _canonical_stack_schema(schema)):
+                out[schema] = mode
+                out[_canonical_stack_schema(schema)] = mode
+        elif schema == 'governance':
+            if _model_has_table_rows(blocks, 'governance_ownership'):
+                out['governance'] = mode
+        elif schema in ('gap_action', 'gap_table'):
+            if _model_has_table_rows(blocks, 'gap_analysis', 'gap_action'):
+                out['gap_action'] = mode
+                out['gap_table'] = mode
+        elif schema.startswith('trace'):
+            trace = blocks.get('traceability_matrix') or {}
+            for st in trace.get('split_tables') or []:
+                st_schema = st.get('schema', '')
+                if st_schema == schema and st.get('rows'):
+                    out[schema] = mode
+    return out
+
+
+def _apply_prcy77_warning_driven_ar_pdf_fallbacks(
+        model: Optional[Dict[str, Any]], lang: str,
+        fallbacks: Dict[str, str]) -> Dict[str, str]:
+    """PR-CY77 — map every stack-warning schema to a card fallback."""
+    if lang != 'ar':
+        return fallbacks
+    out = dict(fallbacks or {})
+    for w in collect_vertical_stack_warnings(model):
+        schema = w.get('schema', '')
+        if not schema:
+            continue
+        canon = _canonical_stack_schema(schema)
+        fb = (
+            PRCY77_AR_PDF_FALLBACK_MODES.get(schema)
+            or PRCY77_AR_PDF_FALLBACK_MODES.get(canon)
+            or SCHEMA_STACK_FALLBACK.get(schema)
+            or SCHEMA_STACK_FALLBACK.get(canon))
+        if fb:
+            out[schema] = fb
+            out[canon] = fb
+    return out
+
+
+def prepare_pdf_render_model(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY77 — apply PDF-only cleanup before render/gate evaluation."""
+    if lang != 'ar' or not model:
+        return {}
+    return apply_pdf_final_table_fallback_cleanup(model, lang)
 
 
 def _canonical_stack_schema(schema: str) -> str:
@@ -875,12 +1207,16 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
 
 def compute_pdf_export_layout_fallbacks(
         model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, str]:
-    """PR-CY62 — merge stack-triggered and proactive PDF layout fallbacks."""
+    """PR-CY62/77 — merge stack-triggered and proactive PDF layout fallbacks."""
+    if lang == 'ar' and model is not None and not model.get('_prcy77_pdf_cleanup'):
+        apply_pdf_final_table_fallback_cleanup(model, lang)
     stack = compute_pdf_stack_fallbacks(model)
     proactive = compute_pdf_proactive_polish_fallbacks(model, lang)
     merged = dict(stack)
     merged.update(proactive)
     merged = _apply_prcy72_mandatory_ar_pdf_fallbacks(model, lang, merged)
+    merged = _apply_prcy77_mandatory_ar_pdf_fallbacks(model, lang, merged)
+    merged = _apply_prcy77_warning_driven_ar_pdf_fallbacks(model, lang, merged)
     return merged
 
 
@@ -903,7 +1239,7 @@ def collect_remaining_arabic_spacing_issues(
 PRCY62_POLISH_SCHEMAS = frozenset({
     'strategic_objectives', 'pillar_initiatives', 'governance',
     'trace_fw_gap', 'trace_fw_init', 'traceability', 'gap_action',
-    'kpi_main', 'kpi_formula',
+    'kpi_main', 'kpi_formula', 'roadmap',
 })
 
 
@@ -4809,6 +5145,10 @@ def run_pdf_quality_gate(
     # structured model). Surfaced in the payload; blocks export when a hard
     # professional defect remains.
     if model is not None:
+        _lang = lang or (model.get('lang') or 'ar')
+        if _lang == 'ar':
+            emit_pdf_final_table_fallback_cleanup_diag(
+                model, _lang, action_taken='pdf_quality_gate_evaluated')
         docchecks = prcy47_docmodel_professional_checks(model, lang)
         _fb = compute_pdf_export_layout_fallbacks(model, lang)
         stack_eval = evaluate_vertical_stack_gate(model, fallbacks=_fb)
