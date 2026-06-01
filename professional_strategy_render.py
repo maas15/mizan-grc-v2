@@ -3883,7 +3883,45 @@ def _prcy70_is_exec_priority_residue(label: str) -> bool:
         return True
     if re.match(r'^[\|\-\s؛:–—]+$', s):
         return True
+    if _prcy73_exec_priority_truncation_residue(s):
+        return True
     return False
+
+
+def _prcy73_exec_priority_truncation_residue(label: str) -> bool:
+    """PR-CY73 — dangling separators or incomplete Arabic word endings."""
+    s = str(label or '').strip()
+    if not s:
+        return False
+    if re.search(r'[—–-]\s*[\u0621-\u064A]{1,3}$', s):
+        return True
+    if s.endswith('—') or s.endswith('–') or s.endswith('-'):
+        return True
+    for frag in ('— حما', '— ح', '- حما'):
+        if frag in s[-10:]:
+            return True
+    return False
+
+
+def _prcy73_sanitize_exec_priority_label(label: str, max_len: int = 80) -> str:
+    """PR-CY73 — concise complete executive priority labels."""
+    s = prcy47_fix_ar_fragments(str(label or '').strip())
+    if not s:
+        return ''
+    if 'تشفير' in s and len(s) > 45:
+        s = 'تطبيق ضوابط التشفير وإدارة المفاتيح'
+    elif (
+            ('dlp' in s.lower() or 'تسرب' in s)
+            and 'تفعيل' not in s and len(s) > 40):
+        s = 'تفعيل DLP ومراقبة تسرب البيانات'
+    s = re.sub(r'\s*[—–-]\s*[\u0621-\u064A]{0,3}$', '', s).strip()
+    s = re.sub(r'\s*[—–-]\s*$', '', s).strip()
+    if len(s) > max_len:
+        cut = s[:max_len]
+        cut = re.sub(r'\s*[—–-]\s*[\u0621-\u064A]{0,4}$', '', cut).strip()
+        cut = re.sub(r'\s+\S{0,2}$', '', cut).strip()
+        s = cut.rstrip('—–-;: ').strip() or s[:max_len]
+    return s
 
 
 def _derive_executive_priorities(
@@ -3908,12 +3946,12 @@ def _derive_executive_priorities(
         col = i_init if i_init >= 0 else (
             2 if len(tbl[1]) > 2 else 1)
         for r in tbl[1:]:
-            init = prcy47_fix_ar_fragments(_cell(r, col, ''))
+            init = _prcy73_sanitize_exec_priority_label(_cell(r, col, ''))
             if init and init not in seen and init not in _RISK_HEADER_TOKENS:
                 if _prcy70_is_exec_priority_residue(init):
                     continue
                 seen.add(init)
-                out.append(init[:80])
+                out.append(init)
     pillars_text = (content_sections or {}).get('pillars', '') or ''
     for ln in pillars_text.split('\n'):
         s = ln.strip()
@@ -3922,12 +3960,12 @@ def _derive_executive_priorities(
         cells = [c.strip() for c in s.strip('|').split('|')]
         if len(cells) >= 2 and cells[1] and cells[1] not in (
                 '#', 'العمود', 'Pillar', '—'):
-            label = prcy47_fix_ar_fragments(cells[1])
+            label = _prcy73_sanitize_exec_priority_label(cells[1])
             if label not in seen:
                 if _prcy70_is_exec_priority_residue(label):
                     continue
                 seen.add(label)
-                out.append(label[:80])
+                out.append(label)
     defaults = (CANONICAL_CYBER_EXEC_PRIORITIES_AR if lang == 'ar'
                 else CANONICAL_CYBER_EXEC_PRIORITIES_EN)
     if len(out) < 3:
