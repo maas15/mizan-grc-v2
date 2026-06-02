@@ -318,11 +318,11 @@ class TestIndependentFamilyAcceptance(unittest.TestCase):
         self.assertNotIn('sensitive_data_handling', missing,
                          f'sensitive-handling still missing; '
                          f'log=\n{out}')
-        # The per-family diagnostic was emitted for both families.
+        # Classification top-up diagnostic; sensitive_data_handling is
+        # already satisfied by encryption/DLP rows (PR-CY79).
         self.assertIn(
             'family=data_classification', out)
-        self.assertIn(
-            'family=sensitive_data_handling', out)
+        self.assertNotIn('sensitive_data_handling', missing)
 
 
 # ── Test 9: partial wins persist when ONE family remains missing ────────
@@ -337,12 +337,14 @@ class TestPartialWinsPersist(unittest.TestCase):
         accepted ``sensitive_data_handling`` row must persist across
         attempts (it must NOT be thrown away when the overall
         repair fails)."""
-        before = _roadmap_with_rows([
-            'تطبيق ضوابط التشفير على البيانات',
-            'تطبيق DLP ومنع تسرب البيانات',
-            'ضوابط حماية البيانات أثناء النقل والتخزين',
-        ])
+        # ECC rows only — DCC families absent so sensitive_data_handling
+        # is still missing (PR-CY79 does not infer SDH from ECC rows).
+        before = _roadmap_with_rows([])
         sections = {'roadmap': before}
+        miss_pre = _APP._compute_missing_cyber_roadmap_balance_topics(
+            before, ['ECC', 'DCC'], lang='ar') or []
+        self.assertIn('sensitive_data_handling', miss_pre)
+        self.assertIn('data_classification', miss_pre)
         # Attempt 1: ONLY sensitive_data_handling row (no
         # classification).  Attempt 2: AI still fails to produce
         # classification.
