@@ -975,10 +975,14 @@ def _apply_prcy77_warning_driven_ar_pdf_fallbacks(
 
 def prepare_pdf_render_model(
         model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
-    """PR-CY77 — apply PDF-only cleanup before render/gate evaluation."""
+    """PR-CY77/78 — PDF-only cleanup and roadmap phase repair before gate."""
     if lang != 'ar' or not model:
         return {}
-    return apply_pdf_final_table_fallback_cleanup(model, lang)
+    cleanup = apply_pdf_final_table_fallback_cleanup(model, lang)
+    apply_prcy78_roadmap_phase_coverage_to_model(
+        model, lang, model.get('selected_frameworks'),
+        output_type='pdf')
+    return cleanup
 
 
 def _canonical_stack_schema(schema: str) -> str:
@@ -2472,6 +2476,448 @@ def roadmap_phase_coverage_text(rows: List[List[str]]) -> str:
     return ' '.join(str(r[0]) if r else '' for r in rows)
 
 
+def _prcy78_dcc_frameworks_selected(
+        selected_frameworks: Optional[List[Any]] = None) -> bool:
+    blob = ' '.join(str(f) for f in (selected_frameworks or [])).upper()
+    return 'DCC' in blob or 'NCA_DCC' in blob.replace(' ', '_')
+
+
+def _prcy78_phase_flags(rows: List[List[str]]) -> Dict[str, bool]:
+    """Detect phase 1/2/3 markers using phase column (gate source of truth)."""
+    text = roadmap_phase_coverage_text(rows or [])
+    return {
+        'phase_1': any(k in text for k in ('تأسيس', '1-6', 'Establish')),
+        'phase_2': any(k in text for k in ('تمكين', '7-18', 'Enable')),
+        'phase_3': any(k in text for k in (
+            'تحسين', '19-24', 'Optimize', 'استدامة')),
+    }
+
+
+def _prcy78_phases_before_after(
+        rows: List[List[str]]) -> Tuple[List[str], List[str]]:
+    before = []
+    after = []
+    for r in rows or []:
+        label = str(r[0] if r else '').strip() or '—'
+        if label not in before:
+            before.append(label)
+    flags = _prcy78_phase_flags(rows)
+    if flags['phase_1']:
+        after.append('phase_1')
+    if flags['phase_2']:
+        after.append('phase_2')
+    if flags['phase_3']:
+        after.append('phase_3')
+    return before, after
+
+
+def _prcy78_period_is_invalid(period: str) -> bool:
+    s = str(period or '').strip()
+    if not s or s in ('—', '-', '–'):
+        return False
+    if _prcy77_period_looks_like_role(s):
+        return True
+    if any(k in s for k in (
+            'تقرير', 'تقدم', 'مؤشر', 'report', 'progress', 'دورية')):
+        return True
+    if len(s) > 36 and not any(
+            k in s for k in ('شهر', 'month', '1-6', '7-18', '19-24', 'أشهر')):
+        return True
+    return False
+
+
+def _prcy78_normalize_framework_cell(
+        fw: str, init: str = '', output: str = '') -> str:
+    s = _prcy77_strip_truncation_artifacts(fw)
+    if '(' in s and not s.rstrip().endswith(')'):
+        s = re.sub(r'\s*\([^)]*$', '', s).strip()
+    if re.search(r'essential\s*cyber', s, flags=re.IGNORECASE):
+        s = 'NCA ECC'
+    blob = f'{init} {output}'.lower()
+    has_ecc = bool(re.search(r'NCA\s*ECC', s, flags=re.IGNORECASE))
+    has_dcc = bool(re.search(r'NCA\s*DCC', s, flags=re.IGNORECASE))
+    if has_ecc and has_dcc:
+        return 'NCA ECC / NCA DCC'
+    if has_dcc or _initiative_needs_dcc(blob):
+        return 'NCA DCC'
+    if has_ecc or _initiative_needs_ecc(blob):
+        return 'NCA ECC'
+    if s.upper().startswith('NCA'):
+        return s.split('/')[0].strip() or 'NCA ECC'
+    return 'NCA ECC'
+
+
+def _prcy78_present_dcc_families(rows: List[List[str]]) -> set:
+    present: set = set()
+    for r in rows or []:
+        blob = ' '.join(str(c) for c in r)
+        low = blob.lower()
+        if any(k in blob for k in ('تصنيف', 'جرد')) and (
+                'بيانات' in blob or 'classification' in low):
+            present.add('data_classification')
+        if 'تشفير' in blob or 'encryption' in low or 'مفاتيح' in blob:
+            present.add('encryption')
+        if 'dlp' in low or 'تسرب' in blob:
+            present.add('dlp')
+    return present
+
+
+PRCY78_PHASE3_ECC_ROW_AR = [
+    'المرحلة 3: تحسين واستدامة',
+    '19-24 شهر',
+    'تحسين برنامج إدارة الثغرات والاستجابة للحوادث CSIRT',
+    'CISO / قائد CSIRT',
+    'برنامج تحسين مستمر للثغرات والاستجابة مع مؤشرات أداء شهرية',
+    'NCA ECC',
+]
+
+PRCY78_PHASE3_DCC_ROW_AR = [
+    'المرحلة 3: تحسين واستدامة',
+    '19-24 شهر',
+    'تحسين مراقبة DLP وتغطية التشفير للبيانات الحساسة',
+    'مدير حماية البيانات',
+    'تقارير تحسين شهرية لتغطية DLP والتشفير ومؤشرات حماية البيانات',
+    'NCA DCC',
+]
+
+PRCY78_DCC_FAMILY_ROWS_AR: Dict[str, List[str]] = {
+    'data_classification': [
+        'المرحلة 1: تأسيس',
+        '1-6 أشهر',
+        'تصنيف وجرد البيانات الحساسة',
+        'مدير حماية البيانات',
+        'سجل بيانات مصنفة ومعتمد',
+        'NCA DCC',
+    ],
+    'encryption': [
+        'المرحلة 2: تمكين وتشغيل',
+        '7-18 شهر',
+        'تطبيق ضوابط التشفير وإدارة المفاتيح',
+        'مدير حماية البيانات',
+        'ضوابط تشفير وإدارة مفاتيح مطبقة',
+        'NCA DCC',
+    ],
+    'dlp': [
+        'المرحلة 2: تمكين وتشغيل',
+        '7-18 شهر',
+        'تفعيل DLP ومراقبة تسرب البيانات',
+        'مدير حماية البيانات',
+        'منصة DLP وقواعد مراقبة تسرب البيانات مفعّلة',
+        'NCA DCC',
+    ],
+}
+
+
+def _prcy78_synth_phase3_rows(
+        lang: str = 'ar',
+        dcc_selected: bool = False) -> List[List[str]]:
+    rows = [list(PRCY78_PHASE3_ECC_ROW_AR)]
+    if dcc_selected and lang == 'ar':
+        rows.append(list(PRCY78_PHASE3_DCC_ROW_AR))
+    elif dcc_selected:
+        rows.append([
+            'Phase 3: Optimize & Sustain',
+            '19-24 months',
+            'Improve DLP monitoring and encryption coverage for sensitive data',
+            'Data Protection Manager',
+            'Monthly improvement reports for DLP, encryption, and data protection KPIs',
+            'NCA DCC',
+        ])
+    return rows
+
+
+def _prcy78_normalize_roadmap_row(
+        row: List[str], lang: str = 'ar') -> Tuple[List[str], Dict[str, bool]]:
+    """Normalize one roadmap row for phase label, period, and framework."""
+    flags = {
+        'period_repaired': False,
+        'framework_repaired': False,
+        'truncation_removed': False,
+    }
+    cells = list(row) + [''] * (6 - len(row))
+    for i, c in enumerate(cells):
+        cleaned = _prcy77_strip_truncation_artifacts(c)
+        if cleaned != str(c or '').strip():
+            flags['truncation_removed'] = True
+        cells[i] = cleaned
+    phase_num = _phase_bucket(f'{cells[0]} {cells[1]}')
+    new_phase = _phase_label(phase_num, lang)
+    if cells[0] != new_phase:
+        cells[0] = new_phase
+    period = str(cells[1] or '').strip()
+    if _prcy78_period_is_invalid(period):
+        cells[1] = _prcy77_default_period_for_phase(cells[0])
+        flags['period_repaired'] = True
+    fw_before = str(cells[5] or '')
+    cells[5] = _prcy78_normalize_framework_cell(
+        cells[5], cells[2], cells[4])
+    if cells[5] != fw_before:
+        flags['framework_repaired'] = True
+    return cells[:6], flags
+
+
+def repair_roadmap_table_rows(
+        rows: Optional[List[List[str]]],
+        lang: str = 'ar',
+        selected_frameworks: Optional[List[Any]] = None,
+        *,
+        task_id: str = '',
+        domain: str = 'cyber',
+        output_type: str = 'unknown') -> Tuple[List[List[str]], Dict[str, Any]]:
+    """PR-CY78 — ensure roadmap phase coverage and canonical cells."""
+    lang_n = 'ar' if str(lang or '').lower() != 'en' else 'en'
+    dcc_on = _prcy78_dcc_frameworks_selected(selected_frameworks)
+    in_rows = [list(r) for r in (rows or []) if r]
+    phases_before, _ = _prcy78_phases_before_after(in_rows)
+    valid_before = roadmap_phase_coverage_valid(in_rows)
+    diag: Dict[str, Any] = {
+        'task_id': task_id,
+        'domain': domain,
+        'lang': lang_n,
+        'output_type': output_type,
+        'phases_before': phases_before,
+        'phases_after': [],
+        'phase_1_present': False,
+        'phase_2_present': False,
+        'phase_3_present': False,
+        'phase_coverage_valid_before': valid_before,
+        'phase_coverage_valid_after': False,
+        'rows_inserted': 0,
+        'inserted_phase_rows': [],
+        'invalid_period_cells_before': 0,
+        'invalid_period_cells_repaired': 0,
+        'truncated_framework_cells_repaired': 0,
+        'missing_dcc_families_before': [],
+        'missing_dcc_families_after': [],
+        'action_taken': 'no_changes',
+        'blocking_error_if_any': '',
+    }
+    out_rows: List[List[str]] = []
+    seen_init: set = set()
+    for ri, r in enumerate(in_rows):
+        period_raw = str((list(r) + [''] * 6)[1] or '')
+        if _prcy78_period_is_invalid(period_raw):
+            diag['invalid_period_cells_before'] += 1
+        repaired, flags = _prcy78_normalize_roadmap_row(r, lang_n)
+        if flags.get('period_repaired'):
+            diag['invalid_period_cells_repaired'] += 1
+        if flags.get('framework_repaired'):
+            diag['truncated_framework_cells_repaired'] += 1
+        if flags.get('truncation_removed'):
+            diag['truncated_framework_cells_repaired'] += 1
+        key = (repaired[2] or '').strip()[:80]
+        if key and key in seen_init:
+            continue
+        if key:
+            seen_init.add(key)
+        out_rows.append(repaired)
+
+    flags = _prcy78_phase_flags(out_rows)
+    diag['phase_1_present'] = flags['phase_1']
+    diag['phase_2_present'] = flags['phase_2']
+    diag['phase_3_present'] = flags['phase_3']
+
+    if not flags['phase_3']:
+        for ins in _prcy78_synth_phase3_rows(lang_n, dcc_on):
+            key = (ins[2] or '').strip()[:80]
+            if key in seen_init:
+                continue
+            seen_init.add(key)
+            out_rows.append(ins)
+            diag['rows_inserted'] += 1
+            diag['inserted_phase_rows'].append(ins[0])
+
+    if dcc_on:
+        missing = sorted(
+            set(PRCY78_DCC_FAMILY_ROWS_AR) - _prcy78_present_dcc_families(out_rows))
+        diag['missing_dcc_families_before'] = list(missing)
+        for fam in missing:
+            ins = list(PRCY78_DCC_FAMILY_ROWS_AR[fam])
+            key = (ins[2] or '').strip()[:80]
+            if key in seen_init:
+                continue
+            seen_init.add(key)
+            out_rows.append(ins)
+            diag['rows_inserted'] += 1
+            diag['inserted_phase_rows'].append(ins[0])
+        diag['missing_dcc_families_after'] = sorted(
+            set(PRCY78_DCC_FAMILY_ROWS_AR) - _prcy78_present_dcc_families(out_rows))
+
+    flags_after = _prcy78_phase_flags(out_rows)
+    diag['phase_1_present'] = flags_after['phase_1']
+    diag['phase_2_present'] = flags_after['phase_2']
+    diag['phase_3_present'] = flags_after['phase_3']
+    _, phases_after = _prcy78_phases_before_after(out_rows)
+    diag['phases_after'] = phases_after
+    diag['phase_coverage_valid_after'] = roadmap_phase_coverage_valid(out_rows)
+
+    if not diag['phase_coverage_valid_after']:
+        missing_phases = []
+        if not flags_after['phase_1']:
+            missing_phases.append('1')
+        if not flags_after['phase_2']:
+            missing_phases.append('2')
+        if not flags_after['phase_3']:
+            missing_phases.append('3')
+        if missing_phases:
+            diag['blocking_error_if_any'] = (
+                'roadmap_phase_coverage_missing_phase:' + missing_phases[0])
+    elif diag['rows_inserted'] or diag['invalid_period_cells_repaired']:
+        diag['action_taken'] = 'repair_applied'
+    else:
+        diag['action_taken'] = 'validated'
+
+    return out_rows, diag
+
+
+def render_canonical_roadmap_markdown_table(
+        rows: List[List[str]], lang: str = 'ar') -> str:
+    """Render canonical 6-column roadmap markdown from row cells."""
+    hdr = list(SCHEMA_ROADMAP_AR if lang == 'ar' else (
+        'Phase', 'Period', 'Initiative', 'Owner',
+        'Deliverable', 'Linked Framework'))
+    lines = [
+        '| ' + ' | '.join(hdr) + ' |',
+        '| ' + ' | '.join(['---'] * 6) + ' |',
+    ]
+    for r in rows or []:
+        cells = list(r) + [''] * (6 - len(r))
+        lines.append('| ' + ' | '.join(
+            str(c or '—').replace('|', '/') for c in cells[:6]) + ' |')
+    return '\n'.join(lines) + '\n'
+
+
+def _roadmap_has_phase_headings(text: str) -> bool:
+    """True when roadmap uses ### المرحلة N section headings."""
+    for ln in (text or '').split('\n'):
+        if re.match(
+                r'^#{1,4}\s.*(?:المرحلة|Phase)\s*\d',
+                ln.strip(), flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def repair_roadmap_phase_headings_preserve(
+        roadmap_text: str,
+        lang: str = 'ar',
+        selected_frameworks: Optional[List[Any]] = None,
+        **diag_kw) -> Tuple[str, Dict[str, Any]]:
+    """PR-CY78 — repair rows but keep ### phase section structure."""
+    lang_n = 'ar' if str(lang or '').lower() != 'en' else 'en'
+    text = roadmap_text or ''
+    flat: List[List[str]] = []
+    for tbl in parse_markdown_tables(text):
+        if len(tbl) >= 2:
+            flat.extend(tbl[1:])
+    repaired, diag = repair_roadmap_table_rows(
+        flat, lang_n, selected_frameworks, **diag_kw)
+    diag['roadmap_header'] = list(SCHEMA_ROADMAP_AR)
+    out = text
+    if not re.search(
+            r'(?:^|\n)#{1,4}\s.*(?:المرحلة|Phase)\s*3',
+            text, flags=re.IGNORECASE | re.MULTILINE):
+        dcc_on = _prcy78_dcc_frameworks_selected(selected_frameworks)
+        p3_rows = [
+            r for r in repaired
+            if 'تحسين' in str(r[0]) or 'Optimize' in str(r[0])]
+        if not p3_rows:
+            p3_rows = _prcy78_synth_phase3_rows(lang_n, dcc_on)
+        block = (
+            '\n\n### المرحلة 3: تحسين واستدامة (19-24 شهر)\n\n'
+            if lang_n == 'ar' else
+            '\n\n### Phase 3: Optimize & Sustain (19-24 months)\n\n')
+        block += render_canonical_roadmap_markdown_table(p3_rows, lang_n)
+        out = text.rstrip() + block
+        diag['rows_inserted'] = diag.get('rows_inserted', 0) + len(p3_rows)
+        diag['inserted_phase_rows'].extend(
+            [r[0] for r in p3_rows])
+        diag['action_taken'] = 'repair_applied'
+    return out, diag
+
+
+def repair_roadmap_section_text(
+        roadmap_text: str,
+        lang: str = 'ar',
+        selected_frameworks: Optional[List[Any]] = None,
+        **diag_kw) -> Tuple[str, Dict[str, Any]]:
+    """PR-CY78 — repair roadmap markdown section for phase coverage."""
+    lang_n = 'ar' if str(lang or '').lower() != 'en' else 'en'
+    text = roadmap_text or ''
+    if _roadmap_has_phase_headings(text):
+        return repair_roadmap_phase_headings_preserve(
+            text, lang_n, selected_frameworks, **diag_kw)
+    tbl = normalize_roadmap_table(text, lang_n)
+    seed_rows = (tbl or {}).get('rows') or []
+    if not seed_rows:
+        tables = parse_markdown_tables(text)
+        for t in tables:
+            if len(t) >= 2:
+                seed_rows.extend(t[1:])
+    repaired, diag = repair_roadmap_table_rows(
+        seed_rows, lang_n, selected_frameworks, **diag_kw)
+    diag['roadmap_header'] = list(
+        SCHEMA_ROADMAP_AR if lang_n == 'ar' else SCHEMA_ROADMAP_AR)
+    if not repaired:
+        return text, diag
+    table_md = render_canonical_roadmap_markdown_table(repaired, lang_n)
+    non_table = [
+        ln for ln in text.split('\n')
+        if not ln.strip().startswith('|')]
+    prefix = '\n'.join(non_table).strip()
+    new_text = ((prefix + '\n\n') if prefix else '') + table_md
+    if new_text.strip() != text.strip():
+        diag['action_taken'] = diag.get('action_taken') or 'repair_applied'
+    return new_text, diag
+
+
+def build_prcy78_roadmap_phase_coverage_diag(
+        diag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return dict(diag or {})
+
+
+def emit_prcy78_roadmap_phase_coverage_diag(
+        diag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Emit [PRCY78-ROADMAP-PHASE-COVERAGE-REPAIR] to server logs."""
+    payload = build_prcy78_roadmap_phase_coverage_diag(diag)
+    try:
+        print(
+            f'[PRCY78-ROADMAP-PHASE-COVERAGE-REPAIR] {payload}', flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def apply_prcy78_roadmap_phase_coverage_to_model(
+        model: Optional[Dict[str, Any]],
+        lang: str = 'ar',
+        selected_frameworks: Optional[List[Any]] = None,
+        **diag_kw) -> Dict[str, Any]:
+    """PR-CY78 — repair roadmap table rows inside a professional doc model."""
+    if not model:
+        return {}
+    blocks = model.get('blocks') or {}
+    road = blocks.get('roadmap') or {}
+    tables = road.get('tables') or []
+    if not tables:
+        return {}
+    tbl = tables[0]
+    repaired, diag = repair_roadmap_table_rows(
+        tbl.get('rows') or [],
+        lang,
+        selected_frameworks or model.get('selected_frameworks'),
+        domain=str((model.get('domain') or diag_kw.get('domain') or 'cyber')),
+        **diag_kw)
+    tbl['rows'] = repaired
+    tbl['header'] = list(
+        SCHEMA_ROADMAP_AR if str(lang or '').lower() != 'en' else (
+            'Phase', 'Period', 'Initiative', 'Owner',
+            'Deliverable', 'Linked Framework'))
+    tbl['schema'] = 'roadmap'
+    model['_prcy78_roadmap_phase_diag'] = dict(diag)
+    emit_prcy78_roadmap_phase_coverage_diag(diag)
+    return diag
+
+
 def count_model_arabic_spacing_issues(
         model: Optional[Dict[str, Any]]) -> int:
     """Count remaining Arabic concat defects anywhere in the model blob."""
@@ -2683,6 +3129,11 @@ def normalize_roadmap_table(
     if not rows_out:
         return None
     rows_out, row_meta = build_roadmap_render_spec(rows_out, lang)
+    rows_out, _p78 = repair_roadmap_table_rows(
+        rows_out, lang, None)
+    if _p78.get('action_taken') == 'repair_applied':
+        row_meta = row_meta + [{}] * max(
+            0, len(rows_out) - len(row_meta))
     return {'schema': 'roadmap', 'header': schema, 'rows': rows_out,
             'row_meta': row_meta}
 
@@ -4807,6 +5258,10 @@ def prcy47_docmodel_professional_checks(
     """PR-CY47 Part I — professional document-model quality checks computed
     from the structured model (the source of truth for what the story
     renderer emits as ReportLab Tables/Paragraphs)."""
+    if model and str(lang or '').lower() != 'en':
+        apply_prcy78_roadmap_phase_coverage_to_model(
+            model, lang, model.get('selected_frameworks'),
+            output_type='docmodel_gate')
     blocks = (model or {}).get('blocks') or {}
 
     def _paras(kind):
