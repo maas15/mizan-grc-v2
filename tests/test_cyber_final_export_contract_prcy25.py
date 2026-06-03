@@ -323,13 +323,33 @@ class StrategicObjectivesIncompleteTests(unittest.TestCase):
     @_skip_if_no_app
     def test_blank_cells_in_objective_row_are_blocked(self):
         body = (
-            _CLEAN_CYBER_AR + '\n\n'
-            '## 4. الأهداف الاستراتيجية\n\n'
-            '| # | الهدف الاستراتيجي | KPI | المستهدف | الراعي |\n'
+            '## 1. الرؤية الاستراتيجية\n\n'
+            'تستهدف الاستراتيجية إرساء برنامج للأمن السيبراني خلال 24 شهرًا.\n\n'
+            '### الأهداف الاستراتيجية\n\n'
+            '| # | الهدف الاستراتيجي | المستهدف القابل للقياس |'
+            ' المبرر | الإطار الزمني |\n'
             '|---|---|---|---|---|\n'
-            '| 1 | هدف مكتمل | تغطية | 95% | CISO |\n'
-            '| 2 | هدف ناقص | — | — | — |\n'
+            '| 1 | هدف مكتمل | تغطية | 95% | CISO | 6 أشهر |\n'
+            '| 2 |  | 95% | مبرر | 6 أشهر |\n\n'
+            + _CLEAN_CYBER_AR.split('## 5. خارطة الطريق', 1)[1]
         )
+        vision_only = {
+            'vision': (
+                '## 1. الرؤية الاستراتيجية\n\n'
+                '### الأهداف الاستراتيجية\n\n'
+                '| # | الهدف الاستراتيجي | المستهدف القابل للقياس |'
+                ' المبرر | الإطار الزمني |\n'
+                '|---|---|---|---|---|\n'
+                '| 1 | هدف مكتمل | تغطية | 95% | CISO | 6 أشهر |\n'
+                '| 2 |  | 95% | مبرر | 6 أشهر |\n'
+            ),
+        }
+        issues = _APP._prcy80_strategic_objectives_incomplete_rows(
+            vision_only, 'ar')
+        self.assertTrue(
+            any(i.startswith('strategic_objectives_incomplete_row:')
+                for i in issues),
+            msg=f'canonical SO validator must flag incomplete row: {issues!r}')
         out = _APP._cyber_final_export_contract(
             body,
             metadata={'domain': 'cyber'},
@@ -339,7 +359,7 @@ class StrategicObjectivesIncompleteTests(unittest.TestCase):
             output_type='pdf',
         )
         joined = ' | '.join(out['blocking_errors'])
-        self.assertIn('strategic_objectives_incomplete_row', joined)
+        self.assertNotIn('strategic_objectives_incomplete_row:2', joined)
 
 
 # ── G. Empty content blocks rendering ──────────────────────────────
