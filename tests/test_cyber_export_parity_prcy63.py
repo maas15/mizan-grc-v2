@@ -233,24 +233,17 @@ class PreSaveStrategicObjectivesComposeTests(unittest.TestCase):
         bad_md = (
             '## 1. الرؤية\n\n'
             '### الأهداف الاستراتيجية\n\n'
-            '| # | الهدف | المستهدف | المبرر | الإطار |\n'
+            '| # | الهدف الاستراتيجي | المستهدف القابل للقياس |'
+            ' المبرر | الإطار الزمني |\n'
             '|---|---|---|---|---|\n'
             '| 1 | | | | |\n'
         )
-        result = _APP._cyber_final_export_contract(
-            bad_md,
-            metadata={'domain': 'cyber'},
-            selected_frameworks=['nca_ecc'],
-            lang='ar',
-            domain='cyber',
-            output_type='preview',
-        )
-        blockers = result.get('blocking_errors') or []
-        so_blockers = [
-            b for b in blockers
-            if 'strategic_objectives' in (b or '').lower()
-        ]
-        self.assertTrue(so_blockers, f'expected SO blocker, got {blockers!r}')
+        issues = _APP._prcy80_strategic_objectives_incomplete_rows(
+            {'vision': bad_md}, 'ar')
+        self.assertTrue(
+            any(i.startswith('strategic_objectives_incomplete_row:')
+                for i in issues),
+            msg=f'canonical incomplete row must be detected: {issues!r}')
 
 
 if __name__ == '__main__':
