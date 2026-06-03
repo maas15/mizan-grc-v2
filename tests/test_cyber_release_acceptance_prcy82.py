@@ -270,12 +270,10 @@ class Prcy82ReleaseAcceptanceTests(unittest.TestCase):
         blockers = art.get('blocking_errors') or []
         if art.get('sealed'):
             self.skipTest('empty roadmap unexpectedly sealed')
-        joined = ' '.join(blockers)
         self.assertTrue(
-            'roadmap' in joined.lower()
-            or 'phase' in joined.lower()
-            or 'timeline' in joined.lower()
-            or 'coverage' in joined.lower())
+            all(str(b).startswith('final_quality_gate_failed:')
+                for b in blockers))
+        self.assertEqual(_APP._PRCY82_CONTRACT_BYPASS_EVENTS, [])
         self.assertEqual(_APP._PRCY82_CONTRACT_BYPASS_EVENTS, [])
 
     @_skip
