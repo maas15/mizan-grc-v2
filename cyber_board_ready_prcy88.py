@@ -283,6 +283,14 @@ _GOVERNANCE_DUP_RE = re.compile(
 
 def _load_app_module():
     import sys
+    for _name in ('app',):
+        _mod = sys.modules.get(_name)
+        if _mod is not None and hasattr(_mod, '_prcy39_locate_so_table'):
+            return _mod
+    for _mod in list(sys.modules.values()):
+        if hasattr(_mod, '_prcy39_locate_so_table') and hasattr(
+                _mod, '_build_cyber_final_strategy_artifact'):
+            return _mod
     frame = sys._getframe(1)
     while frame is not None:
         _name = frame.f_globals.get('__name__')
