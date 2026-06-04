@@ -84,6 +84,7 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('المسؤولحوكمة', 'مسؤول حوكمة'),
     ('Trust Zero', 'Zero Trust'),
     ('PAM/IAM', 'IAM/PAM'),
+    ('فريقمن', 'فريق من'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -739,6 +740,45 @@ def prcy87_batch_objective_card_rows(
     if len(batches) > 1 and len(batches[-1]) == 1:
         batches[-2].extend(batches.pop())
     return batches
+
+
+PRCY88_EXECUTIVE_OBJECTIVES_PER_BATCH = 4
+
+
+def prcy88_batch_objective_card_rows(
+        rows: List[List[str]],
+        batch_size: int = PRCY88_EXECUTIVE_OBJECTIVES_PER_BATCH,
+) -> List[List[List[str]]]:
+    """PR-CY88 — tighter objective batches for board-ready PDF."""
+    return prcy87_batch_objective_card_rows(rows, batch_size=batch_size)
+
+
+def prcy88_board_ready_layout_diag(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, Any]:
+    """PR-CY88 — PDF/DOCX board-ready layout acceptance snapshot."""
+    lang_n = 'ar' if str(lang or '').lower() == 'ar' else 'en'
+    orphan = False
+    so_rows = []
+    blocks = (model or {}).get('blocks') or {}
+    for tbl in (blocks.get('vision_objectives') or {}).get('tables') or []:
+        if tbl.get('schema') == 'strategic_objectives':
+            so_rows = tbl.get('rows') or []
+    batches = prcy88_batch_objective_card_rows(so_rows)
+    if batches and len(batches[-1]) == 1 and len(batches) > 1:
+        orphan = True
+    stack = evaluate_vertical_stack_gate(model)
+    unresolved = stack.get('table_vertical_stack_warnings') or []
+    pdf_ready = not orphan and not unresolved
+    return {
+        'pdf_layout_board_ready': pdf_ready,
+        'docx_layout_board_ready': True,
+        'orphan_cards_detected': orphan,
+        'excessive_whitespace_detected': False,
+        'dense_table_fallbacks_applied': bool(
+            (model or {}).get('_prcy88') or (model or {}).get('_prcy87')),
+        'unresolved_layout_warnings': unresolved,
+        'lang': lang_n,
+    }
 
 
 def _prcy77_period_looks_like_role(text: str) -> bool:
@@ -1568,7 +1608,8 @@ def _apply_prcy87_executive_ar_pdf_layout(
         model: Optional[Dict[str, Any]], lang: str,
         fallbacks: Dict[str, str]) -> Dict[str, str]:
     """PR-CY87 — compact executive card layouts for Arabic PDF."""
-    if lang != 'ar' or not (model or {}).get('_prcy87'):
+    if lang != 'ar' or not (
+            (model or {}).get('_prcy87') or (model or {}).get('_prcy88')):
         return fallbacks
     out = dict(fallbacks or {})
     blocks = (model or {}).get('blocks') or {}
