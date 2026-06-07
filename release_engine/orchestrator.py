@@ -10,6 +10,10 @@ from release_engine.final_quality_contract import evaluate_final_quality
 from release_engine.repair_registry import run_domain_repairs
 from release_engine.scoring import score_artifact
 from release_engine.section_model import legacy_sections_to_canonical
+from release_engine.rel23_finalize import (
+    apply_rel23_cyber_finalize,
+    rel23_blocking_errors,
+)
 from release_engine.validator_registry import (
     assert_no_post_sealed_blockers,
     run_rel2_validators,
@@ -61,6 +65,41 @@ def process_release_artifact(
     sections = dict(merged.get('sections') or {})
     blocking = list(merged.get('blocking_errors') or [])
     repair_actions = list(merged.get('repair_actions') or [])
+    rel23_diags: dict = {}
+
+    _stale_rel23_prefixes = (
+        'rel2_section_parity_failed',
+        'rel2_pillars_failed',
+        'rel2_roadmap_failed',
+        'rel2_kpi_failed',
+        'rel2_arabic_quality_failed',
+        'export_hash_parity_invalid',
+        'cyber_board_ready_pillars_failed',
+        'pillar_sections_hash_mismatch',
+        'kpi_metric_semantics_invalid',
+        'kpi_formula_alignment_invalid',
+        'kpi_numbering_invalid',
+        'kpi_duplicate_numbers',
+    )
+    if is_cyber and document_type == 'strategy':
+        blocking = [
+            b for b in blocking
+            if not any(
+                (b or '').startswith(p) or (b or '') == p
+                for p in _stale_rel23_prefixes)]
+
+    if is_cyber and document_type == 'strategy':
+        merged, rel23_repairs, rel23_diags = apply_rel23_cyber_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel23_repairs)
+        for rb in rel23_blocking_errors(rel23_diags):
+            if rb not in blocking:
+                blocking.append(rb)
 
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(
@@ -98,6 +137,11 @@ def process_release_artifact(
     merged['blocking_errors'] = blocking
     merged['repair_actions'] = repair_actions
     merged['sealed'] = not blocking
+    if rel23_diags:
+        merged['diagnostics'] = dict(merged.get('diagnostics') or {})
+        _rel2_store = dict(merged['diagnostics'].get('rel2') or {})
+        _rel2_store['rel23'] = rel23_diags
+        merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(
         merged,
@@ -167,6 +211,8 @@ def process_release_artifact(
     )
     diag['scoped_validation'] = scoped.get('diag') or {}
     diag['post_sealed_audit'] = post_violations
+    if rel23_diags:
+        diag['rel23'] = rel23_diags
     emit_rel2_diag(diag)
 
     merged['rel2_canonical'] = canonical

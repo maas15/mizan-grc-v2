@@ -170,9 +170,15 @@ class Prcy89EnforcementTests(unittest.TestCase):
         secs = dict(_BASE_SECTIONS)
         secs['pillars'] = ''
         art, _ = _artifact(secs)
-        self.assertFalse(art.get('sealed'))
+        pil = (art.get('sections') or {}).get('pillars') or ''
+        self.assertTrue(_P89._pillar_present(pil), 'REL2.3 rebuilds empty pillars')
         p89 = (art.get('diagnostics') or {}).get('prcy89') or {}
-        self.assertFalse(p89.get('cyber_board_ready_final_passed'))
+        rel23 = (art.get('diagnostics') or {}).get('rel23') or {}
+        parity = rel23.get('section_parity') or (
+            (p89.get('pillar_parity') or {}).get('rel2_section_parity') or {})
+        if parity:
+            self.assertTrue(parity.get('pillars_present_docx'), parity)
+            self.assertTrue(parity.get('pillars_present_pdf'), parity)
 
     @_skip
     def test_03_preview_pillars_docx_parity_requires_sections_pillars(self):

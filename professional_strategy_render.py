@@ -4337,7 +4337,7 @@ def normalize_pillar_blocks(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     blocks = []
     chunks = re.split(
-        r'(?=^#{2,4}\s+(?:الركيزة|Pillar|\d+\.))',
+        r'(?=^#{3,4}\s+)',
         section_text or '', flags=re.MULTILINE | re.IGNORECASE)
     for chunk in chunks:
         chunk = chunk.strip()
@@ -5208,11 +5208,16 @@ def enrich_professional_blocks(
         'tables': [so_tbl] if so_tbl else [],
     }
 
-    # Pillars
-    pil = _sec('strategic_pillars')
+    # Pillars — parse initiative tables from raw section text before
+    # PR-CY47 prose cleanup strips markdown pipe rows.
+    pil_blk = blocks.get('strategic_pillars') or {}
+    pil_raw = (
+        pil_blk.get('content')
+        or (content_sections or {}).get('pillars', '')
+        or '')
     blocks['strategic_pillars'] = {
-        **(blocks.get('strategic_pillars') or {}),
-        'pillar_blocks': normalize_pillar_blocks(pil, lang_n),
+        **pil_blk,
+        'pillar_blocks': normalize_pillar_blocks(pil_raw, lang_n),
     }
 
     # Environment — regulatory + threat prose + compact normalized table.

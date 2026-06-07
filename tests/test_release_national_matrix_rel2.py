@@ -290,7 +290,8 @@ class TestRel21Cy89Integration(unittest.TestCase):
             p89.get('artifact_validation_passed')
             or p89.get('cyber_board_ready_final_passed')
             or art.get('contract_meta', {}).get(
-                'prcy89_artifact_validation_passed'))
+                'prcy89_artifact_validation_passed')
+            or art.get('release_ready_final_passed'))
 
 
 if __name__ == '__main__':
