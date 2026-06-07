@@ -27,6 +27,7 @@ try:
         'app', os.path.join(os.path.dirname(__file__), '..', 'app.py'))
     _APP = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_APP)
+    sys.modules['app'] = _APP
 except Exception as _e:
     raise SystemExit(f'Cannot load app module: {_e!r}')
 

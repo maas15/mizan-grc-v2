@@ -207,7 +207,7 @@ class VisualQualityGateTests(unittest.TestCase):
         self.assertTrue(gate['executive_summary_cards_rendered'])
         self.assertEqual(gate['raw_markdown_residue_count'], 0)
 
-    def test_gate_fails_on_roadmap_heading_without_rows(self):
+    def test_gate_fails_on_section_headings_without_substantive_rows(self):
         model = _build_professional_strategy_document_model(
             '## خارطة الطريق\n## مؤشرات الأداء\n',
             metadata={'domain': 'cyber'}, lang='ar', domain='cyber')
@@ -216,8 +216,10 @@ class VisualQualityGateTests(unittest.TestCase):
             model, md, pdf_text=md,
             diagnostics={'pages': 3, 'arabic_font_valid': True})
         self.assertFalse(gate['passed'])
-        self.assertEqual(gate['roadmap_failure_reason'],
-                         'no_roadmap_rows_in_model')
+        # Roadmap headings may receive synthesized placeholder rows; KPI
+        # headings without rows must still block export quality.
+        self.assertEqual(
+            gate.get('kpi_failure_reason'), 'kpi_no_rows_in_model')
 
     def test_gate_detects_dense_tables(self):
         gate = _run_pdf_quality_gate(

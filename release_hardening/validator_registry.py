@@ -158,6 +158,12 @@ LEGACY_GATE_CLASSIFICATION: Dict[str, Dict[str, str]] = {
         'scoped_validator': 'pdf_render',
         'notes': 'Actionable warnings; unresolved layout blocks at export',
     },
+    'pdf_table_vertical_stack_unresolved': {
+        'legacy_emitter': 'evaluate_vertical_stack_gate',
+        'status': 'export_only',
+        'scoped_validator': 'pdf_render',
+        'notes': 'Layout-only gate after seal; no content mutation',
+    },
     'docmodel_professional_quality': {
         'legacy_emitter': 'build_professional_strategy_document_model',
         'status': 'diagnostic',

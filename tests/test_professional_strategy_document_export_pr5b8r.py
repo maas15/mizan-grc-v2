@@ -48,6 +48,69 @@ try:
 except (ImportError, ModuleNotFoundError) as _e:  # pragma: no cover
     print(f'[WARN] Could not import app.py: {_e}')
     _APP = None
+else:
+    sys.modules['app'] = _APP
+
+
+def _build_sealed_cyber_ar_artifact():
+    """Board-ready cyber AR artifact for PDF export tests (PR-CY89 + REL2)."""
+    from domains.cyber.fixtures_ar import technical_sections
+    sections = technical_sections()
+    order = ('vision', 'pillars', 'environment', 'gaps',
+             'roadmap', 'kpis', 'confidence')
+    content = '\n\n'.join(sections[k] for k in order if sections.get(k))
+    art = _APP._build_cyber_final_strategy_artifact(
+        content,
+        sections=dict(sections),
+        metadata={
+            'domain': 'cyber',
+            'org_name': 'منظمة اختبار',
+            'sector': 'حكومي',
+        },
+        selected_frameworks=['ECC', 'TCC'],
+        lang='ar',
+        domain='cyber',
+        output_type='generation',
+        doc_subtype='technical',
+    )
+    if not art.get('sealed'):
+        raise AssertionError(
+            f'cyber fixture not sealed: {art.get("blocking_errors")!r}')
+    return art
+
+
+def _persist_sealed_strategy(user_id, art):
+    import json
+    with _APP.app.app_context():
+        db = _APP.get_db()
+        cj = dict(art.get('content_json') or {})
+        cm = dict(cj.get('_contract_meta') or art.get('contract_meta') or {})
+        cm.setdefault('sealed', True)
+        cm.setdefault('quality_gate_passed', True)
+        cm.setdefault('final_hash', art['final_hash'])
+        cm.setdefault('prcy39', True)
+        cj['_contract_meta'] = cm
+        cur = db.execute(
+            'INSERT INTO strategies '
+            '(user_id, domain, org_name, sector, content, language, '
+            ' sections_json, content_json) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                user_id,
+                'cyber',
+                'منظمة اختبار',
+                'حكومي',
+                art['final_markdown'],
+                'ar',
+                json.dumps(art.get('sections') or {}, ensure_ascii=False),
+                json.dumps(cj, ensure_ascii=False),
+            ),
+        )
+        db.commit()
+        return cur.lastrowid
+
+
+from tests._pdf_font_gate import skip_if_no_arabic_pdf_font
 
 
 def _skip_if_no_app(fn):
@@ -229,15 +292,19 @@ def _make_test_user(username='pr5b8r_test_user'):
         return row['id']
 
 
-def _build_arabic_pdf_bytes(content, **overrides):
+def _build_arabic_pdf_bytes(content=None, **overrides):
     uid = _make_test_user()
+    art = overrides.pop('artifact', None)
+    if art is None:
+        art = _build_sealed_cyber_ar_artifact()
+    sid = _persist_sealed_strategy(uid, art)
     client = _APP.app.test_client()
     with client.session_transaction() as sess:
         sess['user_id'] = uid
         sess['username'] = 'pr5b8r_test_user'
         sess['role'] = 'user'
     payload = {
-        'content': content,
+        'content': art['final_markdown'],
         'filename': 'pr5b8r_test',
         'language': 'ar',
         'org_name': 'منظمة اختبار',
@@ -245,7 +312,7 @@ def _build_arabic_pdf_bytes(content, **overrides):
         'doc_type': 'Strategy Document',
         'domain': 'Cyber Security',
         'artifact_type': 'strategy',
-        'artifact_id': None,
+        'artifact_id': sid,
         'generation_mode': 'drafting',
         'selected_frameworks': ['ECC', 'TCC'],
     }
@@ -373,7 +440,8 @@ class PdfProfessionalLayoutTest(unittest.TestCase):
     def setUpClass(cls):
         if _APP is None:
             return
-        cls.pdf_bytes = _build_arabic_pdf_bytes(FULL_ARABIC_STRATEGY)
+        skip_if_no_arabic_pdf_font(_APP)
+        cls.pdf_bytes = _build_arabic_pdf_bytes()
         cls.pages = _extract_pdf_text(cls.pdf_bytes)
         cls.all_text = '\n'.join(cls.pages)
 

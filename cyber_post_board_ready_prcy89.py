@@ -94,13 +94,17 @@ def _content_fingerprint(sections: dict) -> str:
 
 def _kpi_table_kind(header_line: str) -> str:
     h = (header_line or '').lower()
-    if 'وصف المؤشر' in h or (
-            'metric' in h and 'formula' not in h and 'target' in h):
+    raw = header_line or ''
+    if 'وصف المؤشر' in raw or 'القيمة المستهدفة' in raw:
         return 'main'
-    if 'صيغة' in h or 'formula' in h:
+    if 'metric' in h and 'target' in h:
+        return 'main'
+    if 'صيغة' in raw and 'وصف' not in raw and 'metric' not in h:
+        return 'formula'
+    if 'formula' in h and 'target' not in h and 'metric' not in h:
         return 'formula'
     if '| #' in h or h.startswith('| #'):
-        if 'مؤشر' in h or 'metric' in h:
+        if 'مؤشر' in raw or 'metric' in h:
             return 'main'
         return 'formula'
     return 'unknown'
@@ -316,6 +320,26 @@ def _row_from_cells(cells: List[str], kind: str) -> Optional[dict]:
             'source': cells[2] if len(cells) > 2 else '',
             'kind': 'formula_only',
         }
+    # PR-CY88/89 catalog row: | # | name | KPI | target | formula | source | freq |
+    if len(cells) >= 6 and (cells[2] or '').upper() in ('KPI', 'KRI'):
+        kpi_type = cells[2].upper()
+        name = cells[1] if len(cells) > 1 else ''
+        target = cells[3] if len(cells) > 3 else ''
+        formula = cells[4] if len(cells) > 4 else ''
+        source = cells[5] if len(cells) > 5 else ''
+        freq = cells[6] if len(cells) > 6 else ''
+        fam = _detect_kpi_family(name) or 'governance_maturity'
+        return {
+            'num': int(cells[0]) if cells[0].isdigit() else 0,
+            'name': name,
+            'kpi_type': kpi_type,
+            'target': target,
+            'formula': formula,
+            'source': source,
+            'frequency': freq,
+            'family': fam,
+            'kind': 'main',
+        }
     if len(cells) < 4:
         return None
     num_s = cells[0]
@@ -352,10 +376,43 @@ def _row_from_cells(cells: List[str], kind: str) -> Optional[dict]:
     return None
 
 
+def _dedupe_kpi_formula_sections(text: str) -> str:
+    """Keep one formula subsection; cy87/cy88 may emit duplicates for EN."""
+    lines = (text or '').split('\n')
+    out: List[str] = []
+    formula_hdr_seen = False
+    in_formula = False
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith('###') and ('صيغة' in s or 'formula' in s.lower()):
+            if formula_hdr_seen:
+                in_formula = True
+                continue
+            formula_hdr_seen = True
+            in_formula = True
+            out.append(ln)
+            continue
+        if in_formula and s.startswith('## ') and not s.startswith('###'):
+            in_formula = False
+        if in_formula and formula_hdr_seen and s.startswith('|') and not re.match(
+                r'^\|[\s\-:|]+\|$', s):
+            cells = [c.strip() for c in s.split('|')[1:-1]]
+            if cells and cells[0].isdigit():
+                # skip duplicate formula rows from second formula block
+                if any(
+                        o.strip().startswith('|')
+                        and o.split('|')[1].strip() == cells[0]
+                        for o in out[-20:]):
+                    continue
+        out.append(ln)
+    return '\n'.join(out)
+
+
 def canonicalize_kpi_final_row_model(
         app, sections: dict, lang: str = 'ar') -> Tuple[dict, dict]:
     """Merge/dedupe/resequence KPI main+formula tables from one row model."""
-    text = sections.get('kpis', '') or ''
+    text = _dedupe_kpi_formula_sections(
+        _strip_kri_appendix_from_kpis(sections.get('kpis', '') or ''))
     numbers_before, _ = _parse_kpi_numbers(text)
     main_rows: Dict[str, dict] = {}
     table_kind = 'main'
@@ -378,6 +435,8 @@ def canonicalize_kpi_final_row_model(
         if not cells:
             continue
         parsed = _row_from_cells(cells, table_kind)
+        if not parsed and len(cells) >= 6:
+            parsed = _row_from_cells(cells, 'main')
         if not parsed:
             continue
         if parsed.get('kind') == 'formula_only':

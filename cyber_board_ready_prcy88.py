@@ -309,6 +309,14 @@ def _load_app_module():
     for _mod in list(sys.modules.values()):
         if hasattr(_mod, '_build_cyber_final_strategy_artifact'):
             return _mod
+    _frm = sys._getframe(1)
+    _g = _frm.f_globals if _frm is not None else {}
+    if '_build_cyber_final_strategy_artifact' in _g:
+        import types
+        _proxy = types.ModuleType('app')
+        _proxy.__dict__.update(_g)
+        sys.modules['app'] = _proxy
+        return _proxy
     raise RuntimeError('app module not loaded for PR-CY88')
 
 
@@ -966,7 +974,8 @@ def baseline_kpi(app, sections: dict, lang: str) -> Tuple[dict, dict]:
     for i, ln in enumerate(lines):
         s = ln.strip()
         if s.startswith('|') and (
-                'المؤشر' in s or 'وصف المؤشر' in s or 'Metric' in s):
+                'المؤشر' in s or 'وصف المؤشر' in s or 'Metric' in s
+                or ('Target' in s and 'Formula' in s)):
             header_idx = i
         elif header_idx >= 0 and s.startswith('|') and not re.match(
                 r'^\|[\s\-:|]+\|$', s):
