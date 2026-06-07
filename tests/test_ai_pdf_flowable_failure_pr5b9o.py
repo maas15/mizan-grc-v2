@@ -431,13 +431,11 @@ class PdfErrorPathControlledTests(unittest.TestCase):
         self.assertIn("'reason': 'pdf_render_failed'", src)
         # The detail field is the exception TYPE name only — never
         # the full message / traceback. We verify by searching for
-        # the canonical assignment.
+        # the canonical assignment in the main PDF exception handler.
         self.assertIn("_err_name = type(e).__name__", src)
-        # Confirm the response body does NOT include the full
-        # exception message (str(e) or traceback).
-        # The lines around the response must use _err_name, not str(e).
-        idx = src.find("'reason': 'pdf_render_failed'")
-        block = src[idx: idx + 400]
+        idx = src.find("_err_name = type(e).__name__")
+        block = src[idx: idx + 500]
+        self.assertIn("'reason': 'pdf_render_failed'", block)
         self.assertNotIn("str(e)", block,
                          'PDF error response must not leak str(e)')
         self.assertNotIn('traceback', block.lower().replace(

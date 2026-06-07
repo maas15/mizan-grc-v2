@@ -63,6 +63,8 @@ except (ImportError, ModuleNotFoundError) as _e:  # pragma: no cover
     print(f'[WARN] Could not import app.py: {_e}')
     _APP = None
 
+from tests._pdf_font_gate import skip_if_no_arabic_pdf_font
+
 
 def _skip_if_no_app(fn):
     import functools
@@ -305,6 +307,7 @@ _PDF_CACHE = {'pages': None, 'all_text': None}
 
 def _get_pages():
     if _PDF_CACHE['pages'] is None:
+        skip_if_no_arabic_pdf_font(_APP)
         pdf_bytes = _build_arabic_pdf_bytes()
         pages = _extract_pdf_text(pdf_bytes)
         _PDF_CACHE['pages'] = pages

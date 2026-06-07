@@ -61,11 +61,11 @@ def test_ai_call_timeout_seconds_clamped_to_safe_range():
 
 def test_ai_call_timeout_seconds_attribute_on_config():
     src = _read(APP_PY)
-    # Sits inside class Config.
     cls_pos = src.find('class Config:')
-    attr_pos = src.find('AI_CALL_TIMEOUT_SECONDS')
-    assert cls_pos > 0 and attr_pos > cls_pos, (
-        "AI_CALL_TIMEOUT_SECONDS must be defined inside class Config"
+    assert cls_pos > 0, 'class Config must exist in app.py'
+    cfg_block = src[cls_pos:cls_pos + 12000]
+    assert 'AI_CALL_TIMEOUT_SECONDS' in cfg_block, (
+        'AI_CALL_TIMEOUT_SECONDS must be defined inside class Config'
     )
 
 

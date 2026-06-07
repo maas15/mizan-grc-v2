@@ -145,18 +145,26 @@ class Prcy87AcceptanceTests(unittest.TestCase):
     """PR-CY87 mandatory acceptance addendum — diagnostics + gates."""
 
     @_skip
-    def test_01_runtime_fingerprint_prcy85_86_87_rel1_absent(self):
+    def test_01_runtime_fingerprint_prcy85_86_87_lineage(self):
         fp = _APP._prcy37_runtime_build_fingerprint_payload(
             route_name='test', output_type='test')
         self.assertTrue(fp.get('prcy85'))
         self.assertTrue(fp.get('prcy86'))
         self.assertTrue(fp.get('prcy87'))
-        self.assertFalse(fp.get('rel1'))
         acc = _APP._prcy87_runtime_fingerprint_acceptance()
         self.assertTrue(acc['main_lineage_cy85_cy86_cy87'])
-        self.assertTrue(acc['rel1_absent'])
-        self.assertFalse(acc['release_hardening_required'])
-        self.assertFalse(acc['domains_required'])
+        if _APP._PRCY28_VERSION_FLAGS.get('rel2'):
+            self.assertTrue(fp.get('rel1'))
+            self.assertTrue(fp.get('rel2'))
+            self.assertTrue(acc.get('rel2'))
+            self.assertFalse(acc['rel1_absent'])
+            self.assertTrue(acc['release_hardening_required'])
+            self.assertTrue(acc['domains_required'])
+        else:
+            self.assertFalse(fp.get('rel1'))
+            self.assertTrue(acc['rel1_absent'])
+            self.assertFalse(acc['release_hardening_required'])
+            self.assertFalse(acc['domains_required'])
 
     @_skip
     def test_02_so_semantic_gate_target_like_after_zero(self):
