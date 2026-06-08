@@ -32,6 +32,25 @@ _GLUE_RE = re.compile(
 # Live AI glue: حلولمن التهديدات (من before whitespace, not another letter).
 _LM_SPACE_GLUE_RE = re.compile(
     r'([\u0600-\u06FF]{2,}ل)من(?=\s|$|[،,.؛:\)\|])')
+# Split ل + منع residue (any whitespace between ل and منع).
+_L_MIN_SPLIT_RE = re.compile(r'ل\s+منع')
+
+
+def _apply_glue_split(text: str) -> str:
+    """Split glued prepositions but keep valid tokens like لمنع (to prevent)."""
+
+    def _repl(m: re.Match[str]) -> str:
+        g1, g2 = m.group(1), m.group(2)
+        if g2 == 'من' and m.end() < len(text) and text[m.end()] == 'ع':
+            if g1 == 'ل' or (g1.endswith('ل') and len(g1) <= 2):
+                return m.group(0)
+        return f'{g1} {g2}'
+
+    return _GLUE_RE.sub(_repl, text)
+
+
+def _normalize_lam_mana(text: str) -> str:
+    return _L_MIN_SPLIT_RE.sub('لمنع', text or '')
 
 
 def _find_residues(text: str) -> List[str]:
@@ -40,6 +59,8 @@ def _find_residues(text: str) -> List[str]:
     for bad, _ in REL2_ARABIC_SPECIFIC_FIXES:
         if bad in blob:
             residues.append(bad)
+    if _L_MIN_SPLIT_RE.search(blob):
+        residues.append('ل منع')
     for m in _GLUE_RE.finditer(blob):
         token = m.group(0)
         if token not in residues and len(token) > 4:
@@ -55,12 +76,14 @@ def _repair_text(text: str) -> str:
     if not text:
         return text or ''
     out = text
-    for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
-        out = out.replace(bad, good)
-    out = _GLUE_RE.sub(r'\1 \2', out)
-    out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
-    for _ in range(3):
+    for _ in range(5):
         prev = out
+        out = _normalize_lam_mana(out)
+        for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
+            out = out.replace(bad, good)
+        out = _apply_glue_split(out)
+        out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
+        out = _normalize_lam_mana(out)
         for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
             out = out.replace(bad, good)
         if out == prev:

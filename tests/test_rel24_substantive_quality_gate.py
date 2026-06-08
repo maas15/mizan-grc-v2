@@ -234,6 +234,21 @@ class Rel24ArabicSubstanceTests(unittest.TestCase):
         self.assertEqual(diag['residues_after'], [])
         self.assertTrue(diag['arabic_quality_passed'])
 
+    def test_lam_mana_split_residue_repaired(self):
+        """Live staging defect: ل منع must not reappear after لمنع glue-split."""
+        sections = {
+            'vision': 'ضوابط ل منع تسرب البيانات',
+            'pillars': 'تفعيل لمنع التسرب عبر DLP',
+            'environment': 'ل  منع الحوادث والمراقبة',
+        }
+        out, diag = apply_arabic_substance_gate(sections, lang='ar')
+        self.assertNotIn('ل منع', out['vision'])
+        self.assertNotIn('ل منع', out['pillars'])
+        self.assertIn('لمنع', out['vision'])
+        self.assertIn('لمنع', out['pillars'])
+        self.assertEqual(diag['residues_after'], [])
+        self.assertTrue(diag['arabic_quality_passed'])
+
 
 class Rel24IntegrationTests(unittest.TestCase):
 
