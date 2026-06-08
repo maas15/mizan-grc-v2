@@ -261,6 +261,21 @@ class Rel24ArabicSubstanceTests(unittest.TestCase):
         # Explicit regression: glue-split alone must not break لمنع
         self.assertEqual(_apply_glue_split('لمنع التسرب'), 'لمنع التسرب')
 
+    def test_hulul_mana_glued_not_split_into_lam_mana_residue(self):
+        """Live defect: حلولمنع must not become حلول منع (false ل منع)."""
+        sections = {
+            'vision': 'تطبيق حلولمنع تسرب البيانات عبر DLP',
+            'pillars': 'حلولمنع التهديدات المتقدمة',
+            'environment': 'حلولمن التهديدات و حلولمنع الحوادث',
+        }
+        out, diag = apply_arabic_substance_gate(sections, lang='ar')
+        self.assertNotIn('ل منع', out['vision'])
+        self.assertNotIn('ل منع', out['pillars'])
+        self.assertIn('حلولمنع', out['vision'])
+        self.assertIn('حلول من', out['environment'])
+        self.assertEqual(diag['residues_after'], [])
+        self.assertTrue(diag['arabic_quality_passed'])
+
 
 class Rel24IntegrationTests(unittest.TestCase):
 

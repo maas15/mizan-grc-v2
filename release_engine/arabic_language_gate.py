@@ -12,6 +12,8 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('الاستعادةفي', 'الاستعادة في'),
     ('ال معلومات', 'المعلومات'),
     ('ال معمول', 'المعمول'),
+    # Before generic ل منع — undo false split from حلولمن inside حلولمنع.
+    ('حلول منع', 'حلول لمنع'),
     ('ل منع', 'لمنع'),
     ('ال معيارية', 'المعيارية'),
     ('ال منفذة', 'المنفذة'),
@@ -20,6 +22,13 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('برامجمن', 'برامج من'),
     ('خدماتمن', 'خدمات من'),
 )
+
+# Do not split حلولمن/برامجمن/خدماتمن when followed by ع (e.g. حلولمنع).
+_LM_WORD_GLUE_FIX_BADS = frozenset(('حلولمن', 'برامجمن', 'خدماتمن'))
+_LM_WORD_GLUE_GUARDED = tuple(
+    (re.compile(re.escape(bad) + r'(?!ع)'), good)
+    for bad, good in REL2_ARABIC_SPECIFIC_FIXES
+    if bad in _LM_WORD_GLUE_FIX_BADS)
 
 
 _GLUE_PREPOSITIONS = ('مع', 'ضد', 'في', 'على', 'عن', 'من', 'إلى', 'لدى')
@@ -56,11 +65,28 @@ def _normalize_lam_mana(text: str) -> str:
     return _L_MIN_SPLIT_RE.sub('لمنع', text or '')
 
 
+def _apply_catalog_fixes(text: str) -> str:
+    out = text or ''
+    for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
+        if bad in _LM_WORD_GLUE_FIX_BADS:
+            continue
+        out = out.replace(bad, good)
+    for pat, good in _LM_WORD_GLUE_GUARDED:
+        out = pat.sub(good, out)
+    return out
+
+
+def _catalog_residue_present(blob: str, bad: str) -> bool:
+    if bad in _LM_WORD_GLUE_FIX_BADS:
+        return bool(re.search(re.escape(bad) + r'(?!ع)', blob))
+    return bad in blob
+
+
 def _find_residues(text: str) -> List[str]:
     residues: List[str] = []
     blob = text or ''
     for bad, _ in REL2_ARABIC_SPECIFIC_FIXES:
-        if bad in blob:
+        if _catalog_residue_present(blob, bad):
             residues.append(bad)
     if _L_MIN_SPLIT_RE.search(blob):
         residues.append('ل منع')
@@ -82,13 +108,11 @@ def _repair_text(text: str) -> str:
     for _ in range(5):
         prev = out
         out = _normalize_lam_mana(out)
-        for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
-            out = out.replace(bad, good)
+        out = _apply_catalog_fixes(out)
         out = _apply_glue_split(out)
         out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
         out = _normalize_lam_mana(out)
-        for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
-            out = out.replace(bad, good)
+        out = _apply_catalog_fixes(out)
         if out == prev:
             break
     return out
