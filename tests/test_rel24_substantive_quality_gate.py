@@ -249,6 +249,18 @@ class Rel24ArabicSubstanceTests(unittest.TestCase):
         self.assertEqual(diag['residues_after'], [])
         self.assertTrue(diag['arabic_quality_passed'])
 
+    def test_lam_mana_repair_cycle_stable(self):
+        """Repair loop must not oscillate لمنع ↔ ل منع (live staging blocker)."""
+        from release_engine.arabic_language_gate import (
+            _apply_glue_split, _repair_text, _find_residues)
+
+        for src in ('ل منع', 'ضوابط لمنع التسرب', 'ل\u00a0منع الحوادث'):
+            repaired = _repair_text(src)
+            self.assertEqual(_find_residues(repaired), [], msg=src)
+            self.assertNotIn('ل منع', repaired, msg=src)
+        # Explicit regression: glue-split alone must not break لمنع
+        self.assertEqual(_apply_glue_split('لمنع التسرب'), 'لمنع التسرب')
+
 
 class Rel24IntegrationTests(unittest.TestCase):
 

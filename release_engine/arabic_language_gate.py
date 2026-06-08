@@ -23,17 +23,20 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
 
 
 _GLUE_PREPOSITIONS = ('مع', 'ضد', 'في', 'على', 'عن', 'من', 'إلى', 'لدى')
+# من(?!ع) keeps valid لمنع (to prevent); other prepositions split glued tokens.
+_GLUE_PREPOSITION_ALT = tuple(
+    r'من(?!ع)' if p == 'من' else re.escape(p) for p in _GLUE_PREPOSITIONS)
 # Only split when the letter before the preposition is a typical word ending
 # (e.g. للتعاملمع, الاجتماعيةضد) — avoids breaking الزمني, التشفير, etc.
 _GLUE_RE = re.compile(
     r'([\u0600-\u06FF]*[لتةاءى])('
-    + '|'.join(re.escape(p) for p in _GLUE_PREPOSITIONS)
+    + '|'.join(_GLUE_PREPOSITION_ALT)
     + r')(?=[\u0600-\u06FF])')
 # Live AI glue: حلولمن التهديدات (من before whitespace, not another letter).
 _LM_SPACE_GLUE_RE = re.compile(
     r'([\u0600-\u06FF]{2,}ل)من(?=\s|$|[،,.؛:\)\|])')
-# Split ل + منع residue (any whitespace between ل and منع).
-_L_MIN_SPLIT_RE = re.compile(r'ل\s+منع')
+# Split ل + منع residue (ASCII/Unicode whitespace between ل and منع).
+_L_MIN_SPLIT_RE = re.compile(r'ل[\s\u00a0\u200b\u200c\u200d\u202f]+منع')
 
 
 def _apply_glue_split(text: str) -> str:

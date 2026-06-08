@@ -117,6 +117,10 @@ def process_release_artifact(
         for rb in rel24_blocking_errors(rel24_diags):
             if rb not in blocking:
                 blocking.append(rb)
+        if (rel24_diags.get('arabic') or {}).get('arabic_quality_passed'):
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith('rel2_arabic_quality_failed')]
 
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(

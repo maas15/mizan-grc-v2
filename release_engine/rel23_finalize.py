@@ -88,6 +88,13 @@ def apply_rel23_cyber_finalize(
     if kpi_diag.get('action_taken'):
         repair_actions.append(f'rel23:{kpi_diag.get("action_taken")}')
 
+    # Re-run after pillar/roadmap/kpi — models may reintroduce glued residues.
+    sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
+    emit_arabic_final_language_gate(ar_diag)
+    diags['arabic'] = ar_diag
+    if ar_diag.get('residues_before'):
+        repair_actions.append('rel23:arabic_repaired')
+
     merged = dict(artifact)
     merged['sections'] = sections
     merged['final_markdown'] = _rebuild_markdown(sections)
