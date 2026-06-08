@@ -14,6 +14,10 @@ from release_engine.rel23_finalize import (
     apply_rel23_cyber_finalize,
     rel23_blocking_errors,
 )
+from release_engine.rel24_finalize import (
+    apply_rel24_cyber_substance_finalize,
+    rel24_blocking_errors,
+)
 from release_engine.validator_registry import (
     assert_no_post_sealed_blockers,
     run_rel2_validators,
@@ -66,6 +70,7 @@ def process_release_artifact(
     blocking = list(merged.get('blocking_errors') or [])
     repair_actions = list(merged.get('repair_actions') or [])
     rel23_diags: dict = {}
+    rel24_diags: dict = {}
 
     _stale_rel23_prefixes = (
         'rel2_section_parity_failed',
@@ -98,6 +103,18 @@ def process_release_artifact(
         sections = dict(merged.get('sections') or {})
         repair_actions.extend(rel23_repairs)
         for rb in rel23_blocking_errors(rel23_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+
+        merged, rel24_repairs, rel24_diags = apply_rel24_cyber_substance_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel24_repairs)
+        for rb in rel24_blocking_errors(rel24_diags):
             if rb not in blocking:
                 blocking.append(rb)
 
@@ -137,10 +154,13 @@ def process_release_artifact(
     merged['blocking_errors'] = blocking
     merged['repair_actions'] = repair_actions
     merged['sealed'] = not blocking
-    if rel23_diags:
+    if rel23_diags or rel24_diags:
         merged['diagnostics'] = dict(merged.get('diagnostics') or {})
         _rel2_store = dict(merged['diagnostics'].get('rel2') or {})
-        _rel2_store['rel23'] = rel23_diags
+        if rel23_diags:
+            _rel2_store['rel23'] = rel23_diags
+        if rel24_diags:
+            _rel2_store['rel24'] = rel24_diags
         merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(
@@ -213,6 +233,8 @@ def process_release_artifact(
     diag['post_sealed_audit'] = post_violations
     if rel23_diags:
         diag['rel23'] = rel23_diags
+    if rel24_diags:
+        diag['rel24'] = rel24_diags
     emit_rel2_diag(diag)
 
     merged['rel2_canonical'] = canonical

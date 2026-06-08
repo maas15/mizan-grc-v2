@@ -23,6 +23,7 @@ CRITICAL_BLOCKER_PREFIXES = (
     'rel2_kpi_failed',
     'rel2_arabic_quality_failed',
     'rel2_export_visual_failed',
+    'rel2_substantive_quality_failed',
 )
 
 
@@ -38,6 +39,53 @@ def _is_critical(code: str) -> bool:
     ):
         return True
     return any(c.startswith(p) for p in CRITICAL_BLOCKER_PREFIXES)
+
+
+def _rel24_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
+    rel24 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
+        'rel24') or {}
+    if not rel24:
+        return {
+            'pillar_substance_passed': True,
+            'roadmap_substance_passed': True,
+            'kpi_substance_passed': True,
+            'risk_treatment_passed': True,
+            'traceability_substance_passed': True,
+            'objectives_quality_passed': True,
+            'board_ready_substance_passed': True,
+            'rel24_blocking_errors': [],
+        }
+    gate = rel24.get('substantive_gate') or {}
+    so = rel24.get('so') or {}
+    pillars = rel24.get('pillars') or {}
+    roadmap = rel24.get('roadmap') or {}
+    kpis = rel24.get('kpis') or {}
+    risk = rel24.get('risk') or {}
+    trace = rel24.get('traceability') or {}
+
+    rel24_blockers: List[str] = list(gate.get('blocking_errors') or [])
+    for diag in (so, pillars, roadmap, kpis, risk, trace):
+        err = (diag.get('blocking_error_if_any') or '').strip()
+        if err and err not in rel24_blockers:
+            rel24_blockers.append(err)
+
+    return {
+        'objectives_quality_passed': bool(
+            so.get('objectives_quality_passed', True)),
+        'pillar_substance_passed': bool(
+            pillars.get('pillar_depth_passed', True)),
+        'roadmap_substance_passed': bool(
+            roadmap.get('roadmap_depth_passed', True)),
+        'kpi_substance_passed': bool(
+            kpis.get('kpi_substance_passed', True)),
+        'risk_treatment_passed': bool(
+            risk.get('risk_treatment_passed', True)),
+        'traceability_substance_passed': bool(
+            trace.get('traceability_substance_passed', True)),
+        'board_ready_substance_passed': bool(
+            gate.get('board_ready_substance_passed', True)),
+        'rel24_blocking_errors': rel24_blockers,
+    }
 
 
 def _rel23_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
@@ -59,12 +107,17 @@ def _rel23_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
     kpis = rel23.get('kpis') or {}
     arabic = rel23.get('arabic') or {}
     export_visual = rel23.get('export_visual') or {}
+    rel24 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
+        'rel24') or {}
+    arabic_rel24 = rel24.get('arabic') or {}
 
     section_parity_passed = bool(parity.get('parity_passed'))
     pillars_valid = not (pillars.get('blocking_error_if_any') or '')
     roadmap_valid = not (roadmap.get('blocking_error_if_any') or '')
     kpi_semantics_valid = bool(kpis.get('kpi_semantics_valid'))
-    arabic_quality_passed = bool(arabic.get('arabic_quality_passed'))
+    arabic_quality_passed = bool(
+        arabic_rel24.get('arabic_quality_passed')
+        if rel24 else arabic.get('arabic_quality_passed'))
     export_visual_ready = export_visual.get(
         'export_visual_ready', section_parity_passed)
 
@@ -83,7 +136,9 @@ def _rel23_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
             kpis.get('blocking_error_if_any') or 'rel2_kpi_failed')
     if not arabic_quality_passed:
         rel23_blockers.append(
-            arabic.get('blocking_error_if_any') or 'rel2_arabic_quality_failed')
+            (arabic_rel24.get('blocking_error_if_any')
+             or arabic.get('blocking_error_if_any')
+             or 'rel2_arabic_quality_failed'))
 
     return {
         'section_parity_passed': section_parity_passed,
@@ -123,7 +178,11 @@ def evaluate_final_quality(
             blocking.append(ti)
 
     rel23_checks = _rel23_contract_checks(artifact)
+    rel24_checks = _rel24_contract_checks(artifact)
     for rb in rel23_checks.get('rel23_blocking_errors') or []:
+        if rb not in blocking:
+            blocking.append(rb)
+    for rb in rel24_checks.get('rel24_blocking_errors') or []:
         if rb not in blocking:
             blocking.append(rb)
 
@@ -152,6 +211,7 @@ def evaluate_final_quality(
         and rel23_checks.get('arabic_quality_passed', True)
         and rel23_checks.get('export_visual_ready', True)
     )
+    rel24_ready = rel24_checks.get('board_ready_substance_passed', True)
 
     release_ready = (
         sealed
@@ -164,10 +224,12 @@ def evaluate_final_quality(
         and parity_ok
         and bool(fh)
         and rel23_ready
+        and rel24_ready
     )
 
     contract_payload = {
         **rel23_checks,
+        **rel24_checks,
         'release_ready_final_passed': release_ready,
         'blocking_errors': blocking,
     }
@@ -194,6 +256,15 @@ def evaluate_final_quality(
         'kpi_semantics_valid': rel23_checks.get('kpi_semantics_valid'),
         'arabic_quality_passed': rel23_checks.get('arabic_quality_passed'),
         'export_visual_ready': rel23_checks.get('export_visual_ready'),
+        'objectives_quality_passed': rel24_checks.get('objectives_quality_passed'),
+        'pillar_substance_passed': rel24_checks.get('pillar_substance_passed'),
+        'roadmap_substance_passed': rel24_checks.get('roadmap_substance_passed'),
+        'kpi_substance_passed': rel24_checks.get('kpi_substance_passed'),
+        'risk_treatment_passed': rel24_checks.get('risk_treatment_passed'),
+        'traceability_substance_passed': rel24_checks.get(
+            'traceability_substance_passed'),
+        'board_ready_substance_passed': rel24_checks.get(
+            'board_ready_substance_passed'),
         'checks': {
             'content_completeness': not struct,
             'domain_relevance': scoring.get('dimension_scores', {}).get(

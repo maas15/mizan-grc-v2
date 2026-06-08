@@ -10,7 +10,14 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('للتعاملمع', 'للتعامل مع'),
     ('الاجتماعيةضد', 'الاجتماعية ضد'),
     ('الاستعادةفي', 'الاستعادة في'),
+    ('ال معلومات', 'المعلومات'),
+    ('ال معمول', 'المعمول'),
+    ('ل منع', 'لمنع'),
+    ('ال معيارية', 'المعيارية'),
+    ('ال منفذة', 'المنفذة'),
+    ('أعمالمع', 'أعمال مع'),
 )
+
 
 _GLUE_PREPOSITIONS = ('مع', 'ضد', 'في', 'على', 'عن', 'من', 'إلى', 'لدى')
 # Only split when the letter before the preposition is a typical word ending
@@ -29,7 +36,7 @@ def _find_residues(text: str) -> List[str]:
             residues.append(bad)
     for m in _GLUE_RE.finditer(blob):
         token = m.group(0)
-        if token not in residues:
+        if token not in residues and len(token) > 4:
             residues.append(token)
     return residues
 
@@ -41,6 +48,12 @@ def _repair_text(text: str) -> str:
     for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
         out = out.replace(bad, good)
     out = _GLUE_RE.sub(r'\1 \2', out)
+    for _ in range(2):
+        prev = out
+        for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
+            out = out.replace(bad, good)
+        if out == prev:
+            break
     return out
 
 
@@ -86,6 +99,35 @@ def emit_arabic_final_language_gate(payload: Dict[str, object]) -> None:
     try:
         print(
             '[REL2-ARABIC-FINAL-LANGUAGE-GATE] '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def apply_arabic_substance_gate(
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+) -> Tuple[Dict[str, str], Dict[str, object]]:
+    """Extended Arabic substance gate — emits substance model tag."""
+    out, diag = apply_arabic_final_gate(sections, lang=lang)
+    substance_diag = {
+        'residues_before': diag.get('residues_before', []),
+        'residues_after': diag.get('residues_after', []),
+        'arabic_quality_passed': diag.get('arabic_quality_passed', True),
+        'action_taken': diag.get('action_taken', 'validated'),
+        'blocking_error_if_any': diag.get('blocking_error_if_any', ''),
+    }
+    emit_arabic_substance_language_model(substance_diag)
+    return out, substance_diag
+
+
+def emit_arabic_substance_language_model(payload: Dict[str, object]) -> None:
+    try:
+        print(
+            '[REL2-ARABIC-SUBSTANCE-LANGUAGE-MODEL] '
             + json.dumps(payload, ensure_ascii=False, default=str),
             flush=True,
         )
