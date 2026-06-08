@@ -16,6 +16,9 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ال معيارية', 'المعيارية'),
     ('ال منفذة', 'المنفذة'),
     ('أعمالمع', 'أعمال مع'),
+    ('حلولمن', 'حلول من'),
+    ('برامجمن', 'برامج من'),
+    ('خدماتمن', 'خدمات من'),
 )
 
 
@@ -26,6 +29,9 @@ _GLUE_RE = re.compile(
     r'([\u0600-\u06FF]*[لتةاءى])('
     + '|'.join(re.escape(p) for p in _GLUE_PREPOSITIONS)
     + r')(?=[\u0600-\u06FF])')
+# Live AI glue: حلولمن التهديدات (من before whitespace, not another letter).
+_LM_SPACE_GLUE_RE = re.compile(
+    r'([\u0600-\u06FF]{2,}ل)من(?=\s|$|[،,.؛:\)\|])')
 
 
 def _find_residues(text: str) -> List[str]:
@@ -38,6 +44,10 @@ def _find_residues(text: str) -> List[str]:
         token = m.group(0)
         if token not in residues and len(token) > 4:
             residues.append(token)
+    for m in _LM_SPACE_GLUE_RE.finditer(blob):
+        token = m.group(0)
+        if token not in residues:
+            residues.append(token)
     return residues
 
 
@@ -48,7 +58,8 @@ def _repair_text(text: str) -> str:
     for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
         out = out.replace(bad, good)
     out = _GLUE_RE.sub(r'\1 \2', out)
-    for _ in range(2):
+    out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
+    for _ in range(3):
         prev = out
         for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
             out = out.replace(bad, good)

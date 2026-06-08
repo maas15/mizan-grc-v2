@@ -221,6 +221,19 @@ class Rel24ArabicSubstanceTests(unittest.TestCase):
         self.assertNotIn('ال معلومات', text)
         self.assertTrue(diag['arabic_quality_passed'])
 
+    def test_live_hulul_min_glued_residue_repaired(self):
+        """Live staging defect: حلولمن (حلول+من) before whitespace."""
+        sections = {
+            'vision': 'تطبيق حلولمن متقدمة لمواجهة التهديدات السيبرانية',
+            'pillars': 'حلولمنالتهديدات عبر SOC',
+        }
+        out, diag = apply_arabic_substance_gate(sections, lang='ar')
+        self.assertNotIn('حلولمن', out['vision'])
+        self.assertIn('حلول من', out['vision'])
+        self.assertNotIn('حلولمن', out['pillars'])
+        self.assertEqual(diag['residues_after'], [])
+        self.assertTrue(diag['arabic_quality_passed'])
+
 
 class Rel24IntegrationTests(unittest.TestCase):
 
