@@ -233,6 +233,40 @@ class Rel23LiveFixtureIntegrationTests(unittest.TestCase):
             parity.get('final_section_hashes', {}).get('pillars'))
 
 
+class Rel23DccPostRel2Tests(unittest.TestCase):
+
+    def test_ecc_only_roadmap_not_blocked_for_dlp_after_rel23(self):
+        """REL2.3 roadmap rebuild must not leave stale prcy74:dlp blockers."""
+        sections = _live_defect_sections()
+        sections['roadmap'] = (
+            '## 5. خارطة الطريق\n\n'
+            '| المرحلة | الفترة | المبادرة | المسؤول | المخرج | الإطار |\n'
+            '|---|---|---|---|---|---|\n'
+            '| المرحلة 1: تأسيس | 1-6 أشهر | حوكمة CISO | CISO | هيكل | NCA ECC |\n'
+            '| المرحلة 2: تمكين | 7-18 شهر | SOC | مدير SOC | مركز | NCA ECC |\n'
+            '| المرحلة 3: تحسين | 19-24 شهر | CSIRT | CISO | فريق | NCA ECC |\n'
+        )
+        art = _APP._build_cyber_final_strategy_artifact(
+            _content(sections),
+            sections=dict(sections),
+            metadata={'domain': 'cyber'},
+            selected_frameworks=['nca_ecc', 'nca_dcc'],
+            lang='ar',
+            domain='cyber',
+            output_type='generation',
+            doc_subtype='technical',
+        )
+        joined = ' '.join(art.get('blocking_errors') or [])
+        self.assertNotIn(
+            'prcy74_missing_required_dcc_family:dlp', joined, joined)
+        self.assertNotIn(
+            'final_quality_gate_failed:prcy74_missing_required_dcc_family:dlp',
+            joined, joined)
+        rm = (art.get('sections') or {}).get('roadmap', '')
+        self.assertTrue(
+            _APP._prcy83_dlp_standalone_initiative_present(rm), rm[:500])
+
+
 class Rel23NationalMatrixSmoke(unittest.TestCase):
 
     def test_rel2_flag_enabled(self):
