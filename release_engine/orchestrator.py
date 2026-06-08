@@ -14,6 +14,7 @@ from release_engine.rel23_finalize import (
     apply_rel23_cyber_finalize,
     rel23_blocking_errors,
 )
+from release_engine.roadmap_model import finalize_roadmap
 from release_engine.rel24_finalize import (
     apply_rel24_cyber_substance_finalize,
     rel24_blocking_errors,
@@ -121,6 +122,29 @@ def process_release_artifact(
             blocking = [
                 b for b in blocking
                 if not (b or '').startswith('rel2_arabic_quality_failed')]
+        if (rel24_diags.get('roadmap') or {}).get('roadmap_depth_passed'):
+            _fws = (
+                (merged.get('contract_meta') or {}).get('selected_frameworks')
+                or merged.get('selected_frameworks') or [])
+            sections, road_diag = finalize_roadmap(
+                sections,
+                lang=lang,
+                domain=dcode,
+                selected_frameworks=_fws,
+                backend=backend,
+            )
+            rel23_diags['roadmap'] = road_diag
+            merged['sections'] = sections
+            merged['final_markdown'] = _rebuild_markdown(sections)
+            _hash_fn = backend.get('content_hash')
+            if _hash_fn:
+                merged['final_hash'] = _hash_fn(merged['final_markdown'])
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith('rel2_roadmap_failed')]
+            _road_err = (road_diag.get('blocking_error_if_any') or '').strip()
+            if _road_err and _road_err not in blocking:
+                blocking.append(_road_err)
 
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(

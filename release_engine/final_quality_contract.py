@@ -110,10 +110,13 @@ def _rel23_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
     rel24 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
         'rel24') or {}
     arabic_rel24 = rel24.get('arabic') or {}
+    roadmap_rel24 = rel24.get('roadmap') or {}
 
     section_parity_passed = bool(parity.get('parity_passed'))
     pillars_valid = not (pillars.get('blocking_error_if_any') or '')
     roadmap_valid = not (roadmap.get('blocking_error_if_any') or '')
+    if rel24 and roadmap_rel24.get('roadmap_depth_passed'):
+        roadmap_valid = True
     kpi_semantics_valid = bool(kpis.get('kpi_semantics_valid'))
     arabic_quality_passed = bool(
         arabic_rel24.get('arabic_quality_passed')

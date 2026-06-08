@@ -306,6 +306,31 @@ class Rel24IntegrationTests(unittest.TestCase):
             'منصة حوكمة معتمدة',
             out['sections'].get('pillars', ''))
 
+    def test_rel24_roadmap_refresh_clears_stale_rel23_blocker(self):
+        """REL2.3 roadmap diag must not block after REL2.4 repairs roadmap."""
+        sections = _live_rel24_defect_sections()
+        raw = {
+            'sections': dict(sections),
+            'final_markdown': _content(sections),
+            'blocking_errors': [],
+            'sealed': False,
+            'domain': 'cyber',
+            'contract_meta': {'selected_frameworks': ['nca_ecc', 'nca_dcc']},
+        }
+        out = process_release_artifact(
+            raw, domain='cyber', lang='ar',
+            backend=_backend(), skip_rel1=True)
+        contract = out.get('final_quality_contract') or {}
+        rel23 = (out.get('diagnostics') or {}).get('rel2', {}).get('rel23') or {}
+        rel24 = (out.get('diagnostics') or {}).get('rel2', {}).get('rel24') or {}
+        self.assertTrue(rel24.get('roadmap', {}).get('roadmap_depth_passed'))
+        self.assertTrue(contract.get('roadmap_valid'), contract)
+        self.assertNotIn(
+            'rel2_roadmap_failed:awareness_training',
+            contract.get('blocking_errors') or [])
+        self.assertFalse(
+            (rel23.get('roadmap') or {}).get('blocking_error_if_any'))
+
     def test_final_quality_contract_includes_substance_flags(self):
         sections = _live_rel24_defect_sections()
         out = process_release_artifact(

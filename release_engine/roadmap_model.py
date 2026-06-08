@@ -105,7 +105,8 @@ _FAMILY_TOKENS = {
     'iam_pam_mfa': ('iam', 'pam', 'mfa', 'هوية'),
     'csirt_incident_response': ('csirt', 'استجابة', 'حوادث'),
     'vulnerability_management': ('ثغرات', 'vulnerab'),
-    'awareness_training': ('توعية', 'تدريب', 'phishing'),
+    'awareness_training': (
+        'توعية', 'تدريب', 'phishing', 'برنامج التوعية', 'توعية أمنية', 'تصيد'),
     'backup_dr_resilience': ('نسخ', 'backup', 'تعافي', 'dr', 'استمرارية'),
     'data_classification': ('تصنيف', 'جرد'),
     'encryption_key_management': ('تشفير', 'مفاتيح', 'encryption'),
@@ -220,6 +221,52 @@ def _rerender_rows(
     return _rerender_roadmap(header, rows)
 
 
+def _drop_redundant_row(
+        parsed: List[Dict[str, str]],
+        *,
+        protect: Optional[str] = None) -> bool:
+    """Drop an unmapped or duplicate-covered row to free a roadmap slot."""
+    for idx, row in enumerate(parsed):
+        fams = _families_for_row(row)
+        if not fams:
+            parsed.pop(idx)
+            return True
+        for fam in fams:
+            if protect and fam == protect:
+                continue
+            if any(
+                    i != idx and fam in _families_for_row(parsed[i])
+                    for i in range(len(parsed))):
+                parsed.pop(idx)
+                return True
+    for idx in range(len(parsed) - 1, -1, -1):
+        fams = _families_for_row(parsed[idx])
+        if protect and protect in fams:
+            continue
+        parsed.pop(idx)
+        return True
+    return False
+
+
+def _append_family_row(
+        parsed: List[Dict[str, str]],
+        fam: str,
+        present: Dict[str, bool]) -> None:
+    tpl = _ROADMAP_CATALOG_AR.get(fam)
+    if not tpl:
+        return
+    while len(parsed) >= 14 and not present.get(fam):
+        if not _drop_redundant_row(parsed, protect=fam):
+            break
+    if len(parsed) >= 14:
+        return
+    parsed.append({
+        'phase': tpl[0], 'period': tpl[1], 'initiative': tpl[2],
+        'owner': tpl[3], 'output': tpl[4], 'framework': tpl[5],
+    })
+    present[fam] = True
+
+
 def _apply_roadmap_repairs(
         parsed: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], int]:
     """Consolidate, fill missing families, cap at 14 without losing coverage."""
@@ -235,13 +282,7 @@ def _apply_roadmap_repairs(
     for fam in ROADMAP_FAMILIES:
         if present.get(fam):
             continue
-        tpl = _ROADMAP_CATALOG_AR.get(fam)
-        if tpl:
-            parsed.append({
-                'phase': tpl[0], 'period': tpl[1], 'initiative': tpl[2],
-                'owner': tpl[3], 'output': tpl[4], 'framework': tpl[5],
-            })
-            present[fam] = True
+        _append_family_row(parsed, fam, present)
 
     while len(parsed) < 10:
         added = False
@@ -249,14 +290,9 @@ def _apply_roadmap_repairs(
             if len(parsed) >= 10:
                 break
             if not present.get(fam):
-                tpl = _ROADMAP_CATALOG_AR.get(fam)
-                if tpl:
-                    parsed.append({
-                        'phase': tpl[0], 'period': tpl[1],
-                        'initiative': tpl[2], 'owner': tpl[3],
-                        'output': tpl[4], 'framework': tpl[5],
-                    })
-                    present[fam] = True
+                before = len(parsed)
+                _append_family_row(parsed, fam, present)
+                if len(parsed) > before:
                     added = True
         if not added:
             break
@@ -283,13 +319,7 @@ def _apply_roadmap_repairs(
         for fam in ROADMAP_FAMILIES:
             if present.get(fam):
                 continue
-            tpl = _ROADMAP_CATALOG_AR.get(fam)
-            if tpl and len(parsed) < 14:
-                parsed.append({
-                    'phase': tpl[0], 'period': tpl[1], 'initiative': tpl[2],
-                    'owner': tpl[3], 'output': tpl[4], 'framework': tpl[5],
-                })
-                present[fam] = True
+            _append_family_row(parsed, fam, present)
 
     return parsed, rows_before
 
