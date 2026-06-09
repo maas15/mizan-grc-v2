@@ -178,9 +178,14 @@ def _repair_row(cells: List[str]) -> Tuple[List[str], bool]:
             changed = True
             break
     if not changed and _is_weak_target(tgt, obj):
-        if len(cells) > tgt_idx:
+        if any(k in blob for k in ('iam', 'هوية', 'pam', 'mfa', 'صلاحيات')):
+            if len(cells) > tgt_idx:
+                cells[tgt_idx] = (
+                    'تغطية 95% من الأنظمة الحرجة بضوابط IAM/PAM/MFA '
+                    'خلال 12 شهراً')
+        elif len(cells) > tgt_idx:
             cells[tgt_idx] = (
-                f'تحقيق {tgt} لـ {obj[:45]} ضمن نطاق تشغيلي خلال 12 شهراً')
+                'تنفيذ مؤشرات تشغيلية قابلة للقياس خلال 12 شهراً')
         if len(cells) > rat_idx and not cells[rat_idx].strip():
             cells[rat_idx] = 'دعم التنفيذ الاستراتيجي للأمن السيبراني'
         if len(cells) > time_idx and not cells[time_idx].strip():

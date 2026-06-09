@@ -19,6 +19,10 @@ from release_engine.rel24_finalize import (
     apply_rel24_cyber_substance_finalize,
     rel24_blocking_errors,
 )
+from release_engine.rel25_finalize import (
+    apply_rel25_cyber_evidence_finalize,
+    rel25_blocking_errors,
+)
 from release_engine.validator_registry import (
     assert_no_post_sealed_blockers,
     run_rel2_validators,
@@ -72,6 +76,7 @@ def process_release_artifact(
     repair_actions = list(merged.get('repair_actions') or [])
     rel23_diags: dict = {}
     rel24_diags: dict = {}
+    rel25_diags: dict = {}
 
     _stale_rel23_prefixes = (
         'rel2_section_parity_failed',
@@ -79,6 +84,7 @@ def process_release_artifact(
         'rel2_roadmap_failed',
         'rel2_kpi_failed',
         'rel2_arabic_quality_failed',
+        'rel2_rendered_evidence_failed',
         'export_hash_parity_invalid',
         'cyber_board_ready_pillars_failed',
         'pillar_sections_hash_mismatch',
@@ -146,6 +152,18 @@ def process_release_artifact(
             if _road_err and _road_err not in blocking:
                 blocking.append(_road_err)
 
+        merged, rel25_repairs, rel25_diags = apply_rel25_cyber_evidence_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel25_repairs)
+        for rb in rel25_blocking_errors(rel25_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(
             sections, domain=dcode, lang=lang, domain_pack=domain_pack)
@@ -182,13 +200,15 @@ def process_release_artifact(
     merged['blocking_errors'] = blocking
     merged['repair_actions'] = repair_actions
     merged['sealed'] = not blocking
-    if rel23_diags or rel24_diags:
+    if rel23_diags or rel24_diags or rel25_diags:
         merged['diagnostics'] = dict(merged.get('diagnostics') or {})
         _rel2_store = dict(merged['diagnostics'].get('rel2') or {})
         if rel23_diags:
             _rel2_store['rel23'] = rel23_diags
         if rel24_diags:
             _rel2_store['rel24'] = rel24_diags
+        if rel25_diags:
+            _rel2_store['rel25'] = rel25_diags
         merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(
@@ -263,6 +283,8 @@ def process_release_artifact(
         diag['rel23'] = rel23_diags
     if rel24_diags:
         diag['rel24'] = rel24_diags
+    if rel25_diags:
+        diag['rel25'] = rel25_diags
     emit_rel2_diag(diag)
 
     merged['rel2_canonical'] = canonical

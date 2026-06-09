@@ -18,6 +18,7 @@ os.environ.setdefault(
     'sqlite:///' + os.path.join(_TMP, 'test.db'),
 )
 os.environ.setdefault('OPENAI_API_KEY', '')
+os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 
 _APP = None
 try:
@@ -44,9 +45,15 @@ from release_engine.substantive_quality_gate import evaluate_substantive_quality
 from release_engine.traceability_substance_model import finalize_traceability_substance
 
 
-def _backend():
-    return _APP._rel2_backend_callables() if hasattr(
-        _APP, '_rel2_backend_callables') else {}
+def _backend(*, with_exports: bool = False):
+    if not hasattr(_APP, '_rel2_backend_callables'):
+        return {}
+    b = _APP._rel2_backend_callables()
+    if not with_exports:
+        b.pop('build_docx_bytes', None)
+        b.pop('build_pdf_bytes', None)
+        b['validate_export_evidence'] = False
+    return b
 
 
 def _content(sections):

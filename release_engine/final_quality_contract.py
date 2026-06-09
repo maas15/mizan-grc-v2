@@ -24,6 +24,7 @@ CRITICAL_BLOCKER_PREFIXES = (
     'rel2_arabic_quality_failed',
     'rel2_export_visual_failed',
     'rel2_substantive_quality_failed',
+    'rel2_rendered_evidence_failed',
 )
 
 
@@ -85,6 +86,38 @@ def _rel24_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
         'board_ready_substance_passed': bool(
             gate.get('board_ready_substance_passed', True)),
         'rel24_blocking_errors': rel24_blockers,
+    }
+
+
+def _rel25_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
+    rel25 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
+        'rel25') or {}
+    if not rel25:
+        return {
+            'rendered_evidence_passed': True,
+            'no_forbidden_patterns': True,
+            'risk_treatments_complete': True,
+            'final_kpi_semantics_visible': True,
+            'final_traceability_visible_valid': True,
+            'final_arabic_rendered_quality_passed': True,
+            'rel25_blocking_errors': [],
+        }
+    ev = rel25.get('evidence') or {}
+    forbidden = ev.get('forbidden_patterns_found') or []
+    kpi_defects = ev.get('kpi_semantic_defects_found') or []
+    risk_empty = ev.get('risk_empty_treatments_found') or []
+    trace_bad = ev.get('traceability_bad_mappings_found') or []
+    arabic = ev.get('arabic_residues_found') or []
+    passed = bool(ev.get('rendered_evidence_passed'))
+    blockers = list(ev.get('blocking_errors') or [])
+    return {
+        'rendered_evidence_passed': passed,
+        'no_forbidden_patterns': not forbidden,
+        'risk_treatments_complete': not risk_empty,
+        'final_kpi_semantics_visible': not kpi_defects,
+        'final_traceability_visible_valid': not trace_bad,
+        'final_arabic_rendered_quality_passed': not arabic,
+        'rel25_blocking_errors': blockers,
     }
 
 
@@ -182,10 +215,14 @@ def evaluate_final_quality(
 
     rel23_checks = _rel23_contract_checks(artifact)
     rel24_checks = _rel24_contract_checks(artifact)
+    rel25_checks = _rel25_contract_checks(artifact)
     for rb in rel23_checks.get('rel23_blocking_errors') or []:
         if rb not in blocking:
             blocking.append(rb)
     for rb in rel24_checks.get('rel24_blocking_errors') or []:
+        if rb not in blocking:
+            blocking.append(rb)
+    for rb in rel25_checks.get('rel25_blocking_errors') or []:
         if rb not in blocking:
             blocking.append(rb)
 
@@ -215,6 +252,7 @@ def evaluate_final_quality(
         and rel23_checks.get('export_visual_ready', True)
     )
     rel24_ready = rel24_checks.get('board_ready_substance_passed', True)
+    rel25_ready = rel25_checks.get('rendered_evidence_passed', True)
 
     release_ready = (
         sealed
@@ -228,11 +266,13 @@ def evaluate_final_quality(
         and bool(fh)
         and rel23_ready
         and rel24_ready
+        and rel25_ready
     )
 
     contract_payload = {
         **rel23_checks,
         **rel24_checks,
+        **rel25_checks,
         'release_ready_final_passed': release_ready,
         'blocking_errors': blocking,
     }
@@ -268,6 +308,17 @@ def evaluate_final_quality(
             'traceability_substance_passed'),
         'board_ready_substance_passed': rel24_checks.get(
             'board_ready_substance_passed'),
+        'rendered_evidence_passed': rel25_checks.get(
+            'rendered_evidence_passed'),
+        'no_forbidden_patterns': rel25_checks.get('no_forbidden_patterns'),
+        'risk_treatments_complete': rel25_checks.get(
+            'risk_treatments_complete'),
+        'final_kpi_semantics_visible': rel25_checks.get(
+            'final_kpi_semantics_visible'),
+        'final_traceability_visible_valid': rel25_checks.get(
+            'final_traceability_visible_valid'),
+        'final_arabic_rendered_quality_passed': rel25_checks.get(
+            'final_arabic_rendered_quality_passed'),
         'checks': {
             'content_completeness': not struct,
             'domain_relevance': scoring.get('dimension_scores', {}).get(

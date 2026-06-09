@@ -19,6 +19,7 @@ os.environ.setdefault(
     'sqlite:///' + os.path.join(_TMP, 'test.db'),
 )
 os.environ.setdefault('OPENAI_API_KEY', '')
+os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 
 _APP = None
 try:
@@ -33,6 +34,18 @@ except Exception as _e:
 
 from domain_packs import get_domain_pack
 from domains import get_domain_pack as get_legacy_pack
+
+
+def _backend(*, with_exports: bool = False):
+    if not hasattr(_APP, '_rel2_backend_callables'):
+        return {}
+    b = _APP._rel2_backend_callables()
+    if not with_exports:
+        b.pop('build_docx_bytes', None)
+        b.pop('build_pdf_bytes', None)
+        b['validate_export_evidence'] = False
+    return b
+
 
 _MATRIX = []
 for _code in ('cyber', 'data', 'ai', 'dt', 'erm', 'global'):
@@ -176,7 +189,7 @@ class TestNoisyFixtureRepairRel2:
             art,
             domain=domain,
             lang=lang,
-            backend=_APP._rel2_backend_callables() if hasattr(_APP, '_rel2_backend_callables') else {},
+            backend=_backend(),
             domain_pack=pack,
             skip_rel1=True,
         )

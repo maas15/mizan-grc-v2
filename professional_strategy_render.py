@@ -3696,9 +3696,9 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
                 if lang == 'ar' else
                 '(Encrypted assets/data / classified sensitive data) × 100')
     if any(k in n for k in ('%', 'نسبة', 'تغطية', 'coverage', 'rate')):
-        return ('(عدد العناصر المطابقة / إجمالي العناصر) × 100'
+        return ('(القيمة المحققة / القيمة المستهدفة) × 100'
                 if lang == 'ar'
-                else '(Compliant items / total items) × 100')
+                else '(Achieved value / target value) × 100')
     return ('(المنجز / المخطط) × 100' if lang == 'ar'
             else '(Achieved / planned) × 100')
 
