@@ -698,14 +698,19 @@ def _ensure_minimum_pillar_blocks(
 
 
 def _pillar_export_parity_check(
-        sections: dict, final_markdown: str, app=None) -> dict:
+        sections: dict, final_markdown: str, app=None,
+        *, task_id: str = '') -> dict:
     """Delegate to REL2.3 section parity when available."""
     try:
         from release_engine.section_parity import evaluate_section_parity
         app = app or _load_app_module()
         backend = {}
         if hasattr(app, '_rel2_backend_callables'):
-            backend = app._rel2_backend_callables()
+            _pipe_cache = None
+            if task_id and hasattr(app, '_REL2_PIPELINE_CACHES'):
+                _pipe_cache = app._REL2_PIPELINE_CACHES.get(task_id)
+            backend = app._rel2_backend_callables(
+                pipeline_cache=_pipe_cache)
         elif hasattr(app, '_prcy25_compute_content_hash'):
             backend['content_hash'] = app._prcy25_compute_content_hash
         artifact = {
@@ -755,7 +760,8 @@ def _pillar_export_parity_check(
 
 
 def _prcy89_validate_saved_board_ready_artifact(
-        artifact: dict, app=None, *, lang: str = 'ar') -> dict:
+        artifact: dict, app=None, *, lang: str = 'ar',
+        task_id: str = '') -> dict:
     """Read-only validation on the exact artifact saved/exported."""
     app = app or _load_app_module()
     lang_n = 'ar' if str(lang or '').lower() != 'en' else 'en'
@@ -839,7 +845,8 @@ def _prcy89_validate_saved_board_ready_artifact(
     except Exception:  # noqa: BLE001
         traceability_valid = False
 
-    pillar_parity = _pillar_export_parity_check(sections, final_md, app=app)
+    pillar_parity = _pillar_export_parity_check(
+        sections, final_md, app=app, task_id=task_id)
     rel2_sp = pillar_parity.get('rel2_section_parity') or {}
     if rel2_sp.get('parity_passed'):
         export_parity_valid = True
@@ -1012,7 +1019,7 @@ def finalize_post_board_ready_artifact(
         },
     }
     validation = _prcy89_validate_saved_board_ready_artifact(
-        artifact, app, lang=lang_n)
+        artifact, app, lang=lang_n, task_id=task_id)
     sections['kpis'] = _strip_kri_appendix_from_kpis(
         sections.get('kpis', '') or '')
     for err in validation.get('blocking_errors') or []:
@@ -1020,7 +1027,7 @@ def finalize_post_board_ready_artifact(
             blocking.append(err)
 
     pillar_parity = _pillar_export_parity_check(
-        sections, final_markdown, app=app)
+        sections, final_markdown, app=app, task_id=task_id)
     _emit('PILLAR-EXPORT-PARITY-CHECK', pillar_parity)
     rel2_sp = pillar_parity.get('rel2_section_parity') or {}
     if rel2_sp.get('parity_passed'):

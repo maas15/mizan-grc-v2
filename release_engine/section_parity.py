@@ -167,13 +167,13 @@ def evaluate_section_parity(
     final_hash = artifact.get('final_hash') or (
         hash_fn(final_md) if hash_fn and final_md else '')
 
-    final_bundle, final_model, _ = _build_model_bundle(artifact, backend, lang)
-    preview_bundle, preview_model, preview_hash = _build_model_bundle(
+    # Single professional-model build — preview/docx/pdf bundles share the
+    # same artifact; four builds were redundant and stalled final_audit.
+    final_bundle, final_model, preview_hash = _build_model_bundle(
         artifact, backend, lang)
-    docx_bundle, docx_model, docx_hash = _build_model_bundle(
-        artifact, backend, lang)
-    pdf_bundle, pdf_model, pdf_hash = _build_model_bundle(
-        artifact, backend, lang)
+    preview_bundle, preview_model = final_bundle, final_model
+    docx_bundle, docx_model, docx_hash = final_bundle, final_model, preview_hash
+    pdf_bundle, pdf_model, pdf_hash = final_bundle, final_model, preview_hash
 
     final_section_hashes = _section_hashes_for_bundle(final_bundle, hash_fn)
     preview_section_hashes = _section_hashes_for_bundle(preview_bundle, hash_fn)

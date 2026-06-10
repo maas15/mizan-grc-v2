@@ -530,6 +530,20 @@ def collect_rendered_texts(
         meta.get('selected_frameworks')
         or artifact.get('selected_frameworks') or [])
 
+    hash_fn = backend.get('content_hash')
+    content_key = (
+        artifact.get('final_hash')
+        or (hash_fn(final_md) if hash_fn and final_md else final_md[:256]))
+    rel2_cache = backend.get('_rel2_cache') or {}
+    export_cache = rel2_cache.get('exports') or {}
+    cached = export_cache.get(content_key)
+    if cached and isinstance(cached, dict):
+        return (
+            cached.get('preview_text', final_md),
+            cached.get('docx_text', ''),
+            cached.get('pdf_text', ''),
+        )
+
     preview_text = final_md
     build_model = backend.get('build_professional_model')
     render_fn = backend.get('render_professional_model_as_markdown')
@@ -585,6 +599,16 @@ def collect_rendered_texts(
                 pdf_text = extract_pdf_visible_text(pdf_bytes)
         except Exception:  # noqa: BLE001
             pdf_text = ''
+
+    if content_key and rel2_cache is not None:
+        if 'exports' not in rel2_cache:
+            rel2_cache['exports'] = {}
+        rel2_cache['exports'][content_key] = {
+            'preview_text': preview_text,
+            'docx_text': docx_text,
+            'pdf_text': pdf_text,
+        }
+        backend['_rel2_cache'] = rel2_cache
 
     return preview_text, docx_text, pdf_text
 
