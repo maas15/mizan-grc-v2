@@ -5355,6 +5355,21 @@ def enrich_professional_blocks(
     return model
 
 
+def _resolve_content_sections(
+        content: str,
+        sections: Optional[Dict[str, str]],
+        section_splitter=None,
+) -> Dict[str, str]:
+    """Resolve section map without importing ``app`` (avoids circular import)."""
+    content_sections = sections if isinstance(sections, dict) else {}
+    if not content_sections and content and section_splitter is not None:
+        try:
+            content_sections = section_splitter(content) or {}
+        except Exception:  # noqa: BLE001
+            content_sections = {}
+    return content_sections
+
+
 def ensure_strategy_professional_model(
         model: Optional[Dict[str, Any]],
         *,
@@ -5364,6 +5379,7 @@ def ensure_strategy_professional_model(
         selected_frameworks: Optional[List[str]] = None,
         lang: str = 'ar',
         domain: Optional[str] = None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
     if model and model.get('render_layer') == 'prcy41_professional':
@@ -5377,13 +5393,8 @@ def ensure_strategy_professional_model(
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
 
@@ -5398,6 +5409,7 @@ def build_professional_strategy_document_model(
         *,
         base_builder=None,
         narrative_composer=None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """Build the 17-block professional model with structured render tables.
 
@@ -5437,13 +5449,8 @@ def build_professional_strategy_document_model(
     else:
         raise ValueError('base_builder or narrative_composer required')
 
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
 
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)

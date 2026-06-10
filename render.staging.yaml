@@ -1,0 +1,39 @@
+# PR-REL2.3 staging-equivalent Render blueprint (Option A).
+# Create a NEW web service — do NOT point this at production mizan-grc.
+#
+# Render Dashboard:
+#   New + → Blueprint → connect maas15/mizan-grc-v2
+#   OR: New Web Service → use this file as reference for settings.
+#
+# Service name: mizan-grc-staging
+# Expected URL:  https://mizan-grc-staging.onrender.com
+#
+# After create: Settings → Deploy Hook → copy URL into RENDER_STAGING_DEPLOY_HOOK_URL
+
+services:
+  - type: web
+    name: mizan-grc-staging
+    runtime: python
+    repo: https://github.com/maas15/mizan-grc-v2
+    branch: release-hardening/rel2-national-launch
+    buildCommand: pip install -r requirements.txt && python scripts/ensure_render_fonts.py
+    startCommand: gunicorn -c gunicorn_config.py app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: "/opt/render/project/src/mizan_staging.db"
+      - key: AI_PROVIDER
+        value: auto
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
