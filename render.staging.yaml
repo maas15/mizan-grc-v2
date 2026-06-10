@@ -1,4 +1,6 @@
 # PR-REL2.3 staging-equivalent Render blueprint (Option A).
+# Python pin: repo root .python-version (3.12.10) + PYTHON_VERSION below.
+# Render ignores Heroku-style runtime.txt — see render.com/docs/python-version.
 # Create a NEW web service — do NOT point this at production mizan-grc.
 #
 # Render Dashboard:

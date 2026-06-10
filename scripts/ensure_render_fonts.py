@@ -20,13 +20,14 @@ def main() -> int:
     if ver >= (3, 14):
         raise RuntimeError(
             f'Python {ver.major}.{ver.minor}.{ver.micro} is unsupported; '
-            'pin runtime.txt to python-3.12.10 (ReportLab breaks on 3.14+)')
+            'add .python-version (3.12.10) or set PYTHON_VERSION=3.12.10 '
+            'on Render — ReportLab breaks on 3.14+')
     try:
         from reportlab.lib.pagesizes import A4  # noqa: F401
     except RecursionError as exc:
         raise RuntimeError(
             'reportlab import failed with RecursionError — '
-            'use Python 3.12.x via runtime.txt') from exc
+            'use Python 3.12.x via .python-version or PYTHON_VERSION') from exc
     os.makedirs(FONT_DIR, exist_ok=True)
     if os.path.isfile(TARGET) and os.path.getsize(TARGET) > 10_000:
         print(f'[FONT-REG] bundled font already present: {TARGET}', flush=True)
