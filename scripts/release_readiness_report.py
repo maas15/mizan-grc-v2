@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 REL2_TESTS = [
     'tests/test_release_national_matrix_rel2.py',
     'tests/test_rel21_cy89_integration.py',
+    'tests/test_rel22_so_canonical_model.py',
+    'tests/test_rel23_live_artifact_parity_and_quality.py',
+    'tests/test_rel24_substantive_quality_gate.py',
+    'tests/test_rel25_rendered_evidence_quality.py',
+    'tests/test_rel26_actual_export_evidence_gate.py',
     'tests/test_legacy_gate_retirement_rel2.py',
     'tests/test_export_contract_rel2.py',
     'tests/test_domain_packs_rel2.py',

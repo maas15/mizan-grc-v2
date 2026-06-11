@@ -698,49 +698,70 @@ def _ensure_minimum_pillar_blocks(
 
 
 def _pillar_export_parity_check(
-        sections: dict, final_markdown: str) -> dict:
+        sections: dict, final_markdown: str, app=None,
+        *, task_id: str = '') -> dict:
+    """Delegate to REL2.3 section parity when available."""
+    try:
+        from release_engine.section_parity import evaluate_section_parity
+        app = app or _load_app_module()
+        backend = {}
+        if hasattr(app, '_rel2_backend_callables'):
+            _pipe_cache = None
+            if task_id and hasattr(app, '_REL2_PIPELINE_CACHES'):
+                _pipe_cache = app._REL2_PIPELINE_CACHES.get(task_id)
+            backend = app._rel2_backend_callables(
+                pipeline_cache=_pipe_cache)
+        elif hasattr(app, '_prcy25_compute_content_hash'):
+            backend['content_hash'] = app._prcy25_compute_content_hash
+        artifact = {
+            'sections': sections,
+            'final_markdown': final_markdown,
+            'final_hash': backend.get('content_hash', _section_hash)(
+                final_markdown) if backend.get('content_hash') else '',
+            'domain': 'cyber',
+        }
+        parity = evaluate_section_parity(artifact, backend, lang='ar')
+        return {
+            'preview_pillars_present': parity.get('pillars_present_preview'),
+            'docx_pillars_present': parity.get('pillars_present_docx'),
+            'pdf_pillars_present': parity.get('pillars_present_pdf'),
+            'pillar_hashes_match': (
+                parity.get('docx_section_hashes', {}).get('pillars')
+                == parity.get('final_section_hashes', {}).get('pillars')),
+            'sections_pillar_hash': parity.get(
+                'final_section_hashes', {}).get('pillars'),
+            'markdown_pillar_signal': parity.get(
+                'preview_section_hashes', {}).get('pillars'),
+            'action_taken': (
+                'parity_ok' if parity.get('parity_passed')
+                else 'section_parity_failed'),
+            'blocking_error_if_any': parity.get('blocking_error_if_any'),
+            'export_parity_valid': parity.get('parity_passed'),
+            'rel2_section_parity': parity,
+        }
+    except Exception:  # noqa: BLE001
+        pass
     pil = sections.get('pillars', '') or ''
     preview = _pillar_present(pil)
-    docx = preview
-    pdf = preview
-    h_pil = _section_hash(pil)
-    pil_in_md = ''
-    if final_markdown:
-        _idx = final_markdown.find('الركائز')
-        if _idx < 0:
-            _idx = final_markdown.lower().find('strategic pillars')
-        if _idx >= 0:
-            _start = final_markdown.rfind('\n## ', 0, _idx)
-            if _start < 0:
-                _start = max(0, _idx - 4)
-            _chunk = final_markdown[_start:]
-            _end = _chunk.find('\n## ', 4)
-            pil_in_md = _chunk[:_end] if _end > 0 else _chunk
-    h_md = _section_hash(pil_in_md)
-    parity = preview == docx == pdf
     blocking = ''
-    action = 'parity_ok'
-    if preview and pil_in_md.strip() and h_pil != h_md:
-        blocking = 'pillar_sections_hash_mismatch'
-        action = 'pillar_hash_mismatch'
     if not preview:
         blocking = 'cyber_board_ready_pillars_failed:empty_pillars'
-        action = 'pillars_empty_blocks'
     return {
         'preview_pillars_present': preview,
-        'docx_pillars_present': docx,
-        'pdf_pillars_present': pdf,
-        'pillar_hashes_match': (not pil.strip()) or (h_pil == h_pil),
-        'sections_pillar_hash': h_pil,
-        'markdown_pillar_signal': h_md,
-        'action_taken': action,
+        'docx_pillars_present': False,
+        'pdf_pillars_present': False,
+        'pillar_hashes_match': False,
+        'sections_pillar_hash': _section_hash(pil),
+        'markdown_pillar_signal': '',
+        'action_taken': 'fallback_check',
         'blocking_error_if_any': blocking,
-        'export_parity_valid': parity and not blocking,
+        'export_parity_valid': False,
     }
 
 
 def _prcy89_validate_saved_board_ready_artifact(
-        artifact: dict, app=None, *, lang: str = 'ar') -> dict:
+        artifact: dict, app=None, *, lang: str = 'ar',
+        task_id: str = '') -> dict:
     """Read-only validation on the exact artifact saved/exported."""
     app = app or _load_app_module()
     lang_n = 'ar' if str(lang or '').lower() != 'en' else 'en'
@@ -824,11 +845,23 @@ def _prcy89_validate_saved_board_ready_artifact(
     except Exception:  # noqa: BLE001
         traceability_valid = False
 
-    pillar_parity = _pillar_export_parity_check(sections, final_md)
-    export_parity_valid = (
-        hashes_match
-        and pillar_parity.get('export_parity_valid')
-        and preview_hash == docx_hash == pdf_hash)
+    pillar_parity = _pillar_export_parity_check(
+        sections, final_md, app=app, task_id=task_id)
+    rel2_sp = pillar_parity.get('rel2_section_parity') or {}
+    if rel2_sp.get('parity_passed'):
+        export_parity_valid = True
+        if rel2_sp.get('preview_hash'):
+            preview_hash = rel2_sp['preview_hash']
+        if rel2_sp.get('docx_hash'):
+            docx_hash = rel2_sp['docx_hash']
+        if rel2_sp.get('pdf_hash'):
+            pdf_hash = rel2_sp['pdf_hash']
+        hashes_match = rel2_sp.get('whole_hashes_match', hashes_match)
+    else:
+        export_parity_valid = (
+            hashes_match
+            and pillar_parity.get('export_parity_valid')
+            and preview_hash == docx_hash == pdf_hash)
 
     blocking: List[str] = []
     if so_shifted:
@@ -935,6 +968,15 @@ def finalize_post_board_ready_artifact(
             sections, _pil_d = baseline_pillars(app, sections, lang_n)
         else:
             _pil_d = {'gate_passed': True}
+    try:
+        from release_engine.pillar_model import finalize_pillars
+        _pil_backend = (
+            app._rel2_backend_callables()
+            if hasattr(app, '_rel2_backend_callables') else {})
+        sections, _rel23_pil = finalize_pillars(
+            sections, lang=lang_n, domain='cyber', backend=_pil_backend)
+    except Exception:  # noqa: BLE001
+        _rel23_pil = {}
     pil_blocks = _pillar_blocks(sections.get('pillars', '') or '')
     if (
             not _pillar_present(sections.get('pillars', '') or '')
@@ -977,15 +1019,34 @@ def finalize_post_board_ready_artifact(
         },
     }
     validation = _prcy89_validate_saved_board_ready_artifact(
-        artifact, app, lang=lang_n)
+        artifact, app, lang=lang_n, task_id=task_id)
     sections['kpis'] = _strip_kri_appendix_from_kpis(
         sections.get('kpis', '') or '')
     for err in validation.get('blocking_errors') or []:
         if err not in blocking:
             blocking.append(err)
 
-    pillar_parity = _pillar_export_parity_check(sections, final_markdown)
+    pillar_parity = _pillar_export_parity_check(
+        sections, final_markdown, app=app, task_id=task_id)
     _emit('PILLAR-EXPORT-PARITY-CHECK', pillar_parity)
+    rel2_sp = pillar_parity.get('rel2_section_parity') or {}
+    if rel2_sp.get('parity_passed'):
+        _parity_stale = (
+            'export_hash_parity_invalid',
+            'rel2_section_parity_failed:pillars',
+        )
+        blocking = [
+            b for b in blocking
+            if b not in _parity_stale
+            and not str(b).startswith('rel2_section_parity_failed')]
+        validation = dict(validation)
+        v_block = [
+            b for b in (validation.get('blocking_errors') or [])
+            if b not in _parity_stale
+            and not str(b).startswith('rel2_section_parity_failed')]
+        validation['blocking_errors'] = v_block
+        validation['export_parity_valid'] = True
+        validation['artifact_validation_passed'] = not v_block
 
     post_fp = _content_fingerprint(sections)
     if detect_post_board_ready_mutation(frozen_fp, sections):
@@ -995,7 +1056,10 @@ def finalize_post_board_ready_artifact(
             current=post_fp,
         )
 
-    passed = not blocking and validation.get('artifact_validation_passed')
+    passed = (
+        not blocking
+        and (validation.get('artifact_validation_passed')
+             or rel2_sp.get('parity_passed')))
 
     sections['_prcy89_frozen_fingerprint'] = post_fp
     sections['_prcy89_board_ready_sealed'] = passed

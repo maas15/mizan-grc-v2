@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
 # Longest patterns first — shorter keys must not run before longer ones.
 PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
+    # PR-REL2.6 — live export Arabic residue fixes.
+    ('الحاليةفي', 'الحالية في'),
+    ('الموظفينفي', 'الموظفين في'),
+    ('رئيسيةفي', 'رئيسية في'),
+    ('حلولمنع', 'حلول لمنع'),
     # PR-CY59 — executive-role and compound spacing defects (longest first).
     ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
     ('امتثاللا تقلعن', 'امتثال لا تقل عن'),
@@ -360,6 +365,14 @@ def normalize_arabic_for_render(text: str) -> str:
             out = out.replace(bad, good)
     if re.search(r'CISO\s+CISO', out, re.IGNORECASE):
         out = re.sub(r'CISO\s+CISO', 'CISO', out, flags=re.IGNORECASE)
+    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
+    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
+    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(
+        r'(?<![\w\u0600-\u06FF])ل\s+منع(?![\w\u0600-\u06FF])', 'لمنع', out)
+    out = out.replace('لل معالجة', 'للمعالجة')
     return out
 
 
@@ -3696,9 +3709,9 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
                 if lang == 'ar' else
                 '(Encrypted assets/data / classified sensitive data) × 100')
     if any(k in n for k in ('%', 'نسبة', 'تغطية', 'coverage', 'rate')):
-        return ('(عدد العناصر المطابقة / إجمالي العناصر) × 100'
+        return ('(المنجز المقيس ÷ الهدف التشغيلي المعتمد) × 100'
                 if lang == 'ar'
-                else '(Compliant items / total items) × 100')
+                else '(Measured achievement ÷ approved operational target) × 100')
     return ('(المنجز / المخطط) × 100' if lang == 'ar'
             else '(Achieved / planned) × 100')
 
@@ -4337,7 +4350,7 @@ def normalize_pillar_blocks(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     blocks = []
     chunks = re.split(
-        r'(?=^#{2,4}\s+(?:الركيزة|Pillar|\d+\.))',
+        r'(?=^#{3,4}\s+)',
         section_text or '', flags=re.MULTILINE | re.IGNORECASE)
     for chunk in chunks:
         chunk = chunk.strip()
@@ -5208,11 +5221,16 @@ def enrich_professional_blocks(
         'tables': [so_tbl] if so_tbl else [],
     }
 
-    # Pillars
-    pil = _sec('strategic_pillars')
+    # Pillars — parse initiative tables from raw section text before
+    # PR-CY47 prose cleanup strips markdown pipe rows.
+    pil_blk = blocks.get('strategic_pillars') or {}
+    pil_raw = (
+        pil_blk.get('content')
+        or (content_sections or {}).get('pillars', '')
+        or '')
     blocks['strategic_pillars'] = {
-        **(blocks.get('strategic_pillars') or {}),
-        'pillar_blocks': normalize_pillar_blocks(pil, lang_n),
+        **pil_blk,
+        'pillar_blocks': normalize_pillar_blocks(pil_raw, lang_n),
     }
 
     # Environment — regulatory + threat prose + compact normalized table.
@@ -5350,6 +5368,21 @@ def enrich_professional_blocks(
     return model
 
 
+def _resolve_content_sections(
+        content: str,
+        sections: Optional[Dict[str, str]],
+        section_splitter=None,
+) -> Dict[str, str]:
+    """Resolve section map without importing ``app`` (avoids circular import)."""
+    content_sections = sections if isinstance(sections, dict) else {}
+    if not content_sections and content and section_splitter is not None:
+        try:
+            content_sections = section_splitter(content) or {}
+        except Exception:  # noqa: BLE001
+            content_sections = {}
+    return content_sections
+
+
 def ensure_strategy_professional_model(
         model: Optional[Dict[str, Any]],
         *,
@@ -5359,6 +5392,7 @@ def ensure_strategy_professional_model(
         selected_frameworks: Optional[List[str]] = None,
         lang: str = 'ar',
         domain: Optional[str] = None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
     if model and model.get('render_layer') == 'prcy41_professional':
@@ -5372,13 +5406,8 @@ def ensure_strategy_professional_model(
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
 
@@ -5393,6 +5422,7 @@ def build_professional_strategy_document_model(
         *,
         base_builder=None,
         narrative_composer=None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """Build the 17-block professional model with structured render tables.
 
@@ -5432,13 +5462,8 @@ def build_professional_strategy_document_model(
     else:
         raise ValueError('base_builder or narrative_composer required')
 
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
 
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
