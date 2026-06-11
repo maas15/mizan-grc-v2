@@ -237,6 +237,7 @@ def process_release_artifact(
             _rel2_store['rel25'] = rel25_diags
         if rel26_diags:
             _rel2_store['rel26'] = rel26_diags
+            _rel2_store['rel27'] = rel26_diags
         merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(

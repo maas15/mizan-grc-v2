@@ -413,7 +413,13 @@ def _repair_kpis(text: str) -> str:
         return text
     new_rows = []
     for cells in rows:
-        c, _ = _repair_row_semantics(list(cells))
+        c = list(cells)
+        if c and re.match(r'^NCA\s*(DCC|ECC)', str(c[0]).strip(), re.I):
+            continue
+        name_probe = c[1] if len(c) > 1 else ''
+        if any(bad in name_probe for bad in FORBIDDEN_KPI_NAMES):
+            continue
+        c, _ = _repair_row_semantics(c)
         name = c[1] if len(c) > 1 else ''
         target = c[2] if len(c) > 2 else ''
         if _DLP_INCIDENT_BAD in name or (
@@ -436,13 +442,23 @@ def _repair_kpis(text: str) -> str:
                 c[4] = _DLP_KRI_REPLACEMENT['source']
             if len(c) > 5:
                 c[5] = 'مدير حماية البيانات'
+        if len(c) > 3:
+            for gf in _GENERIC_FORMULA_VARIANTS:
+                if gf in (c[3] or ''):
+                    c[3] = (
+                        c[1] if c[1] else 'صيغة احتساب معتمدة للمؤشر')
         new_rows.append(c)
-    # Drop duplicate critical-incident rows that still carry percent KPI targets.
+    # Drop duplicate critical-incident rows and duplicate MTTR metrics.
     seen_kri = False
+    seen_mttr = False
     deduped_rows: List[List[str]] = []
     for c in new_rows:
         name = c[1] if len(c) > 1 else ''
         target = c[2] if len(c) > 2 else ''
+        if 'MTTR' in name.upper():
+            if seen_mttr:
+                continue
+            seen_mttr = True
         if 'عدد حوادث تسرب البيانات الحرجة' in name:
             if seen_kri:
                 continue
@@ -460,7 +476,19 @@ def _repair_kpis(text: str) -> str:
         if cells and cells[0].isdigit() and row_i < len(new_rows):
             out_lines[i] = '| ' + ' | '.join(new_rows[row_i]) + ' |'
             row_i += 1
-    return '\n'.join(out_lines)
+    final_lines: List[str] = []
+    for ln in out_lines:
+        if ln.strip().startswith('|') and '---' not in ln:
+            cells = [c.strip() for c in ln.strip('|').split('|')]
+            if cells and re.match(r'^NCA\s*(DCC|ECC)', cells[0], re.I):
+                continue
+            joined = ln
+            for gf in _GENERIC_FORMULA_VARIANTS:
+                if gf in joined:
+                    joined = joined.replace(gf, cells[1] if len(cells) > 1 else '')
+            ln = joined
+        final_lines.append(ln)
+    return '\n'.join(final_lines)
 
 
 def _repair_risk_treatments(text: str) -> str:
@@ -580,6 +608,8 @@ def repair_sections_for_rendered_evidence(
         sections_kpi, _ = _apply_inline_kpi_repairs({'kpis': out['kpis']})
         out['kpis'] = _repair_kpis(sections_kpi.get('kpis', out['kpis']))
     out, _ = finalize_kpi_substance(out, lang=lang, backend=backend)
+    if out.get('kpis'):
+        out['kpis'] = _repair_kpis(out['kpis'])
     for key in ('confidence', 'risk', 'risk_register'):
         if out.get(key):
             out[key] = _repair_risk_treatments(out[key])

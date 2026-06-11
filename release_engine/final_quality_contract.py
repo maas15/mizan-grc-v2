@@ -26,6 +26,7 @@ CRITICAL_BLOCKER_PREFIXES = (
     'rel2_substantive_quality_failed',
     'rel2_rendered_evidence_failed',
     'rel2_actual_export_evidence_failed',
+    'rel2_export_model_drift',
 )
 
 
@@ -125,16 +126,32 @@ def _rel25_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
 def _rel26_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
     rel26 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
         'rel26') or {}
-    if not rel26:
+    rel27 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
+        'rel27') or {}
+    ev = (rel27.get('export') or rel26.get('export') or {})
+    if not ev:
         return {
             'actual_export_evidence_passed': True,
             'preview_export_evidence_passed': True,
             'docx_export_evidence_passed': True,
             'pdf_export_evidence_passed': True,
+            'no_export_forbidden_patterns': True,
+            'final_sections_visible': True,
+            'final_kpi_visible_valid': True,
+            'final_roadmap_visible_valid': True,
+            'final_risk_treatments_visible': True,
+            'final_traceability_visible_valid': True,
+            'final_arabic_visible_quality_passed': True,
+            'exported_kpi_canonical_valid': True,
+            'exported_roadmap_coverage_valid': True,
+            'exported_risk_treatment_valid': True,
+            'exported_traceability_valid': True,
+            'exported_arabic_quality_valid': True,
             'rel26_blocking_errors': [],
+            'rel27_blocking_errors': [],
         }
-    ev = rel26.get('export') or {}
-    passed = bool(ev.get('export_evidence_passed'))
+    passed = bool(
+        ev.get('actual_export_evidence_passed', ev.get('export_evidence_passed')))
     blockers = list(ev.get('blocking_errors') or [])
     return {
         'actual_export_evidence_passed': passed,
@@ -146,7 +163,32 @@ def _rel26_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
             ev.get('pdf_export_evidence_passed', passed)),
         'pdf_text_extraction_unreliable': bool(
             ev.get('pdf_text_extraction_unreliable')),
+        'no_export_forbidden_patterns': bool(
+            ev.get('no_export_forbidden_patterns', passed)),
+        'final_sections_visible': not (ev.get('docx_missing_sections')
+                                       or ev.get('pdf_missing_sections')),
+        'final_kpi_visible_valid': bool(
+            ev.get('exported_kpi_canonical_valid', passed)),
+        'final_roadmap_visible_valid': bool(
+            ev.get('exported_roadmap_coverage_valid', passed)),
+        'final_risk_treatments_visible': bool(
+            ev.get('exported_risk_treatment_valid', passed)),
+        'final_traceability_visible_valid': bool(
+            ev.get('exported_traceability_valid', passed)),
+        'final_arabic_visible_quality_passed': bool(
+            ev.get('exported_arabic_quality_valid', passed)),
+        'exported_kpi_canonical_valid': bool(
+            ev.get('exported_kpi_canonical_valid', passed)),
+        'exported_roadmap_coverage_valid': bool(
+            ev.get('exported_roadmap_coverage_valid', passed)),
+        'exported_risk_treatment_valid': bool(
+            ev.get('exported_risk_treatment_valid', passed)),
+        'exported_traceability_valid': bool(
+            ev.get('exported_traceability_valid', passed)),
+        'exported_arabic_quality_valid': bool(
+            ev.get('exported_arabic_quality_valid', passed)),
         'rel26_blocking_errors': blockers,
+        'rel27_blocking_errors': blockers,
     }
 
 
@@ -287,6 +329,15 @@ def evaluate_final_quality(
     rel24_ready = rel24_checks.get('board_ready_substance_passed', True)
     rel25_ready = rel25_checks.get('rendered_evidence_passed', True)
     rel26_ready = rel26_checks.get('actual_export_evidence_passed', True)
+    rel27_export_ready = (
+        rel26_checks.get('exported_kpi_canonical_valid', True)
+        and rel26_checks.get('exported_roadmap_coverage_valid', True)
+        and rel26_checks.get('exported_risk_treatment_valid', True)
+        and rel26_checks.get('exported_traceability_valid', True)
+        and rel26_checks.get('exported_arabic_quality_valid', True)
+        and rel26_checks.get('no_export_forbidden_patterns', True)
+        and rel26_checks.get('final_sections_visible', True)
+    )
 
     release_ready = (
         sealed
@@ -302,6 +353,7 @@ def evaluate_final_quality(
         and rel24_ready
         and rel25_ready
         and rel26_ready
+        and rel27_export_ready
     )
 
     contract_payload = {

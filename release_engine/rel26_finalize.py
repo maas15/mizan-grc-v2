@@ -4,13 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from release_engine.export_evidence_validator import (
-    repair_before_export_if_possible,
-    validate_artifact_actual_exports,
-)
-from release_engine.rel25_finalize import apply_rel25_cyber_evidence_finalize
-
-
 def apply_rel26_cyber_export_evidence_finalize(
         artifact: Dict[str, Any],
         *,
@@ -36,23 +29,14 @@ def apply_rel26_cyber_export_evidence_finalize(
     rel2_cache.pop('exports', None)
 
     export_diag: Dict[str, Any] = {}
-    for _pass in range(3):
-        export_diag = validate_artifact_actual_exports(
-            merged, backend, domain=dcode, lang=lang,
-            require_docx=True, require_pdf=True)
-        if export_diag.get('export_evidence_passed'):
-            break
-        repair_actions.append('rel26:actual_export_evidence_repaired')
-        merged, rep = repair_before_export_if_possible(
-            merged, domain=dcode, lang=lang, backend=backend)
-        repair_actions.extend(rep)
-        merged, _, _ = apply_rel25_cyber_evidence_finalize(
-            merged, domain=dcode, lang=lang, backend=backend)
-        export_diag = validate_artifact_actual_exports(
-            merged, backend, domain=dcode, lang=lang,
-            require_docx=True, require_pdf=True)
-        if export_diag.get('export_evidence_passed'):
-            break
+    from release_engine.rel27_finalize import (
+        REL27_MAX_REPAIR_ATTEMPTS,
+        apply_rel27_cyber_export_evidence_finalize,
+    )
+    merged, repair_actions, diags = apply_rel27_cyber_export_evidence_finalize(
+        merged, domain=dcode, lang=lang, backend=backend)
+    export_diag = diags.get('export') or {}
+    _ = REL27_MAX_REPAIR_ATTEMPTS  # re-export name for tests
 
     return merged, repair_actions, {'export': export_diag}
 

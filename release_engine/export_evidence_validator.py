@@ -1,4 +1,4 @@
-"""PR-REL2.6 — validate actual exported DOCX/PDF/preview visible text."""
+"""PR-REL2.6/REL2.7 — validate actual exported DOCX/PDF/preview visible text."""
 
 from __future__ import annotations
 
@@ -7,6 +7,13 @@ import re
 from html import unescape
 from typing import Any, Dict, List, Optional, Tuple
 
+from release_engine.rel27_export_checks import (
+    check_export_model_drift,
+    emit_exported_arabic_residue_check,
+    emit_exported_kpi_canonical_check,
+    emit_exported_roadmap_coverage_check,
+    rel27_channel_checks,
+)
 from release_engine.rendered_evidence_validator import (
     _DLP_INCIDENT_BAD,
     _DLP_KRI_REPLACEMENT,
@@ -93,15 +100,17 @@ def _find_in(blob: str, patterns: Tuple[str, ...]) -> List[str]:
 
 
 def _kpi_defects_in(blob: str) -> List[str]:
-    defects = _find_in(blob, REL26_FORBIDDEN_KPI)
+    from release_engine.rel27_export_checks import _kpi_section_blob
+    scoped = _kpi_section_blob(blob) or blob
+    defects = _find_in(scoped, REL26_FORBIDDEN_KPI)
     for gf in REL26_GENERIC_FORMULAS:
-        if gf in blob:
+        if gf in scoped:
             defects.append('generic_formula')
     if _DLP_INCIDENT_BAD in blob and '%' in blob:
         defects.append(_DLP_INCIDENT_BAD)
     # Critical DLP as KPI with percentage target
-    if 'عدد حوادث تسرب البيانات الحرجة' in blob:
-        for ln in blob.splitlines():
+    if 'عدد حوادث تسرب البيانات الحرجة' in scoped:
+        for ln in scoped.splitlines():
             if 'عدد حوادث تسرب البيانات الحرجة' not in ln:
                 continue
             if re.search(
@@ -257,25 +266,54 @@ def _forbidden_in(blob: str) -> List[str]:
     return list(dict.fromkeys(items))
 
 
-def _channel_defects(text: str) -> Dict[str, List[str]]:
-    # PR-REL2.6: validate raw visible export text — never scrub before detection.
+def _channel_defects(text: str) -> Dict[str, Any]:
+    # PR-REL2.6/7: validate raw visible export text — never scrub before detection.
     blob = text or ''
+    rel27 = rel27_channel_checks(blob)
+    kpi_defects = list(dict.fromkeys(
+        _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
+    roadmap_defects = list(dict.fromkeys(
+        _roadmap_defects_in(blob) + (rel27.get('roadmap_defects') or [])))
+    risk_defects = list(dict.fromkeys(
+        _risk_defects_in(blob) + (rel27.get('risk_defects') or [])))
+    traceability_defects = list(dict.fromkeys(
+        _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
+    arabic_residues = list(dict.fromkeys(
+        _arabic_defects_in(blob) + (rel27.get('arabic_residues') or [])))
+    forbidden = list(dict.fromkeys(
+        _forbidden_in(blob)
+        + (rel27.get('missing_sections') or [])
+        + kpi_defects
+        + roadmap_defects
+        + risk_defects
+        + traceability_defects
+        + arabic_residues))
     return {
-        'forbidden_patterns': _forbidden_in(blob),
-        'kpi_defects': _kpi_defects_in(blob),
-        'risk_defects': _risk_defects_in(blob),
-        'arabic_residues': _arabic_defects_in(blob),
-        'traceability_defects': _trace_defects_in(blob),
-        'roadmap_defects': _roadmap_defects_in(blob),
+        'forbidden_patterns': forbidden,
+        'missing_sections': rel27.get('missing_sections') or [],
+        'kpi_defects': kpi_defects,
+        'risk_defects': risk_defects,
+        'arabic_residues': arabic_residues,
+        'traceability_defects': traceability_defects,
+        'roadmap_defects': roadmap_defects,
+        'kpi_canonical': rel27.get('kpi_canonical') or {},
+        'roadmap_coverage': rel27.get('roadmap_coverage') or {},
+        'arabic_check': rel27.get('arabic_check') or {},
     }
 
 
 def _blocking_from_defects(
-        prefix: str, defects: Dict[str, List[str]]) -> List[str]:
+        prefix: str, defects: Dict[str, Any]) -> List[str]:
     blockers: List[str] = []
+    skip_keys = {'kpi_canonical', 'roadmap_coverage', 'arabic_check'}
     for key, items in defects.items():
+        if key in skip_keys:
+            continue
         for item in items or []:
-            blockers.append(f'{prefix}:{item}')
+            if key == 'missing_sections' and item == 'pillars':
+                blockers.append(f'{prefix}:missing_pillars')
+            else:
+                blockers.append(f'{prefix}:{item}')
     return blockers
 
 
@@ -288,6 +326,10 @@ def validate_actual_export_evidence(
         lang: str = 'ar',
         document_type: str = 'strategy',
         pdf_text_extraction_unreliable: bool = False,
+        route_name: str = '',
+        final_hash: str = '',
+        canonical_sections: Optional[Dict[str, str]] = None,
+        hash_fn=None,
 ) -> Dict[str, Any]:
     """Validate visible text from actual export surfaces (not render model only)."""
     preview_def = _channel_defects(preview_text) if preview_text else {}
@@ -307,12 +349,29 @@ def validate_actual_export_evidence(
         blocking.extend(_blocking_from_defects(
             'rel2_actual_export_evidence_failed:pdf', pdf_def))
 
+    drift: List[str] = []
+    if canonical_sections and route_name not in ('finalize', ''):
+        drift = check_export_model_drift(
+            canonical_sections, preview_text, docx_text, hash_fn=hash_fn)
+    blocking.extend(drift)
+    blocking = list(dict.fromkeys(blocking))
+
+    for prefix, defects in (
+            ('preview', preview_def),
+            ('docx', docx_def),
+            ('pdf', pdf_def)):
+        if defects.get('missing_sections'):
+            for sec in defects['missing_sections']:
+                err = f'rel2_actual_export_evidence_failed:missing_pillars'
+                if sec == 'pillars' and err not in blocking:
+                    blocking.append(err)
+
     preview_passed = (
-        not any(preview_def.values()) if preview_text else True)
+        not _channel_has_defects(preview_def) if preview_text else True)
     docx_passed = (
-        not any(docx_def.values()) if docx_text else True)
+        not _channel_has_defects(docx_def) if docx_text else True)
     pdf_passed = (
-        not any(pdf_def.values()) if pdf_text else True)
+        not _channel_has_defects(pdf_def) if pdf_text else True)
     if pdf_text_extraction_unreliable and pdf_checked:
         pdf_passed = True
 
@@ -322,10 +381,32 @@ def validate_actual_export_evidence(
         and pdf_passed
         and not blocking)
 
+    docx_kpi = docx_def.get('kpi_canonical') or {}
+    pdf_kpi = pdf_def.get('kpi_canonical') or {}
+    docx_road = docx_def.get('roadmap_coverage') or {}
+    pdf_road = pdf_def.get('roadmap_coverage') or {}
+    if docx_kpi:
+        emit_exported_kpi_canonical_check(docx_kpi)
+    if pdf_kpi and not pdf_text_extraction_unreliable:
+        emit_exported_kpi_canonical_check(pdf_kpi)
+    if docx_road:
+        emit_exported_roadmap_coverage_check(docx_road)
+    if pdf_road and not pdf_text_extraction_unreliable:
+        emit_exported_roadmap_coverage_check(pdf_road)
+    for chk in (
+            docx_def.get('arabic_check'),
+            pdf_def.get('arabic_check') if not pdf_text_extraction_unreliable else None,
+            preview_def.get('arabic_check'),
+    ):
+        if chk:
+            emit_exported_arabic_residue_check(chk)
+
     payload = {
         'domain': domain,
         'lang': lang,
         'document_type': document_type,
+        'route_name': route_name or '',
+        'final_hash': final_hash or '',
         'preview_text_checked': bool(preview_text),
         'docx_bytes_checked': bool(docx_text),
         'pdf_bytes_checked': pdf_checked,
@@ -333,8 +414,12 @@ def validate_actual_export_evidence(
         'preview_forbidden_patterns': preview_def.get('forbidden_patterns', []),
         'docx_forbidden_patterns': docx_def.get('forbidden_patterns', []),
         'pdf_forbidden_patterns': pdf_def.get('forbidden_patterns', []),
+        'docx_missing_sections': docx_def.get('missing_sections', []),
+        'pdf_missing_sections': pdf_def.get('missing_sections', []),
         'docx_kpi_defects': docx_def.get('kpi_defects', []),
         'pdf_kpi_defects': pdf_def.get('kpi_defects', []),
+        'docx_roadmap_defects': docx_def.get('roadmap_defects', []),
+        'pdf_roadmap_defects': pdf_def.get('roadmap_defects', []),
         'docx_risk_defects': docx_def.get('risk_defects', []),
         'pdf_risk_defects': pdf_def.get('risk_defects', []),
         'docx_arabic_residues': docx_def.get('arabic_residues', []),
@@ -345,11 +430,53 @@ def validate_actual_export_evidence(
         'docx_export_evidence_passed': docx_passed,
         'pdf_export_evidence_passed': pdf_passed,
         'export_evidence_passed': export_passed,
+        'actual_export_evidence_passed': export_passed,
+        'exported_kpi_canonical_valid': bool(
+            docx_kpi.get('exported_kpi_canonical_valid', True)
+            and (pdf_kpi.get('exported_kpi_canonical_valid', True)
+                 if pdf_checked and not pdf_text_extraction_unreliable else True)),
+        'exported_roadmap_coverage_valid': bool(
+            docx_road.get('exported_roadmap_coverage_valid', True)
+            and (pdf_road.get('exported_roadmap_coverage_valid', True)
+                 if pdf_checked and not pdf_text_extraction_unreliable else True)),
+        'exported_risk_treatment_valid': not (
+            docx_def.get('risk_defects') or pdf_def.get('risk_defects')),
+        'exported_traceability_valid': not (
+            docx_def.get('traceability_defects')
+            or pdf_def.get('traceability_defects')),
+        'exported_arabic_quality_valid': not (
+            docx_def.get('arabic_residues') or pdf_def.get('arabic_residues')
+            or preview_def.get('arabic_residues')),
+        'no_export_forbidden_patterns': not (
+            preview_def.get('forbidden_patterns')
+            or docx_def.get('forbidden_patterns')
+            or pdf_def.get('forbidden_patterns')),
         'blocking_errors': blocking,
         'action_taken': 'validated' if export_passed else 'export_evidence_blocked',
     }
     emit_actual_export_evidence_gate(payload)
     return payload
+
+
+def _channel_has_defects(defects: Dict[str, Any]) -> bool:
+    if not defects:
+        return False
+    for key in (
+            'forbidden_patterns', 'missing_sections', 'kpi_defects',
+            'roadmap_defects', 'risk_defects', 'traceability_defects',
+            'arabic_residues'):
+        if defects.get(key):
+            return True
+    kpi = defects.get('kpi_canonical') or {}
+    if kpi and not kpi.get('exported_kpi_canonical_valid', True):
+        return True
+    road = defects.get('roadmap_coverage') or {}
+    if road and not road.get('exported_roadmap_coverage_valid', True):
+        return True
+    arabic = defects.get('arabic_check') or {}
+    if arabic and not arabic.get('exported_arabic_quality_valid', True):
+        return True
+    return False
 
 
 def emit_actual_export_evidence_gate(payload: Dict[str, Any]) -> None:
@@ -478,6 +605,33 @@ def collect_actual_export_texts(
     return preview_text, docx_text, pdf_text, pdf_unreliable
 
 
+def repair_markdown_for_export(
+        content: str,
+        *,
+        domain: str = 'cyber',
+        lang: str = 'ar',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, List[str]]:
+    """Repair canonical markdown/sections before live export re-generation."""
+    backend = backend or {}
+    split_fn = backend.get('split_sections')
+    rebuild_fn = backend.get('rebuild_markdown')
+    if not split_fn or not rebuild_fn:
+        return content, []
+    try:
+        sections = split_fn(content or '') or {}
+    except Exception:  # noqa: BLE001
+        return content, []
+    if not sections:
+        return content, []
+    fixed = repair_sections_for_rendered_evidence(
+        sections, lang=lang, domain=domain, backend=backend)
+    if fixed == sections:
+        return content, []
+    rebuilt = rebuild_fn(fixed)
+    return rebuilt or content, ['rel27:live_export_content_repaired']
+
+
 def validate_artifact_actual_exports(
         artifact: Dict[str, Any],
         backend: Dict[str, Any],
@@ -488,15 +642,31 @@ def validate_artifact_actual_exports(
         preview_html: str = '',
         require_docx: bool = False,
         require_pdf: bool = False,
+        route_name: str = 'finalize',
 ) -> Dict[str, Any]:
     preview_text, docx_text, pdf_text, pdf_unreliable = (
         collect_actual_export_texts(
             artifact, backend, lang=lang, domain=domain,
             preview_html=preview_html))
+    sections = {
+        k: v for k, v in (artifact.get('sections') or {}).items()
+        if isinstance(v, str) and not str(k).startswith('_')}
+    if sections:
+        preview_text = '\n\n'.join(
+            (sections.get(k) or '').strip()
+            for k in (
+                'vision', 'pillars', 'environment', 'gaps',
+                'roadmap', 'kpis', 'confidence', 'traceability',
+            )
+            if (sections.get(k) or '').strip())
     gate = validate_actual_export_evidence(
         preview_text, docx_text, pdf_text,
         domain=domain, lang=lang, document_type=document_type,
         pdf_text_extraction_unreliable=pdf_unreliable,
+        route_name=route_name,
+        final_hash=artifact.get('final_hash') or '',
+        canonical_sections=sections or None,
+        hash_fn=backend.get('content_hash'),
     )
     if require_docx and not docx_text:
         gate['export_evidence_passed'] = False
@@ -522,7 +692,7 @@ def validate_artifact_actual_exports(
             err = 'rel2_actual_export_evidence_failed:pdf_bytes_missing'
             if err not in gate['blocking_errors']:
                 gate['blocking_errors'].append(err)
-    if not gate['export_evidence_passed']:
+    if not gate.get('actual_export_evidence_passed'):
+        gate['export_evidence_passed'] = False
         gate['action_taken'] = 'export_evidence_blocked'
-    emit_actual_export_evidence_gate(gate)
     return gate
