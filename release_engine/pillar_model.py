@@ -182,7 +182,8 @@ def finalize_pillars(
                 lang=lang,
                 domain=domain,
             )
-            export_parseable = _pillars_export_present(probe)
+            export_parseable = _pillars_export_present(
+                probe, {**sections, 'pillars': text_fixed})
         except Exception:  # noqa: BLE001
             export_parseable = False
 

@@ -30,16 +30,36 @@ def _section_hash(text: str, hash_fn: Optional[Callable[[str], str]] = None) -> 
     return hashlib.sha256(blob.encode('utf-8')).hexdigest() if blob else ''
 
 
-def _pillars_export_present(model: Optional[Dict[str, Any]]) -> bool:
-    if not model:
+def _pillars_markdown_present(sections: Optional[Dict[str, str]]) -> bool:
+    """True when legacy pillars markdown has substantive initiative tables."""
+    if not sections:
         return False
-    blocks = (model.get('blocks') or {})
-    blk = blocks.get('strategic_pillars') or {}
-    for pb in blk.get('pillar_blocks') or []:
-        tbl = pb.get('table') or {}
-        if tbl.get('rows'):
+    text = (sections.get('pillars') or '').strip()
+    if not text:
+        return False
+    if '|' not in text:
+        return False
+    for ln in text.splitlines():
+        if not ln.strip().startswith('|') or '---' in ln:
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if len(cells) >= 3 and cells[0] not in ('المبادرة', 'Initiative', '#'):
             return True
     return False
+
+
+def _pillars_export_present(
+        model: Optional[Dict[str, Any]],
+        sections: Optional[Dict[str, str]] = None,
+) -> bool:
+    if model:
+        blocks = (model.get('blocks') or {})
+        blk = blocks.get('strategic_pillars') or {}
+        for pb in blk.get('pillar_blocks') or []:
+            tbl = pb.get('table') or {}
+            if tbl.get('rows'):
+                return True
+    return _pillars_markdown_present(sections)
 
 
 def _serialize_pillars_export(model: Optional[Dict[str, Any]]) -> str:
@@ -96,7 +116,10 @@ def _extract_export_section_text(
         legacy = _LEGACY_MAP.get(section_key, section_key)
         return (sections.get(legacy) or '').strip()
     if section_key == 'pillars':
-        return _serialize_pillars_export(model)
+        serialized = _serialize_pillars_export(model)
+        if not serialized.strip():
+            return (sections.get('pillars') or '').strip()
+        return serialized
     if section_key == 'traceability':
         sec = (sections.get('traceability') or '').strip()
         return sec or _serialize_traceability_export(model)
@@ -107,7 +130,7 @@ def _extract_export_section_text(
     }.get(section_key, section_key)
     blocks = model.get('blocks') or {}
     serialized = _serialize_table_section(blocks, block_key)
-    if section_key == 'vision_objectives' and not serialized.strip():
+    if not serialized.strip():
         legacy = _LEGACY_MAP.get(section_key, section_key)
         return (sections.get(legacy) or '').strip()
     return serialized
@@ -207,10 +230,11 @@ def evaluate_section_parity(
         if pdf_section_hashes.get(key) and pdf_section_hashes.get(key) != fh:
             mismatched_sections.append(f'pdf:{key}')
 
-    pillars_present_final = _pillars_export_present(final_model)
-    pillars_present_preview = _pillars_export_present(preview_model)
-    pillars_present_docx = _pillars_export_present(docx_model)
-    pillars_present_pdf = _pillars_export_present(pdf_model)
+    _sections = artifact.get('sections') or {}
+    pillars_present_final = _pillars_export_present(final_model, _sections)
+    pillars_present_preview = _pillars_export_present(preview_model, _sections)
+    pillars_present_docx = _pillars_export_present(docx_model, _sections)
+    pillars_present_pdf = _pillars_export_present(pdf_model, _sections)
 
     if pillars_present_preview and not pillars_present_docx:
         if 'pillars' not in missing_sections_docx:
