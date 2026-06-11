@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
 # Longest patterns first — shorter keys must not run before longer ones.
 PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
+    # PR-REL2.6 — live export Arabic residue fixes.
+    ('الحاليةفي', 'الحالية في'),
+    ('الموظفينفي', 'الموظفين في'),
+    ('رئيسيةفي', 'رئيسية في'),
+    ('حلولمنع', 'حلول منع'),
     # PR-CY59 — executive-role and compound spacing defects (longest first).
     ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
     ('امتثاللا تقلعن', 'امتثال لا تقل عن'),
@@ -360,6 +365,14 @@ def normalize_arabic_for_render(text: str) -> str:
             out = out.replace(bad, good)
     if re.search(r'CISO\s+CISO', out, re.IGNORECASE):
         out = re.sub(r'CISO\s+CISO', 'CISO', out, flags=re.IGNORECASE)
+    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
+    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
+    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(
+        r'(?<![\w\u0600-\u06FF])ل\s+منع(?![\w\u0600-\u06FF])', 'لمنع', out)
+    out = out.replace('لل معالجة', 'للمعالجة')
     return out
 
 
@@ -3696,9 +3709,9 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
                 if lang == 'ar' else
                 '(Encrypted assets/data / classified sensitive data) × 100')
     if any(k in n for k in ('%', 'نسبة', 'تغطية', 'coverage', 'rate')):
-        return ('(القيمة المحققة / القيمة المستهدفة) × 100'
+        return ('(المنجز المقيس ÷ الهدف التشغيلي المعتمد) × 100'
                 if lang == 'ar'
-                else '(Achieved value / target value) × 100')
+                else '(Measured achievement ÷ approved operational target) × 100')
     return ('(المنجز / المخطط) × 100' if lang == 'ar'
             else '(Achieved / planned) × 100')
 

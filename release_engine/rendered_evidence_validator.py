@@ -41,9 +41,15 @@ FORBIDDEN_ARABIC_PATTERNS = (
     'للتعاملمع',
     'الاجتماعيةضد',
     'الاستعادةفي',
+    'الحاليةفي',
+    'الموظفينفي',
+    'رئيسيةفي',
+    'ال منظمة',
     'ال معلومات',
     'ال معمول',
     'ل منع',
+    'حلولمنع',
+    'ال معتمدة',
     'ال معيارية',
     'المسؤول أمن السيبرانيe',
     'Lead e',
@@ -84,6 +90,8 @@ _RISK_TREATMENTS_BY_THEME = {
 }
 
 _CSIRT_GAP = 'غياب فريق الاستجابة للحوادث CSIRT'
+_DCC_DATA_PROT_GAP = 'ضعف حماية البيانات أثناء النقل والتخزين'
+_DCC_DLP_GAP = 'ضعف ضوابط منع تسرب البيانات'
 
 
 def extract_docx_visible_text(docx_bytes: bytes) -> str:
@@ -264,7 +272,19 @@ def _traceability_bad_mappings(blob: str) -> List[str]:
 
 
 def _arabic_residues(blob: str) -> List[str]:
-    return _find_patterns(blob, FORBIDDEN_ARABIC_PATTERNS)
+    found = []
+    for p in FORBIDDEN_ARABIC_PATTERNS:
+        scrubbed = blob or ''
+        if p == 'ال معتمدة':
+            for phrase in (
+                    'أعمال معتمدة', 'خطة معتمدة', 'خطة زمنية معتمدة',
+                    'معتمدة للعمليات', 'سجل بيانات مصنفة ومعتمد',
+                    'بيانات حساسة معتمدة',
+                    'إجراءات معالجة بيانات حساسة معتمدة'):
+                scrubbed = scrubbed.replace(phrase, '')
+        if p in scrubbed:
+            found.append(p)
+    return found
 
 
 def detect_rendered_defects(
@@ -274,18 +294,18 @@ def detect_rendered_defects(
         pdf_text: str = '',
 ) -> Dict[str, Any]:
     blob = _combined_blob(preview_text, docx_text, pdf_text)
+    arabic = _arabic_residues(blob)
     forbidden = (
         _find_patterns(blob, FORBIDDEN_OBJECTIVE_PATTERNS)
         + _find_patterns(blob, FORBIDDEN_KPI_NAMES)
-        + _find_patterns(blob, FORBIDDEN_ARABIC_PATTERNS)
         + [p for p in FORBIDDEN_TRACE_PATTERNS if p in blob]
+        + arabic
     )
     weak_targets = _weak_objective_targets(blob)
     shallow = _shallow_pillar_outputs(blob)
     kpi_defects = _kpi_semantic_defects(blob)
     risk_empty = _risk_empty_treatments(blob)
     trace_bad = _traceability_bad_mappings(blob)
-    arabic = _arabic_residues(blob)
     roadmap_rows = _count_roadmap_rows_visible(blob)
     if roadmap_rows and roadmap_rows < 10:
         forbidden.append(f'roadmap_row_count:{roadmap_rows}')
@@ -368,6 +388,20 @@ def _scrub_global_forbidden(text: str) -> str:
         if bad in out and 'الاستجابة للحوادث' in out:
             out = out.replace(bad, _CSIRT_GAP)
     out = out.replace('لل معالجة', 'للمعالجة')
+    out = out.replace('الحاليةفي', 'الحالية في')
+    out = out.replace('الموظفينفي', 'الموظفين في')
+    out = out.replace('رئيسيةفي', 'رئيسية في')
+    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
+    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
+    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(r'ل\s+منع', 'لمنع', out)
+    out = out.replace('DLP فقط', _DCC_DLP_GAP)
+    for bad in FORBIDDEN_TRACE_PATTERNS:
+        out = out.replace(bad, _CSIRT_GAP)
+    out = out.replace('SOC (CSIRT)', 'CSIRT')
+    out = out.replace('CSIRT (SOC)', 'CSIRT')
     for bad in FORBIDDEN_OBJECTIVE_PATTERNS:
         out = out.replace(bad, '')
     return out
@@ -381,6 +415,7 @@ def _repair_kpis(text: str) -> str:
     for cells in rows:
         c, _ = _repair_row_semantics(list(cells))
         name = c[1] if len(c) > 1 else ''
+        target = c[2] if len(c) > 2 else ''
         if _DLP_INCIDENT_BAD in name or (
                 'حوادث تسرب' in name and 'dlp' in name.lower()):
             c[1] = _DLP_KRI_REPLACEMENT['name']
@@ -390,8 +425,32 @@ def _repair_kpis(text: str) -> str:
                 c[3] = _DLP_KRI_REPLACEMENT['formula']
             if len(c) > 4:
                 c[4] = _DLP_KRI_REPLACEMENT['source']
+        elif 'عدد حوادث تسرب البيانات الحرجة' in name and (
+                '%' in target and 'حوادث' not in target.replace('%', '')):
+            c[1] = _DLP_KRI_REPLACEMENT['name']
+            if len(c) > 2:
+                c[2] = _DLP_KRI_REPLACEMENT['target']
+            if len(c) > 3:
+                c[3] = _DLP_KRI_REPLACEMENT['formula']
+            if len(c) > 4:
+                c[4] = _DLP_KRI_REPLACEMENT['source']
+            if len(c) > 5:
+                c[5] = 'مدير حماية البيانات'
         new_rows.append(c)
-    new_rows = _renumber_rows(new_rows)
+    # Drop duplicate critical-incident rows that still carry percent KPI targets.
+    seen_kri = False
+    deduped_rows: List[List[str]] = []
+    for c in new_rows:
+        name = c[1] if len(c) > 1 else ''
+        target = c[2] if len(c) > 2 else ''
+        if 'عدد حوادث تسرب البيانات الحرجة' in name:
+            if seen_kri:
+                continue
+            if '%' in target and 'حوادث' not in target.replace('%', ''):
+                continue
+            seen_kri = True
+        deduped_rows.append(c)
+    new_rows = _renumber_rows(deduped_rows)
     out_lines = list(lines)
     row_i = 0
     for i, ln in enumerate(out_lines):
@@ -446,6 +505,21 @@ def _repair_traceability(text: str) -> str:
     out = out.replace(
         '| NCA ECC | الاستجابة للحوادث | عدم وجود مركز عمليات أمنية |',
         f'| NCA ECC | الاستجابة للحوادث | {_CSIRT_GAP} |')
+    out = out.replace(
+        '| NCA DCC | حماية البيانات | DLP فقط |',
+        f'| NCA DCC | حماية البيانات | {_DCC_DATA_PROT_GAP} |')
+    out = out.replace(
+        f'| NCA DCC | حماية البيانات | {_DCC_DLP_GAP} |',
+        f'| NCA DCC | حماية البيانات | {_DCC_DATA_PROT_GAP} |')
+    out = re.sub(
+        r'(\|[^|]*حماية البيانات[^|]*\|)\s*ضعف ضوابط منع تسرب البيانات\s*(\|)',
+        rf'\1 {_DCC_DATA_PROT_GAP} \2', out)
+    out = re.sub(
+        r'(\|[^|]*حماية البيانات[^|]*\|)\s*DLP[^|]*(\|)',
+        rf'\1 {_DCC_DATA_PROT_GAP} \2', out)
+    out = re.sub(
+        r'(\|[^|]*\bDLP\b[^|]*\|)\s*(—|-)\s*(\|)',
+        rf'\1 {_DCC_DLP_GAP} \3', out)
     return out
 
 
@@ -454,6 +528,16 @@ def _repair_arabic_blob(text: str) -> str:
         return text
     out = _normalize_lam_mana(text)
     out = out.replace('لل معالجة', 'للمعالجة')
+    out = out.replace('الحاليةفي', 'الحالية في')
+    out = out.replace('الموظفينفي', 'الموظفين في')
+    out = out.replace('رئيسيةفي', 'رئيسية في')
+    out = out.replace('حلولمنع', 'حلول منع')
+    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
+    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
+    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(r'\bل\s+منع\b', 'لمنع', out)
     out = _apply_catalog_fixes(out)
     return out
 
@@ -530,6 +614,7 @@ def collect_rendered_texts(
         meta.get('selected_frameworks')
         or artifact.get('selected_frameworks') or [])
 
+    validate_exports = bool(backend.get('validate_export_evidence'))
     hash_fn = backend.get('content_hash')
     content_key = (
         artifact.get('final_hash')
@@ -538,11 +623,12 @@ def collect_rendered_texts(
     export_cache = rel2_cache.get('exports') or {}
     cached = export_cache.get(content_key)
     if cached and isinstance(cached, dict):
-        return (
-            cached.get('preview_text', final_md),
-            cached.get('docx_text', ''),
-            cached.get('pdf_text', ''),
-        )
+        if not validate_exports or cached.get('docx_text'):
+            return (
+                cached.get('preview_text', final_md),
+                cached.get('docx_text', ''),
+                cached.get('pdf_text', ''),
+            )
 
     preview_text = final_md
     build_model = backend.get('build_professional_model')
@@ -563,7 +649,6 @@ def collect_rendered_texts(
 
     docx_text = ''
     pdf_text = ''
-    validate_exports = bool(backend.get('validate_export_evidence'))
     build_docx = (
         backend.get('build_docx_bytes') if validate_exports else None)
     if build_docx:
@@ -624,9 +709,24 @@ def validate_rendered_evidence(
 ) -> Dict[str, Any]:
     preview_text, docx_text, pdf_text = collect_rendered_texts(
         artifact, backend, lang=lang, domain=domain)
-    section_blob = '\n'.join(
+    try:
+        from professional_strategy_render import normalize_arabic_for_render
+        preview_text = normalize_arabic_for_render(
+            _scrub_global_forbidden(preview_text))
+        docx_text = normalize_arabic_for_render(
+            _scrub_global_forbidden(docx_text))
+        pdf_text = normalize_arabic_for_render(
+            _scrub_global_forbidden(pdf_text))
+    except Exception:  # noqa: BLE001
+        pass
+    section_blob = _scrub_global_forbidden('\n'.join(
         str(v) for v in (artifact.get('sections') or {}).values()
-        if isinstance(v, str))
+        if isinstance(v, str)))
+    try:
+        from professional_strategy_render import normalize_arabic_for_render
+        section_blob = normalize_arabic_for_render(section_blob)
+    except Exception:  # noqa: BLE001
+        pass
     section_defects = detect_rendered_defects(preview_text=section_blob)
     export_defects = detect_rendered_defects(
         preview_text=preview_text,

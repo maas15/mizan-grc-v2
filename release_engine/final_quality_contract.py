@@ -25,6 +25,7 @@ CRITICAL_BLOCKER_PREFIXES = (
     'rel2_export_visual_failed',
     'rel2_substantive_quality_failed',
     'rel2_rendered_evidence_failed',
+    'rel2_actual_export_evidence_failed',
 )
 
 
@@ -118,6 +119,34 @@ def _rel25_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
         'final_traceability_visible_valid': not trace_bad,
         'final_arabic_rendered_quality_passed': not arabic,
         'rel25_blocking_errors': blockers,
+    }
+
+
+def _rel26_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
+    rel26 = ((artifact.get('diagnostics') or {}).get('rel2') or {}).get(
+        'rel26') or {}
+    if not rel26:
+        return {
+            'actual_export_evidence_passed': True,
+            'preview_export_evidence_passed': True,
+            'docx_export_evidence_passed': True,
+            'pdf_export_evidence_passed': True,
+            'rel26_blocking_errors': [],
+        }
+    ev = rel26.get('export') or {}
+    passed = bool(ev.get('export_evidence_passed'))
+    blockers = list(ev.get('blocking_errors') or [])
+    return {
+        'actual_export_evidence_passed': passed,
+        'preview_export_evidence_passed': bool(
+            ev.get('preview_export_evidence_passed', passed)),
+        'docx_export_evidence_passed': bool(
+            ev.get('docx_export_evidence_passed', passed)),
+        'pdf_export_evidence_passed': bool(
+            ev.get('pdf_export_evidence_passed', passed)),
+        'pdf_text_extraction_unreliable': bool(
+            ev.get('pdf_text_extraction_unreliable')),
+        'rel26_blocking_errors': blockers,
     }
 
 
@@ -216,6 +245,7 @@ def evaluate_final_quality(
     rel23_checks = _rel23_contract_checks(artifact)
     rel24_checks = _rel24_contract_checks(artifact)
     rel25_checks = _rel25_contract_checks(artifact)
+    rel26_checks = _rel26_contract_checks(artifact)
     for rb in rel23_checks.get('rel23_blocking_errors') or []:
         if rb not in blocking:
             blocking.append(rb)
@@ -223,6 +253,9 @@ def evaluate_final_quality(
         if rb not in blocking:
             blocking.append(rb)
     for rb in rel25_checks.get('rel25_blocking_errors') or []:
+        if rb not in blocking:
+            blocking.append(rb)
+    for rb in rel26_checks.get('rel26_blocking_errors') or []:
         if rb not in blocking:
             blocking.append(rb)
 
@@ -253,6 +286,7 @@ def evaluate_final_quality(
     )
     rel24_ready = rel24_checks.get('board_ready_substance_passed', True)
     rel25_ready = rel25_checks.get('rendered_evidence_passed', True)
+    rel26_ready = rel26_checks.get('actual_export_evidence_passed', True)
 
     release_ready = (
         sealed
@@ -267,12 +301,14 @@ def evaluate_final_quality(
         and rel23_ready
         and rel24_ready
         and rel25_ready
+        and rel26_ready
     )
 
     contract_payload = {
         **rel23_checks,
         **rel24_checks,
         **rel25_checks,
+        **rel26_checks,
         'release_ready_final_passed': release_ready,
         'blocking_errors': blocking,
     }
@@ -319,6 +355,14 @@ def evaluate_final_quality(
             'final_traceability_visible_valid'),
         'final_arabic_rendered_quality_passed': rel25_checks.get(
             'final_arabic_rendered_quality_passed'),
+        'actual_export_evidence_passed': rel26_checks.get(
+            'actual_export_evidence_passed'),
+        'preview_export_evidence_passed': rel26_checks.get(
+            'preview_export_evidence_passed'),
+        'docx_export_evidence_passed': rel26_checks.get(
+            'docx_export_evidence_passed'),
+        'pdf_export_evidence_passed': rel26_checks.get(
+            'pdf_export_evidence_passed'),
         'checks': {
             'content_completeness': not struct,
             'domain_relevance': scoring.get('dimension_scores', {}).get(

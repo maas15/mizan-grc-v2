@@ -23,6 +23,10 @@ from release_engine.rel25_finalize import (
     apply_rel25_cyber_evidence_finalize,
     rel25_blocking_errors,
 )
+from release_engine.rel26_finalize import (
+    apply_rel26_cyber_export_evidence_finalize,
+    rel26_blocking_errors,
+)
 from release_engine.validator_registry import (
     assert_no_post_sealed_blockers,
     run_rel2_validators,
@@ -77,6 +81,7 @@ def process_release_artifact(
     rel23_diags: dict = {}
     rel24_diags: dict = {}
     rel25_diags: dict = {}
+    rel26_diags: dict = {}
 
     _stale_rel23_prefixes = (
         'rel2_section_parity_failed',
@@ -85,6 +90,7 @@ def process_release_artifact(
         'rel2_kpi_failed',
         'rel2_arabic_quality_failed',
         'rel2_rendered_evidence_failed',
+        'rel2_actual_export_evidence_failed',
         'export_hash_parity_invalid',
         'cyber_board_ready_pillars_failed',
         'pillar_sections_hash_mismatch',
@@ -164,6 +170,26 @@ def process_release_artifact(
             if rb not in blocking:
                 blocking.append(rb)
 
+        merged, rel26_repairs, rel26_diags = (
+            apply_rel26_cyber_export_evidence_finalize(
+                merged,
+                domain=dcode,
+                lang=lang,
+                backend=backend,
+            ))
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel26_repairs)
+        for rb in rel26_blocking_errors(rel26_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+        if (rel26_diags.get('export') or {}).get('export_evidence_passed'):
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith((
+                    'rel2_rendered_evidence_failed',
+                    'rel2_actual_export_evidence_failed',
+                ))]
+
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(
             sections, domain=dcode, lang=lang, domain_pack=domain_pack)
@@ -200,7 +226,7 @@ def process_release_artifact(
     merged['blocking_errors'] = blocking
     merged['repair_actions'] = repair_actions
     merged['sealed'] = not blocking
-    if rel23_diags or rel24_diags or rel25_diags:
+    if rel23_diags or rel24_diags or rel25_diags or rel26_diags:
         merged['diagnostics'] = dict(merged.get('diagnostics') or {})
         _rel2_store = dict(merged['diagnostics'].get('rel2') or {})
         if rel23_diags:
@@ -209,6 +235,8 @@ def process_release_artifact(
             _rel2_store['rel24'] = rel24_diags
         if rel25_diags:
             _rel2_store['rel25'] = rel25_diags
+        if rel26_diags:
+            _rel2_store['rel26'] = rel26_diags
         merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(
@@ -285,6 +313,8 @@ def process_release_artifact(
         diag['rel24'] = rel24_diags
     if rel25_diags:
         diag['rel25'] = rel25_diags
+    if rel26_diags:
+        diag['rel26'] = rel26_diags
     emit_rel2_diag(diag)
 
     merged['rel2_canonical'] = canonical
