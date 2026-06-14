@@ -170,8 +170,14 @@ def _shallow_pillar_outputs(blob: str) -> List[str]:
             continue
         stripped = ln.strip().lstrip('-').strip()
         for p in SHALLOW_PILLAR_PHRASES:
-            if stripped == p:
+            if stripped == p or (
+                    stripped.startswith('|') and f'| {p} |' in stripped):
                 shallow.append(p)
+                continue
+            if '|' in stripped:
+                cells = [c.strip() for c in stripped.strip('|').split('|')]
+                if p in cells:
+                    shallow.append(p)
     return shallow
 
 

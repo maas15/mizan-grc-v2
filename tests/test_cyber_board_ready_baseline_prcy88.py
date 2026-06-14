@@ -159,6 +159,32 @@ class Prcy88BoardReadyTests(unittest.TestCase):
         self.assertEqual(so.get('duplicate_governance_rows_after'), 0)
 
     @_skip
+    def test_01b_soc_admin_security_not_duplicate_governance(self):
+        """SOC objective mentioning إدارة الأمن must not fail narrative gate."""
+        base_vision = _NOISY_FIXTURE['vision']
+        gov_row = next(
+            ln for ln in base_vision.splitlines()
+            if ln.strip().startswith('| 1 |'))
+        fixture = dict(_NOISY_FIXTURE)
+        fixture['vision'] = (
+            '## 1. الرؤية والأهداف الاستراتيجية\n\n'
+            '### الأهداف الاستراتيجية\n\n'
+            + _SO_HEADER
+            + gov_row + '\n'
+            + '| 2 | تأسيس إدارة الأمن للرصد عبر SOC/SIEM | 95% | تشغيل | 12 شهر |\n'
+            + '| 3 | IAM/PAM/MFA | 95% | هوية | 12 شهر |\n'
+            + '| 4 | إطار ECC/DCC | 90% | تنظيمي | 18 شهر |\n'
+            + '| 5 | CSIRT | 100% | استجابة | 12 شهر |\n'
+            + '| 6 | إدارة الثغرات | 95% | ثغرات | 12 شهر |\n'
+        )
+        _secs, _md, diag = _baseline(fixture)
+        nar = diag.get('narrative') or {}
+        self.assertTrue(nar.get('executive_narrative_passed'), nar.get('issues'))
+        blockers = diag.get('blocking_errors') or []
+        self.assertFalse(
+            any('duplicate_governance_theme' in str(b) for b in blockers))
+
+    @_skip
     def test_02_target_like_objectives_rewritten(self):
         secs, _md, diag = _baseline(_NOISY_FIXTURE)
         self.assertEqual(
