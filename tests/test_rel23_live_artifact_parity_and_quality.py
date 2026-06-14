@@ -87,7 +87,8 @@ def _live_defect_sections():
 
 class Rel23SectionParityTests(unittest.TestCase):
 
-    def test_preview_pillars_docx_pdf_missing_fails_parity(self):
+    def test_preview_pillars_docx_pdf_parity_after_rel271(self):
+        """REL2.7.1 — DOCX must include pillars when preview sections do."""
         sections = _live_defect_sections()
         artifact = {
             'sections': sections,
@@ -95,11 +96,9 @@ class Rel23SectionParityTests(unittest.TestCase):
             'domain': 'cyber',
         }
         parity = evaluate_section_parity(artifact, _backend(), lang='ar')
-        self.assertFalse(parity['pillars_present_docx'])
-        self.assertFalse(parity['parity_passed'])
-        self.assertTrue(
-            'pillars' in parity['missing_sections_docx']
-            or (parity.get('blocking_error_if_any') or '').endswith('pillars'))
+        self.assertTrue(parity['pillars_present_docx'])
+        self.assertTrue(parity['pillars_present_pdf'])
+        self.assertTrue(parity['parity_passed'])
 
     def test_section_hash_catches_missing_pillars(self):
         sections = _live_defect_sections()

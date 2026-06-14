@@ -327,3 +327,47 @@ class Rel27IntegrationTests(unittest.TestCase):
             art, document_type='strategy', lang='ar', skip_structural=True)
         self.assertFalse(contract['release_ready_final_passed'])
         self.assertFalse(contract['actual_export_evidence_passed'])
+
+
+class Rel271RepairTests(unittest.TestCase):
+
+    def test_arabic_gate_fixes_hulul_mana(self):
+        from release_engine.arabic_language_gate import apply_arabic_final_gate
+        sections = {'environment': 'تطبيق حلولمنع تسرب البيانات'}
+        out, diag = apply_arabic_final_gate(sections, lang='ar')
+        self.assertNotIn('حلولمنع', out['environment'])
+        self.assertIn('حلول لمنع', out['environment'])
+        self.assertEqual(diag.get('residues_after'), [])
+
+    def test_normalize_pillar_blocks_canonical_fallback(self):
+        from professional_strategy_render import normalize_pillar_blocks
+        blocks = normalize_pillar_blocks('## الركائز\n\nنص بدون عناوين فرعية.', 'ar')
+        self.assertTrue(blocks)
+        titles = ' '.join(pb.get('title') or '' for pb in blocks)
+        self.assertIn('حوكمة', titles)
+        self.assertIn('الحماية', titles)
+
+    def test_repair_for_actual_export_defects_arabic_and_pillars(self):
+        from release_engine.export_evidence_validator import (
+            repair_for_actual_export_defects,
+        )
+        sections = _live_rel27_defect_sections()
+        artifact = {
+            'sections': dict(sections),
+            'final_markdown': _content(sections),
+            'contract_meta': {'selected_frameworks': ['nca_ecc', 'nca_dcc']},
+        }
+        export_diag = {
+            'blocking_errors': [
+                'rel2_actual_export_evidence_failed:preview:حلولمنع',
+                'rel2_actual_export_evidence_failed:docx:missing_pillars',
+            ],
+            'docx_missing_sections': ['pillars'],
+            'preview_forbidden_patterns': ['حلولمنع'],
+        }
+        merged, repairs = repair_for_actual_export_defects(
+            artifact, export_diag, domain='cyber', lang='ar', backend={})
+        blob = merged.get('final_markdown') or ''
+        self.assertNotIn('حلولمنع', blob)
+        self.assertIn('rel271:forced_canonical_pillars_for_docx', repairs)
+        self.assertIn('الحماية والكشف والاستجابة', merged['sections']['pillars'])

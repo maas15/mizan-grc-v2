@@ -10,10 +10,17 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('للتعاملمع', 'للتعامل مع'),
     ('الاجتماعيةضد', 'الاجتماعية ضد'),
     ('الاستعادةفي', 'الاستعادة في'),
+    ('الحاليةفي', 'الحالية في'),
+    ('الموظفينفي', 'الموظفين في'),
+    ('رئيسيةفي', 'رئيسية في'),
     ('ال معلومات', 'المعلومات'),
     ('ال معمول', 'المعمول'),
+    ('ال منظمة', 'المنظمة'),
+    ('ال معتمدة', 'المعتمدة'),
     ('لل معالجة', 'للمعالجة'),
-    # Before generic ل منع — undo false split from حلولمن inside حلولمنع.
+    # REL2.7.1 — glued solutions+prevent token before partial split rules.
+    ('حلولمنع', 'حلول لمنع'),
+    # Before generic ل منع — undo false split from حلولمن inside حlولمنع.
     ('حلول منع', 'حلول لمنع'),
     ('ل منع', 'لمنع'),
     ('ال معيارية', 'المعيارية'),
@@ -30,6 +37,15 @@ _LM_WORD_GLUE_GUARDED = tuple(
     (re.compile(re.escape(bad) + r'(?!ع)'), good)
     for bad, good in REL2_ARABIC_SPECIFIC_FIXES
     if bad in _LM_WORD_GLUE_FIX_BADS)
+# Split definite-article fixes only at token boundaries — avoids false hits
+# inside words like أعمال معتمدة (…+ا+ل + space + معتمدة).
+_CATALOG_BOUNDARY_BADS = frozenset(
+    bad for bad, _ in REL2_ARABIC_SPECIFIC_FIXES
+    if bad.startswith(('ال ', 'لل ')))
+_CATALOG_BOUNDARY_RES: Dict[str, re.Pattern[str]] = {
+    bad: re.compile(r'(?<![\u0600-\u06FF])' + re.escape(bad))
+    for bad in _CATALOG_BOUNDARY_BADS
+}
 
 
 _GLUE_PREPOSITIONS = ('مع', 'ضد', 'في', 'على', 'عن', 'من', 'إلى', 'لدى')
@@ -71,7 +87,10 @@ def _apply_catalog_fixes(text: str) -> str:
     for bad, good in REL2_ARABIC_SPECIFIC_FIXES:
         if bad in _LM_WORD_GLUE_FIX_BADS:
             continue
-        out = out.replace(bad, good)
+        if bad in _CATALOG_BOUNDARY_BADS:
+            out = _CATALOG_BOUNDARY_RES[bad].sub(good, out)
+        else:
+            out = out.replace(bad, good)
     for pat, good in _LM_WORD_GLUE_GUARDED:
         out = pat.sub(good, out)
     return out
@@ -80,6 +99,8 @@ def _apply_catalog_fixes(text: str) -> str:
 def _catalog_residue_present(blob: str, bad: str) -> bool:
     if bad in _LM_WORD_GLUE_FIX_BADS:
         return bool(re.search(re.escape(bad) + r'(?!ع)', blob))
+    if bad in _CATALOG_BOUNDARY_BADS:
+        return bool(_CATALOG_BOUNDARY_RES[bad].search(blob))
     return bad in blob
 
 
@@ -112,6 +133,7 @@ def _repair_text(text: str) -> str:
         out = _apply_catalog_fixes(out)
         out = _apply_glue_split(out)
         out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
+        out = out.replace('حلول ل منع', 'حلول لمنع')
         out = _normalize_lam_mana(out)
         out = _apply_catalog_fixes(out)
         if out == prev:

@@ -595,6 +595,11 @@ def repair_sections_for_rendered_evidence(
 ) -> Dict[str, str]:
     backend = backend or {}
     out = dict(sections)
+    # REL2.7.1 — scrub Arabic residues on every legacy section key.
+    for key, val in list(out.items()):
+        if str(key).startswith('_') or not isinstance(val, str) or not val:
+            continue
+        out[key] = _repair_arabic_blob(val)
     if out.get('vision'):
         out['vision'] = _repair_arabic_blob(
             _repair_so_weak_targets(out['vision']))
@@ -619,11 +624,12 @@ def repair_sections_for_rendered_evidence(
             _repair_arabic_blob(out['traceability']))
     out, _ = finalize_traceability_substance(out, lang=lang)
 
-    out, _ = apply_arabic_final_gate(out, lang=lang)
     repaired, _ = finalize_roadmap(
         out, lang=lang, domain=domain,
         selected_frameworks=backend.get('selected_frameworks') or [],
         backend=backend)
+    from release_engine.arabic_language_gate import apply_arabic_final_gate
+    repaired, _ = apply_arabic_final_gate(repaired, lang=lang)
     for key, val in list(repaired.items()):
         if isinstance(val, str):
             repaired[key] = _scrub_global_forbidden(val)
@@ -683,16 +689,28 @@ def collect_rendered_texts(
         backend.get('build_docx_bytes') if validate_exports else None)
     if build_docx:
         try:
-            docx_bytes = build_docx(
-                final_md,
-                'strategy',
-                lang,
-                org_name=meta.get('org_name', ''),
-                sector=meta.get('sector', ''),
-                doc_type='Strategy Document',
-                domain=domain,
-                selected_frameworks=fws,
-            )
+            scoped_sections = {
+                k: v for k, v in sections.items()
+                if isinstance(v, str) and not str(k).startswith('_')}
+            try:
+                docx_bytes = build_docx(
+                    final_md, 'strategy', lang,
+                    org_name=meta.get('org_name', ''),
+                    sector=meta.get('sector', ''),
+                    doc_type='Strategy Document',
+                    domain=domain,
+                    selected_frameworks=fws,
+                    sections=scoped_sections or None,
+                )
+            except TypeError:
+                docx_bytes = build_docx(
+                    final_md, 'strategy', lang,
+                    org_name=meta.get('org_name', ''),
+                    sector=meta.get('sector', ''),
+                    doc_type='Strategy Document',
+                    domain=domain,
+                    selected_frameworks=fws,
+                )
             if isinstance(docx_bytes, bytes):
                 docx_text = extract_docx_visible_text(docx_bytes)
         except Exception:  # noqa: BLE001

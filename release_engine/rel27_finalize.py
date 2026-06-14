@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 from release_engine.export_evidence_validator import (
     repair_before_export_if_possible,
+    repair_for_actual_export_defects,
     validate_artifact_actual_exports,
 )
 from release_engine.rel25_finalize import apply_rel25_cyber_evidence_finalize
@@ -59,6 +60,9 @@ def apply_rel27_cyber_export_evidence_finalize(
         merged, rep = repair_before_export_if_possible(
             merged, domain=dcode, lang=lang, backend=backend)
         repair_actions.extend(rep)
+        merged, rel271_rep = repair_for_actual_export_defects(
+            merged, export_diag, domain=dcode, lang=lang, backend=backend)
+        repair_actions.extend(rel271_rep)
         merged, rel25_rep, _ = apply_rel25_cyber_evidence_finalize(
             merged, domain=dcode, lang=lang, backend=backend)
         repair_actions.extend(rel25_rep or [])

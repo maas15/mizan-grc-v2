@@ -490,6 +490,85 @@ def emit_actual_export_evidence_gate(payload: Dict[str, Any]) -> None:
         pass
 
 
+def _rebuild_artifact_markdown(sections: Dict[str, str]) -> str:
+    order = (
+        'vision', 'pillars', 'environment', 'gaps',
+        'roadmap', 'kpis', 'traceability', 'confidence',
+    )
+    return _scrub_global_forbidden('\n\n'.join(
+        (sections.get(k) or '').strip()
+        for k in order if (sections.get(k) or '').strip()))
+
+
+def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
+    needles = ('حلولمنع', 'arabic_glued', 'الحاليةفي', 'الموظفينفي')
+    for err in export_diag.get('blocking_errors') or []:
+        if any(n in str(err) for n in needles):
+            return True
+    preview_patterns = export_diag.get('preview_forbidden_patterns') or []
+    return any(
+        p in preview_patterns
+        for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي'))
+
+
+def _export_defect_needs_pillar_repair(export_diag: Dict[str, Any]) -> bool:
+    for err in export_diag.get('blocking_errors') or []:
+        if 'missing_pillars' in str(err) or ':pillars' in str(err):
+            return True
+    return bool(export_diag.get('docx_missing_sections'))
+
+
+def repair_for_actual_export_defects(
+        artifact: Dict[str, Any],
+        export_diag: Dict[str, Any],
+        *,
+        domain: str,
+        lang: str,
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """REL2.7.1 — targeted repair from actual-byte gate diagnostics."""
+    backend = backend or {}
+    repairs: List[str] = []
+    merged = dict(artifact)
+    sections = {
+        k: v for k, v in (merged.get('sections') or {}).items()
+        if isinstance(v, str) and not str(k).startswith('_')}
+    if not sections:
+        return merged, repairs
+
+    if _export_defect_needs_arabic_repair(export_diag):
+        from release_engine.arabic_language_gate import apply_arabic_final_gate
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        sections = {
+            k: _repair_arabic_blob(v) if isinstance(v, str) else v
+            for k, v in sections.items()}
+        sections, _ = apply_arabic_final_gate(sections, lang=lang)
+        repairs.append('rel271:arabic_all_sections_repaired')
+
+    if _export_defect_needs_pillar_repair(export_diag):
+        from release_engine.pillar_model import (
+            _build_canonical_pillars,
+            finalize_pillars,
+        )
+        sections, pil_diag = finalize_pillars(
+            sections, lang=lang, domain=domain, backend=backend)
+        action = (pil_diag.get('action_taken') or '').strip()
+        if action and action != 'no_changes':
+            repairs.append(f'rel271:{action}')
+        # Force canonical pillar headings when DOCX bytes lack names.
+        sections['pillars'] = _build_canonical_pillars(lang)
+        repairs.append('rel271:forced_canonical_pillars_for_docx')
+
+    merged['sections'] = sections
+    merged['final_markdown'] = _rebuild_artifact_markdown(sections)
+    hash_fn = backend.get('content_hash')
+    if hash_fn and merged.get('final_markdown'):
+        merged['final_hash'] = hash_fn(merged['final_markdown'])
+    rel2_cache = backend.get('_rel2_cache') or {}
+    rel2_cache.pop('exports', None)
+    return merged, repairs
+
+
 def repair_before_export_if_possible(
         artifact: Dict[str, Any],
         *,
@@ -511,17 +590,35 @@ def repair_before_export_if_possible(
     if fixed != sections:
         repairs.append('rel26:sections_repaired_for_export')
     merged['sections'] = fixed
-    order = (
-        'vision', 'pillars', 'environment', 'gaps',
-        'roadmap', 'kpis', 'traceability', 'confidence',
-    )
-    merged['final_markdown'] = _scrub_global_forbidden('\n\n'.join(
-        (fixed.get(k) or '').strip()
-         for k in order if (fixed.get(k) or '').strip()))
+    merged['final_markdown'] = _rebuild_artifact_markdown(fixed)
     hash_fn = backend.get('content_hash')
     if hash_fn:
         merged['final_hash'] = hash_fn(merged['final_markdown'])
     return merged, repairs
+
+
+def _invoke_build_docx_bytes(
+        build_docx,
+        final_md: str,
+        *,
+        lang: str,
+        meta: Dict[str, Any],
+        domain: str,
+        fws: List[str],
+        sections: Optional[Dict[str, str]] = None,
+) -> bytes:
+    kwargs = dict(
+        org_name=meta.get('org_name', ''),
+        sector=meta.get('sector', ''),
+        doc_type='Strategy Document',
+        domain=domain,
+        selected_frameworks=fws,
+    )
+    try:
+        return build_docx(
+            final_md, 'strategy', lang, sections=sections, **kwargs)
+    except TypeError:
+        return build_docx(final_md, 'strategy', lang, **kwargs)
 
 
 def block_export_if_evidence_fails(
@@ -569,14 +666,13 @@ def collect_actual_export_texts(
     build_docx = backend.get('build_docx_bytes')
     if build_docx and backend.get('validate_export_evidence'):
         try:
-            docx_bytes = build_docx(
-                final_md, 'strategy', lang,
-                org_name=meta.get('org_name', ''),
-                sector=meta.get('sector', ''),
-                doc_type='Strategy Document',
-                domain=domain,
-                selected_frameworks=fws,
-            )
+            scoped_sections = {
+                k: v for k, v in sections.items()
+                if isinstance(v, str) and not str(k).startswith('_')}
+            docx_bytes = _invoke_build_docx_bytes(
+                build_docx, final_md,
+                lang=lang, meta=meta, domain=domain, fws=fws,
+                sections=scoped_sections or None)
             if isinstance(docx_bytes, bytes) and docx_bytes:
                 docx_text = extract_text_from_docx_bytes(docx_bytes)
         except Exception:  # noqa: BLE001

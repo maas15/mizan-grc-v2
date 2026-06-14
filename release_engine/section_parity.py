@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PARITY_SECTION_KEYS = (
@@ -48,17 +49,37 @@ def _pillars_markdown_present(sections: Optional[Dict[str, str]]) -> bool:
     return False
 
 
+def _pillars_artifact_present(sections: Optional[Dict[str, str]]) -> bool:
+    """True when the artifact carries a non-empty pillars section."""
+    if not sections:
+        return False
+    text = (sections.get('pillars') or '').strip()
+    if not text:
+        return False
+    if _pillars_markdown_present(sections):
+        return True
+    return bool(re.search(r'^#{2,4}\s+', text, re.MULTILINE))
+
+
+def _pillars_model_export_present(model: Optional[Dict[str, Any]]) -> bool:
+    """True when a professional export model carries substantive pillar tables."""
+    if not model:
+        return False
+    blocks = (model.get('blocks') or {})
+    blk = blocks.get('strategic_pillars') or {}
+    for pb in blk.get('pillar_blocks') or []:
+        tbl = pb.get('table') or {}
+        if tbl.get('rows'):
+            return True
+    return False
+
+
 def _pillars_export_present(
         model: Optional[Dict[str, Any]],
         sections: Optional[Dict[str, str]] = None,
 ) -> bool:
-    if model:
-        blocks = (model.get('blocks') or {})
-        blk = blocks.get('strategic_pillars') or {}
-        for pb in blk.get('pillar_blocks') or []:
-            tbl = pb.get('table') or {}
-            if tbl.get('rows'):
-                return True
+    if _pillars_model_export_present(model):
+        return True
     return _pillars_markdown_present(sections)
 
 
@@ -116,9 +137,12 @@ def _extract_export_section_text(
         legacy = _LEGACY_MAP.get(section_key, section_key)
         return (sections.get(legacy) or '').strip()
     if section_key == 'pillars':
+        legacy = (sections.get('pillars') or '').strip()
+        if not legacy:
+            return ''
         serialized = _serialize_pillars_export(model)
         if not serialized.strip():
-            return (sections.get('pillars') or '').strip()
+            return legacy
         return serialized
     if section_key == 'traceability':
         sec = (sections.get('traceability') or '').strip()
@@ -231,10 +255,10 @@ def evaluate_section_parity(
             mismatched_sections.append(f'pdf:{key}')
 
     _sections = artifact.get('sections') or {}
-    pillars_present_final = _pillars_export_present(final_model, _sections)
-    pillars_present_preview = _pillars_export_present(preview_model, _sections)
-    pillars_present_docx = _pillars_export_present(docx_model, _sections)
-    pillars_present_pdf = _pillars_export_present(pdf_model, _sections)
+    pillars_present_final = _pillars_artifact_present(_sections)
+    pillars_present_preview = _pillars_artifact_present(_sections)
+    pillars_present_docx = _pillars_model_export_present(docx_model)
+    pillars_present_pdf = _pillars_model_export_present(pdf_model)
 
     if pillars_present_preview and not pillars_present_docx:
         if 'pillars' not in missing_sections_docx:
@@ -242,6 +266,15 @@ def evaluate_section_parity(
         if 'docx:pillars' not in mismatched_sections:
             mismatched_sections.append('docx:pillars')
     if pillars_present_preview and not pillars_present_pdf:
+        if 'pillars' not in missing_sections_pdf:
+            missing_sections_pdf.append('pillars')
+        if 'pdf:pillars' not in mismatched_sections:
+            mismatched_sections.append('pdf:pillars')
+    if not pillars_present_final and (pillars_present_docx or pillars_present_pdf):
+        if 'pillars' not in missing_sections_docx:
+            missing_sections_docx.append('pillars')
+        if 'docx:pillars' not in mismatched_sections:
+            mismatched_sections.append('docx:pillars')
         if 'pillars' not in missing_sections_pdf:
             missing_sections_pdf.append('pillars')
         if 'pdf:pillars' not in mismatched_sections:

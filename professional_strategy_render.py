@@ -4348,7 +4348,42 @@ def normalize_gap_tables(
 
 def normalize_pillar_blocks(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
-    blocks = []
+    if not (section_text or '').strip():
+        return []
+    blocks = _parse_pillar_block_chunks(section_text or '')
+    if _pillar_blocks_export_substantive(blocks):
+        return blocks
+    # REL2.7.1 — when markdown lacks ### headings, rebuild from canonical
+    # catalog so DOCX/PDF extracted text includes all four pillar names.
+    try:
+        from release_engine.pillar_model import _build_canonical_pillars
+        canonical = _build_canonical_pillars(lang)
+        blocks = _parse_pillar_block_chunks(canonical)
+    except Exception:  # noqa: BLE001
+        pass
+    return blocks
+
+
+def _pillar_blocks_export_substantive(blocks: List[Dict[str, Any]]) -> bool:
+    if not blocks:
+        return False
+    titles = [
+        (pb.get('title') or '').strip()
+        for pb in blocks if (pb.get('title') or '').strip()]
+    family_markers = (
+        'حوكمة', 'الحماية', 'الهوية', 'المرونة',
+        'governance', 'protection', 'identity', 'resilience',
+    )
+    named = sum(
+        1 for t in titles
+        if any(m in t.lower() for m in family_markers))
+    if named >= 3:
+        return True
+    return any((pb.get('table') or {}).get('rows') for pb in blocks)
+
+
+def _parse_pillar_block_chunks(section_text: str) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
     chunks = re.split(
         r'(?=^#{3,4}\s+)',
         section_text or '', flags=re.MULTILINE | re.IGNORECASE)
