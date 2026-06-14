@@ -18,6 +18,8 @@ REL2_TESTS = [
     'tests/test_rel24_substantive_quality_gate.py',
     'tests/test_rel25_rendered_evidence_quality.py',
     'tests/test_rel26_actual_export_evidence_gate.py',
+    'tests/test_rel27_actual_export_fail_closed.py',
+    'tests/test_rel28_route_bound_export_evidence.py',
     'tests/test_legacy_gate_retirement_rel2.py',
     'tests/test_export_contract_rel2.py',
     'tests/test_domain_packs_rel2.py',

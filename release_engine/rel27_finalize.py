@@ -43,7 +43,8 @@ def apply_rel27_cyber_export_evidence_finalize(
     for attempt in range(REL27_MAX_REPAIR_ATTEMPTS + 1):
         export_diag = validate_artifact_actual_exports(
             merged, backend, domain=dcode, lang=lang,
-            require_docx=True, require_pdf=True)
+            require_docx=True, require_pdf=True,
+            route_name='finalize')
         if export_diag.get('actual_export_evidence_passed'):
             break
         if attempt >= REL27_MAX_REPAIR_ATTEMPTS:

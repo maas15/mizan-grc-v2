@@ -422,6 +422,11 @@ def check_traceability_semantics(blob: str) -> List[str]:
                     bad.append('ecc_incident_mixed_soc_csirt')
         if gap in REL27_EMPTY_TREATMENT:
             bad.append('traceability_gap_blank')
+    if 'CSIRT SOC' in (blob or '') or 'SOC CSIRT' in (blob or ''):
+        bad.append('traceability_mixed_soc_csirt')
+    if re.search(
+            r'SOC\s*\(\s*CSIRT\s*\)|CSIRT\s*\(\s*SOC\s*\)', blob or '', re.I):
+        bad.append('traceability_mixed_soc_csirt')
     return list(dict.fromkeys(bad))
 
 
@@ -489,10 +494,11 @@ def check_export_model_drift(
         canonical_sections: Optional[Dict[str, str]],
         preview_text: str,
         docx_text: str,
+        pdf_text: str = '',
         *,
         hash_fn=None,
 ) -> List[str]:
-    """Block when canonical, preview, and DOCX section hashes diverge."""
+    """Block when canonical section hashes diverge from actual exported text."""
     from release_engine.section_parity import (
         PARITY_SECTION_KEYS,
         _LEGACY_MAP,
@@ -507,7 +513,11 @@ def check_export_model_drift(
             (canonical_sections.get(_LEGACY_MAP[k]) or '').strip(), hash_fn)
         for k in PARITY_SECTION_KEYS
     }
-    for label, text in (('preview', preview_text), ('docx', docx_text)):
+    for label, text in (
+            ('preview', preview_text),
+            ('docx', docx_text),
+            ('pdf', pdf_text),
+    ):
         if not text:
             continue
         split = _split_sections_from_export_text(text)
@@ -569,11 +579,15 @@ def rel27_channel_checks(blob: str) -> Dict[str, Any]:
             'arabic_check': {},
         }
     missing = check_missing_pillars(blob)
-    kpi_blob = _kpi_section_blob(blob) or blob
-    kpi_canonical = check_kpi_canonical(kpi_blob)
-    roadmap = check_roadmap_coverage(blob)
-    risk = check_risk_treatment_exported(blob)
-    trace = check_traceability_semantics(blob)
+    has_kpi = bool(_kpi_section_blob(blob).strip()) or 'مؤشرات' in blob
+    has_roadmap = 'خارطة الطريق' in blob or 'Implementation Roadmap' in blob
+    has_risk = any(k in blob for k in ('تقييم الثقة', 'سجل المخاطر'))
+    has_trace = 'مصفوفة التتبع' in blob or 'traceability' in blob.lower()
+
+    kpi_canonical = check_kpi_canonical(blob) if has_kpi else {}
+    roadmap = check_roadmap_coverage(blob) if has_roadmap else {}
+    risk = check_risk_treatment_exported(blob) if has_risk else []
+    trace = check_traceability_semantics(blob) if has_trace else []
     arabic = check_arabic_residues_exported(blob)
 
     missing_sections: List[str] = []

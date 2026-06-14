@@ -155,12 +155,38 @@ def _rel26_contract_checks(artifact: Dict[str, Any]) -> Dict[str, Any]:
     blockers = list(ev.get('blocking_errors') or [])
     return {
         'actual_export_evidence_passed': passed,
+        'route_bound_evidence_valid': bool(ev.get('route_bound_evidence_valid', passed)),
+        'export_return_allowed': bool(ev.get('export_return_allowed', passed)),
+        'returned_equals_evidence_bytes': bool(
+            ev.get('returned_equals_evidence_bytes', passed)),
+        'exported_section_hashes_from_actual_text': bool(
+            ev.get('exported_text_hash_available', passed)),
+        'preview_route_evidence_passed': bool(
+            ev.get('preview_export_evidence_passed', False)),
+        'docx_route_evidence_passed': bool(
+            ev.get('docx_export_evidence_passed', False)),
+        'pdf_route_evidence_passed': bool(
+            ev.get('pdf_export_evidence_passed', False)),
+        'actual_docx_bytes_checked': bool(ev.get('docx_bytes_checked', False)),
+        'actual_pdf_bytes_checked': bool(ev.get('pdf_bytes_checked', False)),
+        'exported_pillars_visible': not (
+            ev.get('docx_missing_sections') or ev.get('pdf_missing_sections')),
+        'exported_kpi_visible_valid': bool(
+            ev.get('exported_kpi_canonical_valid', passed)),
+        'exported_roadmap_visible_valid': bool(
+            ev.get('exported_roadmap_coverage_valid', passed)),
+        'exported_risk_visible_valid': bool(
+            ev.get('exported_risk_treatment_valid', passed)),
+        'exported_traceability_visible_valid': bool(
+            ev.get('exported_traceability_valid', passed)),
+        'exported_arabic_visible_valid': bool(
+            ev.get('exported_arabic_quality_valid', passed)),
         'preview_export_evidence_passed': bool(
-            ev.get('preview_export_evidence_passed', passed)),
+            ev.get('preview_export_evidence_passed', False)),
         'docx_export_evidence_passed': bool(
-            ev.get('docx_export_evidence_passed', passed)),
+            ev.get('docx_export_evidence_passed', False)),
         'pdf_export_evidence_passed': bool(
-            ev.get('pdf_export_evidence_passed', passed)),
+            ev.get('pdf_export_evidence_passed', False)),
         'pdf_text_extraction_unreliable': bool(
             ev.get('pdf_text_extraction_unreliable')),
         'no_export_forbidden_patterns': bool(
@@ -330,7 +356,9 @@ def evaluate_final_quality(
     rel25_ready = rel25_checks.get('rendered_evidence_passed', True)
     rel26_ready = rel26_checks.get('actual_export_evidence_passed', True)
     rel27_export_ready = (
-        rel26_checks.get('exported_kpi_canonical_valid', True)
+        rel26_checks.get('route_bound_evidence_valid', True)
+        and rel26_checks.get('export_return_allowed', True)
+        and rel26_checks.get('exported_kpi_canonical_valid', True)
         and rel26_checks.get('exported_roadmap_coverage_valid', True)
         and rel26_checks.get('exported_risk_treatment_valid', True)
         and rel26_checks.get('exported_traceability_valid', True)

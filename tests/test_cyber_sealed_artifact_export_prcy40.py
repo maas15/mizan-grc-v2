@@ -150,8 +150,10 @@ class ExportContractReadOnlyTests(unittest.TestCase):
     def test_api_generate_pdf_sets_sealed_flag(self):
         self.assertIn('_cyber_sealed_pdf = _cyber_export_is_sealed_artifact',
                       _APP_SOURCE)
-        self.assertIn("read_only=bool(\n                    locals().get('_cyber_sealed_pdf', False))",
-                      _APP_SOURCE)
+        self.assertRegex(
+            _APP_SOURCE,
+            r"read_only=bool\(\s+locals\(\)\.get\('_cyber_sealed_pdf', False\)\)",
+        )
 
     @_skip_if_no_app
     def test_docx_contract_read_only_when_sealed_artifact(self):

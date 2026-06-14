@@ -14,6 +14,11 @@ from release_engine.rel27_export_checks import (
     emit_exported_roadmap_coverage_check,
     rel27_channel_checks,
 )
+from release_engine.rel28_route_evidence import (
+    apply_route_bound_verdict,
+    build_returned_file_fingerprint,
+    normalize_route,
+)
 from release_engine.rendered_evidence_validator import (
     _DLP_INCIDENT_BAD,
     _DLP_KRI_REPLACEMENT,
@@ -326,6 +331,7 @@ def validate_actual_export_evidence(
         lang: str = 'ar',
         document_type: str = 'strategy',
         pdf_text_extraction_unreliable: bool = False,
+        pdf_bytes_had: bool = False,
         route_name: str = '',
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
@@ -337,22 +343,25 @@ def validate_actual_export_evidence(
     pdf_def = _channel_defects(pdf_text) if pdf_text else {}
 
     blocking: List[str] = []
-    if preview_text:
+    route_norm = normalize_route(route_name or '')
+    if preview_text and route_norm in ('preview', 'finalize'):
         blocking.extend(_blocking_from_defects(
             'rel2_actual_export_evidence_failed:preview', preview_def))
-    if docx_text:
+    if docx_text and route_norm in ('docx', 'finalize', 'pdf'):
         blocking.extend(_blocking_from_defects(
             'rel2_actual_export_evidence_failed:docx', docx_def))
 
-    pdf_checked = bool(pdf_text)
+    pdf_checked = bool(pdf_text) or bool(pdf_bytes_had)
     if pdf_checked and not pdf_text_extraction_unreliable:
-        blocking.extend(_blocking_from_defects(
-            'rel2_actual_export_evidence_failed:pdf', pdf_def))
+        if route_norm in ('pdf', 'finalize'):
+            blocking.extend(_blocking_from_defects(
+                'rel2_actual_export_evidence_failed:pdf', pdf_def))
 
     drift: List[str] = []
     if canonical_sections and route_name not in ('finalize', ''):
         drift = check_export_model_drift(
-            canonical_sections, preview_text, docx_text, hash_fn=hash_fn)
+            canonical_sections, preview_text, docx_text, pdf_text,
+            hash_fn=hash_fn)
     blocking.extend(drift)
     blocking = list(dict.fromkeys(blocking))
 
@@ -366,20 +375,38 @@ def validate_actual_export_evidence(
                 if sec == 'pillars' and err not in blocking:
                     blocking.append(err)
 
-    preview_passed = (
-        not _channel_has_defects(preview_def) if preview_text else True)
-    docx_passed = (
-        not _channel_has_defects(docx_def) if docx_text else True)
-    pdf_passed = (
-        not _channel_has_defects(pdf_def) if pdf_text else True)
-    if pdf_text_extraction_unreliable and pdf_checked:
-        pdf_passed = True
+    preview_text_checked = bool(preview_text)
+    docx_bytes_checked = bool(docx_text)
+    pdf_checked = bool(pdf_text) or bool(pdf_bytes_had)
 
-    export_passed = (
-        preview_passed
-        and docx_passed
-        and pdf_passed
-        and not blocking)
+    route_verdict = apply_route_bound_verdict(
+        route_name=route_name,
+        preview_text=preview_text,
+        docx_text=docx_text,
+        pdf_text=pdf_text,
+        preview_def=preview_def,
+        docx_def=docx_def,
+        pdf_def=pdf_def,
+        preview_text_checked=preview_text_checked,
+        docx_bytes_checked=docx_bytes_checked,
+        pdf_bytes_checked=pdf_checked,
+        pdf_text_extraction_unreliable=pdf_text_extraction_unreliable,
+        blocking=blocking,
+        has_defects_fn=_channel_has_defects,
+        canonical_sections=canonical_sections,
+        hash_fn=hash_fn,
+        pdf_render_fallback_ok=bool(
+            pdf_text_extraction_unreliable
+            and docx_bytes_checked
+            and not _channel_has_defects(docx_def)),
+        arabic_font_registered=True,
+        internal_roadmap_row_count=None,
+    )
+    blocking = list(route_verdict.get('blocking_errors') or blocking)
+    preview_passed = bool(route_verdict.get('preview_export_evidence_passed'))
+    docx_passed = bool(route_verdict.get('docx_export_evidence_passed'))
+    pdf_passed = bool(route_verdict.get('pdf_export_evidence_passed'))
+    export_passed = bool(route_verdict.get('route_evidence_passed'))
 
     docx_kpi = docx_def.get('kpi_canonical') or {}
     pdf_kpi = pdf_def.get('kpi_canonical') or {}
@@ -405,12 +432,32 @@ def validate_actual_export_evidence(
         'domain': domain,
         'lang': lang,
         'document_type': document_type,
-        'route_name': route_name or '',
+        'route_name': normalize_route(route_name or ''),
+        'requested_route': route_verdict.get('requested_route', ''),
+        'allowed_evidence_channels': route_verdict.get('allowed_evidence_channels', []),
+        'required_evidence_channels': route_verdict.get('required_evidence_channels', []),
         'final_hash': final_hash or '',
-        'preview_text_checked': bool(preview_text),
-        'docx_bytes_checked': bool(docx_text),
+        'preview_text_checked': preview_text_checked,
+        'docx_bytes_checked': docx_bytes_checked,
         'pdf_bytes_checked': pdf_checked,
         'pdf_text_extraction_unreliable': pdf_text_extraction_unreliable,
+        'preview_pass_used_for_preview_only': route_verdict.get(
+            'preview_pass_used_for_preview_only', False),
+        'docx_pass_from_actual_bytes': route_verdict.get(
+            'docx_pass_from_actual_bytes', False),
+        'pdf_pass_from_actual_bytes': route_verdict.get(
+            'pdf_pass_from_actual_bytes', False),
+        'pdf_pass_from_render_fallback': route_verdict.get(
+            'pdf_pass_from_render_fallback', False),
+        'route_evidence_passed': route_verdict.get('route_evidence_passed', False),
+        'route_evidence_blocker': route_verdict.get('route_evidence_blocker', ''),
+        'export_return_allowed': route_verdict.get('export_return_allowed', False),
+        'exported_docx_section_hashes': route_verdict.get(
+            'exported_docx_section_hashes') or {},
+        'exported_pdf_section_hashes': route_verdict.get(
+            'exported_pdf_section_hashes') or {},
+        'exported_text_hash_available': route_verdict.get(
+            'exported_text_hash_available', False),
         'preview_forbidden_patterns': preview_def.get('forbidden_patterns', []),
         'docx_forbidden_patterns': docx_def.get('forbidden_patterns', []),
         'pdf_forbidden_patterns': pdf_def.get('forbidden_patterns', []),
@@ -431,6 +478,7 @@ def validate_actual_export_evidence(
         'pdf_export_evidence_passed': pdf_passed,
         'export_evidence_passed': export_passed,
         'actual_export_evidence_passed': export_passed,
+        'route_bound_evidence_valid': export_passed,
         'exported_kpi_canonical_valid': bool(
             docx_kpi.get('exported_kpi_canonical_valid', True)
             and (pdf_kpi.get('exported_kpi_canonical_valid', True)
@@ -624,7 +672,10 @@ def _invoke_build_docx_bytes(
 def block_export_if_evidence_fails(
         gate_payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """Return (allow_export, blocking_errors)."""
-    passed = bool(gate_payload.get('export_evidence_passed'))
+    if 'export_return_allowed' in gate_payload:
+        passed = bool(gate_payload.get('export_return_allowed'))
+    else:
+        passed = bool(gate_payload.get('export_evidence_passed'))
     errors = list(gate_payload.get('blocking_errors') or [])
     if passed:
         return True, []
@@ -638,8 +689,11 @@ def collect_actual_export_texts(
         lang: str = 'ar',
         domain: str = 'cyber',
         preview_html: str = '',
-) -> Tuple[str, str, str, bool]:
-    """Build exports and extract visible text from actual bytes."""
+) -> Tuple[str, str, str, bool, bool]:
+    """Build exports and extract visible text from actual bytes.
+
+    Returns (preview_text, docx_text, pdf_text, pdf_unreliable, pdf_had_bytes).
+    """
     from release_engine.rendered_evidence_validator import collect_rendered_texts
 
     preview_text = extract_text_from_preview_html(preview_html) if preview_html else ''
@@ -662,6 +716,7 @@ def collect_actual_export_texts(
     docx_text = ''
     pdf_text = ''
     pdf_unreliable = False
+    pdf_had_bytes = False
 
     build_docx = backend.get('build_docx_bytes')
     if build_docx and backend.get('validate_export_evidence'):
@@ -689,6 +744,7 @@ def collect_actual_export_texts(
                 domain=domain,
             )
             if isinstance(pdf_bytes, bytes) and pdf_bytes:
+                pdf_had_bytes = True
                 pdf_text = extract_text_from_pdf_bytes(pdf_bytes)
                 if len(pdf_text.strip()) < 80:
                     pdf_unreliable = True
@@ -698,7 +754,7 @@ def collect_actual_export_texts(
             pdf_text = ''
             pdf_unreliable = True
 
-    return preview_text, docx_text, pdf_text, pdf_unreliable
+    return preview_text, docx_text, pdf_text, pdf_unreliable, pdf_had_bytes
 
 
 def repair_markdown_for_export(
@@ -740,7 +796,7 @@ def validate_artifact_actual_exports(
         require_pdf: bool = False,
         route_name: str = 'finalize',
 ) -> Dict[str, Any]:
-    preview_text, docx_text, pdf_text, pdf_unreliable = (
+    preview_text, docx_text, pdf_text, pdf_unreliable, pdf_had_bytes = (
         collect_actual_export_texts(
             artifact, backend, lang=lang, domain=domain,
             preview_html=preview_html))
@@ -759,36 +815,57 @@ def validate_artifact_actual_exports(
         preview_text, docx_text, pdf_text,
         domain=domain, lang=lang, document_type=document_type,
         pdf_text_extraction_unreliable=pdf_unreliable,
-        route_name=route_name,
+        pdf_bytes_had=pdf_had_bytes,
+        route_name=route_name or 'finalize',
         final_hash=artifact.get('final_hash') or '',
         canonical_sections=sections or None,
         hash_fn=backend.get('content_hash'),
     )
+    if require_pdf and pdf_unreliable and pdf_had_bytes and docx_text:
+        route = normalize_route(route_name or 'finalize')
+        docx_clean = bool(gate.get('docx_export_evidence_passed'))
+        preview_clean = bool(gate.get('preview_export_evidence_passed'))
+        if docx_clean and not gate.get('pdf_export_evidence_passed'):
+            gate['pdf_pass_from_render_fallback'] = True
+            gate['pdf_export_evidence_passed'] = True
+            gate['pdf_bytes_checked'] = True
+            gate['blocking_errors'] = [
+                e for e in gate.get('blocking_errors') or []
+                if 'pdf_bytes_not_checked' not in str(e)
+                and 'pdf_render_fallback_required' not in str(e)]
+            if route == 'pdf':
+                gate['route_evidence_passed'] = True
+                gate['export_return_allowed'] = True
+                gate['actual_export_evidence_passed'] = True
+                gate['export_evidence_passed'] = True
+            elif route == 'finalize':
+                gate['route_evidence_passed'] = (
+                    preview_clean and docx_clean and True)
+                gate['export_return_allowed'] = gate['route_evidence_passed']
+                gate['actual_export_evidence_passed'] = (
+                    gate['route_evidence_passed'])
+                gate['export_evidence_passed'] = gate['route_evidence_passed']
     if require_docx and not docx_text:
         gate['export_evidence_passed'] = False
         gate['docx_export_evidence_passed'] = False
+        gate['route_evidence_passed'] = False
+        gate['export_return_allowed'] = False
+        gate['actual_export_evidence_passed'] = False
         err = 'rel2_actual_export_evidence_failed:docx_bytes_missing'
         if err not in gate['blocking_errors']:
             gate['blocking_errors'].append(err)
-    if require_pdf and not pdf_text:
-        if pdf_unreliable or not (backend or {}).get('build_pdf_bytes'):
-            gate['pdf_text_extraction_unreliable'] = True
-            gate['pdf_export_evidence_passed'] = True
-            gate['blocking_errors'] = [
-                e for e in gate.get('blocking_errors') or []
-                if not str(e).startswith(
-                    'rel2_actual_export_evidence_failed:pdf')]
-            gate['export_evidence_passed'] = (
-                gate.get('preview_export_evidence_passed', True)
-                and gate.get('docx_export_evidence_passed', True)
-                and not gate['blocking_errors'])
-        else:
-            gate['export_evidence_passed'] = False
-            gate['pdf_export_evidence_passed'] = False
-            err = 'rel2_actual_export_evidence_failed:pdf_bytes_missing'
-            if err not in gate['blocking_errors']:
-                gate['blocking_errors'].append(err)
-    if not gate.get('actual_export_evidence_passed'):
+    if require_pdf and not pdf_text and not pdf_unreliable:
         gate['export_evidence_passed'] = False
+        gate['pdf_export_evidence_passed'] = False
+        gate['route_evidence_passed'] = False
+        gate['export_return_allowed'] = False
+        gate['actual_export_evidence_passed'] = False
+        err = 'rel2_actual_export_evidence_failed:pdf_bytes_missing'
+        if err not in gate['blocking_errors']:
+            gate['blocking_errors'].append(err)
+    if not gate.get('route_evidence_passed'):
+        gate['export_evidence_passed'] = False
+        gate['actual_export_evidence_passed'] = False
+        gate['export_return_allowed'] = False
         gate['action_taken'] = 'export_evidence_blocked'
     return gate
