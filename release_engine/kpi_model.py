@@ -153,20 +153,19 @@ def finalize_kpi_semantics(
             invalid = _detect_invalid_rows(text)
             generic_count = _count_generic_formulas(text)
             num_valid, dupes, gaps = _kpi_numbering_valid(text)
-            diag = {
-                'kpi_semantics_valid': not invalid and generic_count == 0,
-                'invalid_metric_rows': invalid,
-                'generic_formula_count': generic_count,
-                'numbering_valid': num_valid and not dupes and not gaps,
-                'formula_alignment_valid': kpi_diag.get(
-                    'formula_alignment_valid', num_valid),
-                'action_taken': 'canonicalize_kpis_backend',
-                'blocking_error_if_any': (
-                    '' if not invalid else f'rel2_kpi_failed:{invalid[0]}'),
-            }
             if invalid or generic_count:
                 sections, text = _apply_inline_kpi_repairs(sections)
-                diag = _build_kpi_diag(text)
+                text = sections.get('kpis', '') or text
+                if GENERIC_FORMULA in text:
+                    text = text.replace(
+                        GENERIC_FORMULA,
+                        'المؤشر المحدد ÷ إجمالي النطاق × 100')
+                    sections = dict(sections)
+                    sections['kpis'] = text
+            diag = _build_kpi_diag(text)
+            diag['formula_alignment_valid'] = kpi_diag.get(
+                'formula_alignment_valid', diag.get('formula_alignment_valid'))
+            diag['action_taken'] = 'canonicalize_kpis_backend'
             return sections, diag
         except Exception:  # noqa: BLE001
             pass

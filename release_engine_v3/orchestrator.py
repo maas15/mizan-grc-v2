@@ -150,8 +150,13 @@ def rel3_export_with_evidence(
         export_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[ExportResult, EvidenceResult]:
     """Full REL3 pipeline: render tree → export → validate exact bytes."""
-    if not artifact.frozen:
-        if artifact.blocking_errors:
+    if not artifact.frozen and artifact.blocking_errors:
+        hard_blockers = [
+            b for b in artifact.blocking_errors
+            if not str(b).startswith('rel3_export_evidence_failed')]
+        if route != 'preview' or hard_blockers:
+            blockers = hard_blockers if route == 'preview' else list(
+                artifact.blocking_errors)
             ev = EvidenceResult(
                 route_name=route,
                 artifact_id=artifact.artifact_id,
@@ -167,7 +172,7 @@ def rel3_export_with_evidence(
                 pdf_bytes_checked=False,
                 evidence_passed=False,
                 export_return_allowed=False,
-                blocking_errors=list(artifact.blocking_errors),
+                blocking_errors=blockers,
             )
             ev.emit_diag()
             return ExportResult(
@@ -175,7 +180,7 @@ def rel3_export_with_evidence(
                 artifact_id=artifact.artifact_id,
                 render_tree_hash='',
                 canonical_hash=artifact.canonical_hash,
-                blocking_errors=artifact.blocking_errors,
+                blocking_errors=blockers,
             ), ev
     tree = rel3_build_render_tree(artifact)
     # Parity: all routes must share same render tree hash
@@ -263,3 +268,16 @@ def rel3_verify_render_tree_parity_across_routes(
 def clear_rel3_caches() -> None:
     _EXPORT_CACHE.clear()
     _RENDER_TREE_CACHE.clear()
+
+
+def rel3_get_or_build_frozen_artifact(
+        artifact_or_id,
+        *,
+        backend=None,
+        flags=None,
+):
+    """Delegate to REL3.1 authority resolver."""
+    from release_engine_v3.rel31_authority import (
+        rel3_get_or_build_frozen_artifact as _resolve,
+    )
+    return _resolve(artifact_or_id, backend=backend, flags=flags)

@@ -223,7 +223,7 @@ SCHEMA_STRATEGIC_OBJECTIVES_AR = (
     'المبرر', 'الإطار الزمني',
 )
 SCHEMA_PILLAR_INITIATIVES_AR = (
-    '#', 'المبادرة', 'الوصف', 'المخرج المتوقع',
+    '#', 'المبادرة', 'الوصف', 'المخرج المتوقع', 'المسؤول',
 )
 SCHEMA_GAP_MAIN_AR = (
     '#', 'الفجوة', 'الوصف', 'الأولوية', 'الحالة',
@@ -247,7 +247,7 @@ SCHEMA_GOVERNANCE_AR = (
     'التقارير / التصعيد', 'الإطار المرتبط',
 )
 SCHEMA_TRACE_FW_GAP_AR = (
-    'الإطار', 'القدرة', 'الفجوة',
+    'الإطار المرجعي', 'مجال القدرة', 'الفجوة',
 )
 SCHEMA_TRACE_FW_INIT_AR = (
     'الإطار', 'المبادرة', 'المؤشر', 'المخاطر',
@@ -606,6 +606,8 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
         return [0.08, 0.30, 0.32, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
+    if schema == 'pillar_initiatives' and ncols == 5:
+        return [0.05, 0.22, 0.28, 0.25, 0.20]
     if schema == 'pillar_initiatives' and ncols == 4:
         return [0.06, 0.30, 0.34, 0.30]
     if ncols == 5:
@@ -4312,6 +4314,91 @@ def split_kpi_tables(
     return out
 
 
+def _normalize_kpi_formula_prose_line(line: str) -> str:
+    """Normalize assessment-guide formula lines for PDF/DOCX prose."""
+    s = (line or '').strip()
+    if not s:
+        return ''
+    if 'الصيغة' not in s and 'formula' not in s.lower():
+        return prcy47_fix_ar_fragments(s)
+    s = re.sub(r'\\text\{([^{}]*)\}', r'\1', s)
+    s = s.replace('\\times', '×').replace('\\div', '÷').replace('\\%', '%')
+    s = s.replace('\\(', '(').replace('\\)', ')')
+    m_rev = re.search(r'^(.*?)(الصيغة)\s*:?\s*$', s)
+    if m_rev and m_rev.group(1).strip():
+        prefix = m_rev.group(1).strip()
+        if re.search(r'[÷×*/()0-9]', prefix):
+            s = 'الصيغة: ' + prefix
+    s = re.sub(r'\*\*\s*الصيغة\s*:?\s*\*\*\s*', 'الصيغة: ', s)
+    s = re.sub(
+        r'(^|\s)الصيغة\s+(?=[(\\\d÷×*/])', r'\1الصيغة: ', s)
+    s = re.sub(r'\s{2,}', ' ', s)
+    return prcy47_fix_ar_fragments(s.strip())
+
+
+def extract_kpi_assessment_guides(
+        section_text: str, lang: str = 'ar') -> Dict[str, Any]:
+    """Preserve KPI assessment-guide headings and formula prose in the model."""
+    paras: List[str] = []
+    guide_tables: List[Dict[str, Any]] = []
+    src = section_text or ''
+    guides_re = re.compile(
+        r'(?ms)^#{2,3}\s*(?:KPI Assessment|أدلة تقييم)[^\n]*\n(.*)$')
+    m = guides_re.search(src)
+    if not m:
+        return {'paragraphs': [], 'guide_tables': []}
+    body = m.group(1)
+    guide_heading = (
+        'أدلة تقييم مؤشرات الأداء' if lang == 'ar'
+        else 'KPI Assessment Guidelines')
+    paras.append(guide_heading)
+    guide_h4 = re.compile(r'(?m)^#{4}\s*(.+)$')
+    matches = list(guide_h4.finditer(body))
+    action_schema = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else (
+        'Step', 'Action', 'Owner', 'Timeframe', 'Output'))
+    chunks = []
+    if matches:
+        for gi, gm in enumerate(matches):
+            title = prcy47_fix_ar_fragments(gm.group(1).strip())
+            start = gm.end()
+            end = matches[gi + 1].start() if gi + 1 < len(matches) else len(
+                body)
+            chunks.append((title, body[start:end]))
+    else:
+        chunks.append(('', body))
+    for title, chunk in chunks:
+        if title:
+            paras.append(title)
+        for ln in chunk.split('\n'):
+            t = ln.strip()
+            if not t or t.startswith('|') or t.startswith('#'):
+                continue
+            if 'الصيغة' in t or 'formula' in t.lower():
+                paras.append(_normalize_kpi_formula_prose_line(t))
+        for tbl in parse_markdown_tables(chunk):
+            if len(tbl) < 2:
+                continue
+            hdr_blob = ' '.join(tbl[0]).lower()
+            if not any(k in hdr_blob for k in (
+                    'خطوة', 'إجراء', 'step', 'action')):
+                continue
+            rows = []
+            for r in tbl[1:]:
+                row = _normalize_row(r, len(action_schema))
+                if len(row) >= 2 and row[0] in ('طوة', 'الخ'):
+                    row[0] = 'الخطوة'
+                row[0] = _normalize_gap_cell(row[0])
+                rows.append(row)
+            if rows:
+                guide_tables.append({
+                    'schema': 'gap_action',
+                    'header': list(action_schema),
+                    'rows': rows,
+                    'title': title or guide_heading,
+                })
+    return {'paragraphs': paras, 'guide_tables': guide_tables}
+
+
 def normalize_gap_tables(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     tables = parse_markdown_tables(section_text)
@@ -5314,12 +5401,18 @@ def enrich_professional_blocks(
         'content_present': bool(road.strip()),
     }
 
-    # KPI / KRI split
+    # KPI / KRI split — parse tables from raw markdown so assessment guides
+    # after the main KPI table are not lost.
+    kpi_raw = (
+        (blocks.get('kpi_kri_framework') or {}).get('content')
+        or (content_sections or {}).get('kpis', '') or '')
     kpis = _sec('kpi_kri_framework')
-    kpi_tables = split_kpi_tables(kpis, lang_n)
+    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n)
+    kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
     blocks['kpi_kri_framework'] = {
         **(blocks.get('kpi_kri_framework') or {}),
-        'tables': kpi_tables,
+        'tables': kpi_tables + kpi_guides.get('guide_tables', []),
+        'paragraphs': kpi_guides.get('paragraphs', []),
     }
 
     # Confidence — score card paragraph + factor table + risk register.
@@ -6406,7 +6499,12 @@ def render_professional_model_as_markdown(model: Dict[str, Any]) -> str:
                 _md_table(parts, header, rows)
 
         elif kind == 'kpi_kri_framework':
+            for p in blk.get('paragraphs') or []:
+                if p:
+                    parts.append(str(p))
             for tbl in blk.get('tables') or []:
+                if tbl.get('title'):
+                    parts.append(f"#### {tbl['title']}")
                 _md_table(parts, tbl.get('header'), tbl.get('rows'))
                 parts.append('')
 

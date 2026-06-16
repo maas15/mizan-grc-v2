@@ -252,10 +252,15 @@ def _count_roadmap_rows_visible(blob: str) -> int:
 
 def _roadmap_defects_in(blob: str) -> List[str]:
     defects: List[str] = []
+    try:
+        from release_engine.rel27_export_checks import _roadmap_section_blob
+        scan_blob = _roadmap_section_blob(blob or '') or (blob or '')
+    except Exception:  # noqa: BLE001
+        scan_blob = blob or ''
     for bad in REL26_ROADMAP_BAD_INITIATIVES:
-        if bad in blob:
+        if bad in scan_blob:
             defects.append(f'roadmap_bad_initiative:{bad}')
-    count = _count_roadmap_rows_visible(blob)
+    count = _count_roadmap_rows_visible(scan_blob)
     if count and count < 10:
         defects.append(f'roadmap_row_count:{count}')
     return defects
@@ -566,6 +571,21 @@ def _export_defect_needs_pillar_repair(export_diag: Dict[str, Any]) -> bool:
     return bool(export_diag.get('docx_missing_sections'))
 
 
+def _export_defect_needs_roadmap_repair(export_diag: Dict[str, Any]) -> bool:
+    for key in (
+            'preview_forbidden_patterns', 'docx_forbidden_patterns',
+            'pdf_forbidden_patterns', 'blocking_errors'):
+        for item in export_diag.get(key) or []:
+            if isinstance(item, str) and 'roadmap_bad_initiative' in item:
+                return True
+    for defects in (
+            export_diag.get('docx_roadmap_defects') or [],
+            export_diag.get('pdf_roadmap_defects') or []):
+        if any('roadmap_bad_initiative' in str(d) for d in defects):
+            return True
+    return False
+
+
 def repair_for_actual_export_defects(
         artifact: Dict[str, Any],
         export_diag: Dict[str, Any],
@@ -607,6 +627,21 @@ def repair_for_actual_export_defects(
         sections['pillars'] = _build_canonical_pillars(lang)
         repairs.append('rel271:forced_canonical_pillars_for_docx')
 
+    if _export_defect_needs_roadmap_repair(export_diag):
+        fws = (
+            (merged.get('contract_meta') or {}).get('selected_frameworks')
+            or merged.get('selected_frameworks') or [])
+        baseline = backend.get('baseline_roadmap')
+        if baseline:
+            sections, _ = baseline(sections, lang, fws)
+            repairs.append('rel271:baseline_roadmap_for_export')
+        for bad in REL26_ROADMAP_BAD_INITIATIVES:
+            for key, val in list(sections.items()):
+                if isinstance(val, str) and bad in val:
+                    sections[key] = val.replace(
+                        bad, 'تأسيس CISO ولجنة حوكمة')
+            repairs.append('rel271:roadmap_bad_initiative_scrubbed')
+
     merged['sections'] = sections
     merged['final_markdown'] = _rebuild_artifact_markdown(sections)
     hash_fn = backend.get('content_hash')
@@ -614,6 +649,7 @@ def repair_for_actual_export_defects(
         merged['final_hash'] = hash_fn(merged['final_markdown'])
     rel2_cache = backend.get('_rel2_cache') or {}
     rel2_cache.pop('exports', None)
+    rel2_cache.pop('models', None)
     return merged, repairs
 
 

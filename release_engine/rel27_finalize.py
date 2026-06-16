@@ -80,6 +80,7 @@ def apply_rel27_cyber_export_evidence_finalize(
             merged['final_hash'] = hash_fn(merged['final_markdown'])
         rel2_cache = backend.get('_rel2_cache') or {}
         rel2_cache.pop('exports', None)
+        rel2_cache.pop('models', None)
 
     return merged, repair_actions, {'export': export_diag}
 

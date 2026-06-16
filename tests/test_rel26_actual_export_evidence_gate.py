@@ -285,7 +285,11 @@ class Rel26RepairIntegrationTests(unittest.TestCase):
             })
         self.assertEqual(resp.status_code, 422, resp.get_data(as_text=True)[:500])
         body = resp.get_json() or {}
-        self.assertEqual(body.get('reason'), 'rel2_actual_export_evidence_failed')
+        if _APP._PRCY28_VERSION_FLAGS.get('rel31'):
+            self.assertEqual(body.get('reason'), 'rel3_export_evidence_failed')
+        else:
+            self.assertEqual(
+                body.get('reason'), 'rel2_actual_export_evidence_failed')
 
     def test_release_ready_false_when_export_evidence_fails(self):
         failing = validate_actual_export_evidence(

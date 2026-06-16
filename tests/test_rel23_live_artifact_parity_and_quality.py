@@ -54,6 +54,13 @@ def _content(sections):
     return _APP._prcy65_rebuild_content_from_sections(sections, None)
 
 
+def _rel3_authoritative():
+    return bool(
+        _APP
+        and _APP._PRCY28_VERSION_FLAGS.get('rel31')
+        and _APP._PRCY28_VERSION_FLAGS.get('rel3'))
+
+
 def _live_defect_sections():
     """Simulates live/staging Cyber Arabic Technical defects."""
     from domains.cyber.fixtures_ar import technical_sections
@@ -230,6 +237,37 @@ class Rel23LiveFixtureIntegrationTests(unittest.TestCase):
                 output_type='generation',
                 doc_subtype='technical',
             )
+        if _rel3_authoritative():
+            contract = art.get('rel31_generation_contract') or {}
+            self.assertTrue(
+                contract.get('generation_save_allowed'),
+                contract.get('blocking_errors'))
+            self.assertTrue(contract.get('preview_evidence_valid'))
+            self.assertEqual(contract.get('blocking_errors'), [])
+            fh = art.get('rel3_canonical_hash') or art.get('final_hash')
+            meta = {
+                'domain': 'cyber',
+                'sealed': True,
+                'final_hash': fh,
+                'rel3_canonical_hash': fh,
+                'quality_gate_passed': True,
+            }
+            for route in ('preview', 'docx', 'pdf'):
+                c = _APP._prcy80_invoke_final_strategy_artifact(
+                    art['final_markdown'],
+                    metadata=meta,
+                    selected_frameworks=['nca_ecc', 'nca_dcc'],
+                    lang='ar',
+                    domain='cyber',
+                    output_type=route,
+                    read_only=True,
+                    sections=art.get('sections'),
+                    doc_subtype='technical',
+                )
+                self.assertEqual(
+                    c.get('content_hash'), fh,
+                    f'rel3 export hash parity failed for {route}')
+            return
         rel23 = (art.get('diagnostics') or {}).get('rel2', {}).get('rel23') or {}
         parity = rel23.get('section_parity') or {}
         self.assertTrue(art.get('release_ready_final_passed'), art.get('blocking_errors'))

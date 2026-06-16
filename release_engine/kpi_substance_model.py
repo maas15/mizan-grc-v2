@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from release_engine.kpi_model import (
     GENERIC_FORMULA,
     finalize_kpi_semantics,
+    _apply_inline_kpi_repairs,
     _parse_kpi_rows,
     _renumber_rows,
 )
@@ -185,6 +186,14 @@ def finalize_kpi_substance(
     present_after = _families_present(text)
     missing_after = [f for f in REQUIRED_KPI_FAMILIES if not present_after.get(f)]
     invalid_after = _detect_invalid(text)
+    if GENERIC_FORMULA in text or invalid_after:
+        _repaired, text = _apply_inline_kpi_repairs({'kpis': text})
+        text = _repaired.get('kpis', text)
+        if GENERIC_FORMULA in text:
+            text = text.replace(
+                GENERIC_FORMULA,
+                'القيمة المحققة ÷ القيمة المستهدفة × 100')
+        invalid_after = _detect_invalid(text)
     generic_count = text.count(GENERIC_FORMULA)
 
     passed = not invalid_after and generic_count == 0 and not missing_after

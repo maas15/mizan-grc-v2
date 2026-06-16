@@ -100,19 +100,43 @@ def check_missing_pillars(blob: str) -> List[str]:
 
 
 def _kpi_section_blob(blob: str) -> str:
-    lines: List[str] = []
+    """Extract the primary KPI section — prefer the richest table block."""
+    lines = (blob or '').splitlines()
+    candidates: List[List[str]] = []
+    current: List[str] = []
     in_kpi = False
-    for ln in (blob or '').splitlines():
+    for ln in lines:
         if _KPI_SECTION_RE.search(ln):
+            if current:
+                candidates.append(current)
             in_kpi = True
-            lines.append(ln)
+            current = [ln]
             continue
         if in_kpi and ln.strip().startswith('##'):
             if 'صيغ' not in ln and 'formula' not in ln.lower():
-                break
+                candidates.append(current)
+                current = []
+                in_kpi = False
+                continue
         if in_kpi:
-            lines.append(ln)
-    return '\n'.join(lines)
+            current.append(ln)
+    if current:
+        candidates.append(current)
+
+    def _data_rows(sec_lines: List[str]) -> int:
+        count = 0
+        for ln in sec_lines:
+            if not ln.strip().startswith('|') or '---' in ln:
+                continue
+            cells = [c.strip() for c in ln.strip('|').split('|')]
+            if cells and (cells[0].isdigit() or re.match(r'^NCA\s', cells[0], re.I)):
+                count += 1
+        return count
+
+    if not candidates:
+        return ''
+    best = max(candidates, key=_data_rows)
+    return '\n'.join(best)
 
 
 def _extract_kpi_main_rows(blob: str) -> List[List[str]]:
