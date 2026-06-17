@@ -58,6 +58,10 @@ REL2_TESTS = [
 
     'tests/test_rel31_actual_export_acceptance_failure.py',
 
+    'tests/test_rel31_actual_export_content_quality.py',
+
+    'tests/test_rel31_actual_uploaded_export_quality.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',

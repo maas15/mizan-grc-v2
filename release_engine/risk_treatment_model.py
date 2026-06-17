@@ -36,6 +36,41 @@ _RISK_TREATMENTS_AR = {
         'المالك: مدير استمرارية الأعمال'),
 }
 
+_GENERIC_TREATMENT = 'ضوابط تقنية وإجراءات تشغيلية ومراقبة مستمرة'
+
+_RISK_SPECIFIC_RULES = (
+    (('حوكمة', 'سياسة', 'governance', 'امتثال تنظيمي'), (
+        'تأسيس إطار سياسات حوكمة معتمد ومراجعات امتثال ربع سنوية — '
+        'المالك: CISO')),
+    (('iam', 'mfa', 'pam', 'هوية', 'صلاحية', 'وصول'), (
+        'نشر MFA/PAM وإعادة تصديق صلاحيات ربع سنوية — المالك: مدير الهوية')),
+    (('soc', 'siem', 'كشف', 'رصد', 'مراقبة'), (
+        'تفعيل SOC/SIEM وضبط حالات الاستخدام للكشف — المالك: مدير SOC')),
+    (('تصيد', 'phishing', 'ransomware', 'فدية', 'برمجيات'), (
+        'محاكاة تصيد وخطط استجابة لبرمجيات الفدية — المالك: CSIRT')),
+    (('مورد', 'طرف ثالث', 'supplier', 'third', 'أطراف'), (
+        'تقييم مخاطر الأطراف الثالثة وضوابط تعاقدية — '
+        'المالك: إدارة المشتريات')),
+    (('ثغر', 'vulnerab', 'patch', 'ترقيع'), (
+        'فحص شهري للثغرات ومعالجة وفق SLA — المالك: مدير الثغرات')),
+)
+
+
+def specific_risk_treatment_for_blob(risk_blob: str, *, lang: str = 'ar') -> str:
+    """Return a risk-specific treatment plan for a register row blob."""
+    blob = (risk_blob or '').lower()
+    for keywords, treatment in _RISK_SPECIFIC_RULES:
+        if any(k in blob for k in keywords):
+            return treatment
+    if lang == 'ar':
+        return (
+            'تنفيذ ضوابط تقنية وإجراءات تشغيلية مخصصة للمخاطر المحددة '
+            'ومراقبة مستمرة — المالك: CISO')
+    return (
+        'Implement risk-specific technical controls, procedures, '
+        'and continuous monitoring — Owner: CISO')
+
+
 _THEME_KEYWORDS = {
     'compliance': ('امتثال', 'ecc', 'dcc', 'تنظيمي'),
     'capabilities': ('قدرات', 'soc', 'siem', 'مهارات'),
@@ -85,6 +120,26 @@ def _is_empty_treatment(val: str) -> bool:
         x.lower() for x in _EMPTY_TREATMENT}
 
 
+def _is_generic_treatment(val: str) -> bool:
+    return (val or '').strip() == _GENERIC_TREATMENT
+
+
+def _repair_flat_risk_register(text: str, *, lang: str = 'ar') -> str:
+    """Replace generic/empty treatments in flat DOCX/PDF risk register text."""
+    if _GENERIC_TREATMENT not in (text or ''):
+        return text or ''
+    lines = (text or '').splitlines()
+    out: List[str] = []
+    for i, ln in enumerate(lines):
+        stripped = (ln or '').strip()
+        if stripped == _GENERIC_TREATMENT or _is_empty_treatment(stripped):
+            context = ' '.join(lines[max(0, i - 4):i])
+            out.append(specific_risk_treatment_for_blob(context, lang=lang))
+            continue
+        out.append(ln)
+    return '\n'.join(out)
+
+
 def _themes_covered(rows: List[List[str]], treat_idx: int) -> Dict[str, bool]:
     covered = {t: False for t in _REQUIRED_RISK_THEMES}
     for cells in rows:
@@ -117,26 +172,36 @@ def finalize_risk_treatment(
         text = sections.get('confidence', '') or ''
         target_key = 'confidence'
 
+    if _GENERIC_TREATMENT in text and 'خطة المعالجة' in text:
+        text = _repair_flat_risk_register(text, lang=lang)
+
     lines, hdr, rows = _parse_risk_rows(text)
     empty_before: List[str] = []
     treat_idx = 4
     if hdr >= 0:
         treat_idx = _treatment_col_idx(lines[hdr])
 
+    if hdr < 0 and _GENERIC_TREATMENT in text:
+        text = _repair_flat_risk_register(text, lang=lang)
+        lines, hdr, rows = _parse_risk_rows(text)
+        if hdr >= 0:
+            treat_idx = _treatment_col_idx(lines[hdr])
+
     new_rows: List[List[str]] = []
     for cells in rows:
         c = list(cells)
         if len(c) > treat_idx:
             plan = c[treat_idx]
-            if _is_empty_treatment(plan):
-                empty_before.append(plan or 'empty')
-                blob = ' '.join(c).lower()
-                repaired = None
+            blob = ' '.join(c).lower()
+            if _is_empty_treatment(plan) or _is_generic_treatment(plan):
+                if _is_empty_treatment(plan):
+                    empty_before.append(plan or 'empty')
+                repaired = specific_risk_treatment_for_blob(blob, lang=lang)
                 for theme, kws in _THEME_KEYWORDS.items():
                     if any(k in blob for k in kws):
                         repaired = _RISK_TREATMENTS_AR[theme]
                         break
-                c[treat_idx] = repaired or _RISK_TREATMENTS_AR['capabilities']
+                c[treat_idx] = repaired
         new_rows.append(c)
 
     themes = _themes_covered(new_rows, treat_idx)
@@ -175,19 +240,26 @@ def finalize_risk_treatment(
             out_lines.append('| ' + ' | '.join(c) + ' |')
         text = '\n'.join(out_lines)
 
-    passed = not empty_after
+    if hdr < 0 and _GENERIC_TREATMENT not in text:
+        passed = True
+    elif hdr < 0:
+        passed = _GENERIC_TREATMENT not in text
+    else:
+        passed = not empty_after
     blocking = ''
     if not passed:
         blocking = 'rel2_substantive_quality_failed:risk:empty_treatment'
 
     out = dict(sections)
     out[target_key] = text
+    orig_had_generic = _GENERIC_TREATMENT in (sections.get(target_key) or '')
     diag = {
         'empty_treatment_plans_before': empty_before,
         'empty_treatment_plans_after': empty_after,
         'risk_treatment_passed': passed,
         'action_taken': (
-            'risk_treatment_repaired' if empty_before else 'validated'),
+            'risk_treatment_repaired'
+            if empty_before or orig_had_generic else 'validated'),
         'blocking_error_if_any': blocking,
     }
     return out, diag

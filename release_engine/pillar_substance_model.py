@@ -131,13 +131,16 @@ def _enrich_pillar_text(text: str) -> Tuple[str, List[str], List[str], List[str]
                                 f'تنفيذ برنامج {init} وفق خطة زمنية معتمدة')
                         shallow_initiatives.append(init)
                     if _is_generic_output(output):
-                        enriched = _ENRICHED_OUTPUTS.get(output, '')
-                        if enriched:
-                            cells[out_idx] = enriched
+                        enriched_out = _ENRICHED_OUTPUTS.get(output.strip(), '')
+                        if enriched_out:
+                            cells[out_idx] = enriched_out
+                            output = enriched_out
                         elif len(output) < 20:
                             cells[out_idx] = (
                                 f'مخرج تشغيلي معتمد لـ {init}')
-                        generic_outputs.append(output)
+                            output = cells[out_idx]
+                        if _is_generic_output(output):
+                            generic_outputs.append(output)
                     ln = '| ' + ' | '.join(cells) + ' |'
             body_lines.append(ln)
         if title.startswith('###') and not has_table:
@@ -175,7 +178,7 @@ def finalize_pillar_substance(
             text = _build_canonical_pillars(lang)
 
     enriched, shallow_b, shallow_i, generic_b = _enrich_pillar_text(text)
-    _, shallow_a, shallow_i_a, generic_a = _enrich_pillar_text(enriched)
+    enriched, shallow_a, shallow_i_a, generic_a = _enrich_pillar_text(enriched)
 
     passed = not shallow_a and not generic_a
     blocking = ''

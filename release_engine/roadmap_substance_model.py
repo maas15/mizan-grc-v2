@@ -28,6 +28,8 @@ _WEAK_OUTPUT_ENRICH = {
     'جرد': 'سجل بيانات مصنفة ومعتمد',
     'مراقبة': 'منصة DLP وقواعد مراقبة تسرب مفعّلة',
     'إجراءات': 'إجراءات معالجة بيانات حساسة معتمدة',
+    'نضج': 'خطة نضج سيبراني معتمدة مع مؤشرات تقدم ربع سنوية',
+    'تقرير': 'تقرير امتثال وتقدم تنفيذ معتمد شهرياً',
 }
 
 
@@ -49,7 +51,8 @@ def _enrich_weak_outputs(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
             row['output'] = _WEAK_OUTPUT_ENRICH[o]
         elif len(o) < 10 and row.get('initiative'):
             row['output'] = (
-                f'مخرج تشغيلي معتمد: {row["initiative"]}')
+                f'تسليم تشغيلي قابل للقياس لبرنامج {row["initiative"]} '
+                f'معتمد من المالك المختص')
         out.append(row)
     return out
 

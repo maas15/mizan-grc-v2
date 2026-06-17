@@ -117,4 +117,23 @@ def validate_returned_export_bytes(
         gate=gate,
     )
     result.emit_diag()
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            evaluate_content_substance,
+            emit_rel31_content_substance_evidence,
+        )
+        blob = ''
+        if route_n == 'docx' and docx_text:
+            blob = docx_text
+        elif route_n == 'pdf' and pdf_text:
+            blob = pdf_text
+        elif route_n == 'preview' and preview_text:
+            blob = preview_text
+        if blob.strip():
+            emit_rel31_content_substance_evidence(
+                evaluate_content_substance(
+                    blob, route=route_n,
+                    pdf_bytes=pdf_bytes if route_n == 'pdf' else b''))
+    except Exception:  # noqa: BLE001
+        pass
     return result

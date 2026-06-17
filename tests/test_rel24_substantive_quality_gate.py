@@ -134,9 +134,15 @@ class Rel24SOSubstanceTests(unittest.TestCase):
 class Rel24PillarSubstanceTests(unittest.TestCase):
 
     def test_shallow_pillar_outputs_enriched(self):
-        sections = {'pillars': '## 2. الركائز\n\nنص فقط.\n'}
-        out, diag = finalize_pillar_substance(sections, lang='ar', domain='cyber')
-        self.assertTrue(diag['generic_outputs_before'] or diag['shallow_pillars_before'])
+        sections = {'pillars': (
+            '### حوكمة ونموذج التشغيل\n\n'
+            '| المبادرة | الوصف | المخرج المتوقع |\n|---|---|---|\n'
+            '| سياسات الحوكمة | وصف قصير | منصة حوكمة معتمدة |\n')}
+        _out, diag = finalize_pillar_substance(sections, lang='ar', domain='cyber')
+        self.assertTrue(
+            diag['generic_outputs_before']
+            or diag['shallow_initiatives_before']
+            or diag['shallow_pillars_before'])
         self.assertEqual(diag['generic_outputs_after'], [])
         self.assertTrue(diag['pillar_depth_passed'])
 

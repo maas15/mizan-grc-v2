@@ -25,6 +25,7 @@ from release_engine.export_evidence_validator import (
 )
 from release_engine.final_quality_contract import evaluate_final_quality
 from release_engine.pillar_model import _build_canonical_pillars
+from release_engine.rel31_acceptance_checks import repair_rel31_canonical_sections
 from release_engine.rel28_route_evidence import (
     apply_route_bound_verdict,
     build_returned_file_fingerprint,
@@ -32,10 +33,21 @@ from release_engine.rel28_route_evidence import (
     normalize_route,
     sha256_bytes,
 )
+from tests.test_rel3_cyber_arabic_actual_export_quality import _GOOD_MD
 
-_GOOD_PREVIEW = (
-    '## 1. الرؤية\n\nنص.\n'
-    + _build_canonical_pillars('ar')
+_GOOD_PREVIEW = _GOOD_MD
+
+_MIN_SECTIONS, _ = repair_rel31_canonical_sections(
+    {
+        'vision': '## 1. الرؤية\n\nنص.\n',
+        'pillars': _build_canonical_pillars('ar'),
+    },
+    lang='ar',
+    domain='cyber',
+)
+_GOOD_PREVIEW_MIN = (
+    (_MIN_SECTIONS.get('vision') or '').strip() + '\n\n'
+    + (_MIN_SECTIONS.get('pillars') or '').strip()
 )
 
 _BAD_KPI = (
@@ -119,30 +131,30 @@ class Rel28RouteBoundTests(unittest.TestCase):
             or 'missing_pillars' in errs)
 
     def test_09_kpi_nca_in_number_column_fails(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_KPI
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_KPI
         g = _gate('docx', preview=blob, docx=blob)
         self.assertFalse(g['route_evidence_passed'])
         self.assertIn('kpi_visible_invalid', ' '.join(g['blocking_errors']))
 
     def test_10_duplicate_mttr_fails(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_KPI
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_KPI
         defects = validate_actual_export_evidence('', blob, '', route_name='docx')
         self.assertIn('duplicate_MTTR', ' '.join(
             defects.get('docx_kpi_defects') or []))
 
     def test_11_risk_treatment_dash_fails(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_RISK
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_RISK
         g = _gate('docx', docx=blob)
         self.assertFalse(g['route_evidence_passed'])
 
     def test_12_traceability_mixed_csirt_soc_fails(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_TRACE
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_TRACE
         g = _gate('docx', docx=blob)
         self.assertFalse(g['route_evidence_passed'])
 
     def test_13_roadmap_visible_drift_blocks(self):
         from release_engine.rel28_route_evidence import check_roadmap_visible_drift
-        short = _GOOD_PREVIEW + '\n## 5. خارطة الطريق\n\n| 1 | a | b | c | d | e |\n'
+        short = _GOOD_PREVIEW_MIN + '\n## 5. خارطة الطريق\n\n| 1 | a | b | c | d | e |\n'
         drift = check_roadmap_visible_drift(short, internal_row_count=12)
         self.assertIn('rel2_export_model_drift:roadmap_visible_row_count', drift)
 
@@ -251,13 +263,13 @@ class Rel28AdditionalHardeningTests(unittest.TestCase):
         self.assertTrue(g['docx_pass_from_actual_bytes'])
 
     def test_23_empty_risk_treatment_emits_aggregate_blocker(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_RISK
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_RISK
         g = _gate('docx', docx=blob)
         errs = ' '.join(g.get('blocking_errors') or [])
         self.assertIn('empty_risk_treatment', errs)
 
     def test_24_traceability_csirt_soc_fails(self):
-        blob = _GOOD_PREVIEW + '\n' + _BAD_TRACE
+        blob = _GOOD_PREVIEW_MIN + '\n' + _BAD_TRACE
         g = _gate('docx', docx=blob)
         self.assertFalse(g['exported_traceability_valid'])
 

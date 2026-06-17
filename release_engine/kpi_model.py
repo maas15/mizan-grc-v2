@@ -21,6 +21,16 @@ _DLP_KRI_TARGET = '0 حوادث حرجة'
 _DLP_KRI_FORMULA = 'عدد حوادث تسرب البيانات الحرجة خلال الفترة'
 _DLP_KRI_SOURCE = 'منصة DLP / سجل الحوادث'
 
+_LOGIN_ANOMALY_BAD = 'نسبة محاولات الدخول الفاشلة الشاذة'
+_LOGIN_ANOMALY_GOOD = 'نسبة تغطية مراقبة محاولات الدخول الشاذة'
+_LOGIN_ANOMALY_TARGET = '≥ 95% كشف ومراقبة'
+_LOGIN_ANOMALY_FORMULA = (
+    'عدد محاولات الدخول الشاذة المكتشفة ÷ إجمالي المحاولات الشاذة × 100')
+
+_THIRD_PARTY_RISK_BAD = 'درجة مخاطر الأطراف الثالثة'
+_THIRD_PARTY_RISK_TARGET = '≤ 3 (منخفض)'
+_THIRD_PARTY_RISK_FORMULA = 'متوسط درجة مخاطر الموردين السيبرانية المقيمة'
+
 
 def _parse_kpi_rows(text: str) -> Tuple[List[str], List[List[str]]]:
     lines = (text or '').splitlines()
@@ -79,6 +89,23 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
         if len(cells) > 4:
             cells[4] = _DLP_KRI_SOURCE
         changed = True
+    elif _LOGIN_ANOMALY_BAD in name or (
+            'محاولات الدخول' in name and 'شاذة' in name):
+        cells[1] = _LOGIN_ANOMALY_GOOD
+        if len(cells) > 2 and '100%' in (cells[2] or ''):
+            cells[2] = _LOGIN_ANOMALY_TARGET
+        if len(cells) > 3:
+            cells[3] = _LOGIN_ANOMALY_FORMULA
+        changed = True
+    elif _THIRD_PARTY_RISK_BAD in name:
+        if len(cells) > 2 and '100%' in (cells[2] or ''):
+            cells[2] = _THIRD_PARTY_RISK_TARGET
+        if len(cells) > 3 and (
+                'المنجز' in (cells[3] or '')
+                or 'المخطط' in (cells[3] or '')
+                or 'completion' in (cells[3] or '').lower()):
+            cells[3] = _THIRD_PARTY_RISK_FORMULA
+        changed = True
     if len(cells) > 3 and GENERIC_FORMULA in (cells[3] or ''):
         if 'mttd' in name.lower() or 'كشف' in name:
             cells[3] = 'عدد الحوادث المكتشفة ضمن SLA ÷ إجمالي الحوادث × 100'
@@ -117,9 +144,28 @@ def _detect_invalid_rows(text: str) -> List[str]:
         invalid.append(_PATCH_SLA_BAD)
     if _DLP_INCIDENT_BAD in text and '%' in text:
         invalid.append(_DLP_INCIDENT_BAD)
+    if _DLP_KRI_NAME in text and '100%' in text:
+        invalid.append('dlp_incident_percent_target')
+    if _LOGIN_ANOMALY_BAD in text:
+        if '100%' in text:
+            invalid.append(_LOGIN_ANOMALY_BAD)
+        elif 'KPI' in text.upper() and re.search(
+                r'KPI[^\n]{0,80}100%|100%[^\n]{0,80}KPI', text, re.I):
+            invalid.append(_LOGIN_ANOMALY_BAD)
+    if _THIRD_PARTY_RISK_BAD in text:
+        if '100%' in text:
+            invalid.append('third_party_risk_100_percent')
+        elif re.search(r'المنجز|المخطط|completion', text, re.I):
+            invalid.append('third_party_risk_completion_formula')
     if GENERIC_FORMULA in text:
         invalid.append('generic_formula')
     return invalid
+
+
+def _is_flat_kpi_blob(text: str) -> bool:
+    """True when KPI section lacks a parseable markdown table."""
+    _lines, rows = _parse_kpi_rows(text)
+    return not rows
 
 
 def finalize_kpi_semantics(
@@ -135,7 +181,13 @@ def finalize_kpi_semantics(
     pre_invalid = _detect_invalid_rows(text)
     pre_generic = _count_generic_formulas(text)
     pre_num_valid, pre_dupes, pre_gaps = _kpi_numbering_valid(text)
-    if not pre_invalid and pre_generic == 0 and pre_num_valid and not pre_dupes:
+    flat_blob = _is_flat_kpi_blob(text)
+    if (
+            not flat_blob
+            and not pre_invalid
+            and pre_generic == 0
+            and pre_num_valid
+            and not pre_dupes):
         return sections, {
             'kpi_semantics_valid': True,
             'invalid_metric_rows': [],
@@ -146,7 +198,7 @@ def finalize_kpi_semantics(
             'blocking_error_if_any': '',
         }
 
-    if canonical_fn:
+    if canonical_fn and (flat_blob or pre_invalid or pre_generic or not pre_num_valid):
         try:
             sections, kpi_diag = canonical_fn(dict(sections), lang)
             text = sections.get('kpis', '') or text

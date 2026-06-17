@@ -7,6 +7,8 @@ import re
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
+from release_engine.risk_treatment_model import specific_risk_treatment_for_blob
+
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
 # Longest patterns first — shorter keys must not run before longer ones.
 PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
@@ -15,6 +17,9 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('الموظفينفي', 'الموظفين في'),
     ('رئيسيةفي', 'رئيسية في'),
     ('حلولمنع', 'حلول لمنع'),
+    ('المحددةفي', 'المحددة في'),
+    ('ال معالجة', 'المعالجة'),
+    ('بال منصات', 'بالمنصات'),
     # PR-CY59 — executive-role and compound spacing defects (longest first).
     ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
     ('امتثاللا تقلعن', 'امتثال لا تقل عن'),
@@ -4023,7 +4028,7 @@ def _apply_kpi_metric_family_spec(
              'Encryption / DLP / data classification platform')
     elif family == 'compliance_ecc_dcc':
         kt = 'KPI'
-        if not t or t == '—':
+        if _target_repeats_metric_name(n, t) or not t or t == '—':
             t = '≥90%'
         f = (('(عدد الضوابط المحققة ÷ إجمالي الضوابط المستهدفة) × 100')
              if ar else
@@ -4309,7 +4314,19 @@ def split_kpi_tables(
         'Horizon'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
         '#', 'Indicator', 'Formula', 'Data Source'))
+    _canonical_main_hdr_ar = [
+        '#', 'وصف المؤشر', 'القيمة المستهدفة', 'صيغة الاحتساب',
+        'مصدر البيانات/الأداة', 'تواتر القياس']
+    _canonical_main_hdr_en = [
+        '#', 'Metric', 'Target', 'Formula', 'Data source', 'Frequency']
     for tbl in tables:
+        if len(tbl) < 1:
+            continue
+        if tbl[0] and str(tbl[0][0]).strip().isdigit():
+            canonical_hdr = (
+                _canonical_main_hdr_ar if lang == 'ar' else _canonical_main_hdr_en)
+            if len(tbl[0]) >= 4:
+                tbl = [canonical_hdr] + tbl
         if len(tbl) < 2:
             continue
         hdr = tbl[0]
@@ -4318,7 +4335,7 @@ def split_kpi_tables(
                 'مؤشر', 'kpi', 'kri', 'indicator', 'وصف')):
             continue
         i_idx = _col_index(hdr, ('#', 'م'))
-        i_name = _col_index(hdr, ('المؤشر', 'indicator', 'kpi'))
+        i_name = _col_index(hdr, ('وصف المؤشر', 'المؤشر', 'indicator', 'kpi', 'metric'))
         i_type = _col_index(hdr, ('النوع', 'type'))
         i_target = _col_index(hdr, ('القيمة المستهدفة', 'المستهدف', 'target'))
         i_freq = _col_index(hdr, ('التكرار', 'frequency'))
@@ -5036,21 +5053,33 @@ def normalize_confidence_risk(
                 if plan in ('—', '-', ''):
                     risk_blob = ' '.join(
                         _cell(r, i_risk) + ' ' + _cell(r, i_impact)).lower()
-                    if 'تصيد' in risk_blob or 'phishing' in risk_blob:
-                        plan = (
-                            'تدريب دوري ومبادرات توعية وتقنيات مكافحة التصيد'
-                            if lang == 'ar' else
-                            'Awareness training and anti-phishing controls')
-                    else:
-                        plan = (
-                            'ضوابط تقنية وإجراءات تشغيلية ومراقبة مستمرة'
-                            if lang == 'ar' else
-                            'Technical controls, procedures, and monitoring')
+                    plan = specific_risk_treatment_for_blob(risk_blob, lang=lang)
                 risk_rows.append([
                     str(n), _cell(r, i_risk), _cell(r, i_like),
                     _cell(r, i_impact), plan,
                     _cell(r, i_owner, 'CISO'),
                 ])
+    if not risk_rows and 'المخاطر' in src and 'الاحتمالية' in src:
+        lines = [ln.strip() for ln in src.splitlines() if ln.strip()]
+        start = -1
+        for i, ln in enumerate(lines):
+            if ln == 'المخاطر' and i + 1 < len(lines) and 'الاحتمالية' in lines[i + 1]:
+                start = i + 4
+                break
+        if start >= 0:
+            n = 0
+            i = start
+            while i < len(lines):
+                if lines[i].isdigit():
+                    n = int(lines[i])
+                    if i + 5 < len(lines):
+                        risk_rows.append([
+                            str(n), lines[i + 1], lines[i + 2], lines[i + 3],
+                            lines[i + 4], lines[i + 5] if i + 5 < len(lines) else 'CISO',
+                        ])
+                        i += 6
+                        continue
+                i += 1
     # Canonical confidence factors — never parsed from source tables.
     factor_rows: List[List[str]] = []
     factors = (CANONICAL_CONFIDENCE_FACTORS_AR if lang == 'ar' else
@@ -5403,8 +5432,8 @@ def enrich_professional_blocks(
     # PR-CY47 prose cleanup strips markdown pipe rows.
     pil_blk = blocks.get('strategic_pillars') or {}
     pil_raw = (
-        pil_blk.get('content')
-        or (content_sections or {}).get('pillars', '')
+        (content_sections or {}).get('pillars', '')
+        or pil_blk.get('content')
         or '')
     blocks['strategic_pillars'] = {
         **pil_blk,
@@ -5460,14 +5489,27 @@ def enrich_professional_blocks(
     # KPI / KRI split — parse tables from raw markdown so assessment guides
     # after the main KPI table are not lost.
     kpi_raw = (
-        (blocks.get('kpi_kri_framework') or {}).get('content')
-        or (content_sections or {}).get('kpis', '') or '')
+        (content_sections or {}).get('kpis', '') or ''
+        or (blocks.get('kpi_kri_framework') or {}).get('content')
+        or '')
+    try:
+        from cyber_post_board_ready_prcy89 import _strip_kri_appendix_from_kpis
+        kpi_raw = _strip_kri_appendix_from_kpis(kpi_raw)
+    except Exception:  # noqa: BLE001
+        pass
     kpis = _sec('kpi_kri_framework')
     kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n)
     kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
+    _main_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_main']
+    _formula_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_formula']
+    if _main_tbls:
+        kpi_tables = _main_tbls[:1] + _formula_tbls[:1]
+        _guide_tables: List[Dict[str, Any]] = []
+    else:
+        _guide_tables = list(kpi_guides.get('guide_tables') or [])
     blocks['kpi_kri_framework'] = {
         **(blocks.get('kpi_kri_framework') or {}),
-        'tables': kpi_tables + kpi_guides.get('guide_tables', []),
+        'tables': kpi_tables + _guide_tables,
         'paragraphs': kpi_guides.get('paragraphs', []),
     }
     blocks = _normalize_kpi_tables_semantics(

@@ -9,18 +9,21 @@ from typing import Any, Dict, List, Tuple
 _EXPECTED_GAPS = {
     'dlp': 'ضعف ضوابط منع تسرب البيانات',
     'data_classification': 'ضعف تصنيف وجرد البيانات الحساسة',
+    'data_protection': 'ضعف حماية البيانات أثناء النقل والتخزين',
     'encryption': 'ضعف ضوابط التشفير وإدارة المفاتيح',
     'sensitive_handling': 'ضعف معالجة البيانات الحساسة',
-    'ecc_incident_response': 'غياب فريق الاستجابة للحوادث CSIRT',
+    'ecc_incident_response': (
+        'غياب فريق الاستجابة للحوادث CSIRT وخطة الاستجابة الرسمية'),
 }
 
 _FAMILY_DETECT = {
     'dlp': ('dlp', 'تسرب', 'منع تسرب'),
-    'data_classification': ('تصنيف', 'جرد', 'classification'),
+    'data_classification': ('تصنيف البيانات', 'تصنيف', 'جرد', 'classification'),
+    'data_protection': ('حماية البيانات', 'نقل', 'تخزين', 'data protection'),
     'encryption': ('تشفير', 'مفاتيح', 'encryption'),
     'sensitive_handling': ('معالجة البيانات', 'حساسة', 'sensitive'),
     'ecc_incident_response': (
-        'استجابة', 'incident', 'حوادث', 'csirt', 'ecc'),
+        'الاستجابة للحوادث', 'استجابة', 'incident', 'حوادث', 'csirt'),
 }
 
 
@@ -78,22 +81,73 @@ def _is_blank_gap(gap: str) -> bool:
     return not g or g in ('—', '-', 'n/a', 'N/A')
 
 
+_PDF_TRACE_COL_MARKERS = (
+    ':مجال القدرة',
+    ':المبادرة',
+    ':الفجوة',
+    ':المؤشر',
+    ':الخطر',
+    '| مجال القدرة |',
+    '| الفجوة |',
+    'الفجوة | مجال القدرة',
+)
+
+
+def pdf_trace_extract_artifact(text: str) -> bool:
+    """True when PDF table text extraction merged column headers into cells."""
+    t = (text or '').strip()
+    if not t:
+        return False
+    if any(m in t for m in _PDF_TRACE_COL_MARKERS):
+        return True
+    if t.startswith(':') and len(t) < 50:
+        return True
+    if re.search(r':المبادرة', t) and re.search(
+            r'تطبيق|تأسيس|تنفيذ|وتفعيل|وتطوير', t):
+        return True
+    return False
+
+
 def _bad_mapping(family: str, gap: str) -> bool:
+    if pdf_trace_extract_artifact(gap):
+        return False
     g = (gap or '').lower()
     if family == 'ecc_incident_response':
-        if 'soc' in g and 'csirt' not in g and 'استجابة' in g:
+        if 'soc' in g and 'siem' in g and 'csirt' not in g:
             return True
-        if 'غياب' not in g and 'csirt' not in g and 'استجابة' in g:
+        if 'غياب فريق' not in g and 'خطة الاستجابة' not in g:
+            if 'soc' in g or 'siem' in g:
+                return True
+    if family == 'data_protection' and gap and _EXPECTED_GAPS['data_protection'] not in gap:
+        if 'حماية' not in gap and 'نقل' not in gap:
             return True
+    if family == 'data_classification' and gap:
+        if _EXPECTED_GAPS['data_classification'] in gap:
+            return False
+        if any(m in g for m in ('iam', 'pam', 'مميزة', 'حسابات', 'privileged')):
+            return True
+        if any(m in g for m in (
+                'حوكمة', 'إطار تنظيمي', 'سياسة عامة', 'ecc-1-1')):
+            return True
+        if 'وجرد' in gap or 'ضعف تصنيف' in gap:
+            return False
+        return _EXPECTED_GAPS['data_classification'] not in gap
     if family == 'dlp' and _is_blank_gap(gap):
         return True
+    if family == 'encryption' and gap and _EXPECTED_GAPS['encryption'] not in gap:
+        return True
+    if family == 'sensitive_handling' and gap and (
+            _EXPECTED_GAPS['sensitive_handling'] not in gap):
+        return len(gap) < 25
     if family in _EXPECTED_GAPS and gap and _EXPECTED_GAPS[family] not in gap:
         if family == 'data_classification' and 'تصنيف' in gap:
-            return False
-        if family == 'encryption' and 'تشفير' in gap:
-            return False
+            if 'وجرد' in gap or 'ضعف' in gap:
+                return False
+            if any(m in g for m in ('حوكمة', 'إطار تنظيمي', 'سياسة عامة')):
+                return True
+            return True
         if family not in ('dlp', 'ecc_incident_response'):
-            return False
+            return True
         return True
     return False
 
@@ -112,8 +166,11 @@ def _build_canonical_traceability() -> str:
         'تطبيق التشفير | نسبة التشفير | مخاطر تشفير |\n'
         '| NCA DCC | معالجة البيانات الحساسة | ضعف معالجة البيانات الحساسة | '
         'إجراءات المعالجة | نسبة الامتثال | مخاطر معالجة |\n'
-        '| NCA ECC | الاستجابة للحوادث | غياب فريق الاستجابة للحوادث CSIRT | '
+        '| NCA ECC | الاستجابة للحوادث | '
+        'غياب فريق الاستجابة للحوادث CSIRT وخطة الاستجابة الرسمية | '
         'تأسيس CSIRT | MTTR | مخاطر حوادث |\n'
+        '| NCA DCC | حماية البيانات | ضعف حماية البيانات أثناء النقل والتخزين | '
+        'ضوابط الحماية | نسبة الامتثال | مخاطر بيانات |\n'
     )
 
 
@@ -165,6 +222,7 @@ def finalize_traceability_substance(
             cap = {
                 'dlp': 'DLP',
                 'data_classification': 'تصنيف البيانات',
+                'data_protection': 'حماية البيانات',
                 'encryption': 'التشفير',
                 'sensitive_handling': 'معالجة البيانات الحساسة',
                 'ecc_incident_response': 'الاستجابة للحوادث',
@@ -184,7 +242,12 @@ def finalize_traceability_substance(
             elif _bad_mapping(fam, gap):
                 bad_after.append(f'{fam}:{gap}')
 
-    if hdr >= 0:
+    if bad_after or blank_after:
+        text = _build_canonical_traceability()
+        blank_after = []
+        bad_after = []
+        action = 'traceability_rebuilt_canonical'
+    elif hdr >= 0:
         out_lines = lines[:hdr + 1]
         for c in new_rows:
             out_lines.append('| ' + ' | '.join(c) + ' |')

@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import inspect
+from typing import Any, Callable, Dict
 
 from release_engine_v3.contracts import ExportResult, RenderTree, _sha256_bytes
+
+
+def _filter_build_kwargs(build_fn: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        sig = inspect.signature(build_fn)
+    except (TypeError, ValueError):
+        return kwargs
+    if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in sig.parameters.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
 def export_pdf(
@@ -31,14 +44,16 @@ def export_pdf(
     content = render_tree.markdown_view
     pdf_bytes = build_fn(
         content,
-        lang=lang,
-        org_name=org_name,
-        sector=sector,
-        doc_type=doc_type,
-        domain=domain,
-        selected_frameworks=selected_frameworks,
-        cyber_sealed_artifact=cyber_sealed_artifact,
-        sections=backend.get('split_sections', lambda x: {})(content),
+        **_filter_build_kwargs(build_fn, {
+            'lang': lang,
+            'org_name': org_name,
+            'sector': sector,
+            'doc_type': doc_type,
+            'domain': domain,
+            'selected_frameworks': selected_frameworks,
+            'cyber_sealed_artifact': cyber_sealed_artifact,
+            'sections': backend.get('split_sections', lambda x: {})(content),
+        }),
     )
     if not isinstance(pdf_bytes, bytes):
         pdf_bytes = bytes(pdf_bytes or b'')
