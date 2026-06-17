@@ -1320,7 +1320,46 @@ function showProgress(docType) {
      75s+   : Finalising               (post-processing, section assembly)
 */
 var _strategyProgressTimer = null;
+var _strategyProgressBackendDriven = false;
+
+function formatStrategyEta(seconds){
+  if(typeof seconds !== 'number' || seconds < 0){
+    return isRtl ? 'جارٍ التقدير…' : 'Estimating…';
+  }
+  if(seconds < 60){
+    return isRtl ? ('~'+seconds+' ثانية متبقية') : ('~'+seconds+'s remaining');
+  }
+  var mins = Math.ceil(seconds / 60);
+  return isRtl ? ('~'+mins+' دقيقة متبقية') : ('~'+mins+' min remaining');
+}
+
+function updateStrategyProgressFromPoll(s){
+  if(!s){return;}
+  var pct = (typeof s.progress_percent === 'number') ? s.progress_percent : null;
+  var eta = (typeof s.eta_seconds === 'number') ? s.eta_seconds : null;
+  var label = isRtl
+    ? (s.stage_label_ar || s.stage_label_en || s.stage || '')
+    : (s.stage_label_en || s.stage_label_ar || s.stage || '');
+  if(pct !== null){
+    _strategyProgressBackendDriven = true;
+    if(_strategyProgressTimer){
+      clearTimeout(_strategyProgressTimer);
+      _strategyProgressTimer = null;
+    }
+    var fill = document.getElementById('progress-bar-fill');
+    var pctEl = document.getElementById('progress-percent');
+    if(fill){fill.style.width = pct + '%';}
+    if(pctEl){pctEl.textContent = pct + '%';}
+  }
+  if(label){
+    var sub = document.getElementById('progress-subtitle');
+    var etaTxt = (eta !== null) ? (' · ' + formatStrategyEta(eta)) : '';
+    if(sub){sub.textContent = label + etaTxt;}
+  }
+}
+
 function startStrategyProgressAnimation() {
+    if(_strategyProgressBackendDriven){return;}
     var stages = [
         {pct: 8,  sub: isRtl ? 'تشخيص الفجوات التنظيمية…'          : 'Diagnosing organisational gaps…'},
         {pct: 28, sub: isRtl ? 'بناء الاستراتيجية التقنية…'          : 'Building technical strategy…'},
@@ -1333,6 +1372,7 @@ function startStrategyProgressAnimation() {
     var start = Date.now();
 
     function _advance() {
+        if(_strategyProgressBackendDriven){return;}
         if (idx >= stages.length) return;
         var elapsed = Date.now() - start;
         // Find the highest stage whose delay has passed
@@ -1575,12 +1615,23 @@ function _onStrategyResult(result){
    completes.
 
    Idempotent: subsequent calls update the existing banner in-place. */
-function renderStrategyPendingBanner(taskId, stage, elapsedSeconds){
+function renderStrategyPendingBanner(taskId, telemetry){
   if(!taskId){return;}
-  var stageTxt = (stage===null||stage===undefined||stage==='') ?
-                 (isRtl?'غير معروفة':'unknown') : String(stage);
-  var elapsedTxt = (typeof elapsedSeconds === 'number' && elapsedSeconds>=0) ?
-                   String(elapsedSeconds) : (isRtl?'غير معروفة':'unknown');
+  telemetry = telemetry || {};
+  var stageTxt = telemetry.stage_label_en || telemetry.stage_label_ar
+    || telemetry.stage;
+  if(stageTxt===null||stageTxt===undefined||stageTxt===''){
+    stageTxt = isRtl ? 'غير معروفة' : 'unknown';
+  }
+  var elapsedRaw = (typeof telemetry.elapsed_seconds === 'number')
+    ? telemetry.elapsed_seconds
+    : ((typeof telemetry.elapsed_s === 'number') ? telemetry.elapsed_s : null);
+  var elapsedTxt = (elapsedRaw !== null && elapsedRaw >= 0)
+    ? String(elapsedRaw) : (isRtl?'غير معروفة':'unknown');
+  var pct = (typeof telemetry.progress_percent === 'number')
+    ? telemetry.progress_percent : null;
+  var etaTxt = formatStrategyEta(
+    (typeof telemetry.eta_seconds === 'number') ? telemetry.eta_seconds : null);
   var banner = document.getElementById('strategy-pending-banner');
   if(!banner){
     banner = document.createElement('div');
@@ -1595,6 +1646,15 @@ function renderStrategyPendingBanner(taskId, stage, elapsedSeconds){
       'display:flex;flex-direction:column;gap:10px;';
     banner.innerHTML =
       '<div id="strategy-pending-banner-msg"></div>'+
+      '<div id="strategy-pending-banner-progress-wrap" style="display:none;">'+
+        '<div style="background:rgba(255,255,255,.25);height:6px;border-radius:3px;'+
+          'overflow:hidden;">'+
+          '<div id="strategy-pending-banner-progress" style="height:100%;width:0%;'+
+            'background:#fff;transition:width .4s ease;"></div>'+
+        '</div>'+
+        '<div id="strategy-pending-banner-meta" style="font-size:12px;opacity:.9;'+
+          'margin-top:6px;"></div>'+
+      '</div>'+
       '<div style="display:flex;gap:8px;align-items:center;">'+
         '<button type="button" id="strategy-pending-banner-refresh" '+
           'style="background:#fff;color:#333;border:0;border-radius:6px;'+
@@ -1607,12 +1667,31 @@ function renderStrategyPendingBanner(taskId, stage, elapsedSeconds){
   }
   banner.dataset.taskId = taskId;
   var msg = isRtl
-    ? ('لا يزال التوليد جارياً. المرحلة الحالية: '+stageTxt+
-       '. الوقت المنقضي: '+elapsedTxt+' ثانية.')
-    : ('Generation is still running. Current stage: '+stageTxt+
-       '. Elapsed: '+elapsedTxt+' seconds.');
+    ? ('لا يزال التوليد جارياً. '+stageTxt+
+       (pct !== null ? ('. التقدم: '+pct+'%.') : '')+
+       ' الوقت المنقضي: '+elapsedTxt+' ثانية.'+
+       ' المتبقي تقريباً: '+etaTxt+'.')
+    : ('Generation in progress. '+stageTxt+
+       (pct !== null ? (' Progress: '+pct+'%.') : '')+
+       ' Elapsed: '+elapsedTxt+'s.'+
+       ' ETA: '+etaTxt+'.');
   var msgEl = document.getElementById('strategy-pending-banner-msg');
   if(msgEl){msgEl.textContent = msg;}
+  var progWrap = document.getElementById('strategy-pending-banner-progress-wrap');
+  var progBar = document.getElementById('strategy-pending-banner-progress');
+  var metaEl = document.getElementById('strategy-pending-banner-meta');
+  if(pct !== null && progWrap && progBar){
+    progWrap.style.display = 'block';
+    progBar.style.width = pct + '%';
+    if(metaEl){
+      metaEl.textContent = isRtl
+        ? (pct+'% · '+etaTxt+' · '+elapsedTxt+' ثانية منقضية')
+        : (pct+'% · '+etaTxt+' · '+elapsedTxt+'s elapsed');
+    }
+  }else if(progWrap){
+    progWrap.style.display = 'none';
+  }
+  updateStrategyProgressFromPoll(telemetry);
   var btn = document.getElementById('strategy-pending-banner-refresh');
   if(btn && !btn._wired){
     btn._wired = true;
@@ -1651,11 +1730,7 @@ function renderStrategyPendingBanner(taskId, stage, elapsedSeconds){
             return;
           }
           /* Still pending/running — refresh banner with new telemetry. */
-          var _newStage = (s.stage!==undefined)?s.stage:stage;
-          var _newElapsed = (typeof s.elapsed_seconds==='number')
-                            ? s.elapsed_seconds
-                            : ((typeof s.elapsed_s==='number')?s.elapsed_s:elapsedSeconds);
-          renderStrategyPendingBanner(tid, _newStage, _newElapsed);
+          renderStrategyPendingBanner(tid, s);
         })
         .catch(function(){
           btn.disabled = false;
@@ -1685,6 +1760,7 @@ try{
     return;
   }
   /* Start progress animation */
+  _strategyProgressBackendDriven = false;
   startStrategyProgressAnimation();
   /* ── Poll strategy-status until done ──────────────────────────────────────
      PR-5B.8B Section D: stall-aware polling. Backend now publishes per-stage
@@ -1694,17 +1770,15 @@ try{
        IDLE_CEILING_S  = 180  // matches backend IDLE_THRESHOLD_SECONDS;
                               // stops polling once backend has terminalized
                               // the task as a stall.
-       WALL_CEILING_S  = 900  // hard wall-clock ceiling, after which we
-                              // hand off to the existing latest-strategy
-                              // recovery instead of the generic timeout
-                              // toast.
+       WALL_CEILING_S  = 1500 // hard wall-clock ceiling; heavy Arabic cyber
+                              // runs can exceed 900s while still healthy.
      The previous bare `maxTries=120 × 3s = 6min` ceiling stopped polling
      even when the backend was still actively bumping the stage.  Now we
      only stop when the backend itself is idle or wall time is exhausted.
      Terminal non-retryable states (not_found, error) still short-circuit
      immediately; recovery still calls /api/strategy/latest. */
   var IDLE_CEILING_S=180;
-  var WALL_CEILING_S=900;
+  var WALL_CEILING_S=1500;
   var tid=startData.task_id;var tries=0;
   /* Legacy maxTries kept ONLY as a defensive absolute ceiling far above
      WALL_CEILING_S/3s so a runaway poll loop can never spin forever even
@@ -1774,9 +1848,7 @@ try{
            using the same task_id. We do NOT tell the user to check
            My Documents while pending — the task is still running and
            no document has been written. */
-        renderStrategyPendingBanner(d.task_id || tid,
-                                    d.stage,
-                                    d.elapsed_seconds);
+        renderStrategyPendingBanner(d.task_id || tid, d);
         return;
       }
       if(d&&d.success&&(d.sections||d.content_json)){
@@ -1947,7 +2019,10 @@ try{
         }
         console.log('[STRATEGY-UI] poll_pending task='+tid.slice(0,8)+
                     ' tries='+tries+' elapsed_s='+_elapsed+
-                    ' idle_s='+_idle+' stage='+(s.stage||'?'));
+                    ' idle_s='+_idle+' stage='+(s.stage||'?')+
+                    ' progress='+(s.progress_percent==null?'?':s.progress_percent)+
+                    ' eta_s='+(s.eta_seconds==null?'?':s.eta_seconds));
+        updateStrategyProgressFromPoll(s);
         setTimeout(pollStrategy,3000);
       }
     })
