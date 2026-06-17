@@ -21,8 +21,11 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('لل معالجة', 'للمعالجة'),
     # REL2.7.1 — glued solutions+prevent token before partial split rules.
     ('حلولمنع', 'حلول لمنع'),
+    ('حلمنع', 'حلول لمنع'),
     # Before generic ل منع — undo false split from حلولمن inside حlولمنع.
     ('حلول منع', 'حلول لمنع'),
+    ('المسؤول أمن السيبرانيe', 'مسؤول أمن السيبراني'),
+    ('المسؤول أمن السيبرانيLead', 'مسؤول أمن السيبراني'),
     ('ل منع', 'لمنع'),
     ('ال معيارية', 'المعيارية'),
     ('ال منفذة', 'المنفذة'),

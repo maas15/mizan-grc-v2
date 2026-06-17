@@ -594,6 +594,11 @@ def _repair_arabic_blob(text: str) -> str:
     out = out.replace('الموظفينفي', 'الموظفين في')
     out = out.replace('رئيسيةفي', 'رئيسية في')
     out = out.replace('حلولمنع', 'حلول لمنع')
+    out = out.replace('حلمنع', 'حلول لمنع')
+    out = re.sub(
+        r'المسؤول أمن السيبراني\s*e\b', 'مسؤول أمن السيبراني', out, flags=re.I)
+    out = re.sub(
+        r'المسؤول أمن السيبراني\s*Lead\b', 'مسؤول أمن السيبراني', out, flags=re.I)
     out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
     out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
     out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)

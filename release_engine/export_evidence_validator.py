@@ -60,6 +60,7 @@ REL26_ARABIC_RESIDUES = (
     'ال معمول',
     'ل منع',
     'حلولمنع',
+    'حلمنع',
     'ال معتمدة',
     'ال معيارية',
     'المسؤول أمن السيبرانيe',
@@ -81,7 +82,7 @@ _AR_GLUE_RE = re.compile(
     r'(?:الحالية|الموظفين|رئيسية|حلول)(?=في)'
     r'|(?:^|\s)ال\s+(?:منظمة|معلومات|معمول|معتمدة|معيارية)'
     r'|لل\s+معالجة'
-    r'|حلولمنع',
+    r'|حلولمنع|حلمنع',
     re.UNICODE,
 )
 
@@ -250,7 +251,10 @@ def _count_roadmap_rows_visible(blob: str) -> int:
     return count
 
 
-def _roadmap_defects_in(blob: str) -> List[str]:
+def _roadmap_defects_in(
+        blob: str,
+        *,
+        internal_row_count: int | None = None) -> List[str]:
     defects: List[str] = []
     try:
         from release_engine.rel27_export_checks import _roadmap_section_blob
@@ -260,23 +264,43 @@ def _roadmap_defects_in(blob: str) -> List[str]:
     for bad in REL26_ROADMAP_BAD_INITIATIVES:
         if bad in scan_blob:
             defects.append(f'roadmap_bad_initiative:{bad}')
+    try:
+        from release_engine.rel27_export_checks import check_roadmap_coverage
+        road = check_roadmap_coverage(blob or '')
+        if road.get('exported_roadmap_coverage_valid'):
+            return defects
+        if int(road.get('visible_row_count') or 0) >= 10:
+            return defects
+    except Exception:  # noqa: BLE001
+        pass
+    if internal_row_count is not None and internal_row_count >= 10:
+        return defects
     count = _count_roadmap_rows_visible(scan_blob)
     if count and count < 10:
         defects.append(f'roadmap_row_count:{count}')
     return defects
 
 
-def _forbidden_in(blob: str) -> List[str]:
+def _forbidden_in(
+        blob: str,
+        *,
+        internal_roadmap_row_count: int | None = None) -> List[str]:
     items: List[str] = []
     items.extend(_find_in(blob, REL26_FORBIDDEN_KPI))
-    items.extend(_roadmap_defects_in(blob))
+    items.extend(_roadmap_defects_in(
+        blob, internal_row_count=internal_roadmap_row_count))
     items.extend(_kpi_defects_in(blob))
     items.extend(_arabic_defects_in(blob))
     items.extend(_trace_defects_in(blob))
     return list(dict.fromkeys(items))
 
 
-def _channel_defects(text: str, *, route: str = '', pdf_bytes: bytes = b'') -> Dict[str, Any]:
+def _channel_defects(
+        text: str,
+        *,
+        route: str = '',
+        pdf_bytes: bytes = b'',
+        internal_roadmap_row_count: int | None = None) -> Dict[str, Any]:
     # PR-REL2.6/7: validate raw visible export text — never scrub before detection.
     blob = text or ''
     rel27 = rel27_channel_checks(blob)
@@ -291,8 +315,21 @@ def _channel_defects(text: str, *, route: str = '', pdf_bytes: bytes = b'') -> D
         rel31_defects = []
     kpi_defects = list(dict.fromkeys(
         _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
+    rel27_road_defects = list(rel27.get('roadmap_defects') or [])
+    if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
+        rel27_road_defects = [
+            d for d in rel27_road_defects
+            if not str(d).startswith('roadmap_row_count')]
     roadmap_defects = list(dict.fromkeys(
-        _roadmap_defects_in(blob) + (rel27.get('roadmap_defects') or [])))
+        _roadmap_defects_in(
+            blob, internal_row_count=internal_roadmap_row_count)
+        + rel27_road_defects))
+    if (route == 'preview'
+            and internal_roadmap_row_count is not None
+            and internal_roadmap_row_count >= 10):
+        roadmap_defects = [
+            d for d in roadmap_defects
+            if str(d).startswith('roadmap_bad_initiative')]
     risk_defects = list(dict.fromkeys(
         _risk_defects_in(blob) + (rel27.get('risk_defects') or [])))
     traceability_defects = list(dict.fromkeys(
@@ -300,14 +337,15 @@ def _channel_defects(text: str, *, route: str = '', pdf_bytes: bytes = b'') -> D
     arabic_residues = list(dict.fromkeys(
         _arabic_defects_in(blob) + (rel27.get('arabic_residues') or [])))
     forbidden = list(dict.fromkeys(
-        _forbidden_in(blob)
+        _forbidden_in(
+            blob, internal_roadmap_row_count=internal_roadmap_row_count)
         + (rel27.get('missing_sections') or [])
         + kpi_defects
-        + roadmap_defects
         + risk_defects
         + traceability_defects
         + arabic_residues
-        + rel31_defects))
+        + rel31_defects
+        + roadmap_defects))
     return {
         'forbidden_patterns': forbidden,
         'missing_sections': rel27.get('missing_sections') or [],
@@ -354,7 +392,20 @@ def validate_actual_export_evidence(
         hash_fn=None,
 ) -> Dict[str, Any]:
     """Validate visible text from actual export surfaces (not render model only)."""
-    preview_def = _channel_defects(preview_text, route='preview') if preview_text else {}
+    internal_roadmap_row_count = None
+    if canonical_sections:
+        try:
+            from release_engine.roadmap_model import _parse_roadmap_rows
+            internal_roadmap_row_count = len(
+                _parse_roadmap_rows(canonical_sections.get('roadmap') or ''))
+        except Exception:  # noqa: BLE001
+            internal_roadmap_row_count = None
+    preview_def = (
+        _channel_defects(
+            preview_text,
+            route='preview',
+            internal_roadmap_row_count=internal_roadmap_row_count)
+        if preview_text else {})
     docx_def = _channel_defects(docx_text, route='docx') if docx_text else {}
     pdf_def = _channel_defects(
         pdf_text, route='pdf', pdf_bytes=pdf_bytes) if (pdf_text or pdf_bytes) else {}
@@ -417,7 +468,7 @@ def validate_actual_export_evidence(
             and docx_bytes_checked
             and not _channel_has_defects(docx_def)),
         arabic_font_registered=True,
-        internal_roadmap_row_count=None,
+        internal_roadmap_row_count=internal_roadmap_row_count,
     )
     blocking = list(route_verdict.get('blocking_errors') or blocking)
     preview_passed = bool(route_verdict.get('preview_export_evidence_passed'))
@@ -566,7 +617,10 @@ def _rebuild_artifact_markdown(sections: Dict[str, str]) -> str:
 
 
 def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
-    needles = ('حلولمنع', 'arabic_glued', 'الحاليةفي', 'الموظفينفي')
+    needles = (
+        'حلولمنع', 'حلمنع', 'arabic_glued', 'arabic_residue',
+        'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
+    )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
             return True

@@ -448,6 +448,18 @@ def repair_canonical_before_freeze(
         repairs.extend(rel31_repairs)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from release_engine.arabic_language_gate import apply_arabic_final_gate
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        sections = {
+            k: _repair_arabic_blob(v) if isinstance(v, str) else v
+            for k, v in sections.items()}
+        sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
+        action = (ar_diag.get('action_taken') or '').strip()
+        if action and action not in ('validated', 'no_changes'):
+            repairs.append(f'rel31:{action}')
+    except Exception:  # noqa: BLE001
+        pass
     art['sections'] = sections
     for _ in range(max_attempts):
         obj = validate_rel3_objectives(sections, backend=backend)
@@ -658,10 +670,26 @@ def apply_rel31_authoritative_contract(
     preview_export, preview_ev = rel3_export_with_evidence(
         'preview', built, backend=backend)
     if not preview_ev.export_return_allowed:
-        _roadmap_ev = [
-            e for e in (preview_ev.blocking_errors or [])
-            if 'roadmap' in str(e).lower()]
-        if _roadmap_ev:
+        _preview_gate = getattr(preview_ev, 'gate', None) or {}
+        if not _preview_gate:
+            _preview_gate = {
+                'blocking_errors': list(preview_ev.blocking_errors or []),
+                'preview_forbidden_patterns': [],
+            }
+        _preview_blob = ' '.join(
+            str(e) for e in (preview_ev.blocking_errors or [])).lower()
+        if any(k in _preview_blob for k in (
+                'roadmap', 'arabic', 'pillar', 'missing_pillars')):
+            try:
+                from release_engine.export_evidence_validator import (
+                    repair_for_actual_export_defects,
+                )
+                art, _prev_rep = repair_for_actual_export_defects(
+                    art, _preview_gate,
+                    domain=domain, lang=lang, backend=backend)
+                repairs.extend(_prev_rep)
+            except Exception:  # noqa: BLE001
+                pass
             _secs = dict(art.get('sections') or {})
             _secs = _rel31_dedupe_roadmap_rows(_secs, backend=backend)
             _secs = _repair_rel3_weak_roadmap_outputs(_secs, backend=backend)
@@ -681,26 +709,27 @@ def apply_rel31_authoritative_contract(
                     art['final_markdown'] = backend['rebuild_markdown'](_secs)
                 except Exception:  # noqa: BLE001
                     pass
-            road = validate_rel3_roadmap_output_quality(_secs, backend=backend)
-            art['sections'] = road.get('sections') or _secs
+            obj = validate_rel3_objectives(_secs, backend=backend)
+            art['sections'] = obj.get('sections') or _secs
+            road = validate_rel3_roadmap_output_quality(
+                art.get('sections') or {}, backend=backend)
+            art['sections'] = road.get('sections') or art.get('sections') or {}
+            blockers = [
+                b for b in blockers
+                if b not in (
+                    'rel3_generation_contract_failed:objectives',
+                    'rel3_generation_contract_failed:roadmap_weak_output')]
+            if not obj.get('valid'):
+                blockers.append('rel3_generation_contract_failed:objectives')
             if not road.get('valid'):
-                blockers = [
-                    b for b in blockers
-                    if b != 'rel3_generation_contract_failed:roadmap_weak_output']
-                if not road.get('valid'):
-                    blockers.append(
-                        'rel3_generation_contract_failed:roadmap_weak_output')
-            else:
-                blockers = [
-                    b for b in blockers
-                    if b != 'rel3_generation_contract_failed:roadmap_weak_output']
-            if not blockers:
-                built = build_final_document_artifact(
-                    art, freeze=False,
-                    strategy_id=str(art.get('strategy_id') or ''))
-                built = freeze_artifact(built)
-                store_artifact(built)
-                tree = rel3_build_render_tree(built)
+                blockers.append(
+                    'rel3_generation_contract_failed:roadmap_weak_output')
+            built = build_final_document_artifact(
+                art, freeze=False,
+                strategy_id=str(art.get('strategy_id') or ''))
+            built = freeze_artifact(built)
+            store_artifact(built)
+            tree = rel3_build_render_tree(built)
             preview_export, preview_ev = rel3_export_with_evidence(
                 'preview', built, backend=backend)
     if not preview_ev.export_return_allowed:

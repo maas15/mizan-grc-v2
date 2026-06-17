@@ -84,7 +84,7 @@ def validate_export_text(
         pdf_bytes=pdf_bytes,
         route_name=route,
         final_hash=final_hash,
-        canonical_sections=None,
+        canonical_sections=canonical_sections,
     )
     # Prefix blockers with rel3 namespace for export routes
     rel3_blockers: List[str] = []
