@@ -369,6 +369,7 @@ def normalize_arabic_for_render(text: str) -> str:
     out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
     out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
     out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
     out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
     out = re.sub(
         r'(?<![\w\u0600-\u06FF])ل\s+منع(?![\w\u0600-\u06FF])', 'لمنع', out)
@@ -569,6 +570,7 @@ def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
     kri_keys = (
         'kri', 'risk', 'مخاطر', 'phishing', 'تصيد', 'exposure', 'تعرض',
         'risk exposure', 'failure rate', 'حساس', 'sensitive data',
+        'تسرب', 'حوادث تسرب',
     )
     if any(k in n for k in kri_keys):
         return 'KRI'
@@ -3711,11 +3713,21 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
                 if lang == 'ar' else
                 '(Encrypted assets/data / classified sensitive data) × 100')
     if any(k in n for k in ('%', 'نسبة', 'تغطية', 'coverage', 'rate')):
-        return ('(المنجز المقيس ÷ الهدف التشغيلي المعتمد) × 100'
-                if lang == 'ar'
-                else '(Measured achievement ÷ approved operational target) × 100')
-    return ('(المنجز / المخطط) × 100' if lang == 'ar'
-            else '(Achieved / planned) × 100')
+        if lang == 'ar':
+            if 'لجنة' in n and 'حوكمة' in n:
+                return ('(عدد اجتماعات اللجنة المنعقدة ÷ إجمالي الاجتماعات المخططة) × 100')
+            if any(k in n for k in ('محاولات الدخول', 'دخول فاشل')):
+                return ('(عدد المحاولات الشاذة المكتشفة ÷ إجمالي محاولات الدخول) × 100')
+            if any(k in n for k in ('امتثال', 'ضوابط')):
+                return ('(عدد الضوابط المحققة ÷ إجمالي الضوابط المستهدفة) × 100')
+            return ('(عدد البنود المحققة ÷ إجمالي البنود المستهدفة) × 100')
+        if 'governance committee' in nu or ('committee' in nu and 'governance' in nu):
+            return '(Committee meetings held ÷ planned committee meetings) × 100'
+        if 'failed login' in nu or 'login attempt' in nu:
+            return '(Anomalous login attempts detected ÷ total login attempts) × 100'
+        return '(Controls achieved ÷ target controls) × 100'
+    return ('(عدد البنود المنجزة ÷ إجمالي البنود المخططة) × 100' if lang == 'ar'
+            else '(Items completed ÷ planned items) × 100')
 
 
 def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
@@ -3830,6 +3842,19 @@ def _is_iam_pam_metric(name: str) -> bool:
     ))
 
 
+def _is_dlp_breach_count_metric(name: str) -> bool:
+    """KRI — critical data-breach incident counts are never percentage KPIs."""
+    n = (name or '').strip()
+    if not n:
+        return False
+    if 'عدد حوادث تسرب' in n:
+        return True
+    if 'تسرب' in n and any(k in n for k in ('حوادث', 'بيانات')):
+        return True
+    nu = n.lower()
+    return 'data breach' in nu or 'breach incident' in nu
+
+
 def _detect_kpi_metric_family(
         name: str, target: str = '', formula: str = '',
         kpi_type: str = '', lang: str = 'ar') -> str:
@@ -3838,6 +3863,8 @@ def _detect_kpi_metric_family(
     nu = n.lower()
     t = (target or '').strip()
     pct = _is_percentage_formula(formula)
+    if _is_dlp_breach_count_metric(n):
+        return 'dlp_breach_count_kri'
     if any(k in nu for k in ('تصيد', 'phishing')):
         if ((kpi_type or '').upper() == 'KRI'
                 or '5%' in t or 'أقل' in t or '< 5' in t.lower()
@@ -3876,7 +3903,8 @@ def _detect_kpi_metric_family(
     if any(k in nu for k in (
             'تشفير', 'encrypt', 'dlp', 'بيانات حساسة', 'حماية البيانات',
             'encryption')):
-        return 'data_protection_encryption_dlp'
+        if not _is_dlp_breach_count_metric(n):
+            return 'data_protection_encryption_dlp'
     if any(k in nu for k in (
             'امتثال', 'compliance', 'ecc', 'dcc', 'ضوابط')):
         return 'compliance_ecc_dcc'
@@ -3974,6 +4002,14 @@ def _apply_kpi_metric_family_spec(
              if ar else
              '(Successful backups ÷ total backup operations) × 100')
         s = ('منصة النسخ الاحتياطي' if ar else 'Backup platform')
+    elif family == 'dlp_breach_count_kri':
+        n = ('عدد حوادث تسرب البيانات الحرجة' if ar else
+             'Critical data breach incidents')
+        kt = 'KRI'
+        t = '≤ 2 حوادث حرجة سنوياً' if ar else '≤ 2 critical incidents per year'
+        f = ('عدد حوادث تسرب البيانات الحرجة خلال الفترة' if ar else
+             'Count of critical data breach incidents in period')
+        s = ('منصة DLP / SIEM' if ar else 'DLP / SIEM platform')
     elif family == 'data_protection_encryption_dlp':
         kt = 'KPI'
         t = ('≥95% أو 100% للبيانات الحساسة المصنفة' if ar else
@@ -4008,13 +4044,19 @@ def _normalize_kpi_semantic_row(
             'incident_response_sla', 'incident_response_time',
             'incident_detection_time',
             'iam_pam_coverage', 'mfa_coverage', 'vulnerability_sla',
-            'phishing_failure_kri', 'backup_success',
+            'phishing_failure_kri', 'backup_success', 'dlp_breach_count_kri',
             'data_protection_encryption_dlp', 'compliance_ecc_dcc',
     ):
         name, kpi_type, target, formula, source = _apply_kpi_metric_family_spec(
             family, name, kpi_type, target, formula, source, lang)
     else:
         name = _normalize_kpi_name(name, lang)
+        try:
+            from release_engine.rel27_export_checks import REL27_GENERIC_FORMULAS
+            if any(gf in (formula or '') for gf in REL27_GENERIC_FORMULAS):
+                formula = ''
+        except Exception:  # noqa: BLE001
+            pass
         if _is_formula_like_target(target) or _target_repeats_metric_name(
                 name, target):
             target = _derive_kpi_target(name, '', lang)
@@ -4990,9 +5032,23 @@ def normalize_confidence_risk(
                                       'mitigation', 'plan', 'treatment'))
             i_owner = _col_index(hdr, ('المالك', 'المسؤول', 'owner'))
             for n, r in enumerate(tbl[1:], 1):
+                plan = _cell(r, i_plan)
+                if plan in ('—', '-', ''):
+                    risk_blob = ' '.join(
+                        _cell(r, i_risk) + ' ' + _cell(r, i_impact)).lower()
+                    if 'تصيد' in risk_blob or 'phishing' in risk_blob:
+                        plan = (
+                            'تدريب دوري ومبادرات توعية وتقنيات مكافحة التصيد'
+                            if lang == 'ar' else
+                            'Awareness training and anti-phishing controls')
+                    else:
+                        plan = (
+                            'ضوابط تقنية وإجراءات تشغيلية ومراقبة مستمرة'
+                            if lang == 'ar' else
+                            'Technical controls, procedures, and monitoring')
                 risk_rows.append([
                     str(n), _cell(r, i_risk), _cell(r, i_like),
-                    _cell(r, i_impact), _cell(r, i_plan),
+                    _cell(r, i_impact), plan,
                     _cell(r, i_owner, 'CISO'),
                 ])
     # Canonical confidence factors — never parsed from source tables.
@@ -5414,6 +5470,8 @@ def enrich_professional_blocks(
         'tables': kpi_tables + kpi_guides.get('guide_tables', []),
         'paragraphs': kpi_guides.get('paragraphs', []),
     }
+    blocks = _normalize_kpi_tables_semantics(
+        {'blocks': blocks}, lang_n)['blocks']
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')

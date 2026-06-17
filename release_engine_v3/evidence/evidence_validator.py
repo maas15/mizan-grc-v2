@@ -91,6 +91,7 @@ def validate_returned_export_bytes(
         lang=artifact.language,
         pdf_text_extraction_unreliable=pdf_unreliable,
         pdf_bytes_had=bool(pdf_bytes),
+        pdf_bytes=pdf_bytes if route_n == 'pdf' else b'',
         canonical_sections=artifact.legacy_sections,
         final_hash=artifact.canonical_hash,
     )

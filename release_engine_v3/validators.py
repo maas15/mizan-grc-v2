@@ -67,6 +67,7 @@ def validate_export_text(
         lang: str = 'ar',
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
+        pdf_bytes: bytes = b'',
         canonical_sections: Optional[Dict[str, str]] = None,
         final_hash: str = '',
 ) -> Dict[str, Any]:
@@ -80,6 +81,7 @@ def validate_export_text(
         document_type='strategy',
         pdf_text_extraction_unreliable=pdf_text_extraction_unreliable,
         pdf_bytes_had=pdf_bytes_had,
+        pdf_bytes=pdf_bytes,
         route_name=route,
         final_hash=final_hash,
         canonical_sections=None,

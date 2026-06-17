@@ -17,6 +17,7 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ال معمول', 'المعمول'),
     ('ال منظمة', 'المنظمة'),
     ('ال معتمدة', 'المعتمدة'),
+    ('ال معتمد', 'المعتمد'),
     ('لل معالجة', 'للمعالجة'),
     # REL2.7.1 — glued solutions+prevent token before partial split rules.
     ('حلولمنع', 'حلول لمنع'),

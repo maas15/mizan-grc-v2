@@ -49,10 +49,15 @@ FORBIDDEN_ARABIC_PATTERNS = (
     'ال معمول',
     'ل منع',
     'حلولمنع',
+    'حلمنع',
     'ال معتمدة',
+    'ال معتمد',
     'ال معيارية',
     'المسؤول أمن السيبرانيe',
+    'المسؤول أمن السيبرانيLead',
     'Lead e',
+    'الحوادث السيبرانيةمع',
+    'حوادثلا يقلعن',
 )
 
 FORBIDDEN_TRACE_PATTERNS = (
@@ -114,11 +119,26 @@ def extract_docx_visible_text(docx_bytes: bytes) -> str:
         return ''
 
 
+def normalize_pdf_extracted_text(text: str) -> str:
+    """Map Arabic presentation forms from PDF extract to standard Arabic."""
+    import unicodedata
+    if not text:
+        return ''
+    out = unicodedata.normalize('NFKC', text)
+    try:
+        from professional_strategy_render import normalize_arabic_for_render
+        out = normalize_arabic_for_render(out)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def extract_pdf_visible_text(pdf_bytes: bytes) -> str:
     try:
         import fitz
         doc = fitz.open(stream=pdf_bytes, filetype='pdf')
-        return '\n'.join(p.get_text() for p in doc)
+        raw = '\n'.join(p.get_text() for p in doc)
+        return normalize_pdf_extracted_text(raw)
     except Exception:  # noqa: BLE001
         return ''
 
@@ -288,6 +308,13 @@ def _arabic_residues(blob: str) -> List[str]:
                     'بيانات حساسة معتمدة',
                     'إجراءات معالجة بيانات حساسة معتمدة'):
                 scrubbed = scrubbed.replace(phrase, '')
+        elif p == 'ال معتمد':
+            scrubbed = scrubbed.replace('الهدف التشغيلي المعتمد', '')
+            for phrase in (
+                    'أعمال معتمدة', 'خطة معتمدة', 'خطة زمنية معتمدة',
+                    'معتمدة للعمليات', 'سجل بيانات مصنفة ومعتمد',
+                    'بيانات حساسة معتمدة', 'ال معتمدة'):
+                scrubbed = scrubbed.replace(phrase, '')
         if p in scrubbed:
             found.append(p)
     return found
@@ -401,6 +428,7 @@ def _scrub_global_forbidden(text: str) -> str:
     out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
     out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
     out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
     out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
     out = re.sub(r'ل\s+منع', 'لمنع', out)
     out = out.replace('DLP فقط', _DCC_DLP_GAP)
@@ -570,6 +598,7 @@ def _repair_arabic_blob(text: str) -> str:
     out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
     out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
     out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
     out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
     out = re.sub(r'\bل\s+منع\b', 'لمنع', out)
     out = _apply_catalog_fixes(out)

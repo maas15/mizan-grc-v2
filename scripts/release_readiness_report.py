@@ -56,6 +56,8 @@ REL2_TESTS = [
 
     'tests/test_rel31_source_authority.py',
 
+    'tests/test_rel31_actual_export_acceptance_failure.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',

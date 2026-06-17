@@ -60,35 +60,79 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _pillar_section_after_heading(blob: str) -> str:
-    text = blob or ''
-    start = -1
-    marker_used = ''
-    for marker in PILLAR_HEADING_MARKERS:
-        idx = text.find(marker)
-        if idx >= 0 and (start < 0 or idx < start):
-            start = idx
-            marker_used = marker
-    if start < 0:
-        return ''
-    tail = text[start + len(marker_used):]
+_PILLAR_NEXT_SECTION_MARKERS = (
+    'البيئة التنظيمية',
+    'تحليل الفجوات',
+    'خارطة الطريق',
+    'مؤشرات الأداء',
+    'تقييم الثقة',
+    'نموذج الحوكمة',
+    'مصفوفة تتبع',
+)
+
+
+def _slice_tail_after_marker(text: str, idx: int, marker: str) -> str:
+    tail = text[idx + len(marker):]
+    end = len(tail)
+    for nxt in _PILLAR_NEXT_SECTION_MARKERS:
+        pos = tail.find(nxt)
+        if pos > 0:
+            end = min(end, pos)
     m = NEXT_MAJOR_HEADING_RE.search(tail)
     if m:
-        tail = tail[:m.start()]
-    return tail
+        end = min(end, m.start())
+    return tail[:end]
+
+
+def pillar_body_after_heading(blob: str) -> str:
+    """Pillar body slice — prefer occurrence with canonical pillar names (skip TOC)."""
+    text = blob or ''
+    marker = ''
+    for m in sorted(PILLAR_HEADING_MARKERS, key=len, reverse=True):
+        if m in text:
+            marker = m
+            break
+    if not marker:
+        return ''
+    positions: List[int] = []
+    start = 0
+    while True:
+        idx = text.find(marker, start)
+        if idx < 0:
+            break
+        positions.append(idx)
+        start = idx + 1
+    if not positions:
+        return ''
+    best_section = ''
+    best_score = -1
+    for idx in positions:
+        section = _slice_tail_after_marker(text, idx, marker)
+        score = sum(
+            1 for variants in REQUIRED_PILLAR_NAME_VARIANTS
+            if any(v in section for v in variants))
+        if score > best_score:
+            best_score = score
+            best_section = section
+    if best_score > 0:
+        return best_section
+    return _slice_tail_after_marker(text, positions[-1], marker)
+
+
+def _pillar_section_after_heading(blob: str) -> str:
+    return pillar_body_after_heading(blob)
 
 
 def check_pillars_after_strategic_heading(blob: str) -> List[str]:
     """Hard evidence: four pillar names must appear after strategic pillars heading."""
+    if not _pillar_heading_present(blob or ''):
+        return []
     section = _pillar_section_after_heading(blob or '')
-    scan = section if section.strip() else (blob or '')
-    if not scan.strip():
-        return []
-    if not section.strip() and not _pillar_heading_present(blob or ''):
-        return []
+    if not section.strip():
+        return ['missing_pillars_after_heading']
     missing: List[str] = []
     for variants in REQUIRED_PILLAR_NAME_VARIANTS:
-        if not any(v in scan for v in variants):
+        if not any(v in section for v in variants):
             missing.append(variants[0])
     if missing:
         return ['missing_pillars_after_heading']

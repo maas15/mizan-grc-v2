@@ -437,6 +437,18 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
+    lang = backend.get('lang', 'ar')
+    domain = art.get('domain') or 'cyber'
+    try:
+        from release_engine.rel31_acceptance_checks import (
+            repair_rel31_canonical_sections,
+        )
+        sections, rel31_repairs = repair_rel31_canonical_sections(
+            sections, lang=lang, domain=domain, backend=backend)
+        repairs.extend(rel31_repairs)
+    except Exception:  # noqa: BLE001
+        pass
+    art['sections'] = sections
     for _ in range(max_attempts):
         obj = validate_rel3_objectives(sections, backend=backend)
         sections = obj.get('sections') or sections

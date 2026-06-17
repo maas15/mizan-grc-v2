@@ -276,10 +276,19 @@ def _forbidden_in(blob: str) -> List[str]:
     return list(dict.fromkeys(items))
 
 
-def _channel_defects(text: str) -> Dict[str, Any]:
+def _channel_defects(text: str, *, route: str = '', pdf_bytes: bytes = b'') -> Dict[str, Any]:
     # PR-REL2.6/7: validate raw visible export text — never scrub before detection.
     blob = text or ''
     rel27 = rel27_channel_checks(blob)
+    rel31_defects: List[str] = []
+    try:
+        from release_engine.rel31_acceptance_checks import (
+            run_rel31_acceptance_checks,
+        )
+        rel31_defects = run_rel31_acceptance_checks(
+            blob, route=route, pdf_bytes=pdf_bytes)
+    except Exception:  # noqa: BLE001
+        rel31_defects = []
     kpi_defects = list(dict.fromkeys(
         _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
     roadmap_defects = list(dict.fromkeys(
@@ -297,7 +306,8 @@ def _channel_defects(text: str) -> Dict[str, Any]:
         + roadmap_defects
         + risk_defects
         + traceability_defects
-        + arabic_residues))
+        + arabic_residues
+        + rel31_defects))
     return {
         'forbidden_patterns': forbidden,
         'missing_sections': rel27.get('missing_sections') or [],
@@ -337,15 +347,17 @@ def validate_actual_export_evidence(
         document_type: str = 'strategy',
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
+        pdf_bytes: bytes = b'',
         route_name: str = '',
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
         hash_fn=None,
 ) -> Dict[str, Any]:
     """Validate visible text from actual export surfaces (not render model only)."""
-    preview_def = _channel_defects(preview_text) if preview_text else {}
-    docx_def = _channel_defects(docx_text) if docx_text else {}
-    pdf_def = _channel_defects(pdf_text) if pdf_text else {}
+    preview_def = _channel_defects(preview_text, route='preview') if preview_text else {}
+    docx_def = _channel_defects(docx_text, route='docx') if docx_text else {}
+    pdf_def = _channel_defects(
+        pdf_text, route='pdf', pdf_bytes=pdf_bytes) if (pdf_text or pdf_bytes) else {}
 
     blocking: List[str] = []
     route_norm = normalize_route(route_name or '')
@@ -641,6 +653,27 @@ def repair_for_actual_export_defects(
                     sections[key] = val.replace(
                         bad, 'تأسيس CISO ولجنة حوكمة')
             repairs.append('rel271:roadmap_bad_initiative_scrubbed')
+
+    _docx_fp = export_diag.get('docx_forbidden_patterns') or []
+    if any(p in _docx_fp for p in (
+            'kpi_dlp_incident_as_percentage', 'generic_kpi_formula',
+            'empty_risk_treatment', 'traceability_dcc_classification_invalid',
+            'arabic_residue')):
+        from release_engine.rendered_evidence_validator import (
+            repair_sections_for_rendered_evidence,
+        )
+        sections = repair_sections_for_rendered_evidence(
+            sections, lang=lang, domain=domain, backend=backend)
+        try:
+            from release_engine.rel31_acceptance_checks import (
+                repair_rel31_canonical_sections,
+            )
+            sections, rel31_rep = repair_rel31_canonical_sections(
+                sections, lang=lang, domain=domain, backend=backend)
+            repairs.extend(rel31_rep)
+        except Exception:  # noqa: BLE001
+            pass
+        repairs.append('rel271:export_substance_sections_repaired')
 
     merged['sections'] = sections
     merged['final_markdown'] = _rebuild_artifact_markdown(sections)

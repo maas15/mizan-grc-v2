@@ -96,8 +96,8 @@ def test_frontend_idle_ceiling_constant():
 
 def test_frontend_wall_ceiling_constant():
     html = _read(DOMAIN_HTML)
-    assert re.search(r'\bWALL_CEILING_S\s*=\s*900\b', html), (
-        'templates/domain.html must declare WALL_CEILING_S = 900 in the '
+    assert re.search(r'\bWALL_CEILING_S\s*=\s*1500\b', html), (
+        'templates/domain.html must declare WALL_CEILING_S = 1500 in the '
         'strategy polling loop'
     )
 
