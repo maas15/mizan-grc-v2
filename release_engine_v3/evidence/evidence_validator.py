@@ -82,6 +82,13 @@ def validate_returned_export_bytes(
             export_return_allowed=False,
             blocking_errors=blockers,
         )
+    parity_sections = dict(artifact.legacy_sections or {})
+    if route_n == 'preview' and artifact.canonical_sections:
+        from release_engine_v3.section_models import (
+            canonical_legacy_sections_for_parity,
+        )
+        parity_sections.update(
+            canonical_legacy_sections_for_parity(artifact.canonical_sections))
     gate = validate_export_text(
         route_n,
         preview_text=preview_text if route_n == 'preview' else '',
@@ -92,7 +99,7 @@ def validate_returned_export_bytes(
         pdf_text_extraction_unreliable=pdf_unreliable,
         pdf_bytes_had=bool(pdf_bytes),
         pdf_bytes=pdf_bytes if route_n == 'pdf' else b'',
-        canonical_sections=artifact.legacy_sections,
+        canonical_sections=parity_sections,
         final_hash=artifact.canonical_hash,
     )
     allowed, errors = block_export_if_evidence_fails(gate)

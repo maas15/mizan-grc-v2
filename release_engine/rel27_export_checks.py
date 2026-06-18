@@ -112,8 +112,11 @@ def _kpi_section_blob(blob: str) -> str:
             in_kpi = True
             current = [ln]
             continue
-        if in_kpi and ln.strip().startswith('##'):
+        if in_kpi and ln.strip().startswith('##') and not ln.strip().startswith('###'):
             if 'صيغ' not in ln and 'formula' not in ln.lower():
+                if 'مؤشر' in ln or 'kpi' in ln.lower():
+                    current.append(ln)
+                    continue
                 candidates.append(current)
                 current = []
                 in_kpi = False
@@ -149,7 +152,10 @@ def _extract_kpi_main_rows(blob: str) -> List[List[str]]:
     for ln in section.splitlines():
         if ln.strip().startswith('##'):
             if re.search(r'صيغ|formula|\bkri\b', ln, re.I):
-                in_formula = True
+                if ln.strip().startswith('###') and not main_data_started:
+                    continue
+                if main_data_started:
+                    in_formula = True
             continue
         if in_formula:
             continue
@@ -199,10 +205,15 @@ def _count_kpi_tables(blob: str) -> Tuple[int, int]:
         in_formula = False
         saw_main_header = False
         saw_formula_header = False
+        saw_main_data = False
         for ln in section.splitlines():
-            if 'صيغ' in ln and ln.strip().startswith('##'):
-                in_formula = True
-                saw_formula_header = False
+            if ln.strip().startswith('##') and re.search(
+                    r'صيغ|formula|\bkri\b', ln, re.I):
+                if ln.strip().startswith('###') and not saw_main_data:
+                    continue
+                if saw_main_header or saw_main_data:
+                    in_formula = True
+                    saw_formula_header = False
                 continue
             if not ln.strip().startswith('|') or '---' in ln:
                 continue
@@ -216,6 +227,8 @@ def _count_kpi_tables(blob: str) -> Tuple[int, int]:
                         cells[0] in ('#', 'رقم') or 'وصف المؤشر' in ln):
                     saw_main_header = True
                     main = 1
+                elif cells[0].isdigit() or re.match(r'^NCA\s', cells[0], re.I):
+                    saw_main_data = True
     if main == 0 and _extract_kpi_main_rows(blob):
         main = 1
     if formula == 0 and (
@@ -484,6 +497,21 @@ def check_arabic_residues_exported(blob: str) -> Dict[str, Any]:
     return payload
 
 
+def _section_key_from_heading(ln: str) -> Optional[str]:
+    low = (ln or '').lower()
+    if 'رؤية' in ln or 'أهداف' in ln or 'vision' in low:
+        return 'vision'
+    if 'ركائز' in ln or 'pillar' in low:
+        return 'pillars'
+    if 'خارطة' in ln or 'roadmap' in low:
+        return 'roadmap'
+    if 'مؤشر' in ln or 'kpi' in low:
+        return 'kpis'
+    if 'تتبع' in ln or 'traceability' in low:
+        return 'traceability'
+    return None
+
+
 def _split_sections_from_export_text(text: str) -> Dict[str, str]:
     """Extract legacy section blobs from combined export/preview markdown."""
     sections: Dict[str, str] = {}
@@ -491,22 +519,14 @@ def _split_sections_from_export_text(text: str) -> Dict[str, str]:
     buf: List[str] = []
     for ln in (text or '').splitlines():
         if ln.strip().startswith('##'):
+            new_key = _section_key_from_heading(ln)
+            if new_key and new_key == current:
+                buf.append(ln)
+                continue
             if current and buf:
                 sections[current] = '\n'.join(buf).strip()
-            low = ln.lower()
-            if 'رؤية' in ln or 'أهداف' in ln or 'vision' in low:
-                current = 'vision'
-            elif 'ركائز' in ln or 'pillar' in low:
-                current = 'pillars'
-            elif 'خارطة' in ln or 'roadmap' in low:
-                current = 'roadmap'
-            elif 'مؤشر' in ln or 'kpi' in low:
-                current = 'kpis'
-            elif 'تتبع' in ln or 'traceability' in low:
-                current = 'traceability'
-            else:
-                current = None
-            buf = [ln]
+            current = new_key
+            buf = [ln] if current else []
         elif current:
             buf.append(ln)
     if current and buf:

@@ -46,14 +46,16 @@ def build_render_tree(artifact: FinalDocumentArtifact) -> RenderTree:
         if rendered.strip():
             md_parts.append(rendered)
     markdown_view = '\n\n'.join(md_parts)
-    # Frozen artifacts: legacy sealed markdown is authoritative for export.
+    # Prefer frozen canonical section markdown for preview/export parity.
+    # Legacy sealed markdown may still contain pre-repair shallow pillars,
+    # gap-table bleed, and Arabic residues that DOCX no longer has.
     legacy_md = (artifact.final_markdown_view or '').strip()
     if not legacy_md and artifact.legacy_sections:
         legacy_md = '\n\n'.join(
             str(v).strip()
             for k, v in sorted(artifact.legacy_sections.items())
             if isinstance(v, str) and v.strip() and not str(k).startswith('_'))
-    if legacy_md.strip():
+    if legacy_md.strip() and not markdown_view.strip():
         markdown_view = legacy_md
     tree_hash = compute_render_tree_hash(nodes)
     preview_html = _markdown_to_preview_html(markdown_view)

@@ -31,9 +31,21 @@ def _parse_trace_rows(text: str) -> Tuple[List[str], int, List[List[str]]]:
     lines = (text or '').splitlines()
     hdr = -1
     for i, ln in enumerate(lines):
-        if ln.strip().startswith('|') and (
-                'الفجوة' in ln or 'gap' in ln.lower()
-                or 'مجال القدرة' in ln):
+        if not ln.strip().startswith('|'):
+            continue
+        hdr_blob = ln.lower()
+        # Traceability matrix only — not gap-analysis tables that also use
+        # a "الفجوة" column (# | الفجوة | الوصف | الأولوية).
+        is_trace = (
+            ('مجال القدرة' in ln or 'capability' in hdr_blob)
+            and (
+                'الفجوة المرتبطة' in ln
+                or 'الإطار المرجعي' in ln
+                or 'المبادرة' in ln
+                or 'المؤشر' in ln))
+        if is_trace or (
+                'الإطار المرجعي' in ln
+                and ('مجال القدرة' in ln or 'الفجوة' in ln)):
             hdr = i
             break
     if hdr < 0:
@@ -106,6 +118,16 @@ def pdf_trace_extract_artifact(text: str) -> bool:
             r'تطبيق|تأسيس|تنفيذ|وتفعيل|وتطوير', t):
         return True
     return False
+
+
+def is_diagnostic_gap_label(text: str) -> bool:
+    """Gap-analysis row labels are not traceability capability/gap mappings."""
+    t = (text or '').strip()
+    if not t:
+        return False
+    return any(t.startswith(p) for p in (
+        'غياب ', 'قصور ', 'ضعف ', 'عدم ', 'Limited ', 'limited ',
+        'Absence ', 'absence ', 'Missing ', 'missing '))
 
 
 def _bad_mapping(family: str, gap: str) -> bool:

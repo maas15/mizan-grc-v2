@@ -499,6 +499,7 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
         from release_engine.traceability_substance_model import (
             _bad_mapping,
             _detect_family,
+            is_diagnostic_gap_label,
             pdf_trace_extract_artifact,
         )
     except Exception:  # noqa: BLE001
@@ -512,9 +513,10 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
             cap, gap = lines[i + 1], lines[i + 2]
             if not cap.startswith('NCA ') and not gap.startswith('NCA '):
                 if not pdf_trace_extract_artifact(cap) and not pdf_trace_extract_artifact(gap):
-                    fam = _detect_family([cap, gap], 0)
-                    if fam and _bad_mapping(fam, gap):
-                        defects.append(f'trace_gap_mismatch:{cap}')
+                    if not is_diagnostic_gap_label(cap):
+                        fam = _detect_family([cap, gap], 0)
+                        if fam and _bad_mapping(fam, gap):
+                            defects.append(f'trace_gap_mismatch:{cap}')
                 i += 3
                 continue
         if ln in (
@@ -523,9 +525,10 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
             if i + 1 < len(lines):
                 nxt = lines[i + 1]
                 if not pdf_trace_extract_artifact(ln) and not pdf_trace_extract_artifact(nxt):
-                    fam = _detect_family([ln, nxt], 0)
-                    if fam and _bad_mapping(fam, nxt):
-                        defects.append(f'trace_gap_mismatch:{ln}')
+                    if not is_diagnostic_gap_label(ln):
+                        fam = _detect_family([ln, nxt], 0)
+                        if fam and _bad_mapping(fam, nxt):
+                            defects.append(f'trace_gap_mismatch:{ln}')
         i += 1
     return list(dict.fromkeys(defects))
 

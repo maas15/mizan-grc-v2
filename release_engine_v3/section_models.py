@@ -159,13 +159,59 @@ def build_strategy_document(
     )
 
 
+def _strip_embedded_section_headings(narrative: str, section_key: str) -> str:
+    """Drop legacy ## headings embedded in narrative — title is rendered separately."""
+    if not (narrative or '').strip():
+        return ''
+    drop_if = {
+        'kpi_kri': ('مؤشر', 'kpi', 'kri', 'صيغ'),
+        'vision_objectives': ('رؤية', 'أهداف', 'vision'),
+        'pillars': ('ركائز', 'pillar'),
+        'roadmap': ('خارطة', 'roadmap'),
+        'traceability': ('تتبع', 'traceability'),
+    }
+    needles = drop_if.get(section_key, ())
+    kept: List[str] = []
+    for ln in narrative.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith('#'):
+            low = stripped.lower()
+            if any(n in stripped or n in low for n in needles):
+                continue
+        kept.append(ln)
+    return '\n'.join(kept).strip()
+
+
+def canonical_legacy_sections_for_parity(
+        canonical_sections: Dict[str, CanonicalSection]) -> Dict[str, str]:
+    """Map typed canonical sections to legacy parity keys for preview drift checks."""
+    canon_to_legacy = {
+        'vision_objectives': 'vision',
+        'pillars': 'pillars',
+        'roadmap': 'roadmap',
+        'kpi_kri': 'kpis',
+        'traceability': 'traceability',
+    }
+    out: Dict[str, str] = {}
+    for ck, lk in canon_to_legacy.items():
+        sec = (canonical_sections or {}).get(ck)
+        if not sec:
+            continue
+        rendered = section_to_markdown(sec)
+        if rendered.strip():
+            out[lk] = rendered
+    return out
+
+
 def section_to_markdown(section: CanonicalSection) -> str:
     """Render one canonical section to markdown (view only, not source of truth)."""
     parts: List[str] = []
     if section.title:
         parts.append(f'## {section.title}')
-    if section.narrative:
-        parts.append(section.narrative)
+    narrative = _strip_embedded_section_headings(
+        section.narrative or '', section.key)
+    if narrative:
+        parts.append(narrative)
     if section.table_rows:
         # infer header from first row width
         width = max(len(r.cells) for r in section.table_rows)
