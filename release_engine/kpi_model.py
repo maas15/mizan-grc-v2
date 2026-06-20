@@ -63,6 +63,67 @@ def _renumber_rows(rows: List[List[str]]) -> List[List[str]]:
     return out
 
 
+def _split_kpi_main_and_tail(text: str) -> Tuple[str, str]:
+    """Split KPI markdown into main-table blob and trailing appendix (KRI etc.)."""
+    lines = (text or '').splitlines()
+    formula_idx = -1
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith('###') and ('صيغة' in s or 'formula' in s.lower()):
+            formula_idx = i
+            break
+        if ('مؤشر المخاطر' in s or 'Risk Indicators' in s) and (
+                'KRI' in s.upper() or 'kri' in s.lower()):
+            return '\n'.join(lines[:i]), '\n'.join(lines[i:])
+    if formula_idx < 0:
+        return (text or '').rstrip(), ''
+    tail_start = len(lines)
+    for j in range(formula_idx + 1, len(lines)):
+        s = lines[j].strip()
+        if s.startswith('## ') and not s.startswith('###'):
+            tail_start = j
+            break
+        if ('مؤشر المخاطر' in s or 'Risk Indicators' in s) and (
+                'KRI' in s.upper() or 'kri' in s.lower()):
+            tail_start = j
+            break
+    main_blob = '\n'.join(lines[:formula_idx]).rstrip()
+    tail = '\n'.join(lines[tail_start:]).strip()
+    return main_blob, tail
+
+
+def _formula_appendix_header(lang: str = 'ar') -> str:
+    if str(lang or '').lower() == 'en':
+        return (
+            '\n### Calculation formulas\n\n'
+            '| # | Formula | Data source |\n'
+            '|---|---|---|\n'
+        )
+    return (
+        '\n### صيغة الاحتساب\n\n'
+        '| # | صيغة الاحتساب | مصدر البيانات/الأداة |\n'
+        '|---|---|---|\n'
+    )
+
+
+def _sync_kpi_formula_appendix(text: str, *, lang: str = 'ar') -> str:
+    """Rebuild formula subsection so row numbers match the main KPI table."""
+    main_blob, tail = _split_kpi_main_and_tail(text)
+    _lines, rows = _parse_kpi_rows(main_blob)
+    if not rows:
+        return text
+    formula_lines = []
+    for i, cells in enumerate(rows, 1):
+        formula = cells[3] if len(cells) > 3 else '—'
+        source = cells[4] if len(cells) > 4 else '—'
+        formula_lines.append(f'| {i} | {formula} | {source} |')
+    out = main_blob.rstrip() + _formula_appendix_header(lang)
+    out += '\n' + '\n'.join(formula_lines)
+    if tail:
+        out += '\n\n' + tail
+    return out.rstrip() + '\n'
+
+
 def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
     if len(cells) < 3:
         return cells, False
@@ -117,6 +178,79 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
                 'المؤشر المحدد ÷ إجمالي النطاق × 100')
         changed = True
     return cells, changed
+
+
+def _dedupe_kpi_metric_labels(text: str) -> str:
+    """Keep one MTTD/MTTR row in the canonical KPI table."""
+    lines, rows = _parse_kpi_rows(text)
+    if not rows:
+        return text
+    seen: set = set()
+    kept: List[List[str]] = []
+    for cells in rows:
+        name = (cells[1] if len(cells) > 1 else '').upper()
+        tag = ''
+        if 'MTTD' in name:
+            tag = 'MTTD'
+        elif 'MTTR' in name:
+            tag = 'MTTR'
+        if tag:
+            if tag in seen:
+                continue
+            seen.add(tag)
+        kept.append(cells)
+    if len(kept) == len(rows):
+        return text
+    kept = _renumber_rows(kept)
+    out_lines = list(lines)
+    row_idx = 0
+    for i, ln in enumerate(out_lines):
+        if not ln.strip().startswith('|') or '---' in ln:
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if cells and str(cells[0]).isdigit():
+            if row_idx < len(kept):
+                out_lines[i] = '| ' + ' | '.join(kept[row_idx]) + ' |'
+                row_idx += 1
+            else:
+                out_lines[i] = ''
+    return _sync_kpi_formula_appendix(
+        '\n'.join(ln for ln in out_lines if ln.strip() or ln == ''), lang='ar')
+
+
+def _separate_dlp_encryption_formulas(text: str) -> str:
+    """Ensure DLP and encryption KPI rows use distinct formulas."""
+    lines, rows = _parse_kpi_rows(text)
+    if not rows:
+        return text
+    changed = False
+    for cells in rows:
+        name = (cells[1] if len(cells) > 1 else '').lower()
+        if len(cells) < 4:
+            continue
+        formula = cells[3]
+        if 'dlp' in name or 'تسرب' in name:
+            if 'تشفير' in formula or 'مفاتيح' in formula:
+                cells[3] = _DLP_KRI_FORMULA
+                changed = True
+        elif 'تشفير' in name or 'encryption' in name:
+            if 'dlp' in formula.lower() or 'تسرب' in formula:
+                cells[3] = (
+                    'البيانات الحساسة المشفرة ÷ إجمالي البيانات الحساسة × 100')
+                changed = True
+    if not changed:
+        return text
+    rows = _renumber_rows(rows)
+    out_lines = list(lines)
+    row_idx = 0
+    for i, ln in enumerate(out_lines):
+        if not ln.strip().startswith('|') or '---' in ln:
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if cells and str(cells[0]).isdigit() and row_idx < len(rows):
+            out_lines[i] = '| ' + ' | '.join(rows[row_idx]) + ' |'
+            row_idx += 1
+    return _sync_kpi_formula_appendix('\n'.join(out_lines), lang='ar')
 
 
 def _count_generic_formulas(text: str) -> int:
@@ -247,7 +381,7 @@ def _apply_inline_kpi_repairs(
         if cells and cells[0].isdigit() and row_idx < len(repaired_rows):
             out_lines[i] = '| ' + ' | '.join(repaired_rows[row_idx]) + ' |'
             row_idx += 1
-    new_text = '\n'.join(out_lines)
+    new_text = _sync_kpi_formula_appendix('\n'.join(out_lines), lang='ar')
     out = dict(sections)
     out['kpis'] = new_text
     return out, new_text

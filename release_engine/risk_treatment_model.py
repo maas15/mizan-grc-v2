@@ -30,7 +30,8 @@ _RISK_TREATMENTS_AR = {
     'incident_response': (
         'تفعيل خطط الاستجابة للحوادث وتمارين CSIRT — المالك: قائد CSIRT'),
     'resource_capacity': (
-        'تخصيص موارد وطاقات تشغيلية للأمن السيبراني — المالك: CISO'),
+        'تخصيص موارد وطاقات تشغيلية مخصصة للأمن السيبراني مع خطة '
+        'تنفيذ ربع سنوية — المالك: CISO'),
     'operational_continuity': (
         'اختبار النسخ الاحتياطي وخطط استمرارية الأعمال — '
         'المالك: مدير استمرارية الأعمال'),
@@ -150,6 +151,39 @@ def _themes_covered(rows: List[List[str]], treat_idx: int) -> Dict[str, bool]:
     return covered
 
 
+def _repair_flat_confidence_register(
+        text: str, *, lang: str = 'ar') -> str:
+    """Repair flat (non-markdown) confidence risk register rows."""
+    lines = (text or '').splitlines()
+    out: List[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        stripped = (ln or '').strip()
+        if stripped.isdigit() and i + 5 < len(lines):
+            block = [lines[i + j].strip() for j in range(6)]
+            risk_blob = ' '.join(block).lower()
+            treatment = block[4]
+            if (
+                    _is_generic_treatment(treatment)
+                    or _is_empty_treatment(treatment)
+                    or len(re.findall(r'[\u0600-\u06FF]+', treatment)) < 8
+            ):
+                repaired = specific_risk_treatment_for_blob(risk_blob, lang=lang)
+                for theme, kws in _THEME_KEYWORDS.items():
+                    if any(k in risk_blob for k in kws):
+                        repaired = _RISK_TREATMENTS_AR[theme]
+                        break
+                block[4] = repaired
+            out.append(stripped)
+            out.extend(block[1:])
+            i += 6
+            continue
+        out.append(ln)
+        i += 1
+    return '\n'.join(out)
+
+
 def finalize_risk_treatment(
         sections: Dict[str, str],
         *,
@@ -239,6 +273,9 @@ def finalize_risk_treatment(
             seen.add(key)
             out_lines.append('| ' + ' | '.join(c) + ' |')
         text = '\n'.join(out_lines)
+
+    if hdr < 0 and 'خطة المعالجة' in text and 'المالك' in text:
+        text = _repair_flat_confidence_register(text, lang=lang)
 
     if hdr < 0 and _GENERIC_TREATMENT not in text:
         passed = True

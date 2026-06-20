@@ -279,6 +279,9 @@ class Prcy82ReleaseAcceptanceTests(unittest.TestCase):
                     str(b).startswith((
                         'final_quality_gate_failed:', 'rel2_roadmap_failed:',
                         'rel2_section_parity_failed:', 'rel2_pillars_failed:',
+                        'rel3_generation_contract_failed:',
+                        'rel3_export_evidence_failed:',
+                        'rel3_document_quality_failed:',
                     ))
                     for b in blockers),
                 blockers)

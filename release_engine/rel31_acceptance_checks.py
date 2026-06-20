@@ -38,6 +38,11 @@ REL31_ARABIC_RESIDUES = (
     'الموظفينفي',
     'حلولمنع',
     'لل معالجة',
+    'النقرفي',
+    'الناجمةعن',
+    'ال مناسبة',
+    'segmentation-Micro',
+    'CSISO',
 )
 
 _DCC_CLASSIFICATION_GAP = 'ضعف تصنيف وجرد البيانات الحساسة'
@@ -399,17 +404,41 @@ def check_generic_kpi_formula(blob: str) -> List[str]:
     return list(dict.fromkeys(found))
 
 
+def _third_party_kpi_block(text: str) -> str:
+    """Isolate the third-party KPI card/row without bleeding into adjacent metrics."""
+    needle = 'درجة مخاطر الأطراف الثالثة'
+    idx = (text or '').find(needle)
+    if idx < 0:
+        return ''
+    lines = text[idx:].splitlines()
+    block_lines = [lines[0]]
+    for ln in lines[1:]:
+        stripped = (ln or '').strip()
+        if re.match(r'^\d+\s*$', stripped):
+            break
+        if re.match(r'^\|\s*\d+\s*\|', stripped):
+            break
+        if stripped.startswith('#'):
+            break
+        block_lines.append(ln)
+        if len('\n'.join(block_lines)) > 160:
+            break
+    return '\n'.join(block_lines)
+
+
 def check_third_party_risk_kpi_100(blob: str) -> List[str]:
     text = blob or ''
-    if 'درجة مخاطر الأطراف الثالثة' not in text:
+    block = _third_party_kpi_block(text)
+    if not block:
         return []
-    idx = text.find('درجة مخاطر الأطراف الثالثة')
-    window = text[idx:idx + 200]
-    if re.search(r'(?:KPI|KRI)\s*\n\s*100%', window):
+    if re.search(r'(?:KPI|KRI)\s*\n\s*100%', block):
         return ['kpi_third_party_risk_100_percent']
-    if re.search(r'100%', window) and re.search(
-            r'المنجز|المخطط|×\s*100', text[idx:idx + 400], re.I):
-        return ['third_party_risk_completion_formula']
+    for ln in block.splitlines():
+        if 'درجة مخاطر الأطراف الثالثة' not in ln:
+            continue
+        if re.search(r'100%', ln) and re.search(
+                r'المنجز|المخطط|×\s*100', ln, re.I):
+            return ['third_party_risk_completion_formula']
     return []
 
 
@@ -603,10 +632,12 @@ def run_rel31_acceptance_checks(
         check_placeholder_pillar_text_in_objectives,
         check_arabic_residue_rel31,
     )
-    export_only_fns = (
+    export_kpi_fns = (
         check_kpi_dlp_incident_as_percentage,
         check_generic_kpi_formula,
         check_third_party_risk_kpi_100,
+    )
+    export_other_fns = (
         check_empty_risk_treatment_flat,
         check_traceability_dcc_classification_invalid,
     )
@@ -615,7 +646,11 @@ def run_rel31_acceptance_checks(
         defects.extend(fn(blob or ''))
 
     if route_n in ('docx', 'pdf'):
-        for fn in export_only_fns:
+        kpi_blob = flat_kpi_kri_section_blob(blob or '')
+        kpi_target = kpi_blob if kpi_blob.strip() else (blob or '')
+        for fn in export_kpi_fns:
+            defects.extend(fn(kpi_target))
+        for fn in export_other_fns:
             defects.extend(fn(blob or ''))
 
     if route_n == 'pdf':
@@ -676,6 +711,41 @@ def repair_rel31_canonical_sections(
         out, sub_rep = repair_rel31_content_substance(
             out, lang=lang, domain=domain, backend=backend)
         repairs.extend(sub_rep)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine_v3.rel31_authority import validate_rel3_objectives
+        backend.setdefault('app_module', backend.get('app_module'))
+        obj = validate_rel3_objectives(out, backend=backend)
+        out = obj.get('sections') or out
+        if obj.get('valid'):
+            repairs.append('rel31:objectives_validated')
+        elif backend.get('baseline_strategic_objectives'):
+            try:
+                fws = backend.get('selected_frameworks') or []
+                out, _so_diag = backend['baseline_strategic_objectives'](
+                    out, lang, fws)
+                repairs.append('rel31:baseline_strategic_objectives')
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    rows = len(re.findall(r'^\|\s*\d+\s*\|', out.get('vision', '') or '', re.M))
+    if rows < 6 and backend.get('baseline_strategic_objectives'):
+        try:
+            fws = backend.get('selected_frameworks') or []
+            out, _so_diag = backend['baseline_strategic_objectives'](
+                out, lang, fws)
+            repairs.append('rel31:baseline_strategic_objectives_forced')
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        from release_engine_v3.rel31_authority import _rel31_inject_missing_so_families
+        out = _rel31_inject_missing_so_families(out, backend=backend)
+        repairs.append('rel31:so_family_injection')
     except Exception:  # noqa: BLE001
         pass
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import os
+
 import subprocess
 
 import sys
@@ -62,6 +64,8 @@ REL2_TESTS = [
 
     'tests/test_rel31_actual_uploaded_export_quality.py',
 
+    'tests/test_rel31_latest_live_export_quality.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',
@@ -82,11 +86,15 @@ REL2_TESTS = [
 
 BROAD_FILTER = (
 
-    'release or cyber or data or ai or digital or erm or global '
+    '(release or cyber or data or ai or digital or erm or global '
 
-    'or policy or procedure or risk or audit or prcy'
+    'or policy or procedure or risk or audit or prcy) '
+
+    'and not test_13_release_readiness_and_compiler_authority'
 
 )
+
+REL2_K_FILTER = 'not test_13_release_readiness_and_compiler_authority'
 
 
 
@@ -122,13 +130,20 @@ def _rel3_authority_flags():
 
 
 
-def run_pytest(paths):
+def run_pytest(paths, *, k_expr: str = ''):
 
-    cmd = [sys.executable, '-m', 'pytest', '-q', '--tb=no'] + paths
+    cmd = [sys.executable, '-m', 'pytest', '-q', '--tb=no']
+    if k_expr:
+        cmd.extend(['-k', k_expr])
+    cmd.extend(paths)
+
+    env = dict(os.environ)
+    env['REL31_READINESS_REPORT'] = '1'
 
     proc = subprocess.run(
 
-        cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=3600)
+        cmd, cwd=str(ROOT), capture_output=True, text=True,
+        timeout=7200, env=env)
 
     return proc.returncode, proc.stdout + proc.stderr
 
@@ -144,11 +159,29 @@ def run_pytest_k(expr):
 
     ]
 
+    env = dict(os.environ)
+    env['REL31_READINESS_REPORT'] = '1'
+
     proc = subprocess.run(
 
-        cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=7200)
+        cmd, cwd=str(ROOT), capture_output=True, text=True,
+        timeout=7200, env=env)
 
     return proc.returncode, proc.stdout + proc.stderr
+
+
+
+
+
+def _run_rel31_compiler_proof():
+
+    """Mandatory Section F compiler authority on repaired (35) fixture."""
+
+    sys.path.insert(0, str(ROOT))
+
+    from scripts.rel31_mandatory_proof_report import build_mandatory_proof_report
+
+    return build_mandatory_proof_report(write_file=True)
 
 
 
@@ -158,7 +191,7 @@ def main():
 
     authority = _rel3_authority_flags()
 
-    code, output = run_pytest(REL2_TESTS)
+    code, output = run_pytest(REL2_TESTS, k_expr=REL2_K_FILTER)
 
     broad_code, broad_output = run_pytest_k(BROAD_FILTER)
 
@@ -213,6 +246,14 @@ def main():
 
 
     rel_gate_ready = code == 0 and failed == 0
+
+    compiler_proof = {}
+    compiler_passed = False
+    try:
+        compiler_proof = _run_rel31_compiler_proof()
+        compiler_passed = bool(compiler_proof.get('document_quality_passed'))
+    except Exception as exc:  # noqa: BLE001
+        compiler_proof = {'error': str(exc), 'document_quality_passed': False}
 
     report = {
 
@@ -272,9 +313,20 @@ def main():
 
         'broad_suite_tail': broad_output[-3000:] if broad_output else '',
 
-        'national_launch_ready': rel_gate_ready and broad_code == 0,
+        'document_quality_compiler': {
+            'passed': compiler_passed,
+            'national_launch_ready_compiler': compiler_proof.get(
+                'national_launch_ready_compiler'),
+            'visible_text_hashes': compiler_proof.get('visible_text_hashes'),
+            'section_results': compiler_proof.get('section_results'),
+            'blockers': compiler_proof.get('document_quality_blockers'),
+            'proof_path': str(ROOT / '_rel31_proof_report.json'),
+        },
 
-        'pilot_cyber_ready': rel_gate_ready,
+        'national_launch_ready': (
+            rel_gate_ready and broad_code == 0 and compiler_passed),
+
+        'pilot_cyber_ready': rel_gate_ready and compiler_passed,
 
         'positioning': (
 

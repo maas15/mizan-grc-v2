@@ -19,6 +19,7 @@ os.environ.setdefault(
     'sqlite:///' + os.path.join(_TMP, 'test.db'),
 )
 os.environ.setdefault('OPENAI_API_KEY', '')
+os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 
 _APP = None
 try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,8 +24,33 @@ from release_engine_v3.orchestrator import (
 from release_engine_v3.validators import validate_canonical_quality
 
 REL31_USER_MESSAGE_AR = (
-    'تعذر توليد الاستراتيجية لأن جودة الأهداف الاستراتيجية أو خارطة '
-    'الطريق لم تحقق معيار الجاهزية. تم حجب الوثيقة لمنع إخراج ملف غير مكتمل.'
+    'تعذر توليد الاستراتيجية لأن جودة الوثيقة لم تحقق معيار الجاهزية '
+    'للعرض على مجلس الإدارة. تم حجب الملف لمنع إخراج وثيقة غير مكتملة.'
+)
+
+REL31_BLOCKER_MESSAGES_AR = (
+    ('shallow_pillar', 'مبادرات الركائز الاستراتيجية سطحية أو تفتقر إلى مخرجات قابلة للتحقق.'),
+    ('pillar_owner', 'أعمدة المسؤولية في جداول الركائز فارغة أو تحتوي على شرطة.'),
+    ('pillar_generic', 'مخرجات الركائز عامة وغير قابلة للقياس.'),
+    ('pillar_duplicate', 'نصوص الركائز مكررة بين الأقسام.'),
+    ('roadmap', 'خارطة الطريق لا تغطي العائلات المطلوبة أو عدد المبادرات غير كافٍ.'),
+    ('missing_kpi_family', 'جدول مؤشرات الأداء يفتقد عائلات KPI/KRI إلزامية.'),
+    ('duplicate_MTTR', 'تكرار مؤشر MTTR أو MTTD في جدول المؤشرات.'),
+    ('dlp_encryption', 'خلط صيغ DLP والتشفير في جدول المؤشرات.'),
+    ('third_party', 'مؤشر مخاطر الأطراف الثالثة غير منمذج بشكل صحيح.'),
+    ('risk_treatment', 'خطط معالجة المخاطر عامة أو مكررة أو ناقصة.'),
+    ('traceability', 'مصفوفة التتبع تحتوي على ربط دلالي غير صحيح.'),
+    ('arabic', 'النص العربي الظاهر يحتوي على بقايا لغوية أو أدوار مشوّهة.'),
+    ('pdf_layout', 'ملف PDF يفقد تخطيط الجداول المطلوب أو يختلف دلالياً عن DOCX.'),
+    ('preview_docx_pdf', 'عدم تطابق خارطة الطريق بين المعاينة وDOCX وPDF.'),
+    ('so_family', 'الأهداف الاستراتيجية تفتقد عائلات أهداف إلزامية.'),
+    ('cyber_board_ready_so', (
+        'تعذر توليد الاستراتيجية لأن الأهداف الاستراتيجية لم تحقق '
+        'معيار الجاهزية. تم حجب الوثيقة لمنع إخراج ملف غير مكتمل.')),
+    ('objectives', (
+        'تعذر توليد الاستراتيجية لأن الأهداف الاستراتيجية لم تحقق '
+        'معيار الجاهزية. تم حجب الوثيقة لمنع إخراج ملف غير مكتمل.')),
+    ('document_quality', 'فشل مواصفة جودة الوثيقة الموحدة.'),
 )
 
 REL31_USER_MESSAGE_EN = (
@@ -32,6 +58,13 @@ REL31_USER_MESSAGE_EN = (
     'quality did not meet readiness standards. The document was withheld to '
     'prevent an incomplete export.'
 )
+
+
+def _bind_backend_sections(
+        backend: Dict[str, Any], art: Dict[str, Any]) -> None:
+    """Ensure export routes render repaired canonical sections, not stale markdown."""
+    sections = dict(art.get('sections') or {})
+    backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
 
 _LEGACY_BLOCKER_PREFIXES = (
     'cyber_board_ready_',
@@ -48,6 +81,51 @@ _LEGACY_TO_REL3 = {
     'roadmap_weak_output': 'rel3_generation_contract_failed:roadmap_weak_output',
     'cyber_board_ready_roadmap_failed': 'rel3_generation_contract_failed:roadmap_weak_output',
 }
+
+
+def _artifact_doc_type(art: Dict[str, Any]) -> str:
+    meta = dict(art.get('contract_meta') or {})
+    return str(
+        meta.get('document_type')
+        or art.get('document_type')
+        or 'strategy').strip()
+
+
+def _requires_strategy_contract_sections(
+        art: Dict[str, Any], *, domain: str = 'cyber') -> bool:
+    try:
+        from professional_strategy_render import is_strategy_export_doc_type
+        return is_strategy_export_doc_type(_artifact_doc_type(art), domain)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _enforce_document_quality_blockers(
+        art: Dict[str, Any],
+        *,
+        domain: str = 'cyber',
+        lang: str = 'ar') -> bool:
+    """Fail-closed DQS only on live cyber-ar strategy saves (not REL2 matrix)."""
+    meta = dict(art.get('contract_meta') or {})
+    explicit = meta.get('rel31_enforce_document_quality')
+    if explicit is True:
+        return True
+    if explicit is False:
+        return False
+    if os.environ.get('REL2_SKIP_EXPORT_EVIDENCE', '').strip() == '1':
+        return False
+    doc_type = (
+        meta.get('document_type')
+        or art.get('document_type')
+        or 'strategy')
+    try:
+        from professional_strategy_render import is_strategy_export_doc_type
+        if not is_strategy_export_doc_type(str(doc_type), domain):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return is_rel3_authoritative(
+        domain=domain, lang=lang, flags={'rel3': True, 'rel31': True})
 
 
 def is_rel3_authoritative(
@@ -86,9 +164,14 @@ def translate_legacy_blocker(blocker: str) -> str:
 
 
 def rel31_user_facing_error(blockers: List[str], *, lang: str = 'ar') -> str:
-    if str(lang or '').lower().startswith('ar'):
-        return REL31_USER_MESSAGE_AR
-    return REL31_USER_MESSAGE_EN
+    if not str(lang or '').lower().startswith('ar'):
+        return REL31_USER_MESSAGE_EN
+    for blocker in blockers or []:
+        b = (blocker or '').lower()
+        for key, msg in REL31_BLOCKER_MESSAGES_AR:
+            if key in b:
+                return msg
+    return REL31_USER_MESSAGE_AR
 
 
 def guard_legacy_gate_after_freeze(
@@ -128,7 +211,7 @@ def _rel31_inject_missing_so_families(
         fam = _detect_so_family(spec.get('objective') or '')
         if fam:
             present[fam] = True
-    optional = {'awareness_or_resilience'}
+    optional: set = set()
     missing = [
         f for f in PRCY88_SO_FAMILIES
         if not present.get(f) and f not in optional]
@@ -571,14 +654,18 @@ def build_generation_contract(
         legacy_gate_after_freeze_count: int,
         blocking_errors: List[str],
         legacy_audit: Optional[List[str]] = None,
+        document_quality_passed: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    ok = (
-        not blocking_errors
-        and objectives_valid
-        and roadmap_valid
-        and render_tree_valid
-        and preview_evidence_valid
-        and legacy_gate_after_freeze_count == 0)
+    if document_quality_passed is not None:
+        ok = document_quality_passed and legacy_gate_after_freeze_count == 0
+    else:
+        ok = (
+            not blocking_errors
+            and objectives_valid
+            and roadmap_valid
+            and render_tree_valid
+            and preview_evidence_valid
+            and legacy_gate_after_freeze_count == 0)
     return {
         'artifact_id': artifact.artifact_id,
         'task_id': task_id,
@@ -622,6 +709,10 @@ def apply_rel31_authoritative_contract(
     lang = (
         (art.get('contract_meta') or {}).get('lang')
         or art.get('language') or 'ar')
+    meta = dict(art.get('contract_meta') or {})
+    if legacy_artifact.get('document_type') and not meta.get('document_type'):
+        meta['document_type'] = legacy_artifact.get('document_type')
+    art['contract_meta'] = meta
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         return art
 
@@ -643,9 +734,10 @@ def apply_rel31_authoritative_contract(
         art['sections'].update(road['sections'])
 
     blockers: List[str] = []
-    if not obj.get('valid'):
+    require_strategy = _requires_strategy_contract_sections(art, domain=domain)
+    if require_strategy and not obj.get('valid'):
         blockers.append('rel3_generation_contract_failed:objectives')
-    if not road.get('valid'):
+    if require_strategy and not road.get('valid'):
         blockers.append('rel3_generation_contract_failed:roadmap_weak_output')
 
     built = build_final_document_artifact(
@@ -667,6 +759,7 @@ def apply_rel31_authoritative_contract(
     store_artifact(built)
 
     tree = rel3_build_render_tree(built)
+    _bind_backend_sections(backend, art)
     preview_export, preview_ev = rel3_export_with_evidence(
         'preview', built, backend=backend)
     if not preview_ev.export_return_allowed:
@@ -679,7 +772,8 @@ def apply_rel31_authoritative_contract(
         _preview_blob = ' '.join(
             str(e) for e in (preview_ev.blocking_errors or [])).lower()
         if any(k in _preview_blob for k in (
-                'roadmap', 'arabic', 'pillar', 'missing_pillars')):
+                'roadmap', 'arabic', 'pillar', 'missing_pillars',
+                'kpi', 'third_party', 'missing_family', 'formula', 'risk')):
             try:
                 from release_engine.export_evidence_validator import (
                     repair_for_actual_export_defects,
@@ -714,6 +808,17 @@ def apply_rel31_authoritative_contract(
             road = validate_rel3_roadmap_output_quality(
                 art.get('sections') or {}, backend=backend)
             art['sections'] = road.get('sections') or art.get('sections') or {}
+            try:
+                from release_engine.rel31_content_substance_checks import (
+                    repair_rel31_content_substance,
+                )
+                _sub_secs, _sub_rep = repair_rel31_content_substance(
+                    dict(art.get('sections') or {}),
+                    lang=lang, domain=domain, backend=backend)
+                art['sections'] = _sub_secs
+                repairs.extend(_sub_rep)
+            except Exception:  # noqa: BLE001
+                pass
             blockers = [
                 b for b in blockers
                 if b not in (
@@ -730,12 +835,67 @@ def apply_rel31_authoritative_contract(
             built = freeze_artifact(built)
             store_artifact(built)
             tree = rel3_build_render_tree(built)
+            _bind_backend_sections(backend, art)
             preview_export, preview_ev = rel3_export_with_evidence(
                 'preview', built, backend=backend)
     if not preview_ev.export_return_allowed:
         for e in preview_ev.blocking_errors:
             if e not in blockers:
                 blockers.append(translate_legacy_blocker(e))
+
+    docx_text = ''
+    pdf_text = ''
+    pdf_bytes = b''
+    dq: Dict[str, Any] = {}
+    enforce_dq = _enforce_document_quality_blockers(
+        art, domain=domain, lang=lang)
+    if enforce_dq:
+        try:
+            from release_engine_v3.evidence.docx_text_extractor import (
+                extract_docx_visible_text,
+            )
+            from release_engine_v3.evidence.pdf_text_extractor import (
+                extract_pdf_visible_text,
+            )
+            from release_engine_v3.document_quality_spec import (
+                document_quality_blockers,
+                evaluate_document_quality,
+            )
+            _bind_backend_sections(backend, art)
+            docx_export, docx_ev = rel3_export_with_evidence(
+                'docx', built, backend=backend,
+                export_kwargs={'filename': 'rel31_quality.docx', 'lang': lang})
+            pdf_export, pdf_ev = rel3_export_with_evidence(
+                'pdf', built, backend=backend,
+                export_kwargs={'lang': lang, 'domain': domain})
+            if docx_export.docx_bytes:
+                docx_text = extract_docx_visible_text(docx_export.docx_bytes)
+            pdf_bytes = pdf_export.pdf_bytes or b''
+            if pdf_bytes:
+                pdf_text = extract_pdf_visible_text(pdf_bytes)
+            dq = evaluate_document_quality(
+                canonical_artifact=built,
+                legacy_sections=dict(
+                    getattr(built, 'legacy_sections', None)
+                    or art.get('sections') or {}),
+                render_tree=tree,
+                extracted_preview_text=preview_export.preview_text or '',
+                extracted_docx_text=docx_text,
+                extracted_pdf_text=pdf_text,
+                pdf_bytes=pdf_bytes,
+            )
+            art['rel31_document_quality'] = dq
+            if not dq.get('passed'):
+                for err in document_quality_blockers(dq):
+                    if err not in blockers:
+                        blockers.append(err)
+            if not docx_ev.export_return_allowed:
+                for e in docx_ev.blocking_errors:
+                    tr = translate_legacy_blocker(e)
+                    if tr not in blockers:
+                        blockers.append(tr)
+        except Exception as exc:  # noqa: BLE001
+            blockers.append(f'rel3_document_quality_failed:compiler:{exc!s:.80}')
 
     pillars_valid = not any(
         'missing_pillars' in b for b in (preview_ev.blocking_errors or []))
@@ -760,6 +920,8 @@ def apply_rel31_authoritative_contract(
         legacy_gate_after_freeze_count=0,
         blocking_errors=blockers,
         legacy_audit=legacy_audit,
+        document_quality_passed=(
+            dq.get('passed') if enforce_dq and dq else None),
     )
     emit_rel3_generation_contract(contract)
 
@@ -789,7 +951,11 @@ def apply_rel31_authoritative_contract(
     if enforce_save_contract:
         art['blocking_errors'] = list(blockers)
         art['sealed'] = bool(contract.get('generation_save_allowed'))
-    if contract.get('generation_save_allowed'):
+    if enforce_dq and dq:
+        art['release_ready_final_passed'] = bool(dq.get('passed'))
+        art['export_return_allowed'] = bool(dq.get('export_return_allowed'))
+        art['national_launch_ready'] = bool(dq.get('national_launch_ready'))
+    elif contract.get('generation_save_allowed'):
         art['release_ready_final_passed'] = True
         art['board_ready_score'] = max(
             int(art.get('board_ready_score') or 0), 80)

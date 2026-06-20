@@ -56,14 +56,15 @@ _PILLAR_NARRATIVES = {
         'حوكمة واضحة ولجان فعّالة. تشمل المبادرات اعتماد السياسات وتوزيع '
         'الأدوار وربط القرارات التنفيذية بمتطلبات NCA ECC.'),
     '### الحماية والكشف والاستجابة': (
-        'تركز هذه الركيزة على القدرات التشغيلية للكشف والاستجابة للتهديدات. '
-        'تشمل تشغيل SOC/SIEM وفريق CSIRT وتحسين الرصد المستمر للأصول الحرجة.'),
+        'تركز هذه الركيزة على القدرات التشغيلية للكشف والاستجابة للتهديدات '
+        'وفق NCA ECC. تشمل تشغيل SOC/SIEM وفريق CSIRT وتحسين الرصد المستمر '
+        'للأصول الحرجة.'),
     '### الهوية وحماية البيانات': (
         'تغطي هذه الركيزة ضوابط الهوية وحماية البيانات وفق NCA DCC. '
         'تشمل IAM/PAM/MFA وتصنيف البيانات وتفعيل DLP للبيانات الحساسة.'),
     '### المرونة واستمرارية الأعمال': (
         'تضمن هذه الركيزة استمرارية العمليات عبر النسخ الاحتياطي والتعافي '
-        'من الكوارث وخطط استمرارية الأعمال المختبرة دورياً.'),
+        'من الكوارث وخطط استمرارية الأعمال المختبرة دورياً وفق NCA ECC.'),
 }
 
 _INITIATIVE_ENRICH = {
@@ -74,12 +75,16 @@ _INITIATIVE_ENRICH = {
         'تشغيل مركز عمليات الأمن مع قواعد SIEM للأصول الحرجة',
         'مركز SOC تشغيلي 24/7 مع تغطية SIEM للأصول الحرجة'),
     'فريق CSIRT': (
-        'تأسيس فريق الاستجابة للحوادث وخطط الاستجابة المعتمدة',
+        'تأسيس فريق الاستجابة للحوادث وخطط الاستجابة المعتمدة والمختبرة',
         'فريق CSIRT جاهز مع خطط استجابة وتمارين محاكاة'),
     'DLP': (
-        'تفعيل منصة DLP ومراقبة تسرب البيانات الحساسة',
+        'تفعيل منصة DLP ومراقبة تسرب البيانات الحساسة بشكل مستمر',
         'منصة DLP مفعّلة مع قواعد مراقبة تسرب معتمدة'),
 }
+
+
+def _arabic_word_count(text: str) -> int:
+    return len(re.findall(r'[\u0600-\u06FF]+', text or ''))
 
 
 def _is_generic_output(text: str) -> bool:
@@ -120,7 +125,7 @@ def _enrich_pillar_text(text: str) -> Tuple[str, List[str], List[str], List[str]
                     out_idx = -1
                     desc = cells[desc_idx] if len(cells) > desc_idx else ''
                     output = cells[out_idx]
-                    if len(desc) < 15:
+                    if _arabic_word_count(desc) < 8:
                         for key, (new_desc, new_out) in _INITIATIVE_ENRICH.items():
                             if key in init:
                                 cells[desc_idx] = new_desc
@@ -128,7 +133,8 @@ def _enrich_pillar_text(text: str) -> Tuple[str, List[str], List[str], List[str]
                                 break
                         else:
                             cells[desc_idx] = (
-                                f'تنفيذ برنامج {init} وفق خطة زمنية معتمدة')
+                                f'تنفيذ برنامج {init} وفق خطة زمنية معتمدة '
+                                f'ومخرجات تشغيلية قابلة للقياس والتحقق')
                         shallow_initiatives.append(init)
                     if _is_generic_output(output):
                         enriched_out = _ENRICHED_OUTPUTS.get(output.strip(), '')

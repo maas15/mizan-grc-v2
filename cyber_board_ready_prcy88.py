@@ -416,23 +416,48 @@ def baseline_strategic_objectives(
             present[fam] = True
     missing_before = [f for f, ok in present.items() if not ok]
     inserted = []
+    _trim_optional = ('awareness_or_resilience', 'compliance_ecc_dcc')
+
+    def _drop_so_row_for_cap(rows: List[dict]) -> None:
+        for pri in _trim_optional:
+            for i, spec in enumerate(rows):
+                if _detect_so_family(spec.get('objective') or '') == pri:
+                    rows.pop(i)
+                    return
+        rows.pop()
+
     for fam in missing_before:
         cat = PRCY88_SO_CATALOG_AR.get(fam)
         if not cat:
             continue
-        cleaned.append({
+        new_spec = {
             'row_index': len(cleaned) + 1,
             'objective': cat[0],
             'measurable_target': cat[1],
             'rationale': cat[2],
             'timeframe': cat[3],
             'source': f'prcy88_insert_{fam}',
-        })
+        }
+        if len(cleaned) >= 8:
+            replaced = False
+            for pri in _trim_optional:
+                for i, spec in enumerate(cleaned):
+                    if _detect_so_family(spec.get('objective') or '') == pri:
+                        cleaned[i] = new_spec
+                        replaced = True
+                        break
+                if replaced:
+                    break
+            if not replaced:
+                _drop_so_row_for_cap(cleaned)
+                cleaned.append(new_spec)
+        else:
+            cleaned.append(new_spec)
         inserted.append(fam)
         present[fam] = True
 
     while len(cleaned) > 8:
-        cleaned.pop()
+        _drop_so_row_for_cap(cleaned)
 
     if len(cleaned) < 6:
         for fam in PRCY88_SO_FAMILIES:

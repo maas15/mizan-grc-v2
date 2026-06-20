@@ -83,10 +83,16 @@ def _load_pdf():
 
 
 def _backend_with_exports():
-    if not hasattr(_APP, '_rel2_backend_callables'):
-        return {}
-    b = _APP._rel2_backend_callables()
+    if not hasattr(_APP, '_rel31_backend_callables'):
+        if hasattr(_APP, '_rel2_backend_callables'):
+            b = _APP._rel2_backend_callables()
+        else:
+            b = {'app_module': _APP}
+    else:
+        b = _APP._rel31_backend_callables()
     b['validate_export_evidence'] = True
+    b['app_module'] = _APP
+    b['selected_frameworks'] = ['NCA ECC', 'NCA DCC']
     return b
 
 

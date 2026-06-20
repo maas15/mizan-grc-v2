@@ -762,6 +762,12 @@ def repair_for_actual_export_defects(
             repairs.append(f'rel271:{action}')
         # Force canonical pillar headings when DOCX bytes lack names.
         sections['pillars'] = _build_canonical_pillars(lang)
+        try:
+            from release_engine.pillar_substance_model import finalize_pillar_substance
+            sections, _ = finalize_pillar_substance(
+                sections, lang=lang, domain=domain)
+        except Exception:  # noqa: BLE001
+            pass
         repairs.append('rel271:forced_canonical_pillars_for_docx')
 
     if _export_defect_needs_roadmap_repair(export_diag):

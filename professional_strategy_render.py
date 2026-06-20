@@ -572,6 +572,10 @@ def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
     if t in ('KPI', 'KRI'):
         return t
     n = (name or '').lower()
+    if any(k in n for k in (
+            'أطراف ثالثة', 'الأطراف الثالثة', 'third party',
+            'third-party', 'vendor risk', 'موردين', 'مخاطر المورد')):
+        return 'KPI'
     kri_keys = (
         'kri', 'risk', 'مخاطر', 'phishing', 'تصيد', 'exposure', 'تعرض',
         'risk exposure', 'failure rate', 'حساس', 'sensitive data',
@@ -3587,6 +3591,8 @@ def _is_formula_like_target(val: str) -> bool:
     s = (val or '').strip()
     if not s or s == '—':
         return False
+    if re.search(r'≤\s*\d+|≥\s*\d+', s) and '%' not in s and '×' not in s:
+        return False
     if '×' in s or '÷' in s:
         return True
     if s.count('(') >= 1 and s.count(')') >= 1:
@@ -3605,13 +3611,20 @@ def _is_formula_like_target(val: str) -> bool:
 
 def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
     """PR-CY50/53 — measurable target only; never formula text."""
-    t = (raw_target or '').strip()
+    t_raw = (raw_target or '').strip()
+    n = (name or '').strip()
+    nu = n.lower()
+    if any(k in nu for k in (
+            'أطراف ثالثة', 'الأطراف الثالثة', 'third party',
+            'third-party', 'موردين', 'vendor risk', 'مخاطر المورد')):
+        if t_raw and t_raw not in ('—', '-', '--', '–'):
+            return t_raw
+        return '≤ 3 (منخفض)' if lang == 'ar' else '≤ 30/100'
+    t = t_raw
     if t in ('—', '-', '--', '–'):
         t = ''
     if _is_formula_like_target(t):
         t = ''
-    n = (name or '').strip()
-    nu = n.lower()
     if _is_soc_detection_metric(n):
         return '≥95%' if lang == 'ar' else '≥95%'
     if lang == 'ar':
@@ -3674,6 +3687,12 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
         return ('(المنجز ÷ المخطط) × 100' if lang == 'ar'
                 else '(Done ÷ Planned) × 100')
     nu = n.lower()
+    if any(k in nu for k in (
+            'أطراف ثالثة', 'third party', 'third-party', 'موردين',
+            'vendor risk', 'مخاطر المورد')):
+        return ('متوسط درجة مخاطر الموردين السيبرانية المقيمة'
+                if lang == 'ar' else
+                'Average assessed vendor cyber risk score')
     if _is_soc_detection_metric(n):
         return (
             '(عدد التنبيهات/التهديدات المكتشفة الصحيحة / '
@@ -4062,7 +4081,16 @@ def _normalize_kpi_semantic_row(
                 formula = ''
         except Exception:  # noqa: BLE001
             pass
-        if _is_formula_like_target(target) or _target_repeats_metric_name(
+        _vendor_risk = any(k in (name or '') for k in (
+            'أطراف ثالثة', 'موردين', 'third party', 'third-party'))
+        _score_target = bool(re.search(r'≤\s*\d+', (target or '')))
+        if _vendor_risk and _score_target:
+            if not formula or formula == '—':
+                formula = (
+                    'متوسط درجة مخاطر الموردين السيبرانية المقيمة'
+                    if lang == 'ar' else
+                    'Average assessed vendor cyber risk score')
+        elif _is_formula_like_target(target) or _target_repeats_metric_name(
                 name, target):
             target = _derive_kpi_target(name, '', lang)
         elif not target or target == '—':

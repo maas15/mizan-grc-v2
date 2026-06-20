@@ -167,7 +167,7 @@ def check_pillar_owner_missing(blob: str) -> List[str]:
 def check_kpi_semantic_defects(blob: str, *, route: str = '') -> List[str]:
     text = blob or ''
     route_n = (route or '').lower()
-    if route_n in ('docx', 'pdf'):
+    if route_n in ('docx', 'pdf', 'preview'):
         scoped = flat_kpi_kri_section_blob(text)
         if scoped.strip():
             text = scoped
@@ -195,12 +195,13 @@ def check_kpi_semantic_defects(blob: str, *, route: str = '') -> List[str]:
             if re.search(r'≥\s*95%|100%', ln) and 'حوادث' not in ln:
                 defects.append('dlp_incident_percent_target')
     if _THIRD_PARTY_RISK in text:
-        idx = text.find(_THIRD_PARTY_RISK)
-        window = text[idx:idx + 160]
-        if re.search(r'100%', window) and 'KRI' in window.upper():
-            if re.search(
-                    r'المنجز|المخطط|completion|×\s*100', window, re.I):
-                defects.append('third_party_risk_completion_formula')
+        for ln in text.splitlines():
+            if _THIRD_PARTY_RISK not in ln:
+                continue
+            if re.search(r'100%', ln) and 'KRI' in ln.upper():
+                if re.search(
+                        r'المنجز|المخطط|completion|×\s*100', ln, re.I):
+                    defects.append('third_party_risk_completion_formula')
     for gf in REL27_GENERIC_FORMULAS:
         if gf in text:
             defects.append('generic_kpi_formula')
@@ -308,8 +309,20 @@ def evaluate_content_substance(
         route: str = 'docx',
         pdf_bytes: bytes = b'',
         peer_row_counts: Optional[Dict[str, int]] = None,
+        docx_reference: str = '',
+        canonical_kpis: str = '',
 ) -> Dict[str, Any]:
     """Full substance diagnostic for one export channel."""
+    from release_engine_v3.document_quality_spec import (
+        check_arabic_role_corruption,
+        check_duplicate_metric_labels,
+        check_mixed_metric_formulas,
+        check_pdf_layout_semantic,
+        check_pillar_duplicate_narratives,
+        check_pillar_generic_outputs,
+        _roadmap_family_count,
+    )
+
     peer_row_counts = peer_row_counts or {}
     shallow = check_shallow_pillar_rows(blob)
     owners = check_pillar_owner_missing(blob)
@@ -318,6 +331,18 @@ def evaluate_content_substance(
     risk_generic = check_generic_risk_treatments(blob)
     trace_bad = check_traceability_bad_mappings(blob)
     arabic = check_arabic_residues_substance(blob)
+    pillar_dupes = check_pillar_duplicate_narratives(blob)
+    pillar_generic = check_pillar_generic_outputs(blob)
+    dup_metrics = check_duplicate_metric_labels(
+        blob, docx_reference=docx_reference, canonical_kpis=canonical_kpis)
+    mixed_formulas = check_mixed_metric_formulas(blob)
+    role_corrupt = check_arabic_role_corruption(blob)
+    pdf_layout_ok = True
+    if route == 'pdf':
+        pdf_layout_ok, pdf_layout_defects = check_pdf_layout_semantic(
+            blob, docx_text=docx_reference, pdf_bytes=pdf_bytes)
+    else:
+        pdf_layout_defects = []
 
     drift = False
     if peer_row_counts:
@@ -333,14 +358,25 @@ def evaluate_content_substance(
         blocking.append('shallow_pillar_outputs')
     if owners:
         blocking.append('pillar_owner_missing')
+    if pillar_dupes:
+        blocking.append('pillar_duplicate_narratives')
+    if pillar_generic and not shallow:
+        blocking.append('pillar_generic_outputs')
     blocking.extend(road_defects)
     if drift:
         blocking.append('roadmap_preview_docx_pdf_drift')
     blocking.extend(kpi_defects)
+    blocking.extend(dup_metrics)
+    blocking.extend(mixed_formulas)
     blocking.extend(risk_generic)
     blocking.extend(trace_bad)
-    if arabic:
+    arabic_all = list(dict.fromkeys(arabic + role_corrupt))
+    if arabic_all:
         blocking.append('arabic_residue')
+    if role_corrupt:
+        blocking.append('arabic_role_corruption')
+    if not pdf_layout_ok:
+        blocking.extend(pdf_layout_defects)
 
     passed = not blocking
     return {
@@ -348,15 +384,22 @@ def evaluate_content_substance(
         'pillar_depth_valid': not shallow and not owners,
         'shallow_pillar_rows': shallow,
         'pillar_owner_missing': owners,
+        'pillar_duplicate_narratives': pillar_dupes,
+        'pillar_generic_outputs': pillar_generic,
         'roadmap_visible_row_count': row_count,
+        'roadmap_visible_family_count': _roadmap_family_count(blob),
         'roadmap_required_families_missing': [
             d.replace('missing_family:', '')
             for d in road_defects if d.startswith('missing_family:')],
         'roadmap_preview_docx_pdf_consistent': not drift,
+        'duplicate_metric_labels': dup_metrics,
+        'mixed_metric_formulas': mixed_formulas,
         'kpi_semantic_defects': kpi_defects,
         'risk_generic_treatments': risk_generic,
         'traceability_bad_mappings': trace_bad,
-        'arabic_residues': arabic,
+        'pdf_layout_semantic_passed': pdf_layout_ok,
+        'arabic_role_corruption': role_corrupt,
+        'arabic_residues': arabic_all,
         'content_substance_passed': passed,
         'blocking_errors': list(dict.fromkeys(blocking)),
     }

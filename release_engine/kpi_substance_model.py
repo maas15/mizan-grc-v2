@@ -10,8 +10,12 @@ from release_engine.kpi_model import (
     GENERIC_FORMULA,
     finalize_kpi_semantics,
     _apply_inline_kpi_repairs,
+    _dedupe_kpi_metric_labels,
     _parse_kpi_rows,
     _renumber_rows,
+    _separate_dlp_encryption_formulas,
+    _split_kpi_main_and_tail,
+    _sync_kpi_formula_appendix,
 )
 
 REQUIRED_KPI_FAMILIES = (
@@ -26,6 +30,7 @@ REQUIRED_KPI_FAMILIES = (
     'classification',
     'encryption',
     'dlp',
+    'third_party',
 )
 
 _FAMILY_TOKENS = {
@@ -35,11 +40,12 @@ _FAMILY_TOKENS = {
     'governance': ('حوكمة', 'ciso', 'لجنة'),
     'compliance': ('امتثال', 'compliance', 'ecc'),
     'iam_pam_mfa': ('iam', 'pam', 'mfa', 'هوية'),
-    'awareness': ('توعية', 'تدريب', 'phishing'),
+    'awareness': ('توعية', 'تدريب', 'phishing', 'إكمال', 'awareness', 'تصيد'),
     'backup': ('نسخ', 'backup', 'تعافي', 'dr'),
     'classification': ('تصنيف', 'جرد'),
     'encryption': ('تشفير', 'مفاتيح'),
     'dlp': ('dlp', 'تسرب'),
+    'third_party': ('أطراف ثالثة', 'third', 'مورد'),
 }
 
 _KPI_INSERTS_AR = {
@@ -98,6 +104,11 @@ _KPI_INSERTS_AR = {
         'البيانات الحساسة المغطاة بضوابط DLP ÷ إجمالي البيانات الحساسة × 100',
         'منصة DLP', 'شهري',
     ],
+    'third_party': [
+        '13', 'درجة مخاطر الأطراف الثالثة', '≤ 3 (منخفض)',
+        'متوسط درجة مخاطر الموردين السيبرانية المقيمة',
+        'منصة إدارة الموردين', 'ربع سنوي',
+    ],
 }
 
 _LOGIN_ANOMALY_BAD = 'نسبة محاولات الدخول الفاشلة الشاذة'
@@ -134,8 +145,9 @@ def _repair_login_anomaly(lines: List[str], rows: List[List[str]]) -> str:
     return '\n'.join(out_lines)
 
 
-def _insert_missing_families(text: str, missing: List[str]) -> str:
-    lines, rows = _parse_kpi_rows(text)
+def _insert_missing_families(text: str, missing: List[str], *, lang: str = 'ar') -> str:
+    main_blob, tail = _split_kpi_main_and_tail(text)
+    lines, rows = _parse_kpi_rows(main_blob)
     if not lines:
         return text
     for fam in missing:
@@ -153,9 +165,23 @@ def _insert_missing_families(text: str, missing: List[str]) -> str:
             out_lines[i] = '| ' + ' | '.join(rows[row_idx]) + ' |'
             row_idx += 1
     if row_idx < len(rows):
+        insert_at = len(out_lines)
+        for i, ln in enumerate(out_lines):
+            s = ln.strip()
+            if s.startswith('###') and ('صيغة' in s or 'formula' in s.lower()):
+                insert_at = i
+                break
+            if s.startswith('|') and '---' not in s:
+                cells = [c.strip() for c in s.split('|')[1:-1]]
+                if cells and str(cells[0]).isdigit():
+                    insert_at = i + 1
         for r in rows[row_idx:]:
-            out_lines.append('| ' + ' | '.join(r) + ' |')
-    return '\n'.join(out_lines)
+            out_lines.insert(insert_at, '| ' + ' | '.join(r) + ' |')
+            insert_at += 1
+    rebuilt = _sync_kpi_formula_appendix('\n'.join(out_lines), lang=lang)
+    if tail:
+        rebuilt = rebuilt.rstrip() + '\n\n' + tail + '\n'
+    return rebuilt
 
 
 def finalize_kpi_substance(
@@ -176,13 +202,16 @@ def finalize_kpi_substance(
         text = _repair_login_anomaly(lines, [])
     for _ in range(2):
         if missing_before:
-            text = _insert_missing_families(text, missing_before)
+            text = _insert_missing_families(text, missing_before, lang=lang)
         present_after = _families_present(text)
         missing_before = [
             f for f in REQUIRED_KPI_FAMILIES if not present_after.get(f)]
         if not missing_before:
             break
 
+    text = _dedupe_kpi_metric_labels(text)
+    text = _separate_dlp_encryption_formulas(text)
+    text = _sync_kpi_formula_appendix(text, lang=lang)
     present_after = _families_present(text)
     missing_after = [f for f in REQUIRED_KPI_FAMILIES if not present_after.get(f)]
     invalid_after = _detect_invalid(text)
