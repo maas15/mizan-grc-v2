@@ -92,7 +92,8 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
                 'so_family_missing', 'kpi_percent_without_denominator',
                 'risk_count_invalid', 'risk_missing_control_family',
                 'arabic_residue', 'arabic_role_corruption',
-                'dlp_incident')):
+                'arabic_canonical_invalid', 'roadmap_preview_docx_pdf_drift',
+                'preview_docx_pdf_roadmap_drift', 'dlp_incident')):
             return True
     return False
 
@@ -124,17 +125,30 @@ def _preview_failure_repairable(
 
 def _rel31_build_export_diag_for_repair(
         docx_ev: Any,
-        dq: Dict[str, Any]) -> Dict[str, Any]:
+        dq: Dict[str, Any],
+        preview_ev: Any = None) -> Dict[str, Any]:
     gate = getattr(docx_ev, 'gate', None) or {}
+    preview_gate = getattr(preview_ev, 'gate', None) or {} if preview_ev else {}
     blocking = list(getattr(docx_ev, 'blocking_errors', None) or [])
+    blocking.extend(getattr(preview_ev, 'blocking_errors', None) or [])
     for e in dq.get('blocking_errors') or []:
         blocking.append(str(e))
+    preview_patterns = list(gate.get('preview_forbidden_patterns') or [])
+    preview_patterns.extend(preview_gate.get('preview_forbidden_patterns') or [])
+    route_evidence = dq.get('route_evidence') or {}
+    for route, ev in route_evidence.items():
+        if not ev.get('content_substance_passed'):
+            for err in ev.get('blocking_errors') or []:
+                blocking.append(f'{route}:{err}')
+            for residue in ev.get('arabic_residues') or []:
+                preview_patterns.append(str(residue))
+            for corrupt in ev.get('arabic_role_corruption') or []:
+                preview_patterns.append(str(corrupt))
     return {
-        'blocking_errors': blocking,
+        'blocking_errors': list(dict.fromkeys(blocking)),
         'docx_forbidden_patterns': list(
             gate.get('docx_forbidden_patterns') or []),
-        'preview_forbidden_patterns': list(
-            gate.get('preview_forbidden_patterns') or []),
+        'preview_forbidden_patterns': list(dict.fromkeys(preview_patterns)),
         'docx_missing_sections': list(gate.get('docx_missing_sections') or []),
         'docx_arabic_residues': list(gate.get('docx_arabic_residues') or []),
     }
@@ -147,6 +161,9 @@ def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
         and not b.startswith('rel3_export_evidence_failed:docx:')
         and 'arabic_role_corruption' not in b
         and 'arabic_residue' not in b
+        and 'arabic_canonical_invalid' not in b
+        and 'roadmap_preview_docx_pdf_drift' not in b
+        and 'preview_docx_pdf_roadmap_drift' not in b
         and 'kpi_percent_without_denominator' not in b
         and 'so_family_missing' not in b
         and 'risk_count_invalid' not in b
@@ -957,6 +974,8 @@ def apply_rel31_authoritative_contract(
             )
             _bind_backend_sections(backend, art)
             for _dq_pass in range(2):
+                preview_export, preview_ev = rel3_export_with_evidence(
+                    'preview', built, backend=backend)
                 docx_export, docx_ev = rel3_export_with_evidence(
                     'docx', built, backend=backend,
                     export_kwargs={'filename': 'rel31_quality.docx', 'lang': lang})
@@ -996,7 +1015,7 @@ def apply_rel31_authoritative_contract(
                         repair_document_quality_sections,
                     )
                     export_diag = _rel31_build_export_diag_for_repair(
-                        docx_ev, dq)
+                        docx_ev, dq, preview_ev)
                     art, dq_rep = repair_for_actual_export_defects(
                         art, export_diag,
                         domain=domain, lang=lang, backend=backend)

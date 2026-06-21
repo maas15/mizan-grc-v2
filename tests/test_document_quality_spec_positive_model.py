@@ -208,16 +208,22 @@ class StagingDqsRepairTests(unittest.TestCase):
 
     def test_arabic_glue_repaired_in_dqs_pipeline(self):
         from release_engine_v3.document_quality_spec import (
+            check_arabic_tokenization_quality,
             repair_document_quality_sections,
         )
 
         sections = {
             'vision': 'هدف يعتمد على ال معلومات الحساسة للتعامل مع التهديدات',
+            'environment': 'تعتمد ال منظمة على حوكمة أمن المعلومات',
         }
         repaired, reps = repair_document_quality_sections(sections, lang='ar')
         self.assertNotIn('ال معلومات', repaired.get('vision', ''))
         self.assertIn('المعلومات', repaired.get('vision', ''))
+        self.assertNotIn('ال منظمة', repaired.get('environment', ''))
+        self.assertIn('المنظمة', repaired.get('environment', ''))
         self.assertIn('dqs:arabic_final_gate', reps)
+        blob = '\n\n'.join(repaired.values())
+        self.assertTrue(check_arabic_tokenization_quality(blob).get('passed'))
 
 
 if __name__ == '__main__':
