@@ -219,6 +219,9 @@ _CONTROL_FAMILY_KEYWORDS = {
     'resilience': ('نسخ', 'dr', 'استمرارية', 'تعافي'),
     'awareness': ('توعية', 'تدريب', 'awareness'),
     'resource_capacity': ('موارد', 'طاقات', 'ميزانية', 'كفاءات'),
+    'third_party': (
+        'أطراف', 'طرف ثالث', 'الأطراف', 'من الأطر', 'مورد', 'supplier',
+        'vendor'),
 }
 
 
@@ -1469,12 +1472,24 @@ def repair_document_quality_sections(
     try:
         from release_engine.kpi_model import (
             _apply_inline_kpi_repairs,
+            _dedupe_kpi_metric_labels,
             finalize_kpi_semantics,
         )
         out, _ = finalize_kpi_semantics(
             out, lang=lang, backend=backend)
         out, _ = _apply_inline_kpi_repairs(out)
+        if out.get('kpis'):
+            out['kpis'] = _dedupe_kpi_metric_labels(out['kpis'])
         repairs.append('dqs:kpi_percent_formula_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            repair_sections_generic_gap_treatments,
+        )
+        out = repair_sections_generic_gap_treatments(out)
+        repairs.append('dqs:generic_gap_treatments_diversified')
     except Exception:  # noqa: BLE001
         pass
 

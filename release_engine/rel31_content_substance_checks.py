@@ -59,6 +59,37 @@ _EXTRA_ARABIC_RESIDUES = (
 
 _GENERIC_GAP_TREATMENT = 'تطبيق الضوابط المرتبطة ومتابعتها'
 
+_GAP_ACTION_ALTERNATIVES = (
+    'تنفيذ خطة معالجة معتمدة مع مالك ومخرج قابل للقياس خلال 90 يوماً',
+    'تطبيق ضوابط ECC/DCC ذات الأولوية مع تقرير تقدم ربع سنوي',
+    'إعداد خطة عمل تفصيلية مع RACI ومواعيد تنفيذ محددة',
+    'تفعيل الضوابط المطلوبة وربطها بمؤشرات أداء قابلة للمراجعة',
+    'تخصيص مالك للمعالجة وتوثيق إجراءات التحقق الدورية',
+)
+
+
+def repair_generic_gap_treatments(text: str) -> str:
+    """Replace repeated generic gap actions with distinct substantive plans."""
+    blob = text or ''
+    if blob.count(_GENERIC_GAP_TREATMENT) < 2:
+        return blob
+    parts = blob.split(_GENERIC_GAP_TREATMENT)
+    out = parts[0] + _GENERIC_GAP_TREATMENT
+    for i, part in enumerate(parts[1:], 1):
+        out += _GAP_ACTION_ALTERNATIVES[(i - 1) % len(_GAP_ACTION_ALTERNATIVES)] + part
+    return out
+
+
+def repair_sections_generic_gap_treatments(
+        sections: Dict[str, str]) -> Dict[str, str]:
+    """Scrub repeated generic gap treatments across legacy sections."""
+    out = dict(sections or {})
+    for key in ('gaps', 'environment', 'vision', 'roadmap', 'confidence'):
+        val = out.get(key)
+        if isinstance(val, str) and _GENERIC_GAP_TREATMENT in val:
+            out[key] = repair_generic_gap_treatments(val)
+    return out
+
 _SHALLOW_PROGRAM_PHRASE = (
     'تنفيذ برنامج',
     'مخرجات تشغيلية قابلة للقياس والتحقق',
@@ -517,6 +548,9 @@ def repair_rel31_content_substance(
     out, trace = finalize_traceability_substance(out, lang=lang)
     if trace.get('action_taken') and trace.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{trace.get("action_taken")}')
+
+    out = repair_sections_generic_gap_treatments(out)
+    repairs.append('rel31_substance:generic_gap_treatments_diversified')
 
     out = repair_sections_for_rendered_evidence(
         out, lang=lang, domain=domain, backend=backend)

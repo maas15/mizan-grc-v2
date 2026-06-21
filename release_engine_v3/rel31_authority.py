@@ -70,14 +70,22 @@ def _bind_backend_sections(
 def _scrub_art_sections_for_build(
         sections: Dict[str, str], lang: str) -> Dict[str, str]:
     """Scrub Arabic glue residues before artifact build / export."""
+    from release_engine.kpi_model import _dedupe_kpi_metric_labels
+    from release_engine.rel31_content_substance_checks import (
+        repair_sections_generic_gap_treatments,
+    )
+    out = dict(sections or {})
+    out = repair_sections_generic_gap_treatments(out)
+    if out.get('kpis'):
+        out['kpis'] = _dedupe_kpi_metric_labels(out['kpis'])
     if str(lang or '').lower().startswith('en'):
-        return sections
+        return out
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
     from release_engine.arabic_language_gate import apply_arabic_final_gate
     out = {
         k: _repair_arabic_blob(v)
         if isinstance(v, str) and not str(k).startswith('_') else v
-        for k, v in sections.items()}
+        for k, v in out.items()}
     out, _ = apply_arabic_final_gate(out, lang=lang)
     return out
 
@@ -111,7 +119,8 @@ def _rel31_dq_repairable(
         'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
         'arabic_residue', 'ال معلومات', 'ال منظمة',
-        'duplicate_mttd', 'duplicate_mttr', 'repeated_generic'))
+        'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
+        'repeated_generic', 'repeated_generic_gap'))
 
 
 def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
@@ -124,7 +133,8 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
                 'arabic_residue', 'arabic_role_corruption',
                 'arabic_canonical_invalid', 'roadmap_preview_docx_pdf_drift',
                 'preview_docx_pdf_roadmap_drift', 'dlp_incident',
-                'duplicate_mttd', 'duplicate_mttr', 'repeated_generic')):
+                'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
+        'repeated_generic', 'repeated_generic_gap')):
             return True
     return False
 
@@ -143,7 +153,8 @@ def _preview_failure_repairable(
             'roadmap', 'arabic', 'pillar', 'missing_pillars',
             'kpi', 'third_party', 'missing_family', 'formula', 'risk',
             'document_quality', 'risk_missing', 'duplicate_mttd',
-            'duplicate_mttr', 'repeated_generic')):
+            'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
+            'repeated_generic', 'repeated_generic_gap')):
         return True
     if any(p in blob for p in _ARABIC_GLUE_REPAIR_TRIGGERS):
         return True

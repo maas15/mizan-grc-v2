@@ -261,10 +261,12 @@ def _dedupe_kpi_metric_labels(text: str) -> str:
     kept: List[List[str]] = []
     for cells in rows:
         name = (cells[1] if len(cells) > 1 else '').upper()
+        raw_name = cells[1] if len(cells) > 1 else ''
         tag = ''
-        if 'MTTD' in name:
+        if 'MTTD' in name or (
+                'زمن' in raw_name and ('كشف' in raw_name or 'اكتشاف' in raw_name)):
             tag = 'MTTD'
-        elif 'MTTR' in name:
+        elif 'MTTR' in name or ('زمن' in raw_name and 'استجاب' in raw_name):
             tag = 'MTTR'
         if tag:
             if tag in seen:

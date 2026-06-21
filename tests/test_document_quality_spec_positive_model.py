@@ -91,6 +91,57 @@ class StagingDqsRepairTests(unittest.TestCase):
              if 'kpi_percent_without_denominator' in d],
             [])
 
+    def test_al_munasib_glue_repaired(self):
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        from release_engine.rel31_content_substance_checks import (
+            check_arabic_residue_rel31,
+        )
+
+        glued = 'تحديد نموذج تشغيل SOC ال مناسب (داخلي أو مُدار MSSP)'
+        repaired = _repair_arabic_blob(glued)
+        self.assertNotIn('ال مناسب', repaired)
+        self.assertIn('المناسب', repaired)
+        self.assertEqual(check_arabic_residue_rel31(repaired), [])
+
+    def test_mttr_dedupe_repair(self):
+        from release_engine.kpi_model import _dedupe_kpi_metric_labels
+
+        kpis = (
+            '| # | وصف | القيمة | صيغة | مصدر | تواتر |\n|---|---|---|---|---|---|\n'
+            '| 1 | MTTR | ≤ 4 س | f | s | m |\n'
+            '| 2 | MTTR | ≤ 6 س | f | s | m |\n'
+        )
+        out = _dedupe_kpi_metric_labels(kpis)
+        self.assertEqual(out.upper().count('MTTR'), 1)
+
+    def test_generic_gap_treatment_diversified(self):
+        from release_engine.rel31_content_substance_checks import (
+            check_generic_risk_treatments,
+            repair_generic_gap_treatments,
+        )
+
+        generic = 'تطبيق الضوابط المرتبطة ومتابعتها'
+        blob = '\n'.join([generic] * 3)
+        repaired = repair_generic_gap_treatments(blob)
+        self.assertEqual(repaired.count(generic), 1)
+        self.assertNotIn(
+            'repeated_generic_gap_treatment',
+            check_generic_risk_treatments(repaired))
+
+    def test_third_party_risk_control_family_detected(self):
+        from release_engine_v3.document_quality_spec import check_risk_register_schema
+
+        confidence = (
+            '| # | المخاطرة | الاحتمال | الأثر | خطة المعالجة | المالك |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | مخاطر الأمن السيبراني من الأطر | متوسط | عالٍ | '
+            'تقييم مخاطر الأطراف الثالثة — المالك: المشتريات | المشتريات |\n'
+        )
+        defects, _ = check_risk_register_schema(confidence)
+        self.assertEqual(
+            [d for d in defects if 'risk_missing_control_family' in d],
+            [])
+
     def test_normalize_arabic_strips_cso_role_e_suffix(self):
         from professional_strategy_render import normalize_arabic_for_render
         out = normalize_arabic_for_render('المسؤول أمن السيبرانيe')

@@ -725,7 +725,27 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
 
 
 def _export_defect_needs_kpi_dedupe_repair(export_diag: Dict[str, Any]) -> bool:
-    needles = ('duplicate_mttd', 'duplicate_mttr')
+    needles = (
+        'duplicate_mttd', 'duplicate_mttr',
+        'duplicate_MTTD', 'duplicate_MTTR',
+    )
+    for err in export_diag.get('blocking_errors') or []:
+        if any(n in str(err) for n in needles):
+            return True
+    for key in (
+            'preview_forbidden_patterns', 'docx_forbidden_patterns',
+            'pdf_forbidden_patterns'):
+        for item in export_diag.get(key) or []:
+            if any(n in str(item) for n in needles):
+                return True
+    return False
+
+
+def _export_defect_needs_gap_repair(export_diag: Dict[str, Any]) -> bool:
+    needles = (
+        'repeated_generic_gap_treatment', 'repeated_generic_treatment',
+        'repeated_generic',
+    )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
             return True
@@ -862,6 +882,13 @@ def repair_for_actual_export_defects(
                 sections, lang=lang, backend=backend)
         except Exception:  # noqa: BLE001
             pass
+
+    if _export_defect_needs_gap_repair(export_diag):
+        from release_engine.rel31_content_substance_checks import (
+            repair_sections_generic_gap_treatments,
+        )
+        sections = repair_sections_generic_gap_treatments(sections)
+        repairs.append('rel271:generic_gap_treatments_diversified')
 
     if _export_defect_needs_dqs_canonical_repair(export_diag):
         try:

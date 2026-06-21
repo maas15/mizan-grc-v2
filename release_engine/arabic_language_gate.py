@@ -32,6 +32,7 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('النقرفي', 'النقر في'),
     ('الناجمةعن', 'الناجمة عن'),
     ('ال مناسبة', 'المناسبة'),
+    ('ال مناسب', 'المناسب'),
     ('segmentation-Micro', 'تقسيم Micro'),
     ('CSISO', 'CISO'),
     ('Lead e', ''),
@@ -81,7 +82,7 @@ _AR_INVISIBLE_RE = re.compile(r'[\u200f\u200e\u200b\u200c\u200d]')
 _AR_INVISIBLE_WS = r'[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+'
 _LAM_INVISIBLE_GLUE_RE = re.compile(
     r'(?<![\u0600-\u06FF])ال' + _AR_INVISIBLE_WS
-    + r'(منظمة|معلومات|معمول|معتمدة|معتمد|معيارية|معالجة|مناسبة|منفذة)',
+    + r'(منظمة|معلومات|معمول|معتمدة|معتمد|معيارية|معالجة|مناسبة|مناسب|منفذة)',
     re.UNICODE)
 
 
