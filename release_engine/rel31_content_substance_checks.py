@@ -82,12 +82,33 @@ def repair_generic_gap_treatments(text: str) -> str:
 
 def repair_sections_generic_gap_treatments(
         sections: Dict[str, str]) -> Dict[str, str]:
-    """Scrub repeated generic gap treatments across legacy sections."""
+    """Scrub repeated generic gap treatments across all legacy sections."""
     out = dict(sections or {})
-    for key in ('gaps', 'environment', 'vision', 'roadmap', 'confidence'):
-        val = out.get(key)
-        if isinstance(val, str) and _GENERIC_GAP_TREATMENT in val:
-            out[key] = repair_generic_gap_treatments(val)
+    total = sum(
+        (val or '').count(_GENERIC_GAP_TREATMENT)
+        for key, val in out.items()
+        if not str(key).startswith('_') and isinstance(val, str))
+    if total < 2:
+        return out
+    alt_idx = 0
+    keep_generic = True
+    for key, val in list(out.items()):
+        if str(key).startswith('_') or not isinstance(val, str):
+            continue
+        if _GENERIC_GAP_TREATMENT not in val:
+            continue
+        parts = val.split(_GENERIC_GAP_TREATMENT)
+        rebuilt = parts[0]
+        for part in parts[1:]:
+            if keep_generic:
+                rebuilt += _GENERIC_GAP_TREATMENT
+                keep_generic = False
+            else:
+                rebuilt += _GAP_ACTION_ALTERNATIVES[
+                    alt_idx % len(_GAP_ACTION_ALTERNATIVES)]
+                alt_idx += 1
+            rebuilt += part
+        out[key] = rebuilt
     return out
 
 _SHALLOW_PROGRAM_PHRASE = (
@@ -544,6 +565,10 @@ def repair_rel31_content_substance(
     out, risk = finalize_risk_treatment(out, lang=lang)
     if risk.get('action_taken') and risk.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{risk.get("action_taken")}')
+    from release_engine.risk_treatment_model import trim_risk_register_rows
+    out, trimmed = trim_risk_register_rows(out, max_rows=8)
+    if trimmed:
+        repairs.append('rel31_substance:risk_register_trimmed')
 
     out, trace = finalize_traceability_substance(out, lang=lang)
     if trace.get('action_taken') and trace.get('action_taken') != 'validated':

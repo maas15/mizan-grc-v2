@@ -74,8 +74,10 @@ def _scrub_art_sections_for_build(
     from release_engine.rel31_content_substance_checks import (
         repair_sections_generic_gap_treatments,
     )
+    from release_engine.risk_treatment_model import trim_risk_register_rows
     out = dict(sections or {})
     out = repair_sections_generic_gap_treatments(out)
+    out, _ = trim_risk_register_rows(out, max_rows=8)
     if out.get('kpis'):
         out['kpis'] = _dedupe_kpi_metric_labels(out['kpis'])
     if str(lang or '').lower().startswith('en'):
@@ -123,6 +125,7 @@ def _rel31_dq_repairable(
         'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
         'arabic_residue', 'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد',
+        'ال معنية', 'ال منظمات', 'ال عنصر',
         'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
         'repeated_generic', 'repeated_generic_gap'))
 
@@ -145,7 +148,8 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
 
 _ARABIC_GLUE_REPAIR_TRIGGERS = (
     'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معيارية',
-    'ال معالجة', 'ال مناسب', 'ال مناسبة', 'حلولمن', 'ل منع',
+    'ال معالجة', 'ال مناسب', 'ال مناسبة', 'ال معنية', 'ال منظمات',
+    'ال عنصر', 'حلولمن', 'ل منع',
     'الحاليةفي', 'الموظفينفي', 'dlp_incident', 'placeholder_pillar',
     'arabic_residue', 'arabic_role_corruption', 'arabic_glued',
 )

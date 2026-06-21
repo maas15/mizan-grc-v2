@@ -706,7 +706,8 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
         'حلولمنع', 'حلمنع', 'arabic_glued', 'arabic_residue',
         'arabic_role_corruption',
         'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
-        'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معالجة', 'ل منع',
+        'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معالجة',
+        'ال معنية', 'ال منظمات', 'ال عنصر', 'ل منع',
     )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
@@ -721,7 +722,7 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
     return any(
         p in preview_patterns
         for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي',
-                  'ال معلومات', 'ال منظمة'))
+                  'ال معلومات', 'ال منظمة', 'ال معنية', 'ال منظمات'))
 
 
 def _export_defect_needs_kpi_dedupe_repair(export_diag: Dict[str, Any]) -> bool:
@@ -891,6 +892,13 @@ def repair_for_actual_export_defects(
         repairs.append('rel271:generic_gap_treatments_diversified')
 
     if _export_defect_needs_dqs_canonical_repair(export_diag):
+        try:
+            from release_engine.risk_treatment_model import trim_risk_register_rows
+            sections, trimmed = trim_risk_register_rows(sections, max_rows=8)
+            if trimmed:
+                repairs.append('rel271:risk_register_trimmed')
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from release_engine_v3.document_quality_spec import (
                 repair_document_quality_sections,

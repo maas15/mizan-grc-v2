@@ -242,6 +242,8 @@ def finalize_risk_treatment(
     missing_themes = [t for t in _REQUIRED_RISK_THEMES if not themes.get(t)]
     if missing_themes and hdr >= 0:
         for theme in missing_themes:
+            if len(new_rows) >= MAX_RISK_REGISTER_ROWS:
+                break
             tpl = _RISK_TREATMENTS_AR[theme]
             name = {
                 'compliance': 'مخاطر الامتثال التنظيمي',
@@ -290,6 +292,7 @@ def finalize_risk_treatment(
     out = dict(sections)
     out[target_key] = text
     orig_had_generic = _GENERIC_TREATMENT in (sections.get(target_key) or '')
+    out, _ = trim_risk_register_rows(out, max_rows=MAX_RISK_REGISTER_ROWS)
     diag = {
         'empty_treatment_plans_before': empty_before,
         'empty_treatment_plans_after': empty_after,
@@ -313,6 +316,38 @@ def emit_risk_treatment_model(payload: Dict[str, Any]) -> None:
         pass
 
 
+MAX_RISK_REGISTER_ROWS = 8
+
+
+def _trim_flat_risk_register(
+        text: str, *, max_rows: int = MAX_RISK_REGISTER_ROWS) -> Tuple[str, bool]:
+    """Cap flat (non-markdown) confidence risk register rows."""
+    lines = (text or '').splitlines()
+    start = -1
+    for i, ln in enumerate(lines):
+        if ln.strip() == 'المالك' and i >= 1 and lines[i - 1].strip() == 'خطة المعالجة':
+            start = i + 1
+            break
+    if start < 0:
+        return text, False
+    blocks: List[Tuple[int, int]] = []
+    i = start
+    while i < len(lines):
+        if lines[i].strip().isdigit() and i + 5 < len(lines):
+            blocks.append((i, i + 6))
+            i += 6
+            continue
+        i += 1
+    if len(blocks) <= max_rows:
+        return text, False
+    keep_end = blocks[max_rows - 1][1]
+    tail_start = blocks[-1][1]
+    out_lines = lines[:keep_end] + lines[tail_start:]
+    for bi, (row_start, _) in enumerate(blocks[:max_rows]):
+        out_lines[row_start] = str(bi + 1)
+    return '\n'.join(out_lines), True
+
+
 def trim_risk_register_rows(
         sections: Dict[str, str],
         *,
@@ -328,9 +363,24 @@ def trim_risk_register_rows(
             text = sections[k]
             break
     if not target_key:
+        for k in keys:
+            val = sections.get(k) or ''
+            if 'خطة المعالجة' in val and 'المالك' in val:
+                trimmed, did = _trim_flat_risk_register(val, max_rows=max_rows)
+                if did:
+                    out = dict(sections)
+                    out[k] = trimmed
+                    return out, True
         return sections, False
     lines, hdr, rows = _parse_risk_rows(text)
-    if hdr < 0 or len(rows) <= max_rows:
+    if hdr < 0:
+        trimmed, did = _trim_flat_risk_register(text, max_rows=max_rows)
+        if did:
+            out = dict(sections)
+            out[target_key] = trimmed
+            return out, True
+        return sections, False
+    if len(rows) <= max_rows:
         return sections, False
     trimmed = rows[:max_rows]
     out_lines = lines[:hdr + 1]

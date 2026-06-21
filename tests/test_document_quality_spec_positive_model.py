@@ -316,6 +316,67 @@ class StagingDqsRepairTests(unittest.TestCase):
         residues = check_arabic_residues_exported(repaired)
         self.assertTrue(residues.get('exported_arabic_quality_valid'))
 
+    def test_al_maaniya_glue_repaired(self):
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+
+        glued = (
+            'تنسيق مع الجهات ال معنية وتبادل المعلومات في ال منظمات '
+            'حسب ال عنصر المعتمد'
+        )
+        repaired = _repair_arabic_blob(glued)
+        self.assertNotIn('ال معنية', repaired)
+        self.assertNotIn('ال منظمات', repaired)
+        self.assertNotIn('ال عنصر', repaired)
+        self.assertIn('المعنية', repaired)
+        self.assertIn('المنظمات', repaired)
+        self.assertIn('العنصر', repaired)
+        self.assertTrue(check_arabic_residues_exported(repaired).get(
+            'exported_arabic_quality_valid'))
+
+    def test_generic_gap_repair_scrubs_all_sections(self):
+        from release_engine.rel31_content_substance_checks import (
+            check_generic_risk_treatments,
+            repair_sections_generic_gap_treatments,
+        )
+
+        generic = 'تطبيق الضوابط المرتبطة ومتابعتها'
+        sections = {
+            'gaps': '\n'.join([generic] * 3),
+            'traceability': '\n'.join([generic] * 2),
+        }
+        repaired = repair_sections_generic_gap_treatments(sections)
+        blob = '\n\n'.join(repaired.values())
+        self.assertNotIn(
+            'repeated_generic_gap_treatment',
+            check_generic_risk_treatments(blob))
+
+    def test_finalize_risk_treatment_trims_to_eight_rows(self):
+        from release_engine.risk_treatment_model import (
+            _parse_risk_rows,
+            finalize_risk_treatment,
+        )
+        from release_engine_v3.document_quality_spec import check_risk_register_schema
+
+        rows = []
+        for i in range(1, 11):
+            rows.append(
+                f'| {i} | مخاطر {i} | متوسط | عالٍ | '
+                f'خطة معالجة مخصصة للمخاطر {i} — المالك: CISO | CISO |')
+        confidence = (
+            '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة | المالك |\n'
+            '|---|---|---|---|---|---|\n'
+            + '\n'.join(rows)
+        )
+        sections = {'confidence': confidence}
+        out, _ = finalize_risk_treatment(sections, lang='ar')
+        defects, _ = check_risk_register_schema(out['confidence'])
+        self.assertEqual(
+            [d for d in defects if d.startswith('risk_count_invalid')],
+            [])
+        _, hdr, rows = _parse_risk_rows(out['confidence'])
+        self.assertLessEqual(len(rows), 8)
+
 
 if __name__ == '__main__':
     unittest.main()
