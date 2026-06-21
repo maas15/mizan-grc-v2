@@ -101,6 +101,10 @@ def _rel31_rebuild_frozen_artifact(
         dict(art.get('sections') or {}), lang)
     built = build_final_document_artifact(
         art, freeze=False, strategy_id=strategy_id)
+    if _sections_arabic_residue_clean(dict(art.get('sections') or {})):
+        built.blocking_errors = _strip_repaired_arabic_glue_blockers(
+            list(built.blocking_errors or []),
+            dict(art.get('sections') or {}))
     return freeze_artifact(built)
 
 
@@ -118,7 +122,7 @@ def _rel31_dq_repairable(
         'so_family_missing', 'risk_count_invalid',
         'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
-        'arabic_residue', 'ال معلومات', 'ال منظمة',
+        'arabic_residue', 'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد',
         'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
         'repeated_generic', 'repeated_generic_gap'))
 
@@ -140,9 +144,45 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
 
 
 _ARABIC_GLUE_REPAIR_TRIGGERS = (
-    'ال معلومات', 'ال منظمة', 'ال معالجة', 'حلولمن', 'ل منع',
+    'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معيارية',
+    'ال معالجة', 'ال مناسب', 'ال مناسبة', 'حلولمن', 'ل منع',
     'الحاليةفي', 'الموظفينفي', 'dlp_incident', 'placeholder_pillar',
+    'arabic_residue', 'arabic_role_corruption', 'arabic_glued',
 )
+
+_ARABIC_LAM_GLUE_RESIDUES = _ARABIC_GLUE_REPAIR_TRIGGERS
+
+
+def _is_arabic_lam_glue_blocker(err: str) -> bool:
+    e = str(err or '')
+    if any(p in e for p in _ARABIC_LAM_GLUE_RESIDUES):
+        return True
+    return any(k in e for k in (
+        'arabic_residue', 'arabic_role_corruption',
+        'arabic_canonical_invalid', 'arabic_glued'))
+
+
+def _blockers_contain_arabic_defect(blockers: List[str]) -> bool:
+    return any(_is_arabic_lam_glue_blocker(b) for b in (blockers or []))
+
+
+def _sections_arabic_residue_clean(sections: Dict[str, str]) -> bool:
+    from release_engine.rel27_export_checks import check_arabic_residues_exported
+
+    blob = '\n\n'.join(
+        v for v in (sections or {}).values()
+        if isinstance(v, str) and v.strip())
+    return bool(check_arabic_residues_exported(blob).get(
+        'exported_arabic_quality_valid'))
+
+
+def _strip_repaired_arabic_glue_blockers(
+        blockers: List[str],
+        sections: Dict[str, str]) -> List[str]:
+    """Drop lam-glue blockers when canonical sections no longer contain them."""
+    if not _sections_arabic_residue_clean(sections):
+        return list(blockers or [])
+    return [b for b in (blockers or []) if not _is_arabic_lam_glue_blocker(b)]
 
 
 def _preview_failure_repairable(
@@ -210,7 +250,8 @@ def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
         and 'kpi_percent_without_denominator' not in b
         and 'so_family_missing' not in b
         and 'risk_count_invalid' not in b
-        and 'risk_missing_control_family' not in b]
+        and 'risk_missing_control_family' not in b
+        and not _is_arabic_lam_glue_blocker(b)]
 
 _LEGACY_BLOCKER_PREFIXES = (
     'cyber_board_ready_',
@@ -801,9 +842,21 @@ def build_generation_contract(
         blocking_errors: List[str],
         legacy_audit: Optional[List[str]] = None,
         document_quality_passed: Optional[bool] = None,
+        dqs_route_count: int = 0,
+        enforce_dq: bool = False,
 ) -> Dict[str, Any]:
+    dq_ok = True
+    if enforce_dq and document_quality_passed is not None:
+        dq_ok = bool(document_quality_passed) and dqs_route_count >= 1
     if document_quality_passed is not None:
-        ok = document_quality_passed and legacy_gate_after_freeze_count == 0
+        ok = (
+            dq_ok
+            and not blocking_errors
+            and objectives_valid
+            and roadmap_valid
+            and render_tree_valid
+            and preview_evidence_valid
+            and legacy_gate_after_freeze_count == 0)
     else:
         ok = (
             not blocking_errors
@@ -889,8 +942,8 @@ def apply_rel31_authoritative_contract(
     art['sections'] = _scrub_art_sections_for_build(
         dict(art.get('sections') or {}), lang)
     art['blocking_errors'] = []
-    built = build_final_document_artifact(
-        art, freeze=False, strategy_id=str(art.get('strategy_id') or ''))
+    built = _rel31_rebuild_frozen_artifact(
+        art, lang=lang, strategy_id=str(art.get('strategy_id') or ''))
     quality = validate_canonical_quality(
         built.canonical_sections,
         legacy_sections=art.get('sections') or {},
@@ -902,8 +955,12 @@ def apply_rel31_authoritative_contract(
             blockers.append(f'rel3_generation_contract_failed:{err}')
         else:
             blockers.append(err)
-
-    if not blockers:
+    blockers = _strip_repaired_arabic_glue_blockers(
+        blockers, dict(art.get('sections') or {}))
+    built.blocking_errors = _strip_repaired_arabic_glue_blockers(
+        list(built.blocking_errors or []),
+        dict(art.get('sections') or {}))
+    if not blockers and not built.blocking_errors:
         built = freeze_artifact(built)
     store_artifact(built)
 
@@ -1118,7 +1175,9 @@ def apply_rel31_authoritative_contract(
     kpi_valid = 'kpi' not in ' '.join(blockers).lower()
     risk_valid = 'risk' not in ' '.join(blockers).lower()
     trace_valid = 'traceability' not in ' '.join(blockers).lower()
-    arabic_valid = 'arabic' not in ' '.join(blockers).lower()
+    arabic_valid = (
+        not _blockers_contain_arabic_defect(blockers)
+        and 'arabic' not in ' '.join(blockers).lower())
 
     contract = build_generation_contract(
         artifact=built,
@@ -1138,6 +1197,8 @@ def apply_rel31_authoritative_contract(
         legacy_audit=legacy_audit,
         document_quality_passed=(
             dq.get('passed') if enforce_dq and dq else None),
+        dqs_route_count=len(dq.get('route_evidence') or {}) if dq else 0,
+        enforce_dq=enforce_dq,
     )
     emit_rel3_generation_contract(contract)
 

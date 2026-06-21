@@ -706,7 +706,7 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
         'حلولمنع', 'حلمنع', 'arabic_glued', 'arabic_residue',
         'arabic_role_corruption',
         'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
-        'ال معلومات', 'ال منظمة', 'ال معالجة', 'ل منع',
+        'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معالجة', 'ل منع',
     )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):

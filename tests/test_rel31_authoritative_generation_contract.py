@@ -30,6 +30,7 @@ except Exception as _e:
 from release_engine.pillar_model import _build_canonical_pillars
 from release_engine_v3.rel31_authority import (
     apply_rel31_authoritative_contract,
+    build_generation_contract,
     emit_rel3_generation_contract,
     rel31_fingerprint_extension,
     rel31_user_facing_error,
@@ -159,6 +160,66 @@ class Rel31AuthoritativeGenerationTests(unittest.TestCase):
         errs = contract.get('blocking_errors') or []
         self.assertTrue(
             any('rel3_generation_contract_failed' in e for e in errs))
+
+    def test_08_generation_contract_requires_export_routes_and_clean_blockers(self):
+        from release_engine_v3.contracts import ExportManifest, FinalDocumentArtifact
+
+        art = FinalDocumentArtifact(
+            artifact_id='a1',
+            domain='cyber',
+            language='ar',
+            document_type='strategy',
+            strategy_type='technical',
+            selected_frameworks=[],
+            canonical_sections={},
+            quality_repairs=[],
+            quality_results={},
+            frozen=True,
+            canonical_hash='hash',
+            render_tree_hash='rt',
+            export_manifest=ExportManifest(canonical_hash='hash'),
+            blocking_errors=[],
+            release_ready_final_passed=True,
+        )
+        blocked = build_generation_contract(
+            artifact=art,
+            render_tree_hash='rt',
+            objectives_valid=True,
+            roadmap_valid=True,
+            pillars_valid=True,
+            kpi_valid=True,
+            risk_valid=True,
+            traceability_valid=True,
+            arabic_valid=False,
+            render_tree_valid=True,
+            preview_evidence_valid=False,
+            legacy_gate_after_freeze_count=0,
+            blocking_errors=['rel3_generation_contract_failed:ال معتمدة'],
+            document_quality_passed=True,
+            dqs_route_count=0,
+            enforce_dq=True,
+        )
+        self.assertFalse(blocked.get('generation_save_allowed'))
+
+        allowed = build_generation_contract(
+            artifact=art,
+            render_tree_hash='rt',
+            objectives_valid=True,
+            roadmap_valid=True,
+            pillars_valid=True,
+            kpi_valid=True,
+            risk_valid=True,
+            traceability_valid=True,
+            arabic_valid=True,
+            render_tree_valid=True,
+            preview_evidence_valid=True,
+            legacy_gate_after_freeze_count=0,
+            blocking_errors=[],
+            document_quality_passed=True,
+            dqs_route_count=3,
+            enforce_dq=True,
+        )
+        self.assertTrue(allowed.get('generation_save_allowed'))
 
 
 if __name__ == '__main__':

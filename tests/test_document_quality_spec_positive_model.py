@@ -142,6 +142,17 @@ class StagingDqsRepairTests(unittest.TestCase):
             [d for d in defects if 'risk_missing_control_family' in d],
             [])
 
+    def test_al_muaadeda_glue_repaired(self):
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+
+        glued = 'اعتماد السياسات ال معتمدة وفق NCA ECC'
+        repaired = _repair_arabic_blob(glued)
+        self.assertNotIn('ال معتمدة', repaired)
+        self.assertIn('المعتمدة', repaired)
+        self.assertTrue(check_arabic_residues_exported(repaired).get(
+            'exported_arabic_quality_valid'))
+
     def test_normalize_arabic_strips_cso_role_e_suffix(self):
         from professional_strategy_render import normalize_arabic_for_render
         out = normalize_arabic_for_render('المسؤول أمن السيبرانيe')

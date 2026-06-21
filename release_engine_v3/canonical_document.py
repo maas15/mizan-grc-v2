@@ -58,10 +58,13 @@ def _scrub_legacy_sections_arabic(
     if str(lang or '').lower().startswith('en'):
         return sections
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
-    return {
+    from release_engine.arabic_language_gate import apply_arabic_final_gate
+    out = {
         k: _repair_arabic_blob(v)
         if isinstance(v, str) and not str(k).startswith('_') else v
         for k, v in sections.items()}
+    out, _ = apply_arabic_final_gate(out, lang=lang)
+    return out
 
 
 def build_final_document_artifact(
