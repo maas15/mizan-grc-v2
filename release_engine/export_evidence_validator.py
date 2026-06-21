@@ -692,6 +692,7 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
         'حلولمنع', 'حلمنع', 'arabic_glued', 'arabic_residue',
         'arabic_role_corruption',
         'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
+        'ال معلومات', 'ال منظمة', 'ال معالجة', 'ل منع',
     )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
@@ -705,7 +706,8 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
     preview_patterns = export_diag.get('preview_forbidden_patterns') or []
     return any(
         p in preview_patterns
-        for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي'))
+        for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي',
+                  'ال معلومات', 'ال منظمة'))
 
 
 def _export_defect_needs_kpi_schema_repair(export_diag: Dict[str, Any]) -> bool:
@@ -721,7 +723,8 @@ def _export_defect_needs_dqs_canonical_repair(
         e = str(err).lower()
         if any(k in e for k in (
                 'so_family_missing', 'risk_count_invalid',
-                'kpi_percent_without_denominator')):
+                'kpi_percent_without_denominator',
+                'risk_missing_control_family', 'dlp_incident')):
             return True
     return False
 

@@ -192,6 +192,33 @@ class StagingDqsRepairTests(unittest.TestCase):
              if 'kpi_percent_without_denominator' in d],
             [])
 
+    def test_phishing_risk_links_control_family(self):
+        from release_engine_v3.document_quality_spec import check_risk_register_schema
+
+        confidence = (
+            '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة | المالك |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | نجاح حملات التصيد الاحتيالي | متوسط | عالٍ | '
+            'محاكاة تصيد وتوعية ربع سنوية — المالك: مدير التوعية | CISO |\n'
+        )
+        defects, _ = check_risk_register_schema(confidence)
+        self.assertEqual(
+            [d for d in defects if 'risk_missing_control_family' in d],
+            [])
+
+    def test_arabic_glue_repaired_in_dqs_pipeline(self):
+        from release_engine_v3.document_quality_spec import (
+            repair_document_quality_sections,
+        )
+
+        sections = {
+            'vision': 'هدف يعتمد على ال معلومات الحساسة للتعامل مع التهديدات',
+        }
+        repaired, reps = repair_document_quality_sections(sections, lang='ar')
+        self.assertNotIn('ال معلومات', repaired.get('vision', ''))
+        self.assertIn('المعلومات', repaired.get('vision', ''))
+        self.assertIn('dqs:arabic_final_gate', reps)
+
 
 if __name__ == '__main__':
     unittest.main()

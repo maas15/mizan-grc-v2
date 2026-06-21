@@ -207,10 +207,12 @@ _CONTROL_FAMILY_KEYWORDS = {
     'soc_monitoring': ('soc', 'siem', 'رصد'),
     'iam': ('iam', 'pam', 'mfa', 'هوية', 'صلاحيات'),
     'incident_response': (
-        'csirt', 'حوادث', 'استجابة', 'فدية', 'تجزئة', 'segmentation'),
+        'csirt', 'حوادث', 'استجابة', 'فدية', 'تجزئة', 'segmentation',
+        'تصيد', 'phishing'),
     'vulnerability': ('ثغر', 'vulnerab', 'patch'),
     'data_protection': ('بيانات', 'dlp', 'تصنيف', 'تشفير'),
     'resilience': ('نسخ', 'dr', 'استمرارية', 'تعافي'),
+    'awareness': ('توعية', 'تدريب', 'awareness'),
     'resource_capacity': ('موارد', 'طاقات', 'ميزانية', 'كفاءات'),
 }
 
@@ -1305,6 +1307,17 @@ def repair_document_quality_sections(
     repairs: List[str] = []
     out = dict(sections or {})
     fws = backend.get('selected_frameworks') or []
+
+    try:
+        from release_engine.arabic_language_gate import apply_arabic_final_gate
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        out = {
+            k: _repair_arabic_blob(v) if isinstance(v, str) else v
+            for k, v in out.items()}
+        out, _ = apply_arabic_final_gate(out, lang=lang)
+        repairs.append('dqs:arabic_final_gate')
+    except Exception:  # noqa: BLE001
+        pass
 
     if backend.get('baseline_strategic_objectives'):
         try:

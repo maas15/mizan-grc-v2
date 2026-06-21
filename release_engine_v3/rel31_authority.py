@@ -79,8 +79,9 @@ def _rel31_dq_repairable(
     return any(k in blob for k in (
         'arabic', 'kpi_percent_without_denominator',
         'so_family_missing', 'risk_count_invalid',
+        'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
-        'arabic_residue'))
+        'arabic_residue', 'ال معلومات', 'ال منظمة'))
 
 
 def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
@@ -89,9 +90,35 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
         e = str(err).lower()
         if any(k in e for k in (
                 'so_family_missing', 'kpi_percent_without_denominator',
-                'risk_count_invalid', 'arabic_residue',
-                'arabic_role_corruption')):
+                'risk_count_invalid', 'risk_missing_control_family',
+                'arabic_residue', 'arabic_role_corruption',
+                'dlp_incident')):
             return True
+    return False
+
+
+_ARABIC_GLUE_REPAIR_TRIGGERS = (
+    'ال معلومات', 'ال منظمة', 'ال معالجة', 'حلولمن', 'ل منع',
+    'الحاليةفي', 'الموظفينفي', 'dlp_incident', 'placeholder_pillar',
+)
+
+
+def _preview_failure_repairable(
+        blocking_errors: List[str],
+        gate: Optional[Dict[str, Any]] = None) -> bool:
+    blob = ' '.join(str(e) for e in (blocking_errors or [])).lower()
+    if any(k in blob for k in (
+            'roadmap', 'arabic', 'pillar', 'missing_pillars',
+            'kpi', 'third_party', 'missing_family', 'formula', 'risk',
+            'document_quality', 'risk_missing')):
+        return True
+    if any(p in blob for p in _ARABIC_GLUE_REPAIR_TRIGGERS):
+        return True
+    gate = gate or {}
+    for key in ('preview_forbidden_patterns', 'blocking_errors'):
+        for item in gate.get(key) or []:
+            if any(p in str(item) for p in _ARABIC_GLUE_REPAIR_TRIGGERS):
+                return True
     return False
 
 
@@ -122,7 +149,8 @@ def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
         and 'arabic_residue' not in b
         and 'kpi_percent_without_denominator' not in b
         and 'so_family_missing' not in b
-        and 'risk_count_invalid' not in b]
+        and 'risk_count_invalid' not in b
+        and 'risk_missing_control_family' not in b]
 
 _LEGACY_BLOCKER_PREFIXES = (
     'cyber_board_ready_',
@@ -829,17 +857,24 @@ def apply_rel31_authoritative_contract(
             }
         _preview_blob = ' '.join(
             str(e) for e in (preview_ev.blocking_errors or [])).lower()
-        if any(k in _preview_blob for k in (
-                'roadmap', 'arabic', 'pillar', 'missing_pillars',
-                'kpi', 'third_party', 'missing_family', 'formula', 'risk')):
+        if _preview_failure_repairable(
+                list(preview_ev.blocking_errors or []), _preview_gate):
             try:
                 from release_engine.export_evidence_validator import (
                     repair_for_actual_export_defects,
+                )
+                from release_engine_v3.document_quality_spec import (
+                    repair_document_quality_sections,
                 )
                 art, _prev_rep = repair_for_actual_export_defects(
                     art, _preview_gate,
                     domain=domain, lang=lang, backend=backend)
                 repairs.extend(_prev_rep)
+                _prev_secs, _dqs_prev = repair_document_quality_sections(
+                    dict(art.get('sections') or {}),
+                    lang=lang, domain=domain, backend=backend)
+                art['sections'] = _prev_secs
+                repairs.extend(_dqs_prev)
             except Exception:  # noqa: BLE001
                 pass
             _secs = dict(art.get('sections') or {})
