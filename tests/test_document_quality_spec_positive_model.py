@@ -225,6 +225,18 @@ class StagingDqsRepairTests(unittest.TestCase):
         blob = '\n\n'.join(repaired.values())
         self.assertTrue(check_arabic_tokenization_quality(blob).get('passed'))
 
+    def test_arabic_invisible_lam_glue_repaired(self):
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+
+        glued = 'تعتمد ال\u200f منظمة على ال\u200e معلومات حساسة'
+        repaired = _repair_arabic_blob(glued)
+        self.assertNotIn('ال منظمة', repaired)
+        self.assertIn('المنظمة', repaired)
+        self.assertIn('المعلومات', repaired)
+        residues = check_arabic_residues_exported(repaired)
+        self.assertTrue(residues.get('exported_arabic_quality_valid'))
+
 
 if __name__ == '__main__':
     unittest.main()

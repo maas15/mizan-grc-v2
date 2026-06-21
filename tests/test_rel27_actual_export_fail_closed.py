@@ -375,3 +375,25 @@ class Rel271RepairTests(unittest.TestCase):
         self.assertNotIn('حلولمنع', blob)
         self.assertIn('rel271:forced_canonical_pillars_for_docx', repairs)
         self.assertIn('الحماية والكشف والاستجابة', merged['sections']['pillars'])
+
+    def test_repair_for_actual_export_defects_kpi_dedupe(self):
+        from release_engine.export_evidence_validator import (
+            repair_for_actual_export_defects,
+        )
+        kpis = (
+            '## 6. مؤشرات\n| # | وصف المؤشر | القيمة | صيغة | مصدر | تواتر |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | MTTD | ≤ 60 دقيقة | f | s | m |\n'
+            '| 2 | MTTD | ≤ 45 دقيقة | f | s | m |\n'
+            '| 3 | MTTR | ≤ 4 ساعات | f | s | m |\n'
+        )
+        artifact = {'sections': {'kpis': kpis}, 'final_markdown': kpis}
+        export_diag = {
+            'blocking_errors': ['rel3_document_quality_failed:duplicate_mttd'],
+            'preview_forbidden_patterns': ['duplicate_mttd'],
+        }
+        merged, repairs = repair_for_actual_export_defects(
+            artifact, export_diag, domain='cyber', lang='ar', backend={})
+        self.assertIn('rel271:kpi_mttd_mttr_deduped', repairs)
+        blob = merged['sections']['kpis']
+        self.assertEqual(blob.upper().count('MTTD'), 1)

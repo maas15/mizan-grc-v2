@@ -52,6 +52,18 @@ def _legacy_to_canonical_sections(
     return sections
 
 
+def _scrub_legacy_sections_arabic(
+        sections: Dict[str, str], lang: str) -> Dict[str, str]:
+    """Pre-scrub Arabic glue before canonical quality validation."""
+    if str(lang or '').lower().startswith('en'):
+        return sections
+    from release_engine.rendered_evidence_validator import _repair_arabic_blob
+    return {
+        k: _repair_arabic_blob(v)
+        if isinstance(v, str) and not str(k).startswith('_') else v
+        for k, v in sections.items()}
+
+
 def build_final_document_artifact(
         legacy_artifact: Dict[str, Any],
         *,
@@ -76,6 +88,7 @@ def build_final_document_artifact(
         or meta.get('domain')
         or 'cyber')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
+    legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
     quality = validate_canonical_quality(
         canon_map,

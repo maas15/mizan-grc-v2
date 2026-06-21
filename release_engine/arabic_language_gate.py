@@ -76,6 +76,13 @@ _LM_SPACE_GLUE_RE = re.compile(
     r'([\u0600-\u06FF]{2,}ل)من(?=\s|$|[،,.؛:\)\|])')
 # Split ل + منع residue (ASCII/Unicode whitespace between ل and منع).
 _L_MIN_SPLIT_RE = re.compile(r'ل[\s\u00a0\u200b\u200c\u200d\u202f]+منع')
+# Invisible directional / zero-width chars that break substring glue detection.
+_AR_INVISIBLE_RE = re.compile(r'[\u200f\u200e\u200b\u200c\u200d]')
+_AR_INVISIBLE_WS = r'[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+'
+_LAM_INVISIBLE_GLUE_RE = re.compile(
+    r'(?<![\u0600-\u06FF])ال' + _AR_INVISIBLE_WS
+    + r'(منظمة|معلومات|معمول|معتمدة|معتمد|معيارية|معالجة|مناسبة|منفذة)',
+    re.UNICODE)
 
 
 def _apply_glue_split(text: str) -> str:
@@ -93,6 +100,22 @@ def _apply_glue_split(text: str) -> str:
 
 def _normalize_lam_mana(text: str) -> str:
     return _L_MIN_SPLIT_RE.sub('لمنع', text or '')
+
+
+def _normalize_arabic_invisible_whitespace(text: str) -> str:
+    """Strip invisible Unicode marks that break lam-glue substring checks."""
+    if not text:
+        return text or ''
+    return _AR_INVISIBLE_RE.sub('', text)
+
+
+def _normalize_arabic_lam_glue(text: str) -> str:
+    """Repair definite-article splits including invisible-char variants."""
+    if not text:
+        return text or ''
+    out = _normalize_arabic_invisible_whitespace(text)
+    out = _LAM_INVISIBLE_GLUE_RE.sub(lambda m: 'ال' + m.group(1), out)
+    return out
 
 
 def _apply_catalog_fixes(text: str) -> str:
@@ -139,10 +162,11 @@ def _find_residues(text: str) -> List[str]:
 def _repair_text(text: str) -> str:
     if not text:
         return text or ''
-    out = text
+    out = _normalize_arabic_lam_glue(text)
     for _ in range(5):
         prev = out
         out = _normalize_lam_mana(out)
+        out = _normalize_arabic_lam_glue(out)
         out = _apply_catalog_fixes(out)
         out = _apply_glue_split(out)
         out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)

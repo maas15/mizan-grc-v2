@@ -67,6 +67,35 @@ def _bind_backend_sections(
     backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
 
 
+def _scrub_art_sections_for_build(
+        sections: Dict[str, str], lang: str) -> Dict[str, str]:
+    """Scrub Arabic glue residues before artifact build / export."""
+    if str(lang or '').lower().startswith('en'):
+        return sections
+    from release_engine.rendered_evidence_validator import _repair_arabic_blob
+    from release_engine.arabic_language_gate import apply_arabic_final_gate
+    out = {
+        k: _repair_arabic_blob(v)
+        if isinstance(v, str) and not str(k).startswith('_') else v
+        for k, v in sections.items()}
+    out, _ = apply_arabic_final_gate(out, lang=lang)
+    return out
+
+
+def _rel31_rebuild_frozen_artifact(
+        art: Dict[str, Any],
+        *,
+        lang: str,
+        strategy_id: str = '') -> FinalDocumentArtifact:
+    """Rebuild artifact after repair — drop stale canonical blockers."""
+    art['blocking_errors'] = []
+    art['sections'] = _scrub_art_sections_for_build(
+        dict(art.get('sections') or {}), lang)
+    built = build_final_document_artifact(
+        art, freeze=False, strategy_id=strategy_id)
+    return freeze_artifact(built)
+
+
 def _rel31_dq_repairable(
         blockers: List[str],
         dq: Dict[str, Any],
@@ -81,7 +110,8 @@ def _rel31_dq_repairable(
         'so_family_missing', 'risk_count_invalid',
         'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
-        'arabic_residue', 'ال معلومات', 'ال منظمة'))
+        'arabic_residue', 'ال معلومات', 'ال منظمة',
+        'duplicate_mttd', 'duplicate_mttr', 'repeated_generic'))
 
 
 def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
@@ -93,7 +123,8 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
                 'risk_count_invalid', 'risk_missing_control_family',
                 'arabic_residue', 'arabic_role_corruption',
                 'arabic_canonical_invalid', 'roadmap_preview_docx_pdf_drift',
-                'preview_docx_pdf_roadmap_drift', 'dlp_incident')):
+                'preview_docx_pdf_roadmap_drift', 'dlp_incident',
+                'duplicate_mttd', 'duplicate_mttr', 'repeated_generic')):
             return True
     return False
 
@@ -111,7 +142,8 @@ def _preview_failure_repairable(
     if any(k in blob for k in (
             'roadmap', 'arabic', 'pillar', 'missing_pillars',
             'kpi', 'third_party', 'missing_family', 'formula', 'risk',
-            'document_quality', 'risk_missing')):
+            'document_quality', 'risk_missing', 'duplicate_mttd',
+            'duplicate_mttr', 'repeated_generic')):
         return True
     if any(p in blob for p in _ARABIC_GLUE_REPAIR_TRIGGERS):
         return True
@@ -843,6 +875,9 @@ def apply_rel31_authoritative_contract(
     if require_strategy and not road.get('valid'):
         blockers.append('rel3_generation_contract_failed:roadmap_weak_output')
 
+    art['sections'] = _scrub_art_sections_for_build(
+        dict(art.get('sections') or {}), lang)
+    art['blocking_errors'] = []
     built = build_final_document_artifact(
         art, freeze=False, strategy_id=str(art.get('strategy_id') or ''))
     quality = validate_canonical_quality(
@@ -939,10 +974,9 @@ def apply_rel31_authoritative_contract(
             if not road.get('valid'):
                 blockers.append(
                     'rel3_generation_contract_failed:roadmap_weak_output')
-            built = build_final_document_artifact(
-                art, freeze=False,
+            built = _rel31_rebuild_frozen_artifact(
+                art, lang=lang,
                 strategy_id=str(art.get('strategy_id') or ''))
-            built = freeze_artifact(built)
             store_artifact(built)
             tree = rel3_build_render_tree(built)
             _bind_backend_sections(backend, art)
@@ -973,7 +1007,8 @@ def apply_rel31_authoritative_contract(
                 evaluate_document_quality,
             )
             _bind_backend_sections(backend, art)
-            for _dq_pass in range(2):
+            _dq_max_passes = 3 if route_name == 'generation' else 2
+            for _dq_pass in range(_dq_max_passes):
                 preview_export, preview_ev = rel3_export_with_evidence(
                     'preview', built, backend=backend)
                 docx_export, docx_ev = rel3_export_with_evidence(
@@ -1005,7 +1040,7 @@ def apply_rel31_authoritative_contract(
                 docx_ok = bool(docx_ev.export_return_allowed)
                 if dq_ok and docx_ok:
                     break
-                if _dq_pass == 0 and (
+                if _dq_pass < (_dq_max_passes - 1) and (
                         _rel31_dq_repairable(blockers, dq, docx_ev)
                         or _rel31_dq_needs_repair(dq)):
                     from release_engine.export_evidence_validator import (
@@ -1044,10 +1079,9 @@ def apply_rel31_authoritative_contract(
                                 art.get('sections') or {})
                         except Exception:  # noqa: BLE001
                             pass
-                    built = build_final_document_artifact(
-                        art, freeze=False,
+                    built = _rel31_rebuild_frozen_artifact(
+                        art, lang=lang,
                         strategy_id=str(art.get('strategy_id') or ''))
-                    built = freeze_artifact(built)
                     store_artifact(built)
                     tree = rel3_build_render_tree(built)
                     rel2_cache = backend.get('_rel2_cache') or {}

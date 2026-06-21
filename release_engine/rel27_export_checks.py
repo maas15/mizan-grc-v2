@@ -507,8 +507,10 @@ def check_arabic_residues_exported(blob: str) -> Dict[str, Any]:
         if _contains_arabic_residue(blob or '', p)]
     glue_re = re.compile(
         r'(?:الحالية|الموظفين|رئيسية|حلول)(?=في)'
-        r'|(?:^|\s)ال\s+(?:منظمة|معلومات|معمول|معتمدة|معيارية)'
-        r'|لل\s+معالجة'
+        r'|(?:^|[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f])'
+        r'ال[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+'
+        r'(?:منظمة|معلومات|معمول|معتمدة|معيارية)'
+        r'|لل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة'
         r'|حلولمنع',
         re.UNICODE,
     )

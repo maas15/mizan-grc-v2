@@ -724,6 +724,20 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
                   'ال معلومات', 'ال منظمة'))
 
 
+def _export_defect_needs_kpi_dedupe_repair(export_diag: Dict[str, Any]) -> bool:
+    needles = ('duplicate_mttd', 'duplicate_mttr')
+    for err in export_diag.get('blocking_errors') or []:
+        if any(n in str(err) for n in needles):
+            return True
+    for key in (
+            'preview_forbidden_patterns', 'docx_forbidden_patterns',
+            'pdf_forbidden_patterns'):
+        for item in export_diag.get(key) or []:
+            if any(n in str(item) for n in needles):
+                return True
+    return False
+
+
 def _export_defect_needs_kpi_schema_repair(export_diag: Dict[str, Any]) -> bool:
     for err in export_diag.get('blocking_errors') or []:
         if 'kpi_percent_without_denominator' in str(err):
@@ -836,6 +850,18 @@ def repair_for_actual_export_defects(
             sections, lang=lang, backend=backend)
         sections, _ = _apply_inline_kpi_repairs(sections)
         repairs.append('rel271:kpi_percent_formula_repaired')
+
+    if _export_defect_needs_kpi_dedupe_repair(export_diag):
+        from release_engine.kpi_model import _dedupe_kpi_metric_labels
+        if sections.get('kpis'):
+            sections['kpis'] = _dedupe_kpi_metric_labels(sections['kpis'])
+            repairs.append('rel271:kpi_mttd_mttr_deduped')
+        try:
+            from release_engine.kpi_substance_model import finalize_kpi_substance
+            sections, _ = finalize_kpi_substance(
+                sections, lang=lang, backend=backend)
+        except Exception:  # noqa: BLE001
+            pass
 
     if _export_defect_needs_dqs_canonical_repair(export_diag):
         try:

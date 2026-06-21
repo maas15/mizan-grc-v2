@@ -8,8 +8,9 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 from release_engine.arabic_language_gate import (
-    _apply_catalog_fixes,
+    _normalize_arabic_lam_glue,
     _normalize_lam_mana,
+    _repair_text,
     apply_arabic_final_gate,
 )
 from release_engine.kpi_model import (
@@ -617,25 +618,8 @@ def _repair_arabic_blob(text: str) -> str:
     if not text:
         return text
     out = _normalize_lam_mana(text)
-    out = out.replace('لل معالجة', 'للمعالجة')
-    out = out.replace('الحاليةفي', 'الحالية في')
-    out = out.replace('الموظفينفي', 'الموظفين في')
-    out = out.replace('رئيسيةفي', 'رئيسية في')
-    out = out.replace('حلولمنع', 'حلول لمنع')
-    out = out.replace('حلمنع', 'حلول لمنع')
-    out = re.sub(
-        r'المسؤول أمن السيبراني\s*e\b', 'مسؤول أمن السيبراني', out, flags=re.I)
-    out = re.sub(
-        r'المسؤول أمن السيبراني\s*Lead\b', 'مسؤول أمن السيبراني', out, flags=re.I)
-    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
-    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
-    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
-    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
-    out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
-    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
-    out = re.sub(r'\bل\s+منع\b', 'لمنع', out)
-    out = _apply_catalog_fixes(out)
-    return out
+    out = _normalize_arabic_lam_glue(out)
+    return _repair_text(out)
 
 
 def _repair_shallow_pillars(text: str) -> str:
