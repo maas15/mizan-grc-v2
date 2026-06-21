@@ -137,10 +137,16 @@ def validate_returned_export_bytes(
         elif route_n == 'preview' and preview_text:
             blob = preview_text
         if blob.strip():
+            _canon_kpis = ''
+            if artifact.legacy_sections:
+                _canon_kpis = (artifact.legacy_sections or {}).get('kpis') or ''
             emit_rel31_content_substance_evidence(
                 evaluate_content_substance(
                     blob, route=route_n,
-                    pdf_bytes=pdf_bytes if route_n == 'pdf' else b''))
+                    pdf_bytes=pdf_bytes if route_n == 'pdf' else b'',
+                    docx_reference=docx_text if route_n == 'pdf' else '',
+                    canonical_kpis=_canon_kpis,
+                ))
     except Exception:  # noqa: BLE001
         pass
     return result

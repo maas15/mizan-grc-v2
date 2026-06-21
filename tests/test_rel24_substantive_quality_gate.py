@@ -304,7 +304,7 @@ class Rel24IntegrationTests(unittest.TestCase):
         }
         art23, _, _ = apply_rel23_cyber_finalize(
             dict(raw), domain='cyber', lang='ar', backend=_backend())
-        self.assertIn('منصة حوكمة معتمدة', art23['sections'].get('pillars', ''))
+        self.assertIn('≥ 90%', art23['sections'].get('vision', ''))
 
         out = process_release_artifact(
             raw, domain='cyber', lang='ar',

@@ -426,6 +426,9 @@ def _scrub_global_forbidden(text: str) -> str:
     out = out.replace('رئيسيةفي', 'رئيسية في')
     out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
     out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+مناسب\b', 'المناسب', out)
+    out = re.sub(r'\bال\s+معنية\b', 'المعنية', out)
+    out = re.sub(r'المراقبة المست(?!مر)', 'المراقبة المستمرة', out)
     out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
     out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
     out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
@@ -441,7 +444,27 @@ def _scrub_global_forbidden(text: str) -> str:
     return out
 
 
+def _compact_markdown_tables(text: str) -> str:
+    """Remove blank lines inside pipe tables so parsers keep header + rows."""
+    if not text:
+        return text
+    lines = text.split('\n')
+    out: List[str] = []
+    in_table = False
+    for ln in lines:
+        if ln.strip().startswith('|'):
+            in_table = True
+            out.append(ln)
+        elif in_table and not ln.strip():
+            continue
+        else:
+            in_table = False
+            out.append(ln)
+    return '\n'.join(out)
+
+
 def _repair_kpis(text: str) -> str:
+    text = _compact_markdown_tables(text)
     lines, rows = _parse_kpi_rows(text)
     if not rows:
         return text
@@ -465,10 +488,11 @@ def _repair_kpis(text: str) -> str:
                 c[3] = _DLP_KRI_REPLACEMENT['formula']
             if len(c) > 4:
                 c[4] = _DLP_KRI_REPLACEMENT['source']
-        elif 'عدد حوادث تسرب البيانات الحرجة' in name and (
-                '%' in target and 'حوادث' not in target.replace('%', '')):
+        elif 'عدد حوادث تسرب البيانات الحرجة' in name:
             c[1] = _DLP_KRI_REPLACEMENT['name']
-            if len(c) > 2:
+            if len(c) > 2 and (
+                    '0 حوادث' not in target or '%' in target
+                    or re.search(r'≤\s*[1-9]|≥\s*[1-9]', target)):
                 c[2] = _DLP_KRI_REPLACEMENT['target']
             if len(c) > 3:
                 c[3] = _DLP_KRI_REPLACEMENT['formula']
@@ -485,18 +509,22 @@ def _repair_kpis(text: str) -> str:
     # Drop duplicate critical-incident rows and duplicate MTTR metrics.
     seen_kri = False
     seen_mttr = False
+    seen_mttd = False
     deduped_rows: List[List[str]] = []
     for c in new_rows:
         name = c[1] if len(c) > 1 else ''
         target = c[2] if len(c) > 2 else ''
-        if 'MTTR' in name.upper():
+        name_u = name.upper()
+        if 'MTTD' in name_u or 'زمن الكشف' in name or 'زمن اكتشاف' in name:
+            if seen_mttd:
+                continue
+            seen_mttd = True
+        if 'MTTR' in name_u:
             if seen_mttr:
                 continue
             seen_mttr = True
         if 'عدد حوادث تسرب البيانات الحرجة' in name:
             if seen_kri:
-                continue
-            if '%' in target and 'حوادث' not in target.replace('%', ''):
                 continue
             seen_kri = True
         deduped_rows.append(c)
@@ -522,7 +550,7 @@ def _repair_kpis(text: str) -> str:
                     joined = joined.replace(gf, cells[1] if len(cells) > 1 else '')
             ln = joined
         final_lines.append(ln)
-    return '\n'.join(final_lines)
+    return _compact_markdown_tables('\n'.join(final_lines))
 
 
 def _repair_risk_treatments(text: str) -> str:

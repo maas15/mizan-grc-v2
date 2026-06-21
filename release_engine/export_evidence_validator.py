@@ -301,7 +301,9 @@ def _channel_defects(
         route: str = '',
         pdf_bytes: bytes = b'',
         internal_roadmap_row_count: int | None = None,
-        peer_row_counts: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+        peer_row_counts: Optional[Dict[str, int]] = None,
+        canonical_kpis: str = '',
+        docx_reference: str = '') -> Dict[str, Any]:
     # PR-REL2.6/7: validate raw visible export text — never scrub before detection.
     blob = text or ''
     rel27 = rel27_channel_checks(blob)
@@ -321,7 +323,9 @@ def _channel_defects(
         )
         substance_defects = run_rel31_content_substance_checks(
             blob, route=route, pdf_bytes=pdf_bytes,
-            peer_row_counts=peer_row_counts)
+            peer_row_counts=peer_row_counts,
+            canonical_kpis=canonical_kpis,
+            docx_reference=docx_reference)
     except Exception:  # noqa: BLE001
         substance_defects = []
     kpi_defects = list(dict.fromkeys(
@@ -432,22 +436,27 @@ def validate_actual_export_evidence(
         return counts
 
     peer_row_counts = _roadmap_peer_counts()
+    _canon_kpis = (canonical_sections or {}).get('kpis') or ''
 
     preview_def = (
         _channel_defects(
             preview_text,
             route='preview',
             internal_roadmap_row_count=internal_roadmap_row_count,
-            peer_row_counts=peer_row_counts)
+            peer_row_counts=peer_row_counts,
+            canonical_kpis=_canon_kpis)
         if preview_text else {})
     docx_def = (
         _channel_defects(
             docx_text, route='docx',
-            peer_row_counts=peer_row_counts)
+            peer_row_counts=peer_row_counts,
+            canonical_kpis=_canon_kpis)
         if docx_text else {})
     pdf_def = _channel_defects(
         pdf_text, route='pdf', pdf_bytes=pdf_bytes,
-        peer_row_counts=peer_row_counts) if (pdf_text or pdf_bytes) else {}
+        peer_row_counts=peer_row_counts,
+        canonical_kpis=_canon_kpis,
+        docx_reference=docx_text) if (pdf_text or pdf_bytes) else {}
 
     blocking: List[str] = []
     route_norm = normalize_route(route_name or '')
@@ -556,11 +565,16 @@ def validate_actual_export_evidence(
             active_blob = preview_text
             route_norm_emit = 'preview'
         if active_blob.strip():
+            _canon_kpis = ''
+            if isinstance(canonical_sections, dict):
+                _canon_kpis = canonical_sections.get('kpis') or ''
             substance_diag = evaluate_content_substance(
                 active_blob,
                 route=route_norm_emit,
                 pdf_bytes=pdf_bytes if route_norm_emit == 'pdf' else b'',
                 peer_row_counts=peer_row_counts,
+                docx_reference=docx_text if route_norm_emit == 'pdf' else '',
+                canonical_kpis=_canon_kpis,
             )
             emit_rel31_content_substance_evidence(substance_diag)
     except Exception:  # noqa: BLE001

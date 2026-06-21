@@ -193,6 +193,30 @@ def _extract_kpi_main_rows(blob: str) -> List[List[str]]:
     return rows
 
 
+def parse_flat_professional_kpi_cards(section: str) -> List[Dict[str, str]]:
+    """Card-style KPI rows from professional flat export (number/name/type/target)."""
+    rows: List[Dict[str, str]] = []
+    lines = [ln.strip() for ln in (section or '').splitlines()]
+    i = 0
+    while i < len(lines):
+        if re.match(r'^\d+$', lines[i]):
+            if i + 2 >= len(lines):
+                break
+            name, typ = lines[i + 1], lines[i + 2]
+            target = lines[i + 3] if i + 3 < len(lines) else ''
+            if name and name not in ('#', 'المؤشر', 'النوع', 'القيمة المستهدفة'):
+                rows.append({
+                    'num': lines[i],
+                    'name': name,
+                    'type': typ,
+                    'target': target,
+                })
+                i += 4
+                continue
+        i += 1
+    return rows
+
+
 def _count_kpi_tables(blob: str) -> Tuple[int, int]:
     """Return (main_kpi_table_count, formula_table_count)."""
     section = _kpi_section_blob(blob or '')

@@ -80,7 +80,9 @@ def sections_from_uploaded_docx_text(text: str) -> Dict[str, str]:
     from release_engine.rel31_acceptance_checks import (
         _risk_register_blob,
         _trace_matrix_blob,
+        flat_kpi_kri_section_blob,
         flat_pillar_initiative_blob,
+        flat_roadmap_initiative_blob,
     )
 
     sections = dict(technical_sections())
@@ -88,24 +90,14 @@ def sections_from_uploaded_docx_text(text: str) -> Dict[str, str]:
     if pillars.strip():
         sections['pillars'] = (
             '## 2. الركائز الاستراتيجية\n\n' + pillars.strip() + '\n')
-    kpi_idx = text.rfind('نسبة محاولات الدخول الفاشلة الشاذة')
-    if kpi_idx < 0:
-        kpi_idx = text.rfind('مؤشرات الأداء الرئيسية')
-    if kpi_idx >= 0:
-        end = len(text)
-        for end_m in (
-                'العامل\nالوزن\nالدرجة',
-                'تقييم الثقة والمخاطر',
-                'صيغة الاحتساب',
-                'خطة المعالجة',
-                'سجل المخاطر',
-        ):
-            pos = text.find(end_m, kpi_idx + 40)
-            if pos > kpi_idx:
-                end = min(end, pos)
+    kpi_blob = flat_kpi_kri_section_blob(text)
+    if kpi_blob.strip():
         sections['kpis'] = (
-            '## 6. مؤشرات الأداء الرئيسية\n\n'
-            + text[kpi_idx:end].strip() + '\n')
+            '## 6. مؤشرات الأداء الرئيسية\n\n' + kpi_blob.strip() + '\n')
+    road_blob = flat_roadmap_initiative_blob(text)
+    if road_blob.strip():
+        sections['roadmap'] = (
+            '## 5. خارطة الطريق التنفيذية\n\n' + road_blob.strip() + '\n')
     risk = _risk_register_blob(text)
     if risk.strip():
         sections['confidence'] = (

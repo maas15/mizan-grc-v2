@@ -246,7 +246,9 @@ class Rel31UploadedRepairPassTests(unittest.TestCase):
         self.assertTrue(ev.docx_bytes_checked)
         self.assertEqual(ev.blocking_errors, [])
         docx_text = extract_docx_visible_text(export.docx_bytes or b'')
-        diag = evaluate_content_substance(docx_text, route='docx')
+        diag = evaluate_content_substance(
+            docx_text, route='docx',
+            canonical_kpis=repaired.get('kpis') or '')
         self.assertTrue(diag['content_substance_passed'], diag)
         self.assertEqual(diag['shallow_pillar_rows'], [])
         self.assertEqual(diag['kpi_semantic_defects'], [])

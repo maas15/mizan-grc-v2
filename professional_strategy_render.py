@@ -583,7 +583,7 @@ def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
     if any(k in n for k in (
             'أطراف ثالثة', 'الأطراف الثالثة', 'third party',
             'third-party', 'vendor risk', 'موردين', 'مخاطر المورد')):
-        return 'KPI'
+        return 'KRI'
     kri_keys = (
         'kri', 'risk', 'مخاطر', 'phishing', 'تصيد', 'exposure', 'تعرض',
         'risk exposure', 'failure rate', 'حساس', 'sensitive data',
@@ -4038,7 +4038,7 @@ def _apply_kpi_metric_family_spec(
         n = ('عدد حوادث تسرب البيانات الحرجة' if ar else
              'Critical data breach incidents')
         kt = 'KRI'
-        t = '≤ 2 حوادث حرجة سنوياً' if ar else '≤ 2 critical incidents per year'
+        t = '0 حوادث حرجة' if ar else '0 critical incidents'
         f = ('عدد حوادث تسرب البيانات الحرجة خلال الفترة' if ar else
              'Count of critical data breach incidents in period')
         s = ('منصة DLP / SIEM' if ar else 'DLP / SIEM platform')

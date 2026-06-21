@@ -18,6 +18,7 @@ from release_engine.rel31_acceptance_checks import (
     _risk_register_blob,
     _trace_matrix_blob,
     check_arabic_residue_rel31,
+    arabic_glue_residue_present,
     check_dlp_incident_nonzero_tolerance,
     check_generic_kpi_formula,
     check_kpi_dlp_incident_as_percentage,
@@ -51,6 +52,16 @@ _EXTRA_ARABIC_RESIDUES = (
     'المحددةفي',
     'ال معالجة',
     'بال منصات',
+    'ال مناسب',
+    'ال معنية',
+    'المراقبة المست',
+)
+
+_GENERIC_GAP_TREATMENT = 'تطبيق الضوابط المرتبطة ومتابعتها'
+
+_SHALLOW_PROGRAM_PHRASE = (
+    'تنفيذ برنامج',
+    'مخرجات تشغيلية قابلة للقياس والتحقق',
 )
 
 _LOGIN_ANOMALY_KPI = 'نسبة محاولات الدخول الفاشلة الشاذة'
@@ -120,6 +131,8 @@ def check_shallow_pillar_rows(blob: str) -> List[str]:
             stripped = (ln or '').strip()
             if _is_shallow_export_output(stripped):
                 shallow.append(stripped[:80])
+            if any(p in stripped for p in _SHALLOW_PROGRAM_PHRASE):
+                shallow.append(stripped[:80])
     if not shallow:
         use_line_scan = not re.search(
             r'^###\s+حوكمة', section, re.MULTILINE)
@@ -161,6 +174,12 @@ def check_pillar_owner_missing(blob: str) -> List[str]:
                     if lines[j].strip() in ('—', '-'):
                         missing.append('—')
                         break
+    if not missing and section.strip():
+        dash_count = sum(
+            1 for ln in section.splitlines()
+            if (ln or '').strip() in ('—', '-'))
+        if dash_count >= 6 and 'المسؤول' in section:
+            missing.append('—')
     return list(dict.fromkeys(missing))[:8]
 
 
@@ -209,10 +228,16 @@ def check_kpi_semantic_defects(blob: str, *, route: str = '') -> List[str]:
 
 
 def check_generic_risk_treatments(blob: str) -> List[str]:
+    text = blob or ''
+    generic: List[str] = []
+    gap_count = text.count(_GENERIC_GAP_TREATMENT)
+    if gap_count >= 2:
+        generic.append('repeated_generic_gap_treatment')
     risk_blob = _risk_register_blob(blob)
     if not risk_blob.strip():
-        return []
-    generic: List[str] = []
+        if gap_count:
+            generic.append(_GENERIC_GAP_TREATMENT)
+        return list(dict.fromkeys(generic))
     count = 0
     for ln in risk_blob.splitlines():
         if GENERIC_RISK_TREATMENT in ln:
@@ -275,7 +300,7 @@ def check_arabic_residues_substance(blob: str) -> List[str]:
             if re.search(r'(?<![\u0600-\u06FF])ال معتمد(?!ة)', text):
                 residues.append(pat)
             continue
-        if pat in text:
+        if arabic_glue_residue_present(text, pat):
             residues.append(pat)
     if re.search(r'المسؤول أمن السيبراني\s*e', text, re.I):
         residues.append('المسؤول أمن السيبرانيe')
@@ -335,7 +360,8 @@ def evaluate_content_substance(
     pillar_generic = check_pillar_generic_outputs(blob)
     dup_metrics = check_duplicate_metric_labels(
         blob, docx_reference=docx_reference, canonical_kpis=canonical_kpis)
-    mixed_formulas = check_mixed_metric_formulas(blob)
+    mixed_formulas = check_mixed_metric_formulas(
+        blob, canonical_kpis=canonical_kpis)
     role_corrupt = check_arabic_role_corruption(blob)
     pdf_layout_ok = True
     if route == 'pdf':
@@ -411,11 +437,15 @@ def run_rel31_content_substance_checks(
         route: str = 'docx',
         pdf_bytes: bytes = b'',
         peer_row_counts: Optional[Dict[str, int]] = None,
+        canonical_kpis: str = '',
+        docx_reference: str = '',
 ) -> List[str]:
     """Return standardized substance defect codes."""
     diag = evaluate_content_substance(
         blob, route=route, pdf_bytes=pdf_bytes,
-        peer_row_counts=peer_row_counts)
+        peer_row_counts=peer_row_counts,
+        canonical_kpis=canonical_kpis,
+        docx_reference=docx_reference)
     if diag.get('content_substance_passed'):
         return []
     return list(diag.get('blocking_errors') or [])

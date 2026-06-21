@@ -122,6 +122,9 @@ ARABIC_GLUE_RESIDUE_PATTERNS = (
     'النقرفي',
     'الناجمةعن',
     'ال مناسبة',
+    'ال مناسب',
+    'ال معنية',
+    'المراقبة المست',
     'ال معالجة',
     'ال منظمة',
     'ال معلومات',
@@ -259,6 +262,24 @@ def check_pillar_duplicate_narratives(blob: str) -> List[str]:
             dupes.append(norm[:80])
         else:
             narratives.append(norm)
+    text = blob or ''
+    start = text.rfind('2. الركائز الاستراتيجية')
+    if start < 0:
+        start = text.rfind('حوكمة ونموذج التشغيل')
+    end = text.find('البيئة التنظيمية', start + 100) if start >= 0 else -1
+    if start >= 0 and end > start:
+        seen_para: List[str] = []
+        for ln in text[start:end].splitlines():
+            stripped = (ln or '').strip()
+            if len(stripped) < 50:
+                continue
+            if stripped in ('—', '-', '#') or stripped.startswith('|'):
+                continue
+            norm = re.sub(r'\s+', ' ', stripped)
+            if norm in seen_para:
+                dupes.append(norm[:80])
+            else:
+                seen_para.append(norm)
     return list(dict.fromkeys(dupes))[:6]
 
 
@@ -267,12 +288,30 @@ def check_pillar_generic_outputs(blob: str) -> List[str]:
     return list(dict.fromkeys(shallow))[:12]
 
 
+def _parse_canonical_kpi_rows(canonical_kpis: str) -> List[List[str]]:
+    """Parse KPI markdown rows from canonical section (not flat export text)."""
+    from release_engine.kpi_model import _parse_kpi_rows
+
+    raw = (canonical_kpis or '').strip()
+    if not raw:
+        return []
+    _lines, rows = _parse_kpi_rows(raw)
+    if rows:
+        return rows
+    flat = flat_kpi_kri_section_blob(raw) or raw
+    _lines, rows = _parse_kpi_rows(flat)
+    return rows
+
+
 def _metric_tag_row_count(section_text: str, tag: str) -> int:
     """Canonical KPI table rows containing a metric tag (not flat-text repeats)."""
     from release_engine.rel27_export_checks import _extract_kpi_main_rows
 
-    section = flat_kpi_kri_section_blob(section_text) or section_text or ''
-    rows = _extract_kpi_main_rows(section) or _extract_kpi_main_rows(section_text or '')
+    rows = _parse_canonical_kpi_rows(section_text)
+    if not rows:
+        section = flat_kpi_kri_section_blob(section_text) or section_text or ''
+        rows = _extract_kpi_main_rows(section) or _extract_kpi_main_rows(
+            section_text or '')
     if not rows:
         return 0
     return sum(
@@ -287,8 +326,35 @@ def check_duplicate_metric_labels(
         canonical_kpis: str = '') -> List[str]:
     """Duplicate MTTD/MTTR or other metric labels in KPI section."""
     from release_engine.kpi_model import _parse_kpi_rows
+    from release_engine.rel27_export_checks import parse_flat_professional_kpi_cards
 
     section = flat_kpi_kri_section_blob(blob) or blob or ''
+    canon_rows = _parse_canonical_kpi_rows(canonical_kpis)
+    if canon_rows:
+        tag_counts: Dict[str, int] = {}
+        name_targets: Dict[str, List[str]] = {}
+        for cells in canon_rows:
+            name = (cells[1] if len(cells) > 1 else '').strip()
+            target = (cells[2] if len(cells) > 2 else '').strip()
+            if name:
+                name_targets.setdefault(name, []).append(target)
+            for tag in ('MTTD', 'MTTR'):
+                if tag in name.upper() or (
+                        tag == 'MTTD' and 'اكتشاف' in name) or (
+                        tag == 'MTTR' and 'استجابة' in name):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        canon_dupes: List[str] = []
+        for tag, count in tag_counts.items():
+            if count > 1:
+                canon_dupes.append(f'duplicate_{tag.lower()}')
+        for name, targets in name_targets.items():
+            if len(targets) > 1:
+                uniq = {t for t in targets if t}
+                if len(uniq) > 1:
+                    canon_dupes.append('conflicting_kpi_targets')
+        if not canon_dupes:
+            return []
+        return list(dict.fromkeys(canon_dupes))
     _lines, rows = _parse_kpi_rows(section)
     dupes: List[str] = []
     if rows:
@@ -302,6 +368,25 @@ def check_duplicate_metric_labels(
             if count > 1:
                 dupes.append(f'duplicate_{tag}')
         return dupes
+    cards = parse_flat_professional_kpi_cards(section)
+    if cards:
+        name_targets: Dict[str, List[str]] = {}
+        for card in cards:
+            name = re.sub(r'\s+', ' ', (card.get('name') or '').strip())
+            if not name:
+                continue
+            name_targets.setdefault(name, []).append(card.get('target') or '')
+        for name, targets in name_targets.items():
+            if len(targets) > 1:
+                uniq = {t.strip() for t in targets if t.strip()}
+                if len(uniq) > 1:
+                    dupes.append('conflicting_kpi_targets')
+                low = name.upper()
+                if 'MTTD' in low or 'اكتشاف' in name:
+                    dupes.append('duplicate_mttd')
+                if 'MTTR' in low or 'استجابة' in name:
+                    dupes.append('duplicate_mttr')
+        return list(dict.fromkeys(dupes))
     low = section.upper()
     ref_low = (flat_kpi_kri_section_blob(docx_reference) or docx_reference or '').upper()
     canon_section = flat_kpi_kri_section_blob(canonical_kpis) or canonical_kpis or ''
@@ -325,12 +410,31 @@ def check_duplicate_metric_labels(
     return dupes
 
 
-def check_mixed_metric_formulas(blob: str) -> List[str]:
+def check_mixed_metric_formulas(
+        blob: str, *, canonical_kpis: str = '') -> List[str]:
     """DLP rows with encryption formulas or vice versa."""
     from release_engine.kpi_model import _parse_kpi_rows
+    from release_engine.rel27_export_checks import parse_flat_professional_kpi_cards
 
     section = flat_kpi_kri_section_blob(blob) or blob or ''
     mixed: List[str] = []
+    canon_rows = _parse_canonical_kpi_rows(canonical_kpis)
+    if canon_rows:
+        mixed_canon: List[str] = []
+        for cells in canon_rows:
+            name = (cells[1] if len(cells) > 1 else '').lower()
+            formula = (cells[3] if len(cells) > 3 else '').lower()
+            if not formula:
+                continue
+            if ('dlp' in name or 'تسرب' in name) and (
+                    'تشفير' in formula or 'مفاتيح' in formula):
+                mixed_canon.append('dlp_encryption_formula_mix')
+            if ('تشفير' in name or 'encryption' in name) and (
+                    'dlp' in formula or 'تسرب' in formula):
+                mixed_canon.append('encryption_dlp_formula_mix')
+        if not mixed_canon:
+            return []
+        return list(dict.fromkeys(mixed_canon))
     _lines, rows = _parse_kpi_rows(section)
     if rows:
         for cells in rows:
@@ -352,6 +456,13 @@ def check_mixed_metric_formulas(blob: str) -> List[str]:
                 if re.search(r'100%|المنجز|المخطط|completion', target, re.I):
                     mixed.append('third_party_completion_percent')
         return list(dict.fromkeys(mixed))
+    cards = parse_flat_professional_kpi_cards(section)
+    if cards:
+        data_names = [
+            c.get('name') or '' for c in cards
+            if any(k in (c.get('name') or '') for k in ('DLP', 'تشفير', 'تصنيف', 'تسرب'))]
+        if len(data_names) >= 3:
+            mixed.append('dlp_encryption_classification_metric_mix')
     for ln in section.splitlines():
         low = ln.lower()
         if ('dlp' in low or 'تسرب' in ln) and (
@@ -815,7 +926,10 @@ def check_arabic_role_corruption(blob: str) -> List[str]:
         if re.search(pat, text, re.I):
             found.append(pat.replace('\\s+', ' ').replace('\\b', '')[:40])
     for pat in ARABIC_GLUE_RESIDUE_PATTERNS:
-        if pat in text:
+        from release_engine.rel31_acceptance_checks import (
+            arabic_glue_residue_present as _glue_present,
+        )
+        if _glue_present(text, pat):
             found.append(pat)
     if re.search(r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة)', text):
         found.append('separated_definite_article')
@@ -897,7 +1011,8 @@ def _evaluate_visible_route(
     dup_metrics = check_duplicate_metric_labels(
         blob, docx_reference=docx_reference,
         canonical_kpis=canonical_kpis)
-    mixed_formulas = check_mixed_metric_formulas(blob)
+    mixed_formulas = check_mixed_metric_formulas(
+        blob, canonical_kpis=canonical_kpis)
     role_corrupt = check_arabic_role_corruption(blob)
     pdf_layout_ok = True
     pdf_layout_defects: List[str] = []
@@ -1177,6 +1292,25 @@ def evaluate_document_quality(
         equivalence_ok = max(counts) - min(counts) <= 2
     if not equivalence_ok:
         blocking.append('preview_docx_pdf_roadmap_drift')
+
+    _DRIFT_SUBSTANCE_KEYS = (
+        'shallow_pillar', 'pillar_owner', 'pillar_duplicate', 'duplicate_',
+        'conflicting_kpi', 'dlp_encryption', 'third_party', 'trace_gap',
+        'mixed_metric', 'kpi_semantic', 'arabic_residue', 'arabic_role',
+    )
+
+    def _substance_blockers(ev: Dict[str, Any]) -> set:
+        return {
+            err for err in (ev.get('blocking_errors') or [])
+            if any(k in err for k in _DRIFT_SUBSTANCE_KEYS)
+        }
+
+    if 'docx' in route_evidence and 'pdf' in route_evidence:
+        docx_sub = _substance_blockers(route_evidence['docx'])
+        pdf_sub = _substance_blockers(route_evidence['pdf'])
+        if docx_sub != pdf_sub:
+            blocking.append('preview_docx_pdf_semantic_drift')
+            equivalence_ok = False
 
     visible_hashes = {
         'preview': _sha256_text(extracted_preview_text),

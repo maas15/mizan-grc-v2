@@ -22,26 +22,40 @@ _PILLAR_CATALOG_AR: Tuple[Tuple[str, Tuple[Tuple[str, str, str], ...]], ...] = (
          'ميثاق لجنة حوكمة أمن سيبراني معتمد مع اجتماعات ربع سنوية',
          'لجنة حوكمة فعّالة'),
         ('مصفوفة RACI',
-         'توزيع مسؤوليات RACI للأمن السيبراني عبر الإدارات',
+         'توزيع مسؤوليات RACI للأمن السيبراني عبر الإدارات والوظائف وفق NCA ECC',
          'مصفوفة RACI معتمدة'),
     )),
-    ('### الحماية والكشف والاستجابة', (
-        ('تشغيل SOC/SIEM', 'تشغيل المركز', 'مركز SOC تشغيلي'),
+    ('### الحماية والكشف والاستجابة — NCA ECC', (
+        ('تشغيل SOC/SIEM',
+         'تشغيل مركز عمليات الأمن مع قواعد SIEM والاستجابة وفق NCA ECC',
+         'مركز SOC تشغيلي'),
         ('فريق CSIRT',
          'تأسيس فريق الاستجابة للحوادث وخطط الاستجابة المعتمدة والمختبرة',
          'فريق CSIRT جاهز'),
-        ('الرصد والمراقبة', 'قواعد المراقبة', 'تغطية SIEM للأصول الحرجة'),
+        ('الرصد والمراقبة',
+         'تشغيل قواعد SIEM والمراقبة المستمرة للأصول الحرجة والشبكات وفق NCA ECC',
+         'تغطية SIEM للأصول الحرجة'),
     )),
-    ('### الهوية وحماية البيانات', (
-        ('IAM/PAM/MFA', 'ضوابط الهوية', 'تغطية MFA للحسابات الحرجة'),
-        ('تصنيف البيانات', 'جرد وتصنيف', 'سجل بيانات مصنف'),
+    ('### الهوية وحماية البيانات — NCA DCC', (
+        ('IAM/PAM/MFA',
+         'تطبيق ضوابط IAM/PAM/MFA شاملة للحسابات الحرجة والامتيازات والوصول وفق NCA DCC',
+         'تغطية MFA للحسابات الحرجة'),
+        ('تصنيف البيانات',
+         'جرد وتصنيف البيانات الحساسة وتحديث سجل التصنيف وفق NCA DCC',
+         'سجل بيانات مصنف'),
         ('DLP', 'تفعيل منصة DLP ومراقبة تسرب البيانات الحساسة بشكل مستمر',
          'منصة DLP مفعّلة'),
     )),
-    ('### المرونة واستمرارية الأعمال', (
-        ('النسخ الاحتياطي', 'اختبار النسخ', 'خطة نسخ احتياطي معتمدة'),
-        ('التعافي من الكوارث', 'اختبار DR', 'خطة DR مختبرة'),
-        ('استمرارية الأعمال', 'خطط BCP', 'خطط استمرارية معتمدة'),
+    ('### المرونة واستمرارية الأعمال — NCA ECC', (
+        ('النسخ الاحتياطي',
+         'اختبار النسخ الاحتياطي واستعادة البيانات الحرجة دورياً وفق NCA ECC',
+         'خطة نسخ احتياطي معتمدة'),
+        ('التعافي من الكوارث',
+         'اختبار خطط التعافي من الكوارث واستمرارية الأنظمة وفق NCA ECC',
+         'خطة DR مختبرة'),
+        ('استمرارية الأعمال',
+         'اعتماد خطط BCP للعمليات الحرجة واختبارها دورياً والتحديث وفق NCA ECC',
+         'خطط استمرارية معتمدة'),
     )),
 )
 
@@ -97,21 +111,40 @@ def _pillar_families_present(text: str) -> Dict[str, bool]:
 
 
 def _build_canonical_pillars(lang: str) -> str:
+    from release_engine.pillar_substance_model import _ENRICHED_OUTPUTS
+
+    _owners = {}
+    for _heading, _rows in _PILLAR_CATALOG_AR:
+        for init, _desc, _output in _rows:
+            if init == 'فريق CSIRT':
+                _owners[init] = 'قائد CSIRT'
+            elif init == 'IAM/PAM/MFA':
+                _owners[init] = 'مدير IAM/PAM'
+            elif init in ('تصنيف البيانات', 'DLP'):
+                _owners[init] = 'مدير حماية البيانات'
+            elif init == 'النسخ الاحتياطي':
+                _owners[init] = 'مدير IT'
+            elif init in ('التعافي من الكوارث', 'استمرارية الأعمال'):
+                _owners[init] = 'مدير BCP'
+            elif 'SOC' in init:
+                _owners[init] = 'مدير SOC'
+            else:
+                _owners[init] = 'CISO'
     is_ar = str(lang or '').lower() != 'en'
     title = '## 2. الركائز الاستراتيجية' if is_ar else '## 2. Strategic Pillars'
     parts = [title, '']
-    catalog = _PILLAR_CATALOG_AR
-    for heading, rows in catalog:
+    for heading, rows in _PILLAR_CATALOG_AR:
         parts.append(heading)
         parts.append('')
         parts.append(
-            '| المبادرة | الوصف | المخرج المتوقع |\n'
-            '|---|---|---|')
-        for cells in rows:
-            parts.append('| ' + ' | '.join(cells) + ' |')
+            '| المبادرة | الوصف | المخرج المتوقع | المسؤول |\n'
+            '|---|---|---|---|')
+        for init, desc, output in rows:
+            out_cell = _ENRICHED_OUTPUTS.get(output, output)
+            owner = _owners.get(init, 'CISO')
+            parts.append(f'| {init} | {desc} | {out_cell} | {owner} |')
         parts.append('')
     return '\n'.join(parts).rstrip() + '\n'
-
 
 def _fix_mismatched_outputs(text: str) -> Tuple[str, int, int]:
     mismatched_before = 0

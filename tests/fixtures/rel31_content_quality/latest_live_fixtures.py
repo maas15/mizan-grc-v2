@@ -1,4 +1,4 @@
-"""Byte-exact latest live export fixtures (استراتيجية الأمن السيبراني 35/62)."""
+"""Byte-exact latest live export fixtures (استراتيجية الأمن السيبراني 36/63)."""
 
 from __future__ import annotations
 
@@ -12,21 +12,21 @@ from tests.fixtures.rel31_content_quality.uploaded_fixtures import (
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent
-DOCX_LATEST = FIXTURE_DIR / 'cyber_strategy_35_actual.docx'
-PDF_LATEST = FIXTURE_DIR / 'cyber_strategy_62_actual.pdf'
+DOCX_LATEST = FIXTURE_DIR / 'cyber_strategy_36_actual.docx'
+PDF_LATEST = FIXTURE_DIR / 'cyber_strategy_63_actual.pdf'
 
 LATEST_DOCX_SHA256 = (
-    '763b893997c49d9e26999a5ac36825e6841f3b2110f439c9fa08397e9f7f9b33')
+    '487368c1c5ef49bbed9a535bd0c36fa01d57afa2eef29f5c24a8c8becc29b197')
 LATEST_PDF_SHA256 = (
-    '73e82439442616eb2ffe85d92ad73b611d80760499a98edadb54af65a31f38d6')
+    '855b74754cb13548646ee61e78f38802bf6a00fd9310ecaaf54a42908a0e867c')
 
 _DOCX_SOURCE_CANDIDATES = (
-    Path('/mnt/data/استراتيجية الأمن السيبراني (35).docx'),
-    Path(r'C:\Users\dell\Downloads\استراتيجية الأمن السيبراني (35).docx'),
+    Path('/mnt/data/استراتيجية الأمن السيبراني (36).docx'),
+    Path(r'C:\Users\dell\Downloads\استراتيجية الأمن السيبراني (36).docx'),
 )
 _PDF_SOURCE_CANDIDATES = (
-    Path('/mnt/data/استراتيجية الأمن السيبراني (62).pdf'),
-    Path(r'C:\Users\dell\Downloads\استراتيجية الأمن السيبراني (62).pdf'),
+    Path('/mnt/data/استراتيجية الأمن السيبراني (63).pdf'),
+    Path(r'C:\Users\dell\Downloads\استراتيجية الأمن السيبراني (63).pdf'),
 )
 
 

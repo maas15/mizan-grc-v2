@@ -41,6 +41,9 @@ REL31_ARABIC_RESIDUES = (
     'النقرفي',
     'الناجمةعن',
     'ال مناسبة',
+    'ال مناسب',
+    'ال معنية',
+    'المراقبة المست',
     'segmentation-Micro',
     'CSISO',
 )
@@ -85,6 +88,18 @@ _TRACE_SECTION_MARKERS = (
 )
 
 _TOC_LINE_RE = re.compile(r'^\d+\s+\S')
+
+_GLUE_RESIDUE_PATTERNS = {
+    'المراقبة المست': r'المراقبة المست(?!مر)',
+}
+
+
+def arabic_glue_residue_present(text: str, pat: str) -> bool:
+    """Match glue residues without false positives (e.g. المستمرة)."""
+    special = _GLUE_RESIDUE_PATTERNS.get(pat)
+    if special:
+        return bool(re.search(special, text or ''))
+    return pat in (text or '')
 
 
 def _line_at(text: str, pos: int) -> str:
@@ -136,29 +151,46 @@ def _body_section_between(
     return text[start:end]
 
 
+def _last_non_toc_find(text: str, marker: str) -> int:
+    """Last occurrence of marker that is not on a TOC line."""
+    best = -1
+    pos = 0
+    while True:
+        idx = text.find(marker, pos)
+        if idx < 0:
+            break
+        if not _is_toc_line(_line_at(text, idx)):
+            best = idx
+        pos = idx + 1
+    return best
+
+
 def flat_pillar_initiative_blob(blob: str) -> str:
     """Pillar initiative table body from flat professional DOCX/PDF text."""
     text = blob or ''
     start = -1
     for marker in (
-            'الركائز الاستراتيجية',
-            'Strategic Pillars',
+            'المبادرة\nالوصف\nالمخرج المتوقع\nالمسؤول',
             'المبادرة\nالوصف\nالمخرج المتوقع',
-            'المبادرة\nالوصف\nالمخرج',
+            'المخرج المتوقع\nالمسؤول\nسياسات الحوكمة',
     ):
-        idx = text.find(marker)
+        idx = _last_non_toc_find(text, marker)
         if idx >= 0:
-            start = idx
+            start = max(0, idx - 20)
             break
     if start < 0:
+        idx = _last_non_toc_find(text, '2. الركائز الاستراتيجية')
+        if idx >= 0:
+            start = idx
+    if start < 0:
         for needle in (
-                'المخرج المتوقع\nالمسؤول\nسياسات الحوكمة',
+                'منصة حوكمة سيبرانية معتمدة',
                 'منصة حوكمة معتمدة',
                 'لجنة حوكمة فعّالة',
         ):
-            idx = text.find(needle)
+            idx = _last_non_toc_find(text, needle)
             if idx >= 0:
-                start = max(0, idx - 120)
+                start = max(0, idx - 200)
                 break
     if start < 0:
         return ''
@@ -169,10 +201,17 @@ def flat_pillar_initiative_blob(blob: str) -> str:
             'المرحلة\nالفترة\nالمبادرة',
             'مؤشرات الأداء الرئيسية',
             'Key Performance Indicators',
+            'التهديد / الفجوة',
     ):
-        pos = text.find(end_m, start + 80)
-        if pos > start:
-            end = min(end, pos)
+        pos = start + 80
+        while True:
+            eidx = text.find(end_m, pos)
+            if eidx < 0:
+                break
+            if not _is_toc_line(_line_at(text, eidx)):
+                end = min(end, eidx)
+                break
+            pos = eidx + 1
     return text[start:end]
 
 
@@ -203,15 +242,16 @@ def flat_kpi_kri_section_blob(blob: str) -> str:
     text = blob or ''
     start = -1
     for needle in (
+            '#\nالمؤشر\nالنوع',
+            'المؤشر\nالنوع\nالقيمة المستهدفة',
             'نسبة محاولات الدخول الفاشلة الشاذة',
             'متوسط زمن الكشف MTTD',
             'متوسط زمن اكتشاف الحوادث',
+            'درجة مخاطر الأطراف الثالثة',
             'نضج حوكمة الأمن السيبراني وسياسات معتمدة',
-            '#\nالمؤشر\nالنوع',
-            'المؤشر\nالنوع',
             'وصف المؤشر\nالقيمة المستهدفة',
     ):
-        idx = text.find(needle)
+        idx = _last_non_toc_find(text, needle)
         if idx >= 0:
             start = max(0, idx - 60)
             break
@@ -220,7 +260,7 @@ def flat_kpi_kri_section_blob(blob: str) -> str:
                 'مؤشرات الأداء الرئيسية',
                 'Key Performance Indicators',
         ):
-            idx = text.rfind(marker)
+            idx = _last_non_toc_find(text, marker)
             if idx >= 0:
                 start = idx
                 break
@@ -233,9 +273,15 @@ def flat_kpi_kri_section_blob(blob: str) -> str:
             'الملاحق',
             'Appendices',
     ):
-        pos = text.find(end_m, start + 120)
-        if pos > start:
-            end = min(end, pos)
+        pos = start + 120
+        while True:
+            eidx = text.find(end_m, pos)
+            if eidx < 0:
+                break
+            if not _is_toc_line(_line_at(text, eidx)):
+                end = min(end, eidx)
+                break
+            pos = eidx + 1
     return text[start:end]
 
 
@@ -439,6 +485,9 @@ def check_third_party_risk_kpi_100(blob: str) -> List[str]:
         if re.search(r'100%', ln) and re.search(
                 r'المنجز|المخطط|×\s*100', ln, re.I):
             return ['third_party_risk_completion_formula']
+    window = block[:240]
+    if re.search(r'KPI', window, re.I) and not re.search(r'KRI', window, re.I):
+        return ['third_party_risk_as_kpi']
     return []
 
 
@@ -577,7 +626,7 @@ def check_arabic_residue_rel31(blob: str) -> List[str]:
             if re.search(r'ال معتمد\s*\n\s*KPI', scrubbed):
                 return ['arabic_residue']
             continue
-        elif pat in text:
+        elif arabic_glue_residue_present(text, pat):
             return ['arabic_residue']
     if re.search(r'الحوادث السيبرانية\s*مع', text):
         return ['arabic_residue']
@@ -746,6 +795,16 @@ def repair_rel31_canonical_sections(
         from release_engine_v3.rel31_authority import _rel31_inject_missing_so_families
         out = _rel31_inject_missing_so_families(out, backend=backend)
         repairs.append('rel31:so_family_injection')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine_v3.document_quality_spec import (
+            repair_document_quality_sections,
+        )
+        out, dqs_rep = repair_document_quality_sections(
+            out, lang=lang, domain=domain, backend=backend)
+        repairs.extend(dqs_rep)
     except Exception:  # noqa: BLE001
         pass
 

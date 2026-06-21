@@ -138,12 +138,13 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
         if len(cells) > 4:
             cells[4] = _PATCH_SLA_SOURCE
         changed = True
-    elif _DLP_INCIDENT_BAD in name or (
-            'حوادث تسرب' in name and 'dlp' in name.lower()):
+    elif (_DLP_INCIDENT_BAD in name or _DLP_KRI_NAME in name or (
+            'حوادث تسرب' in name and 'dlp' in name.lower())):
         cells[1] = _DLP_KRI_NAME
         if len(cells) > 2:
-            tgt = cells[2]
-            if '%' in tgt or '≥' in tgt or 'percent' in tgt.lower():
+            tgt = cells[2] or ''
+            if ('0 حوادث' not in tgt or '%' in tgt
+                    or re.search(r'≤\s*[1-9]|≥\s*[1-9]', tgt)):
                 cells[2] = _DLP_KRI_TARGET
         if len(cells) > 3:
             cells[3] = _DLP_KRI_FORMULA
@@ -302,8 +303,14 @@ def _detect_invalid_rows(text: str) -> List[str]:
         invalid.append(_PATCH_SLA_BAD)
     if _DLP_INCIDENT_BAD in text and '%' in text:
         invalid.append(_DLP_INCIDENT_BAD)
-    if _DLP_KRI_NAME in text and '100%' in text:
-        invalid.append('dlp_incident_percent_target')
+    if _DLP_KRI_NAME in text:
+        idx = text.find(_DLP_KRI_NAME)
+        window = text[idx:idx + 160]
+        if '100%' in window:
+            invalid.append('dlp_incident_percent_target')
+        elif '0 حوادث' not in window and re.search(
+                r'≤\s*[1-9]|≥\s*[1-9]', window):
+            invalid.append('dlp_incident_nonzero_tolerance')
     if _LOGIN_ANOMALY_BAD in text:
         if '100%' in text:
             invalid.append(_LOGIN_ANOMALY_BAD)
