@@ -378,5 +378,29 @@ class StagingDqsRepairTests(unittest.TestCase):
         self.assertLessEqual(len(rows), 8)
 
 
+    def test_environment_table_render_avoids_repeated_generic_gap(self):
+        from professional_strategy_render import normalize_environment_table
+        from release_engine.rel31_content_substance_checks import (
+            _GENERIC_GAP_TREATMENT,
+            check_generic_risk_treatments,
+        )
+
+        env_md = (
+            '| البُعد | التأثير | الأولوية |\n'
+            '|---|---|---|\n'
+            '| تنظيمي | عالٍ | عالية |\n'
+            '| تهديد | عالٍ | عالية |\n'
+            '| أعمال | متوسط | متوسطة |\n'
+        )
+        norm = normalize_environment_table(env_md, lang='ar')
+        self.assertIsNotNone(norm)
+        blob = '\n'.join(
+            ' | '.join(r) for r in (norm.get('rows') or []))
+        self.assertLess(blob.count(_GENERIC_GAP_TREATMENT), 2)
+        self.assertNotIn(
+            'repeated_generic_gap_treatment',
+            check_generic_risk_treatments(blob))
+
+
 if __name__ == '__main__':
     unittest.main()

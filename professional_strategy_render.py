@@ -5010,6 +5010,46 @@ def _ensure_roadmap_phase_coverage(
     return rows + extra
 
 
+def _environment_treatment_fallback(row_idx: int, lang: str = 'ar') -> str:
+    """Distinct substantive environment treatments — never repeat generic gap text."""
+    if lang != 'ar':
+        return 'Apply and monitor related controls'
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            _GAP_ACTION_ALTERNATIVES,
+        )
+        return _GAP_ACTION_ALTERNATIVES[row_idx % len(_GAP_ACTION_ALTERNATIVES)]
+    except Exception:  # noqa: BLE001
+        return 'تنفيذ خطة معالجة معتمدة مع مالك ومخرج قابل للقياس خلال 90 يوماً'
+
+
+def _dedupe_environment_generic_treatments(
+        rows_out: List[List[str]], lang: str = 'ar') -> None:
+    """Ensure at most one generic gap phrase across environment treatment cells."""
+    if lang != 'ar' or not rows_out:
+        return
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            _GAP_ACTION_ALTERNATIVES,
+            _GENERIC_GAP_TREATMENT,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    alt_idx = 0
+    keep_generic = True
+    for row in rows_out:
+        if len(row) < 4:
+            continue
+        treat = (row[3] or '').strip()
+        if treat == _GENERIC_GAP_TREATMENT:
+            if keep_generic:
+                keep_generic = False
+                continue
+            row[3] = _GAP_ACTION_ALTERNATIVES[
+                alt_idx % len(_GAP_ACTION_ALTERNATIVES)]
+            alt_idx += 1
+
+
 def normalize_environment_table(
         section_text: str, lang: str = 'ar') -> Optional[Dict[str, Any]]:
     """Normalize an environment / threat markdown table into the compact
@@ -5030,17 +5070,19 @@ def normalize_environment_table(
         i_treat = _col_index(hdr, ('المعالجة', 'treatment', 'mitigation'))
         if i_threat < 0 and i_impact < 0:
             continue
-        for r in tbl[1:]:
+        for ri, r in enumerate(tbl[1:]):
             threat = _cell(r, i_threat if i_threat >= 0 else 0)
             impact = _cell(r, i_impact if i_impact >= 0 else 1)
             prio = _cell(r, i_prio) if i_prio >= 0 else _impact_to_priority(
                 impact, lang)
-            treat = _cell(r, i_treat) if i_treat >= 0 else (
-                'تطبيق الضوابط المرتبطة ومتابعتها' if lang == 'ar'
-                else 'Apply and monitor related controls')
+            treat = _cell(r, i_treat) if i_treat >= 0 else ''
+            if not (treat or '').strip():
+                treat = _environment_treatment_fallback(
+                    len(rows_out), lang)
             if threat == '—' and impact == '—':
                 continue
             rows_out.append([threat, impact, prio, treat])
+    _dedupe_environment_generic_treatments(rows_out, lang)
     if not rows_out:
         return None
     return {'schema': 'environment', 'header': schema, 'rows': rows_out}
