@@ -74,6 +74,23 @@ class DocumentQualitySpecCompilerTests(unittest.TestCase):
 class StagingDqsRepairTests(unittest.TestCase):
     """Regression for live staging failures (arabic role + KPI percent)."""
 
+    def test_mttd_percent_target_repaired_to_time(self):
+        from release_engine.kpi_model import _apply_inline_kpi_repairs
+        from release_engine_v3.document_quality_spec import check_kpi_row_schema
+
+        kpis = (
+            '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | مصدر | تواتر |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | متوسط زمن اكتشاف الحوادث الأمن | ≥ 95% | '
+            'متوسط زمن من SIEM | SIEM/SOC | شهري |\n'
+        )
+        _, text = _apply_inline_kpi_repairs({'kpis': kpis})
+        self.assertIn('≤ 60 دقيقة', text)
+        self.assertEqual(
+            [d for d in check_kpi_row_schema(text)
+             if 'kpi_percent_without_denominator' in d],
+            [])
+
     def test_normalize_arabic_strips_cso_role_e_suffix(self):
         from professional_strategy_render import normalize_arabic_for_render
         out = normalize_arabic_for_render('المسؤول أمن السيبرانيe')

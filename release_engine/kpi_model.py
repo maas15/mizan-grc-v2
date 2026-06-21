@@ -31,6 +31,27 @@ _THIRD_PARTY_RISK_BAD = 'درجة مخاطر الأطراف الثالثة'
 _THIRD_PARTY_RISK_TARGET = '≤ 3 (منخفض)'
 _THIRD_PARTY_RISK_FORMULA = 'متوسط درجة مخاطر الموردين السيبرانية المقيمة'
 
+_MTTD_TARGET = '≤ 60 دقيقة'
+_MTTD_FORMULA = 'متوسط زمن الكشف عن الحادث من SIEM/SOC'
+_MTTR_TARGET = '≤ 4 ساعات'
+_MTTR_FORMULA = 'متوسط زمن الاستجابة والاحتواء من سجل الحوادث'
+
+
+def _is_mttd_metric_name(name: str) -> bool:
+    n = (name or '').lower()
+    if 'mttd' in n:
+        return True
+    return (
+        ('زمن' in name or 'متوسط' in name)
+        and ('كشف' in name or 'اكتشاف' in name))
+
+
+def _is_mttr_metric_name(name: str) -> bool:
+    n = (name or '').lower()
+    if 'mttr' in n:
+        return True
+    return 'زمن' in name and 'استجاب' in name
+
 
 def _parse_kpi_rows(text: str) -> Tuple[List[str], List[List[str]]]:
     lines = (text or '').splitlines()
@@ -168,6 +189,32 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
                 or 'completion' in (cells[3] or '').lower()):
             cells[3] = _THIRD_PARTY_RISK_FORMULA
         changed = True
+    elif _is_mttd_metric_name(name):
+        tgt = cells[2] if len(cells) > 2 else ''
+        had_pct = '%' in tgt
+        if len(cells) > 2 and had_pct:
+            cells[2] = _MTTD_TARGET
+            changed = True
+        if len(cells) > 3:
+            formula = cells[3] or ''
+            if had_pct and formula.strip() and (
+                    '÷' not in formula and '/' not in formula
+                    and '×' not in formula):
+                cells[3] = _MTTD_FORMULA
+                changed = True
+    elif _is_mttr_metric_name(name):
+        tgt = cells[2] if len(cells) > 2 else ''
+        had_pct = '%' in tgt
+        if len(cells) > 2 and had_pct:
+            cells[2] = _MTTR_TARGET
+            changed = True
+        if len(cells) > 3:
+            formula = cells[3] or ''
+            if had_pct and formula.strip() and (
+                    '÷' not in formula and '/' not in formula
+                    and '×' not in formula):
+                cells[3] = _MTTR_FORMULA
+                changed = True
     elif any(k in name for k in (
             'اكتمال النسخ', 'النسخ الاحتياط', 'نسخ احتياط', 'backup')):
         if len(cells) > 3 and '%' in (cells[2] or ''):
