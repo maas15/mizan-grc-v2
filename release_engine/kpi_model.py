@@ -176,6 +176,21 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
                 cells[3] = (
                     'عمليات نسخ/استعادة ناجحة ÷ إجمالي العمليات × 100')
                 changed = True
+    elif len(cells) > 3 and '%' in (cells[2] or ''):
+        formula = cells[3] or ''
+        if formula.strip() and (
+                '÷' not in formula and '/' not in formula
+                and '×' not in formula):
+            if any(k in name for k in ('ثغر', 'vulnerab', 'patch')):
+                cells[3] = (
+                    'ثغرات حرجة مُعالجة خلال SLA ÷ إجمالي الثغرات الحرجة × 100')
+            elif any(k in name for k in (
+                    'موظف', 'توعية', 'تدريب', 'إكمال', 'phishing')):
+                cells[3] = (
+                    'المشاركون المُكمّلون ÷ إجمالي الموظفين المستهدفين × 100')
+            elif 'نسبة' in name or 'معدل' in name:
+                cells[3] = 'المؤشر المحدد ÷ إجمالي النطاق × 100'
+            changed = True
     if len(cells) > 3 and GENERIC_FORMULA in (cells[3] or ''):
         if 'mttd' in name.lower() or 'كشف' in name:
             cells[3] = 'عدد الحوادث المكتشفة ضمن SLA ÷ إجمالي الحوادث × 100'

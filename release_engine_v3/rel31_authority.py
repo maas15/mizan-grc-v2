@@ -78,8 +78,21 @@ def _rel31_dq_repairable(
     blob = ' '.join(str(e) for e in combined).lower()
     return any(k in blob for k in (
         'arabic', 'kpi_percent_without_denominator',
+        'so_family_missing', 'risk_count_invalid',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
         'arabic_residue'))
+
+
+def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
+    """True when DQS compiler reported repairable canonical defects."""
+    for err in dq.get('blocking_errors') or []:
+        e = str(err).lower()
+        if any(k in e for k in (
+                'so_family_missing', 'kpi_percent_without_denominator',
+                'risk_count_invalid', 'arabic_residue',
+                'arabic_role_corruption')):
+            return True
+    return False
 
 
 def _rel31_build_export_diag_for_repair(
@@ -107,7 +120,9 @@ def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
         and not b.startswith('rel3_export_evidence_failed:docx:')
         and 'arabic_role_corruption' not in b
         and 'arabic_residue' not in b
-        and 'kpi_percent_without_denominator' not in b]
+        and 'kpi_percent_without_denominator' not in b
+        and 'so_family_missing' not in b
+        and 'risk_count_invalid' not in b]
 
 _LEGACY_BLOCKER_PREFIXES = (
     'cyber_board_ready_',
@@ -936,10 +951,14 @@ def apply_rel31_authoritative_contract(
                 docx_ok = bool(docx_ev.export_return_allowed)
                 if dq_ok and docx_ok:
                     break
-                if _dq_pass == 0 and _rel31_dq_repairable(
-                        blockers, dq, docx_ev):
+                if _dq_pass == 0 and (
+                        _rel31_dq_repairable(blockers, dq, docx_ev)
+                        or _rel31_dq_needs_repair(dq)):
                     from release_engine.export_evidence_validator import (
                         repair_for_actual_export_defects,
+                    )
+                    from release_engine_v3.document_quality_spec import (
+                        repair_document_quality_sections,
                     )
                     export_diag = _rel31_build_export_diag_for_repair(
                         docx_ev, dq)
@@ -947,6 +966,11 @@ def apply_rel31_authoritative_contract(
                         art, export_diag,
                         domain=domain, lang=lang, backend=backend)
                     repairs.extend(dq_rep)
+                    _dqs_secs, _dqs_rep = repair_document_quality_sections(
+                        dict(art.get('sections') or {}),
+                        lang=lang, domain=domain, backend=backend)
+                    art['sections'] = _dqs_secs
+                    repairs.extend(_dqs_rep)
                     try:
                         from release_engine.rel31_content_substance_checks import (
                             repair_rel31_content_substance,

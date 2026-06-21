@@ -715,6 +715,17 @@ def _export_defect_needs_kpi_schema_repair(export_diag: Dict[str, Any]) -> bool:
     return False
 
 
+def _export_defect_needs_dqs_canonical_repair(
+        export_diag: Dict[str, Any]) -> bool:
+    for err in export_diag.get('blocking_errors') or []:
+        e = str(err).lower()
+        if any(k in e for k in (
+                'so_family_missing', 'risk_count_invalid',
+                'kpi_percent_without_denominator')):
+            return True
+    return False
+
+
 def _export_defect_needs_pillar_repair(export_diag: Dict[str, Any]) -> bool:
     for err in export_diag.get('blocking_errors') or []:
         if 'missing_pillars' in str(err) or ':pillars' in str(err):
@@ -808,6 +819,18 @@ def repair_for_actual_export_defects(
             sections, lang=lang, backend=backend)
         sections, _ = _apply_inline_kpi_repairs(sections)
         repairs.append('rel271:kpi_percent_formula_repaired')
+
+    if _export_defect_needs_dqs_canonical_repair(export_diag):
+        try:
+            from release_engine_v3.document_quality_spec import (
+                repair_document_quality_sections,
+            )
+            sections, dqs_rep = repair_document_quality_sections(
+                sections, lang=lang, domain=domain, backend=backend)
+            repairs.extend(dqs_rep)
+        except Exception:  # noqa: BLE001
+            pass
+        repairs.append('rel271:dqs_canonical_sections_repaired')
 
     _docx_fp = export_diag.get('docx_forbidden_patterns') or []
     if any(p in _docx_fp for p in (

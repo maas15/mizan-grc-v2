@@ -105,6 +105,93 @@ class StagingDqsRepairTests(unittest.TestCase):
             'blocking_errors': ['rel3_export_evidence_failed:docx:arabic_role_corruption'],
         }))
 
+    def test_dqs_so_family_insert_repairs_awareness_training(self):
+        from release_engine_v3.document_quality_spec import (
+            check_so_families_present,
+            repair_document_quality_sections,
+        )
+
+        vision = (
+            '## 1\n| # | الهدف | المستهدف | المبرر | الإطار |\n'
+            '|---|---|---|---|---|\n'
+            '| 1 | تأسيس حوكمة CISO | ≥ 95% تغطية CISO خلال 6 أشهر | حوكمة | 6 شهور |\n'
+            '| 2 | امتثال ECC | ≥ 90% امتثال | تنظيمي | 12 شهر |\n'
+            '| 3 | تشغيل SOC | MTTD ≤ 15 دقيقة | كشف | 12 شهر |\n'
+            '| 4 | IAM/PAM/MFA | ≥ 95% تغطية | هوية | 12 شهر |\n'
+            '| 5 | CSIRT | SLA ≤ 4 ساعات | استجابة | 12 شهر |\n'
+            '| 6 | إدارة الثغرات | ≥ 95% SLA | ثغرات | 12 شهر |\n'
+            '| 7 | حماية DCC | ≥ 95% بيانات | dcc | 12 شهر |\n'
+            '| 8 | تشفير البيانات | ≥ 95% أصول | تشفير | 12 شهر |\n'
+        )
+        missing, _ = check_so_families_present(vision)
+        self.assertIn('awareness_training', missing)
+        class _AppStub:
+            @staticmethod
+            def _prcy39_locate_so_table(v):
+                for i, ln in enumerate(v.splitlines()):
+                    if '| # |' in ln or '| 1 |' in ln:
+                        return i - 1 if '| # |' not in ln else i, len(v.splitlines())
+                return None, None
+
+            @staticmethod
+            def _prcy39_parse_table_rows(lines):
+                rows = []
+                for ln in lines:
+                    if ln.strip().startswith('|') and '---' not in ln:
+                        cells = [c.strip() for c in ln.strip('|').split('|')]
+                        if cells and cells[0].isdigit():
+                            rows.append(cells)
+                return rows
+
+            @staticmethod
+            def _prcy39_row_to_spec(cells, idx, source=''):
+                if len(cells) < 5:
+                    return None
+                return {
+                    'row_index': idx,
+                    'objective': cells[1],
+                    'measurable_target': cells[2],
+                    'rationale': cells[3],
+                    'timeframe': cells[4],
+                    'source': source,
+                }
+
+            @staticmethod
+            def _prcy39_render_canonical_so_table(specs, lang):
+                hdr = '| # | الهدف | المستهدف | المبرر | الإطار |\n|---|---|---|---|---|\n'
+                body = ''.join(
+                    f'| {s["row_index"]} | {s["objective"]} | '
+                    f'{s["measurable_target"]} | {s["rationale"]} | '
+                    f'{s["timeframe"]} |\n'
+                    for s in specs)
+                return hdr + body
+
+        repaired, reps = repair_document_quality_sections(
+            {'vision': vision},
+            lang='ar',
+            backend={'app_module': _AppStub},
+        )
+        missing_after, _ = check_so_families_present(repaired.get('vision', ''))
+        self.assertNotIn('awareness_training', missing_after)
+        self.assertTrue(any('so_family_insert' in r for r in reps))
+
+    def test_kpi_vulnerability_percent_gets_denominator(self):
+        from release_engine.kpi_model import _apply_inline_kpi_repairs
+        from release_engine_v3.document_quality_spec import check_kpi_row_schema
+
+        kpis = (
+            '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | مصدر | تواتر |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | نسبة الثغرات الأمنية الحرجة المغلقة | ≥ 95% | '
+            'عدد الثغرات المغلقة | منصة | شهري |\n'
+        )
+        _, text = _apply_inline_kpi_repairs({'kpis': kpis})
+        self.assertIn('÷', text)
+        self.assertEqual(
+            [d for d in check_kpi_row_schema(text)
+             if 'kpi_percent_without_denominator' in d],
+            [])
+
 
 if __name__ == '__main__':
     unittest.main()

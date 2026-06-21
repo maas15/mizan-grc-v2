@@ -311,3 +311,34 @@ def emit_risk_treatment_model(payload: Dict[str, Any]) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def trim_risk_register_rows(
+        sections: Dict[str, str],
+        *,
+        max_rows: int = 8,
+) -> Tuple[Dict[str, str], bool]:
+    """Cap markdown risk register rows for DQS (6–8 required)."""
+    keys = ('confidence', 'risk', 'risk_register')
+    target_key = None
+    text = ''
+    for k in keys:
+        if sections.get(k) and 'خطة المعالجة' in (sections.get(k) or ''):
+            target_key = k
+            text = sections[k]
+            break
+    if not target_key:
+        return sections, False
+    lines, hdr, rows = _parse_risk_rows(text)
+    if hdr < 0 or len(rows) <= max_rows:
+        return sections, False
+    trimmed = rows[:max_rows]
+    out_lines = lines[:hdr + 1]
+    for i, c in enumerate(trimmed, 1):
+        cells = list(c)
+        if cells:
+            cells[0] = str(i)
+        out_lines.append('| ' + ' | '.join(cells) + ' |')
+    out = dict(sections)
+    out[target_key] = '\n'.join(out_lines)
+    return out, True

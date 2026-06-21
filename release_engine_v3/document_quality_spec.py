@@ -1219,6 +1219,141 @@ def evaluate_document_quality(
     return result
 
 
+_SPEC_TO_PRCY88 = {v: k for k, v in _PRCY88_SO_TO_SPEC.items()}
+
+
+def _inject_missing_dqs_so_families(
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], List[str]]:
+    """Insert catalog SO rows for DQS-required families missing from vision."""
+    backend = backend or {}
+    app_mod = backend.get('app_module')
+    if not app_mod:
+        return sections, []
+    try:
+        from cyber_board_ready_prcy88 import (
+            PRCY88_SO_CATALOG_AR,
+            _detect_so_family,
+            _parse_so_specs,
+            _render_so_table,
+        )
+    except Exception:  # noqa: BLE001
+        return sections, []
+    vision = sections.get('vision', '') or ''
+    missing, _ = check_so_families_present(vision)
+    if not missing:
+        return sections, []
+    specs, _ = _parse_so_specs(app_mod, vision)
+    if not specs:
+        return sections, []
+    repairs: List[str] = []
+    replace_priority = (
+        'compliance_ecc_dcc', 'governance_ciso', 'soc_monitoring_detection',
+        'iam_pam_mfa', 'incident_response_csirt', 'vulnerability_management',
+        'data_protection_dcc', 'awareness_or_resilience',
+    )
+    for spec_fam in missing:
+        prcy = _SPEC_TO_PRCY88.get(spec_fam)
+        cat = PRCY88_SO_CATALOG_AR.get(prcy or '')
+        if not cat:
+            continue
+        target_idx = None
+        for pri in replace_priority:
+            if pri == prcy:
+                continue
+            for idx, spec in enumerate(specs):
+                if _detect_so_family(spec.get('objective') or '') == pri:
+                    target_idx = idx
+                    break
+            if target_idx is not None:
+                break
+        if target_idx is None and len(specs) >= MAX_SO_OBJECTIVES:
+            target_idx = len(specs) - 1
+        elif target_idx is None:
+            specs.append({})
+            target_idx = len(specs) - 1
+        specs[target_idx].update({
+            'row_index': target_idx + 1,
+            'objective': cat[0],
+            'measurable_target': cat[1],
+            'rationale': cat[2],
+            'timeframe': cat[3],
+            'source': f'dqs_insert_{spec_fam}',
+        })
+        repairs.append(f'dqs:so_family_insert:{spec_fam}')
+    for i, spec in enumerate(specs, 1):
+        spec['row_index'] = i
+    while len(specs) > MAX_SO_OBJECTIVES:
+        specs.pop()
+    out = dict(sections)
+    out['vision'] = _render_so_table(app_mod, vision, specs, lang)
+    return out, repairs
+
+
+def repair_document_quality_sections(
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+        domain: str = 'cyber',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], List[str]]:
+    """Canonical repairs for DQS compiler blockers before re-export."""
+    backend = dict(backend or {})
+    repairs: List[str] = []
+    out = dict(sections or {})
+    fws = backend.get('selected_frameworks') or []
+
+    if backend.get('baseline_strategic_objectives'):
+        try:
+            out, _ = backend['baseline_strategic_objectives'](out, lang, fws)
+            repairs.append('dqs:baseline_strategic_objectives')
+        except Exception:  # noqa: BLE001
+            pass
+
+    out, so_rep = _inject_missing_dqs_so_families(
+        out, lang=lang, backend=backend)
+    repairs.extend(so_rep)
+
+    try:
+        from release_engine.kpi_model import (
+            _apply_inline_kpi_repairs,
+            finalize_kpi_semantics,
+        )
+        out, _ = finalize_kpi_semantics(
+            out, lang=lang, backend=backend)
+        out, _ = _apply_inline_kpi_repairs(out)
+        repairs.append('dqs:kpi_percent_formula_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.risk_treatment_model import (
+            finalize_risk_treatment,
+            trim_risk_register_rows,
+        )
+        out, _ = finalize_risk_treatment(out, lang=lang)
+        out, trimmed = trim_risk_register_rows(out, max_rows=MAX_RISKS)
+        if trimmed:
+            repairs.append('dqs:risk_register_trimmed')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.rendered_evidence_validator import (
+            repair_sections_for_rendered_evidence,
+        )
+        out = repair_sections_for_rendered_evidence(
+            out, lang=lang, domain=domain, backend=backend)
+        repairs.append('dqs:rendered_evidence_pipeline')
+    except Exception:  # noqa: BLE001
+        pass
+
+    return out, list(dict.fromkeys(repairs))
+
+
 def document_quality_blockers(result: Dict[str, Any]) -> List[str]:
     """Standardized blocker codes for generation contract."""
     return [
