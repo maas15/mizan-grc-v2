@@ -71,5 +71,40 @@ class DocumentQualitySpecCompilerTests(unittest.TestCase):
         self.assertEqual(blockers, ['rel3_document_quality_failed:roadmap_canonical_invalid'])
 
 
+class StagingDqsRepairTests(unittest.TestCase):
+    """Regression for live staging failures (arabic role + KPI percent)."""
+
+    def test_normalize_arabic_strips_cso_role_e_suffix(self):
+        from professional_strategy_render import normalize_arabic_for_render
+        out = normalize_arabic_for_render('المسؤول أمن السيبرانيe')
+        self.assertNotIn('المسؤول أمن السيبرانيe', out)
+        self.assertIn('مسؤول أمن السيبراني', out)
+
+    def test_kpi_backup_percent_gets_denominator(self):
+        from release_engine.kpi_model import _apply_inline_kpi_repairs
+        from release_engine_v3.document_quality_spec import check_kpi_row_schema
+
+        kpis = (
+            '| # | وصف المؤشر | القيمة المستهدفة | صيغة الاحتساب | مصدر | تواتر |\n'
+            '|---|---|---|---|---|---|\n'
+            '| 1 | نسبة اكتمال النسخ الاحتياطي والاستعادة | ≥ 99% | '
+            'عدد النسخ الناجحة | منصة DR | شهري |\n'
+        )
+        _, text = _apply_inline_kpi_repairs({'kpis': kpis})
+        self.assertIn('÷', text)
+        self.assertEqual(
+            [d for d in check_kpi_row_schema(text)
+             if 'kpi_percent_without_denominator' in d],
+            [])
+
+    def test_arabic_role_corruption_triggers_export_repair(self):
+        from release_engine.export_evidence_validator import (
+            _export_defect_needs_arabic_repair,
+        )
+        self.assertTrue(_export_defect_needs_arabic_repair({
+            'blocking_errors': ['rel3_export_evidence_failed:docx:arabic_role_corruption'],
+        }))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -66,6 +66,49 @@ def _bind_backend_sections(
     sections = dict(art.get('sections') or {})
     backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
 
+
+def _rel31_dq_repairable(
+        blockers: List[str],
+        dq: Dict[str, Any],
+        docx_ev: Any) -> bool:
+    """True when docx/DQS failures are fixable via canonical section repair."""
+    combined = list(blockers or [])
+    combined.extend(dq.get('blocking_errors') or [])
+    combined.extend(getattr(docx_ev, 'blocking_errors', None) or [])
+    blob = ' '.join(str(e) for e in combined).lower()
+    return any(k in blob for k in (
+        'arabic', 'kpi_percent_without_denominator',
+        'المسؤول أمن السيبراني', 'arabic_role_corruption',
+        'arabic_residue'))
+
+
+def _rel31_build_export_diag_for_repair(
+        docx_ev: Any,
+        dq: Dict[str, Any]) -> Dict[str, Any]:
+    gate = getattr(docx_ev, 'gate', None) or {}
+    blocking = list(getattr(docx_ev, 'blocking_errors', None) or [])
+    for e in dq.get('blocking_errors') or []:
+        blocking.append(str(e))
+    return {
+        'blocking_errors': blocking,
+        'docx_forbidden_patterns': list(
+            gate.get('docx_forbidden_patterns') or []),
+        'preview_forbidden_patterns': list(
+            gate.get('preview_forbidden_patterns') or []),
+        'docx_missing_sections': list(gate.get('docx_missing_sections') or []),
+        'docx_arabic_residues': list(gate.get('docx_arabic_residues') or []),
+    }
+
+
+def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
+    return [
+        b for b in blockers
+        if not b.startswith('rel3_document_quality_failed:')
+        and not b.startswith('rel3_export_evidence_failed:docx:')
+        and 'arabic_role_corruption' not in b
+        and 'arabic_residue' not in b
+        and 'kpi_percent_without_denominator' not in b]
+
 _LEGACY_BLOCKER_PREFIXES = (
     'cyber_board_ready_',
     'rel2_actual_export_evidence_failed',
@@ -847,6 +890,7 @@ def apply_rel31_authoritative_contract(
     pdf_text = ''
     pdf_bytes = b''
     dq: Dict[str, Any] = {}
+    docx_ev = None
     enforce_dq = _enforce_document_quality_blockers(
         art, domain=domain, lang=lang)
     if enforce_dq:
@@ -862,34 +906,83 @@ def apply_rel31_authoritative_contract(
                 evaluate_document_quality,
             )
             _bind_backend_sections(backend, art)
-            docx_export, docx_ev = rel3_export_with_evidence(
-                'docx', built, backend=backend,
-                export_kwargs={'filename': 'rel31_quality.docx', 'lang': lang})
-            pdf_export, pdf_ev = rel3_export_with_evidence(
-                'pdf', built, backend=backend,
-                export_kwargs={'lang': lang, 'domain': domain})
-            if docx_export.docx_bytes:
-                docx_text = extract_docx_visible_text(docx_export.docx_bytes)
-            pdf_bytes = pdf_export.pdf_bytes or b''
-            if pdf_bytes:
-                pdf_text = extract_pdf_visible_text(pdf_bytes)
-            dq = evaluate_document_quality(
-                canonical_artifact=built,
-                legacy_sections=dict(
-                    getattr(built, 'legacy_sections', None)
-                    or art.get('sections') or {}),
-                render_tree=tree,
-                extracted_preview_text=preview_export.preview_text or '',
-                extracted_docx_text=docx_text,
-                extracted_pdf_text=pdf_text,
-                pdf_bytes=pdf_bytes,
-            )
-            art['rel31_document_quality'] = dq
+            for _dq_pass in range(2):
+                docx_export, docx_ev = rel3_export_with_evidence(
+                    'docx', built, backend=backend,
+                    export_kwargs={'filename': 'rel31_quality.docx', 'lang': lang})
+                pdf_export, pdf_ev = rel3_export_with_evidence(
+                    'pdf', built, backend=backend,
+                    export_kwargs={'lang': lang, 'domain': domain})
+                docx_text = ''
+                if docx_export.docx_bytes:
+                    docx_text = extract_docx_visible_text(docx_export.docx_bytes)
+                pdf_bytes = pdf_export.pdf_bytes or b''
+                pdf_text = ''
+                if pdf_bytes:
+                    pdf_text = extract_pdf_visible_text(pdf_bytes)
+                dq = evaluate_document_quality(
+                    canonical_artifact=built,
+                    legacy_sections=dict(
+                        getattr(built, 'legacy_sections', None)
+                        or art.get('sections') or {}),
+                    render_tree=tree,
+                    extracted_preview_text=preview_export.preview_text or '',
+                    extracted_docx_text=docx_text,
+                    extracted_pdf_text=pdf_text,
+                    pdf_bytes=pdf_bytes,
+                )
+                art['rel31_document_quality'] = dq
+                dq_ok = bool(dq.get('passed'))
+                docx_ok = bool(docx_ev.export_return_allowed)
+                if dq_ok and docx_ok:
+                    break
+                if _dq_pass == 0 and _rel31_dq_repairable(
+                        blockers, dq, docx_ev):
+                    from release_engine.export_evidence_validator import (
+                        repair_for_actual_export_defects,
+                    )
+                    export_diag = _rel31_build_export_diag_for_repair(
+                        docx_ev, dq)
+                    art, dq_rep = repair_for_actual_export_defects(
+                        art, export_diag,
+                        domain=domain, lang=lang, backend=backend)
+                    repairs.extend(dq_rep)
+                    try:
+                        from release_engine.rel31_content_substance_checks import (
+                            repair_rel31_content_substance,
+                        )
+                        _sub_secs, _sub_rep = repair_rel31_content_substance(
+                            dict(art.get('sections') or {}),
+                            lang=lang, domain=domain, backend=backend)
+                        art['sections'] = _sub_secs
+                        repairs.extend(_sub_rep)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    blockers = _rel31_clear_dq_blockers(blockers)
+                    _bind_backend_sections(backend, art)
+                    if backend.get('rebuild_markdown'):
+                        try:
+                            art['final_markdown'] = backend['rebuild_markdown'](
+                                art.get('sections') or {})
+                        except Exception:  # noqa: BLE001
+                            pass
+                    built = build_final_document_artifact(
+                        art, freeze=False,
+                        strategy_id=str(art.get('strategy_id') or ''))
+                    built = freeze_artifact(built)
+                    store_artifact(built)
+                    tree = rel3_build_render_tree(built)
+                    rel2_cache = backend.get('_rel2_cache') or {}
+                    rel2_cache.pop('exports', None)
+                    rel2_cache.pop('models', None)
+                    backend['_rel2_cache'] = rel2_cache
+                    continue
+                break
             if not dq.get('passed'):
                 for err in document_quality_blockers(dq):
                     if err not in blockers:
                         blockers.append(err)
-            if not docx_ev.export_return_allowed:
+            if docx_ev and not docx_ev.export_return_allowed:
                 for e in docx_ev.blocking_errors:
                     tr = translate_legacy_blocker(e)
                     if tr not in blockers:

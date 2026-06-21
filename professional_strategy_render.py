@@ -379,6 +379,14 @@ def normalize_arabic_for_render(text: str) -> str:
     out = re.sub(
         r'(?<![\w\u0600-\u06FF])ل\s+منع(?![\w\u0600-\u06FF])', 'لمنع', out)
     out = out.replace('لل معالجة', 'للمعالجة')
+    out = re.sub(
+        r'المسؤول\s+أمن\s+السيبراني\s*e\b',
+        'مسؤول أمن السيبراني', out, flags=re.I)
+    out = re.sub(
+        r'المسؤول\s+أمن\s+السيبراني\s*Lead\b',
+        'مسؤول أمن السيبراني', out, flags=re.I)
+    out = re.sub(r'\bLead\s+e\b', '', out, flags=re.I)
+    out = re.sub(r'\bCSISO\b', 'CISO', out, flags=re.I)
     return out
 
 

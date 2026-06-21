@@ -167,6 +167,15 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
                 or 'completion' in (cells[3] or '').lower()):
             cells[3] = _THIRD_PARTY_RISK_FORMULA
         changed = True
+    elif any(k in name for k in (
+            'اكتمال النسخ', 'النسخ الاحتياط', 'نسخ احتياط', 'backup')):
+        if len(cells) > 3 and '%' in (cells[2] or ''):
+            formula = cells[3] or ''
+            if formula.strip() and (
+                    '÷' not in formula and '/' not in formula):
+                cells[3] = (
+                    'عمليات نسخ/استعادة ناجحة ÷ إجمالي العمليات × 100')
+                changed = True
     if len(cells) > 3 and GENERIC_FORMULA in (cells[3] or ''):
         if 'mttd' in name.lower() or 'كشف' in name:
             cells[3] = 'عدد الحوادث المكتشفة ضمن SLA ÷ إجمالي الحوادث × 100'

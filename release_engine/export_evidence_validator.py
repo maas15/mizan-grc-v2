@@ -690,15 +690,29 @@ def _rebuild_artifact_markdown(sections: Dict[str, str]) -> str:
 def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
     needles = (
         'حلولمنع', 'حلمنع', 'arabic_glued', 'arabic_residue',
+        'arabic_role_corruption',
         'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
     )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
             return True
+    for key in (
+            'preview_forbidden_patterns', 'docx_forbidden_patterns',
+            'pdf_forbidden_patterns', 'docx_arabic_residues'):
+        for item in export_diag.get(key) or []:
+            if any(n in str(item) for n in needles):
+                return True
     preview_patterns = export_diag.get('preview_forbidden_patterns') or []
     return any(
         p in preview_patterns
         for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي'))
+
+
+def _export_defect_needs_kpi_schema_repair(export_diag: Dict[str, Any]) -> bool:
+    for err in export_diag.get('blocking_errors') or []:
+        if 'kpi_percent_without_denominator' in str(err):
+            return True
+    return False
 
 
 def _export_defect_needs_pillar_repair(export_diag: Dict[str, Any]) -> bool:
@@ -784,6 +798,16 @@ def repair_for_actual_export_defects(
                     sections[key] = val.replace(
                         bad, 'تأسيس CISO ولجنة حوكمة')
             repairs.append('rel271:roadmap_bad_initiative_scrubbed')
+
+    if _export_defect_needs_kpi_schema_repair(export_diag):
+        from release_engine.kpi_model import (
+            _apply_inline_kpi_repairs,
+            finalize_kpi_semantics,
+        )
+        sections, _ = finalize_kpi_semantics(
+            sections, lang=lang, backend=backend)
+        sections, _ = _apply_inline_kpi_repairs(sections)
+        repairs.append('rel271:kpi_percent_formula_repaired')
 
     _docx_fp = export_diag.get('docx_forbidden_patterns') or []
     if any(p in _docx_fp for p in (
