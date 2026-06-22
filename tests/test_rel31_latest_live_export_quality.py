@@ -287,7 +287,12 @@ class Rel31LatestReleaseReadinessTests(unittest.TestCase):
         self.assertEqual(
             proc.returncode, 0,
             (proc.stdout or '') + (proc.stderr or ''))
-        report = json.loads(proc.stdout)
+        stdout = proc.stdout or ''
+        json_start = stdout.find('{"domains_covered"')
+        if json_start < 0:
+            json_start = stdout.rfind('{')
+        self.assertGreaterEqual(json_start, 0, stdout[-2000:])
+        report = json.loads(stdout[json_start:])
         self.assertTrue(report.get('national_launch_ready'))
         compiler = report.get('document_quality_compiler') or {}
         self.assertTrue(compiler.get('passed'), compiler)

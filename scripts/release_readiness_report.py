@@ -8,6 +8,8 @@ from __future__ import annotations
 
 
 
+import contextlib
+
 import json
 
 import os
@@ -250,7 +252,10 @@ def main():
     compiler_proof = {}
     compiler_passed = False
     try:
-        compiler_proof = _run_rel31_compiler_proof()
+        # Compiler proof imports app and emits diagnostics; keep stdout
+        # JSON-only so subprocess callers can json.loads(proc.stdout).
+        with contextlib.redirect_stdout(sys.stderr):
+            compiler_proof = _run_rel31_compiler_proof()
         compiler_passed = bool(compiler_proof.get('document_quality_passed'))
     except Exception as exc:  # noqa: BLE001
         compiler_proof = {'error': str(exc), 'document_quality_passed': False}

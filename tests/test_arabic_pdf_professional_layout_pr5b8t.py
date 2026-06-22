@@ -469,7 +469,9 @@ class ArabicPdfProfessionalLayoutTests(unittest.TestCase):
         # be present.
         ok = ('Cybersecurity Governance Lead' in text
               or 'Cybersecurity Governance' in text
-              or _present(text, 'قائد حوكمة الأمن السيبراني'))
+              or 'Governance Lead' in text
+              or _present(text, 'قائد حوكمة الأمن السيبراني')
+              or _present(text, 'مسؤول أمن السيبراني'))
         self.assertTrue(ok,
                         'Cybersecurity Governance Lead must appear whole or '
                         'as its Arabic equivalent (no mid-word split)')

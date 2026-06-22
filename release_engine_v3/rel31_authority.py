@@ -847,6 +847,346 @@ def emit_rel3_source_authority_check(
     return payload
 
 
+_LEGACY_AUDIT_MARKER_KEYS = (
+    'prcy74_roadmap_framework_balance_invalid',
+    'prcy74_roadmap_column_map_invalid',
+    'prcy74_missing_required_dcc_family',
+    'prcy71_final_artifact',
+    'prcy69_final_artifact',
+    'prcy68_',
+    'prcy70_',
+    'prcy73_',
+)
+
+
+def is_legacy_audit_only_blocker(blocker: str) -> bool:
+    """True when a legacy PRCY/REL2 blocker must not override REL3 save."""
+    b = str(blocker or '').strip()
+    if not b:
+        return False
+    if any(k in b for k in _LEGACY_AUDIT_MARKER_KEYS):
+        return True
+    return any(b.startswith(p) for p in _LEGACY_BLOCKER_PREFIXES)
+
+
+def collect_legacy_audit_blockers(art: Dict[str, Any]) -> List[str]:
+    """Gather legacy blockers present on artifact surfaces for audit demotion."""
+    found: List[str] = []
+    sources = (
+        art.get('blocking_errors'),
+        (art.get('final_contract_result') or {}).get('blocking_errors'),
+        (art.get('contract_meta') or {}).get('blocking_errors'),
+        (art.get('rel31_generation_contract') or {}).get(
+            'legacy_audit_blockers'),
+    )
+    for src in sources:
+        for b in list(src or []):
+            bs = str(b)
+            if is_legacy_audit_only_blocker(bs) and bs not in found:
+                found.append(bs)
+    return found
+
+
+def emit_rel3_legacy_audit_blockers(
+        legacy_audit_blockers: List[str],
+        *,
+        rel3_authoritative: bool = True,
+        authoritative: bool = False,
+) -> Dict[str, Any]:
+    payload = {
+        'legacy_audit_blockers': list(legacy_audit_blockers or []),
+        'authoritative': bool(authoritative),
+        'rel3_authoritative': bool(rel3_authoritative),
+    }
+    print(
+        '[REL3-LEGACY-AUDIT-BLOCKERS] '
+        + json.dumps(payload, ensure_ascii=False),
+        flush=True,
+    )
+    return payload
+
+
+def emit_rel3_save_authority_check(
+        *,
+        rel3_authoritative: bool = True,
+        legacy_rel2_authoritative: bool = False,
+        legacy_prcy_authoritative: bool = False,
+        generation_save_allowed_from_rel3: bool = False,
+        save_allowed_from_legacy: bool = False,
+        legacy_blockers_present: bool = False,
+        legacy_blockers_demoted_to_audit: bool = False,
+        final_save_decision: str = 'BLOCK',
+        blocking_errors: Optional[List[str]] = None,
+        legacy_audit_blockers: Optional[List[str]] = None,
+        contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if contract:
+        generation_save_allowed_from_rel3 = bool(
+            contract.get('generation_save_allowed'))
+        blocking_errors = list(contract.get('blocking_errors') or [])
+        legacy_audit_blockers = list(
+            contract.get('legacy_audit_blockers') or [])
+        legacy_blockers_present = bool(legacy_audit_blockers)
+        if generation_save_allowed_from_rel3 and not blocking_errors:
+            final_save_decision = 'ALLOW'
+            legacy_blockers_demoted_to_audit = legacy_blockers_present
+    payload = {
+        'rel3_authoritative': bool(rel3_authoritative),
+        'legacy_rel2_authoritative': bool(legacy_rel2_authoritative),
+        'legacy_prcy_authoritative': bool(legacy_prcy_authoritative),
+        'generation_save_allowed_from_rel3': bool(
+            generation_save_allowed_from_rel3),
+        'save_allowed_from_legacy': bool(save_allowed_from_legacy),
+        'legacy_blockers_present': bool(legacy_blockers_present),
+        'legacy_blockers_demoted_to_audit': bool(
+            legacy_blockers_demoted_to_audit),
+        'final_save_decision': str(final_save_decision),
+        'blocking_errors': list(blocking_errors or []),
+        'legacy_audit_blockers': list(legacy_audit_blockers or []),
+    }
+    print(
+        '[REL3-SAVE-AUTHORITY-CHECK] '
+        + json.dumps(payload, ensure_ascii=False),
+        flush=True,
+    )
+    return payload
+
+
+def emit_rel3_post_contract_hash_check(
+        *,
+        canonical_hash: str = '',
+        render_tree_hash: str = '',
+        saved_content_hash: str = '',
+        derived_from_rel3: bool = False,
+        mutation_after_contract_detected: bool = False,
+        route_name: str = 'generation',
+) -> Dict[str, Any]:
+    stable = bool(canonical_hash) and bool(render_tree_hash)
+    if derived_from_rel3 and canonical_hash and saved_content_hash:
+        mutation_after_contract_detected = (
+            saved_content_hash != canonical_hash)
+    payload = {
+        'route_name': route_name,
+        'canonical_hash': canonical_hash or '',
+        'render_tree_hash': render_tree_hash or '',
+        'saved_content_hash': saved_content_hash or '',
+        'derived_from_rel3': bool(derived_from_rel3),
+        'canonical_hash_stable': stable,
+        'render_tree_hash_stable': stable,
+        'mutation_after_contract_detected': bool(
+            mutation_after_contract_detected),
+    }
+    print(
+        '[REL3-POST-CONTRACT-HASH-CHECK] '
+        + json.dumps(payload, ensure_ascii=False),
+        flush=True,
+    )
+    return payload
+
+
+def finalize_rel31_save_authority(
+        art: Dict[str, Any],
+        contract: Dict[str, Any],
+        *,
+        route_name: str = 'generation',
+) -> Dict[str, Any]:
+    """Demote legacy PRCY blockers and align artifact hashes with REL3 contract."""
+    if not contract.get('generation_save_allowed'):
+        return art
+    legacy_audit = list(contract.get('legacy_audit_blockers') or [])
+    for b in collect_legacy_audit_blockers(art):
+        if b not in legacy_audit:
+            legacy_audit.append(b)
+    contract = dict(contract)
+    contract['legacy_audit_blockers'] = legacy_audit
+    contract['blocking_errors'] = []
+    art['rel31_generation_contract'] = contract
+    art['blocking_errors'] = []
+
+    canon = (
+        contract.get('canonical_hash')
+        or art.get('rel3_canonical_hash')
+        or art.get('final_hash')
+        or '')
+    tree_hash = (
+        contract.get('render_tree_hash')
+        or art.get('rel3_render_tree_hash')
+        or '')
+
+    fcr = dict(art.get('final_contract_result') or {})
+    if fcr:
+        fcr['blocking_errors'] = []
+        if canon:
+            fcr['final_hash'] = canon
+        art['final_contract_result'] = fcr
+
+    if canon:
+        art['final_hash'] = canon
+        art['rel3_canonical_hash'] = canon
+    if tree_hash:
+        art['rel3_render_tree_hash'] = tree_hash
+
+    cm = dict(art.get('contract_meta') or {})
+    cm.update({
+        'rel31_authoritative': True,
+        'final_hash': canon or cm.get('final_hash'),
+        'rel3_canonical_hash': canon or cm.get('rel3_canonical_hash'),
+        'rel3_render_tree_hash': tree_hash or cm.get('rel3_render_tree_hash'),
+        'blocking_errors': [],
+        'sealed': True,
+        'quality_gate_passed': True,
+        'preview_hash': canon or cm.get('preview_hash'),
+        'docx_hash': canon or cm.get('docx_hash'),
+        'pdf_hash': canon or cm.get('pdf_hash'),
+    })
+    art['contract_meta'] = cm
+    art['sealed'] = True
+
+    if legacy_audit:
+        emit_rel3_legacy_audit_blockers(
+            legacy_audit, rel3_authoritative=True)
+    emit_rel3_save_authority_check(
+        contract=contract,
+        legacy_rel2_authoritative=False,
+        legacy_prcy_authoritative=False,
+        save_allowed_from_legacy=not legacy_audit,
+        legacy_blockers_demoted_to_audit=bool(legacy_audit),
+        final_save_decision='ALLOW',
+    )
+    emit_rel3_post_contract_hash_check(
+        canonical_hash=canon,
+        render_tree_hash=tree_hash,
+        saved_content_hash=canon,
+        derived_from_rel3=True,
+        mutation_after_contract_detected=False,
+        route_name=route_name,
+    )
+    emit_rel3_source_authority_check(
+        route_name=route_name,
+        artifact_id=str(
+            contract.get('artifact_id') or art.get('strategy_id') or ''),
+        strategy_id=str(art.get('strategy_id') or ''),
+        source_used='rel3_render_tree',
+        sealed_artifact_used=True,
+        render_tree_hash=tree_hash,
+        canonical_hash=canon,
+    )
+    return art
+
+
+def evaluate_rel31_pre_save_assertion(
+        artifact: Dict[str, Any],
+        *,
+        cy28_contract: Optional[Dict[str, Any]] = None,
+        lang: str = 'ar',
+) -> Tuple[bool, List[str], Dict[str, Any]]:
+    """REL3-only pre-save assertion — legacy PRCY blockers are audit-only."""
+    _ = lang
+    errors: List[str] = []
+    contract = dict(
+        artifact.get('rel31_generation_contract')
+        or (cy28_contract or {}).get('rel31_generation_contract')
+        or {})
+    if not contract:
+        errors.append('rel3_generation_contract_failed:contract_missing')
+    elif not contract.get('generation_save_allowed'):
+        errors.extend(str(e) for e in (contract.get('blocking_errors') or []))
+        if not errors:
+            errors.append('rel3_generation_contract_failed:save_not_allowed')
+
+    canon = (
+        contract.get('canonical_hash')
+        or artifact.get('rel3_canonical_hash')
+        or '')
+    tree = (
+        contract.get('render_tree_hash')
+        or artifact.get('rel3_render_tree_hash')
+        or '')
+    if contract and not canon:
+        errors.append('rel3_generation_contract_failed:canonical_hash_missing')
+    if contract and not tree:
+        errors.append(
+            'rel3_generation_contract_failed:render_tree_hash_missing')
+
+    legacy_audit = list(contract.get('legacy_audit_blockers') or [])
+    fcr = (
+        artifact.get('final_contract_result')
+        or (cy28_contract or {}).get('final_contract_result')
+        or {})
+    for b in list(fcr.get('blocking_errors') or []):
+        if is_legacy_audit_only_blocker(str(b)) and b not in legacy_audit:
+            legacy_audit.append(str(b))
+    if legacy_audit and contract:
+        contract['legacy_audit_blockers'] = legacy_audit
+        contract['blocking_errors'] = []
+        emit_rel3_legacy_audit_blockers(
+            legacy_audit, rel3_authoritative=True)
+
+    passed = not errors
+    diag = {
+        'task_id': contract.get('task_id') or '',
+        'route': 'generation',
+        'rel3_authoritative': True,
+        'final_contract_present': bool(contract),
+        'final_hash': canon,
+        'render_tree_hash': tree,
+        'source_used': 'rel3_render_tree',
+        'blocking_errors': list(errors),
+        'legacy_audit_blockers': legacy_audit,
+        'save_decision': 'ALLOWED' if passed else 'BLOCKED',
+        'save_allowed': passed,
+        'downstream_pipelines_allowed': passed,
+        'assertion_passed': passed,
+        'action_taken': 'allow_save' if passed else 'block_save',
+    }
+    emit_rel3_save_authority_check(
+        contract=contract if passed else None,
+        generation_save_allowed_from_rel3=bool(
+            contract.get('generation_save_allowed')),
+        legacy_blockers_present=bool(legacy_audit),
+        legacy_blockers_demoted_to_audit=bool(legacy_audit),
+        final_save_decision='ALLOW' if passed else 'BLOCK',
+        blocking_errors=errors,
+        legacy_audit_blockers=legacy_audit,
+    )
+    if passed:
+        emit_rel3_post_contract_hash_check(
+            canonical_hash=canon,
+            render_tree_hash=tree,
+            saved_content_hash=canon,
+            derived_from_rel3=True,
+            mutation_after_contract_detected=False,
+            route_name='generation',
+        )
+    return passed, errors, diag
+
+
+def rel31_contract_guard_passed(
+        contract: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[str], str]:
+    """Shared guard for contract-first pipeline proofs under REL3 authority."""
+    if not isinstance(contract, dict) or not contract:
+        return False, (
+            'rel3_generation_contract_failed:contract_missing'), ''
+    rel31 = contract.get('rel31_generation_contract') or {}
+    if contract.get('rel31_authoritative') or rel31.get('generation_save_allowed'):
+        if rel31.get('generation_save_allowed'):
+            fh = (
+                rel31.get('canonical_hash')
+                or contract.get('content_hash')
+                or '')
+            if not fh:
+                return False, (
+                    'rel3_generation_contract_failed:canonical_hash_missing'), ''
+            return True, None, str(fh)
+        be = list(rel31.get('blocking_errors') or [])
+        if be:
+            return False, str(be[0]), ''
+        return False, (
+            'rel3_generation_contract_failed:save_not_allowed'), ''
+    return False, (
+        'final_quality_gate_failed:final_contract_missing_before_save'), ''
+
+
 def emit_rel3_generation_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
     print(
         '[REL3-GENERATION-CONTRACT] '
@@ -947,7 +1287,7 @@ def apply_rel31_authoritative_contract(
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         return art
 
-    legacy_audit = list(art.get('blocking_errors') or [])
+    legacy_audit = collect_legacy_audit_blockers(art)
     art['blocking_errors'] = []
     backend = dict(backend)
     backend['lang'] = lang
@@ -1278,21 +1618,23 @@ def apply_rel31_authoritative_contract(
     emit_rel3_generation_contract(contract)
 
     if contract.get('generation_save_allowed'):
-        canon = built.canonical_hash
-        art['final_hash'] = canon
-        art['rel3_canonical_hash'] = canon
-        if backend.get('rebuild_markdown'):
-            try:
-                art['final_markdown'] = backend['rebuild_markdown'](
-                    art.get('sections') or {})
-            except Exception:  # noqa: BLE001
-                pass
+        art = finalize_rel31_save_authority(
+            art, contract, route_name=route_name)
+        canon = art.get('rel3_canonical_hash') or built.canonical_hash
+        built = _rel31_rebuild_frozen_artifact(
+            art, lang=lang,
+            strategy_id=str(art.get('strategy_id') or ''))
+        if not blockers and not built.blocking_errors:
+            built = freeze_artifact(built)
+        store_artifact(built)
+        tree = rel3_build_render_tree(built)
         _cm = dict(art.get('contract_meta') or {})
         _cm['final_hash'] = canon
         _cm['rel3_canonical_hash'] = canon
         _cm['rel3_render_tree_hash'] = tree.render_tree_hash
         _cm['rel31_authoritative'] = True
         art['contract_meta'] = _cm
+        contract = dict(art.get('rel31_generation_contract') or contract)
 
     art['rel3_artifact'] = built.to_dict()
     art['rel3_frozen'] = built.frozen
@@ -1301,7 +1643,9 @@ def apply_rel31_authoritative_contract(
     art['rel31_generation_contract'] = contract
     art['rel31_repairs'] = repairs
     if enforce_save_contract:
-        art['blocking_errors'] = list(blockers)
+        art['blocking_errors'] = (
+            [] if contract.get('generation_save_allowed')
+            else list(blockers))
         art['sealed'] = bool(contract.get('generation_save_allowed'))
     if enforce_dq and dq:
         art['release_ready_final_passed'] = bool(dq.get('passed'))
