@@ -786,11 +786,15 @@ def _export_defect_needs_pillar_repair(export_diag: Dict[str, Any]) -> bool:
 
 
 def _export_defect_needs_roadmap_repair(export_diag: Dict[str, Any]) -> bool:
+    needles = (
+        'roadmap_bad_initiative', 'roadmap_weak_owner', 'roadmap_weak_output',
+        'roadmap_row_count', 'roadmap_duplicate_rows',
+    )
     for key in (
             'preview_forbidden_patterns', 'docx_forbidden_patterns',
             'pdf_forbidden_patterns', 'blocking_errors'):
         for item in export_diag.get(key) or []:
-            if isinstance(item, str) and 'roadmap_bad_initiative' in item:
+            if any(n in str(item) for n in needles):
                 return True
     for defects in (
             export_diag.get('docx_roadmap_defects') or [],
@@ -855,6 +859,17 @@ def repair_for_actual_export_defects(
         if baseline:
             sections, _ = baseline(sections, lang, fws)
             repairs.append('rel271:baseline_roadmap_for_export')
+        try:
+            from release_engine.roadmap_model import finalize_roadmap
+            sections, _ = finalize_roadmap(
+                sections,
+                lang=lang,
+                domain=domain,
+                selected_frameworks=fws,
+                backend=backend)
+            repairs.append('rel271:roadmap_owners_finalized')
+        except Exception:  # noqa: BLE001
+            pass
         for bad in REL26_ROADMAP_BAD_INITIATIVES:
             for key, val in list(sections.items()):
                 if isinstance(val, str) and bad in val:

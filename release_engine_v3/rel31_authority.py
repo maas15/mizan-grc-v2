@@ -127,7 +127,8 @@ def _rel31_dq_repairable(
         'arabic_residue', 'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد',
         'ال معنية', 'ال منظمات', 'ال عنصر',
         'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
-        'repeated_generic', 'repeated_generic_gap'))
+        'repeated_generic', 'repeated_generic_gap',
+        'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count'))
 
 
 def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
@@ -141,8 +142,29 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
                 'arabic_canonical_invalid', 'roadmap_preview_docx_pdf_drift',
                 'preview_docx_pdf_roadmap_drift', 'dlp_incident',
                 'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
-        'repeated_generic', 'repeated_generic_gap')):
+        'repeated_generic', 'repeated_generic_gap',
+                'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count')):
             return True
+    return False
+
+
+def _is_roadmap_dq_blocker(err: str) -> bool:
+    e = str(err or '').lower()
+    return any(k in e for k in (
+        'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count',
+        'roadmap_duplicate', 'missing_family:'))
+
+
+def _dq_needs_roadmap_owner_repair(
+        dq: Dict[str, Any],
+        export_diag: Optional[Dict[str, Any]] = None) -> bool:
+    for err in dq.get('blocking_errors') or []:
+        if _is_roadmap_dq_blocker(str(err)):
+            return True
+    if export_diag:
+        for err in export_diag.get('blocking_errors') or []:
+            if _is_roadmap_dq_blocker(str(err)):
+                return True
     return False
 
 
@@ -246,6 +268,12 @@ def _rel31_clear_dq_blockers(blockers: List[str]) -> List[str]:
         b for b in blockers
         if not b.startswith('rel3_document_quality_failed:')
         and not b.startswith('rel3_export_evidence_failed:docx:')
+        and not (
+            b.startswith('rel3_export_evidence_failed:preview:')
+            and _is_roadmap_dq_blocker(b))
+        and not (
+            b.startswith('rel3_generation_contract_failed:')
+            and _is_roadmap_dq_blocker(b))
         and 'arabic_role_corruption' not in b
         and 'arabic_residue' not in b
         and 'arabic_canonical_invalid' not in b
@@ -1143,6 +1171,25 @@ def apply_rel31_authoritative_contract(
                         repairs.extend(_sub_rep)
                     except Exception:  # noqa: BLE001
                         pass
+                    if _dq_needs_roadmap_owner_repair(dq, export_diag):
+                        _rm_secs = dict(art.get('sections') or {})
+                        _rm_secs = _rel31_dedupe_roadmap_rows(
+                            _rm_secs, backend=backend)
+                        _rm_secs = _repair_rel3_weak_roadmap_outputs(
+                            _rm_secs, backend=backend)
+                        try:
+                            from release_engine.roadmap_model import finalize_roadmap
+                            _rm_secs, _ = finalize_roadmap(
+                                _rm_secs,
+                                lang=lang,
+                                domain=domain,
+                                selected_frameworks=(
+                                    backend.get('selected_frameworks') or []),
+                                backend=backend)
+                            repairs.append('rel31:roadmap_owners_repaired_for_dqs')
+                        except Exception:  # noqa: BLE001
+                            pass
+                        art['sections'] = _rm_secs
                     blockers = _rel31_clear_dq_blockers(blockers)
                     _bind_backend_sections(backend, art)
                     if backend.get('rebuild_markdown'):
@@ -1162,6 +1209,17 @@ def apply_rel31_authoritative_contract(
                     backend['_rel2_cache'] = rel2_cache
                     continue
                 break
+            road = validate_rel3_roadmap_output_quality(
+                dict(art.get('sections') or {}), backend=backend)
+            art['sections'] = road.get('sections') or art.get('sections') or {}
+            if dq.get('passed'):
+                blockers = _rel31_clear_dq_blockers(blockers)
+                if not road.get('valid'):
+                    blockers.append(
+                        'rel3_generation_contract_failed:roadmap_weak_output')
+                _bind_backend_sections(backend, art)
+                preview_export, preview_ev = rel3_export_with_evidence(
+                    'preview', built, backend=backend)
             if not dq.get('passed'):
                 for err in document_quality_blockers(dq):
                     if err not in blockers:

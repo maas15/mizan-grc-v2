@@ -351,6 +351,50 @@ class StagingDqsRepairTests(unittest.TestCase):
             'repeated_generic_gap_treatment',
             check_generic_risk_treatments(blob))
 
+    def test_dqs_repairable_includes_preview_roadmap_weak_owner(self):
+        from release_engine_v3.rel31_authority import _rel31_dq_repairable
+
+        dq = {'blocking_errors': ['preview:roadmap_weak_owner']}
+        self.assertTrue(_rel31_dq_repairable([], dq, None))
+
+    def test_finalize_roadmap_clears_weak_owners_for_export_check(self):
+        from release_engine.roadmap_model import finalize_roadmap
+        from release_engine.rel27_export_checks import check_roadmap_coverage
+
+        rows = [
+            f'| المرحلة 1 | 1-6 | مبادرة {i} | مسؤول | مخرج {i} | ECC |'
+            for i in range(1, 11)
+        ]
+        roadmap = (
+            '| المرحلة | الفترة | المبادرة | المسؤول | المخرج | الإطار |\n'
+            '|---|---|---|---|---|---|\n'
+            + '\n'.join(rows)
+        )
+        out, _ = finalize_roadmap({'roadmap': roadmap}, lang='ar', domain='cyber')
+        chk = check_roadmap_coverage(out['roadmap'])
+        self.assertNotIn('roadmap_weak_owner', chk.get('defects') or [])
+
+    def test_dqs_sections_repair_finalizes_roadmap_owners(self):
+        from release_engine_v3.document_quality_spec import (
+            repair_document_quality_sections,
+        )
+        from release_engine.rel27_export_checks import check_roadmap_coverage
+
+        rows = [
+            f'| المرحلة 1 | 1-6 | مبادرة {i} | — | مخرج {i} | ECC |'
+            for i in range(1, 11)
+        ]
+        roadmap = (
+            '| المرحلة | الفترة | المبادرة | المسؤول | المخرج | الإطار |\n'
+            '|---|---|---|---|---|---|\n'
+            + '\n'.join(rows)
+        )
+        repaired, reps = repair_document_quality_sections(
+            {'roadmap': roadmap}, lang='ar', domain='cyber')
+        chk = check_roadmap_coverage(repaired.get('roadmap') or '')
+        self.assertNotIn('roadmap_weak_owner', chk.get('defects') or [])
+        self.assertIn('dqs:roadmap_owners_finalized', reps)
+
     def test_finalize_risk_treatment_trims_to_eight_rows(self):
         from release_engine.risk_treatment_model import (
             _parse_risk_rows,

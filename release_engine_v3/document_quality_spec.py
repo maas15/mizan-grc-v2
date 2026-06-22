@@ -1494,6 +1494,20 @@ def repair_document_quality_sections(
         pass
 
     try:
+        from release_engine.roadmap_model import finalize_roadmap
+        out, rm_diag = finalize_roadmap(
+            out,
+            lang=lang,
+            domain=domain,
+            selected_frameworks=fws,
+            backend=backend)
+        if (rm_diag.get('action_taken') or '').strip() not in (
+                '', 'no_changes', 'skipped_non_cyber'):
+            repairs.append('dqs:roadmap_owners_finalized')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
         from release_engine.risk_treatment_model import (
             finalize_risk_treatment,
             trim_risk_register_rows,
