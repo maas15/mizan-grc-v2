@@ -125,7 +125,7 @@ def _rel31_dq_repairable(
         'risk_missing_control_family', 'dlp_incident',
         'المسؤول أمن السيبراني', 'arabic_role_corruption',
         'arabic_residue', 'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد',
-        'ال معنية', 'ال منظمات', 'ال عنصر',
+        'ال معنية', 'ال منظمات', 'ال عنصر', 'ال منقولة', 'ل معالجة',
         'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
         'repeated_generic', 'repeated_generic_gap',
         'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count'))
@@ -171,7 +171,7 @@ def _dq_needs_roadmap_owner_repair(
 _ARABIC_GLUE_REPAIR_TRIGGERS = (
     'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معيارية',
     'ال معالجة', 'ال مناسب', 'ال مناسبة', 'ال معنية', 'ال منظمات',
-    'ال عنصر', 'حلولمن', 'ل منع',
+    'ال عنصر', 'ال منقولة', 'حلولمن', 'ل منع', 'ل معالجة',
     'الحاليةفي', 'الموظفينفي', 'dlp_incident', 'placeholder_pillar',
     'arabic_residue', 'arabic_role_corruption', 'arabic_glued',
 )
@@ -1139,6 +1139,14 @@ def apply_rel31_authoritative_contract(
                 dq_ok = bool(dq.get('passed'))
                 docx_ok = bool(docx_ev.export_return_allowed)
                 if dq_ok and docx_ok:
+                    built = _rel31_rebuild_frozen_artifact(
+                        art, lang=lang,
+                        strategy_id=str(art.get('strategy_id') or ''))
+                    store_artifact(built)
+                    tree = rel3_build_render_tree(built)
+                    _bind_backend_sections(backend, art)
+                    preview_export, preview_ev = rel3_export_with_evidence(
+                        'preview', built, backend=backend)
                     break
                 if _dq_pass < (_dq_max_passes - 1) and (
                         _rel31_dq_repairable(blockers, dq, docx_ev)
@@ -1217,6 +1225,11 @@ def apply_rel31_authoritative_contract(
                 if not road.get('valid'):
                     blockers.append(
                         'rel3_generation_contract_failed:roadmap_weak_output')
+                built = _rel31_rebuild_frozen_artifact(
+                    art, lang=lang,
+                    strategy_id=str(art.get('strategy_id') or ''))
+                store_artifact(built)
+                tree = rel3_build_render_tree(built)
                 _bind_backend_sections(backend, art)
                 preview_export, preview_ev = rel3_export_with_evidence(
                     'preview', built, backend=backend)

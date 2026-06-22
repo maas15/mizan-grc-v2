@@ -19,6 +19,7 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ال معتمدة', 'المعتمدة'),
     ('ال معتمد', 'المعتمد'),
     ('لل معالجة', 'للمعالجة'),
+    ('ل معالجة', 'لمعالجة'),
     # REL2.7.1 — glued solutions+prevent token before partial split rules.
     ('حلولمنع', 'حلول لمنع'),
     ('حلمنع', 'حلول لمنع'),
@@ -36,6 +37,8 @@ REL2_ARABIC_SPECIFIC_FIXES: Tuple[Tuple[str, str], ...] = (
     ('ال معنية', 'المعنية'),
     ('ال منظمات', 'المنظمات'),
     ('ال عنصر', 'العنصر'),
+    ('وال منقولة', 'والمنقولة'),
+    ('ال منقولة', 'المنقولة'),
     ('segmentation-Micro', 'تقسيم Micro'),
     ('CSISO', 'CISO'),
     ('Lead e', ''),
@@ -80,13 +83,19 @@ _LM_SPACE_GLUE_RE = re.compile(
     r'([\u0600-\u06FF]{2,}ل)من(?=\s|$|[،,.؛:\)\|])')
 # Split ل + منع residue (ASCII/Unicode whitespace between ل and منع).
 _L_MIN_SPLIT_RE = re.compile(r'ل[\s\u00a0\u200b\u200c\u200d\u202f]+منع')
+_L_LAM_MUALAJA_RE = re.compile(
+    r'(?<![\u0600-\u06FF])ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة')
 # Invisible directional / zero-width chars that break substring glue detection.
 _AR_INVISIBLE_RE = re.compile(r'[\u200f\u200e\u200b\u200c\u200d]')
 _AR_INVISIBLE_WS = r'[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+'
 _LAM_INVISIBLE_GLUE_RE = re.compile(
     r'(?<![\u0600-\u06FF])ال' + _AR_INVISIBLE_WS
     + r'(منظمة|معلومات|معمول|معتمدة|معتمد|معيارية|معالجة|مناسبة|مناسب|منفذة|'
-    + r'معنية|منظمات|عنصر)',
+    + r'معنية|منظمات|عنصر|منقولة)',
+    re.UNICODE)
+_WAW_LAM_GLUE_RE = re.compile(
+    r'(?<=و)ال' + _AR_INVISIBLE_WS
+    + r'(منقولة|معالجة|منظمة|معلومات|معنية)',
     re.UNICODE)
 
 
@@ -101,6 +110,10 @@ def _apply_glue_split(text: str) -> str:
         return f'{g1} {g2}'
 
     return _GLUE_RE.sub(_repl, text)
+
+
+def _normalize_lam_mualeda(text: str) -> str:
+    return _L_LAM_MUALAJA_RE.sub('لمعالجة', text or '')
 
 
 def _normalize_lam_mana(text: str) -> str:
@@ -119,6 +132,7 @@ def _normalize_arabic_lam_glue(text: str) -> str:
     if not text:
         return text or ''
     out = _normalize_arabic_invisible_whitespace(text)
+    out = _WAW_LAM_GLUE_RE.sub(lambda m: 'وال' + m.group(1), out)
     out = _LAM_INVISIBLE_GLUE_RE.sub(lambda m: 'ال' + m.group(1), out)
     return out
 
@@ -161,6 +175,8 @@ def _find_residues(text: str) -> List[str]:
         token = m.group(0)
         if token not in residues:
             residues.append(token)
+    if _L_LAM_MUALAJA_RE.search(blob):
+        residues.append('ل معالجة')
     return residues
 
 
@@ -171,12 +187,14 @@ def _repair_text(text: str) -> str:
     for _ in range(5):
         prev = out
         out = _normalize_lam_mana(out)
+        out = _normalize_lam_mualeda(out)
         out = _normalize_arabic_lam_glue(out)
         out = _apply_catalog_fixes(out)
         out = _apply_glue_split(out)
         out = _LM_SPACE_GLUE_RE.sub(r'\1 من', out)
         out = out.replace('حلول ل منع', 'حلول لمنع')
         out = _normalize_lam_mana(out)
+        out = _normalize_lam_mualeda(out)
         out = _apply_catalog_fixes(out)
         if out == prev:
             break

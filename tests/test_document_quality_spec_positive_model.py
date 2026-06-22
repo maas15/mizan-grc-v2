@@ -334,6 +334,35 @@ class StagingDqsRepairTests(unittest.TestCase):
         self.assertTrue(check_arabic_residues_exported(repaired).get(
             'exported_arabic_quality_valid'))
 
+    def test_al_manqula_and_l_mualeda_glue_repaired(self):
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+        from release_engine_v3.document_quality_spec import (
+            check_arabic_tokenization_quality,
+            repair_document_quality_sections,
+        )
+
+        glued = (
+            'معدل تشفير البيانات الحساسة المخزّنة وال منقولة (حماية البيانات) '
+            '— إجراءات التشغيل المعيارية ل معالجة الحوادث.'
+        )
+        repaired = _repair_arabic_blob(glued)
+        self.assertNotIn('ال منقولة', repaired)
+        self.assertNotIn('ل معالجة', repaired)
+        self.assertIn('المنقولة', repaired)
+        self.assertIn('لمعالجة', repaired)
+        self.assertTrue(check_arabic_residues_exported(repaired).get(
+            'exported_arabic_quality_valid'))
+        self.assertTrue(check_arabic_tokenization_quality(repaired).get('passed'))
+
+        sections = {'traceability': glued, 'gaps': glued}
+        dqs_secs, reps = repair_document_quality_sections(sections, lang='ar')
+        blob = '\n\n'.join(dqs_secs.values())
+        self.assertNotIn('ال منقولة', blob)
+        self.assertNotIn('ل معالجة', blob)
+        self.assertIn('dqs:arabic_final_gate', reps)
+        self.assertTrue(check_arabic_tokenization_quality(blob).get('passed'))
+
     def test_generic_gap_repair_scrubs_all_sections(self):
         from release_engine.rel31_content_substance_checks import (
             check_generic_risk_treatments,

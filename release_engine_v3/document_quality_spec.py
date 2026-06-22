@@ -134,6 +134,8 @@ ARABIC_GLUE_RESIDUE_PATTERNS = (
     'الموظفينفي',
     'حلولمنع',
     'لل معالجة',
+    'ل معالجة',
+    'ال منقولة',
 )
 
 GENERIC_RISK_TREATMENTS = (
@@ -854,7 +856,8 @@ def check_arabic_tokenization_quality(blob: str) -> Dict[str, Any]:
     text = blob or ''
     for pat in (
             r'(?:الحالية|الموظفين|النقر|الناجمة)(?=في|عن|مع)',
-            r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة)',
+            r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة|منقولة|معنية|منظمات|عنصر)',
+            r'(?<![\u0600-\u06FF])ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة',
     ):
         if re.search(pat, text):
             glue.append(pat[:40])
@@ -934,8 +937,12 @@ def check_arabic_role_corruption(blob: str) -> List[str]:
         )
         if _glue_present(text, pat):
             found.append(pat)
-    if re.search(r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة)', text):
+    if re.search(r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة|منقولة|معنية|منظمات|عنصر)', text):
         found.append('separated_definite_article')
+    if re.search(
+            r'(?<![\u0600-\u06FF])ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة',
+            text):
+        found.append('lam_mualeda_split')
     if re.search(
             r'(?:الحالية|الموظفين|النقر|الناجمة)(?=في|عن|مع)',
             text):

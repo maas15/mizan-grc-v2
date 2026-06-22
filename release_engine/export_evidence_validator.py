@@ -49,6 +49,8 @@ REL26_GENERIC_FORMULAS = (
 
 REL26_ARABIC_RESIDUES = (
     'لل معالجة',
+    'ل معالجة',
+    'ال منقولة',
     'للتعاملمع',
     'الاجتماعيةضد',
     'الاستعادةفي',
@@ -80,8 +82,10 @@ REL26_TRACE_BAD = (
 
 _AR_GLUE_RE = re.compile(
     r'(?:الحالية|الموظفين|رئيسية|حلول)(?=في)'
-    r'|(?:^|\s)ال\s+(?:منظمة|معلومات|معمول|معتمدة|معيارية)'
-    r'|لل\s+معالجة'
+    r'|(?:^|\s)ال[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+'
+    r'(?:منظمة|معلومات|معمول|معتمدة|معيارية|منقولة|معنية|منظمات|عنصر)'
+    r'|(?:^|\s)ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة'
+    r'|لل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة'
     r'|حلولمنع|حلمنع',
     re.UNICODE,
 )
@@ -707,7 +711,7 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
         'arabic_role_corruption',
         'الحاليةفي', 'الموظفينفي', 'المسؤول أمن السيبرانيe',
         'ال معلومات', 'ال منظمة', 'ال معتمدة', 'ال معتمد', 'ال معالجة',
-        'ال معنية', 'ال منظمات', 'ال عنصر', 'ل منع',
+        'ال معنية', 'ال منظمات', 'ال عنصر', 'ال منقولة', 'ل معالجة', 'ل منع',
     )
     for err in export_diag.get('blocking_errors') or []:
         if any(n in str(err) for n in needles):
@@ -722,7 +726,8 @@ def _export_defect_needs_arabic_repair(export_diag: Dict[str, Any]) -> bool:
     return any(
         p in preview_patterns
         for p in ('حلولمنع', 'arabic_glued_particle', 'الحاليةفي',
-                  'ال معلومات', 'ال منظمة', 'ال معنية', 'ال منظمات'))
+                  'ال معلومات', 'ال منظمة', 'ال معنية', 'ال منظمات',
+                  'ال منقولة', 'ل معالجة'))
 
 
 def _export_defect_needs_kpi_dedupe_repair(export_diag: Dict[str, Any]) -> bool:

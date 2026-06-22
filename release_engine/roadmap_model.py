@@ -33,6 +33,16 @@ FORBIDDEN_OWNERS = frozenset({
     '',
 })
 
+_WEAK_OWNER_ALIASES = frozenset({'—', '-', '–', 'n/a', 'N/A', 'TBD', 'tbd'})
+
+
+def _is_weak_roadmap_owner(owner: str) -> bool:
+    """Match REL27 export gate: forbidden tokens, placeholders, or too short."""
+    own = (owner or '').strip()
+    if own in FORBIDDEN_OWNERS or own in _WEAK_OWNER_ALIASES:
+        return True
+    return len(own) < 3
+
 _INSTITUTIONAL_OWNERS = (
     'CISO / الإدارة العليا',
     'مدير SOC',
@@ -275,8 +285,7 @@ def _apply_roadmap_repairs(
     present = _detect_families(parsed)
 
     for row in parsed:
-        own = (row.get('owner') or '').strip()
-        if own in FORBIDDEN_OWNERS:
+        if _is_weak_roadmap_owner(row.get('owner') or ''):
             row['owner'] = _owner_for_initiative(row.get('initiative', ''))
 
     for fam in ROADMAP_FAMILIES:

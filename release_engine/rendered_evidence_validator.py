@@ -39,6 +39,8 @@ FORBIDDEN_KPI_NAMES = (
 
 FORBIDDEN_ARABIC_PATTERNS = (
     'لل معالجة',
+    'ل معالجة',
+    'ال منقولة',
     'للتعاملمع',
     'الاجتماعيةضد',
     'الاستعادةفي',
@@ -425,6 +427,11 @@ def _scrub_global_forbidden(text: str) -> str:
         if bad in out and 'الاستجابة للحوادث' in out:
             out = out.replace(bad, _CSIRT_GAP)
     out = out.replace('لل معالجة', 'للمعالجة')
+    out = re.sub(
+        r'(?<![\u0600-\u06FF])ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة',
+        'لمعالجة', out)
+    out = out.replace('ال منقولة', 'المنقولة')
+    out = out.replace('وال منقولة', 'والمنقولة')
     out = out.replace('الحاليةفي', 'الحالية في')
     out = out.replace('الموظفينفي', 'الموظفين في')
     out = out.replace('رئيسيةفي', 'رئيسية في')
@@ -437,6 +444,7 @@ def _scrub_global_forbidden(text: str) -> str:
     out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
     out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
     out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(r'\bال\s+منقولة\b', 'المنقولة', out)
     out = re.sub(r'ل\s+منع', 'لمنع', out)
     out = out.replace('DLP فقط', _DCC_DLP_GAP)
     for bad in FORBIDDEN_TRACE_PATTERNS:
