@@ -976,7 +976,7 @@ def _detect_kpi_family(line: str) -> Optional[str]:
                 k in low for k in ('iam', 'pam', 'mfa', 'هوية')):
             return fam
         if fam == 'mttd_detection' and any(
-                k in low for k in ('mttd', 'كشف', 'detect')):
+                k in low for k in ('mttd', 'كشف', 'اكتشاف', 'detect')):
             return fam
         if fam == 'mttr_incident' and any(
                 k in low for k in ('mttr', 'استجابة', 'respond')):

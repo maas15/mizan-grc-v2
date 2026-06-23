@@ -810,4 +810,13 @@ def repair_rel31_canonical_sections(
     except Exception:  # noqa: BLE001
         pass
 
+    try:
+        from release_engine.kpi_model import repair_kpi_canonical_families
+        out, kpi_diag = repair_kpi_canonical_families(
+            out, lang=lang, backend=backend)
+        if kpi_diag.get('action_taken') != 'no_changes':
+            repairs.append('rel31:kpi_canonical_families_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
     return out, list(dict.fromkeys(repairs))

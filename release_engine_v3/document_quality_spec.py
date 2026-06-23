@@ -330,28 +330,31 @@ def check_duplicate_metric_labels(
         docx_reference: str = '',
         canonical_kpis: str = '') -> List[str]:
     """Duplicate MTTD/MTTR or other metric labels in KPI section."""
-    from release_engine.kpi_model import _parse_kpi_rows
+    from release_engine.kpi_model import (
+        _duplicate_kpi_families_from_rows,
+        _parse_kpi_rows,
+        resolve_kpi_canonical_family,
+    )
     from release_engine.rel27_export_checks import parse_flat_professional_kpi_cards
 
     section = flat_kpi_kri_section_blob(blob) or blob or ''
     canon_rows = _parse_canonical_kpi_rows(canonical_kpis)
     if canon_rows:
-        tag_counts: Dict[str, int] = {}
+        dup_fams, dup_labels = _duplicate_kpi_families_from_rows(canon_rows)
+        canon_dupes: List[str] = []
+        for fam in dup_fams:
+            if fam == 'soc_mttd':
+                canon_dupes.append('duplicate_mttd')
+            elif fam == 'incident_response_mttr':
+                canon_dupes.append('duplicate_mttr')
+            else:
+                canon_dupes.append(f'duplicate_{fam}')
         name_targets: Dict[str, List[str]] = {}
         for cells in canon_rows:
             name = (cells[1] if len(cells) > 1 else '').strip()
             target = (cells[2] if len(cells) > 2 else '').strip()
             if name:
                 name_targets.setdefault(name, []).append(target)
-            for tag in ('MTTD', 'MTTR'):
-                if tag in name.upper() or (
-                        tag == 'MTTD' and 'اكتشاف' in name) or (
-                        tag == 'MTTR' and 'استجابة' in name):
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        canon_dupes: List[str] = []
-        for tag, count in tag_counts.items():
-            if count > 1:
-                canon_dupes.append(f'duplicate_{tag.lower()}')
         for name, targets in name_targets.items():
             if len(targets) > 1:
                 uniq = {t for t in targets if t}
@@ -361,17 +364,18 @@ def check_duplicate_metric_labels(
             return []
         return list(dict.fromkeys(canon_dupes))
     _lines, rows = _parse_kpi_rows(section)
+    if not rows and blob:
+        _lines, rows = _parse_kpi_rows(blob)
     dupes: List[str] = []
     if rows:
-        tag_counts: Dict[str, int] = {}
-        for cells in rows:
-            name = (cells[1] if len(cells) > 1 else '').upper()
-            for tag in ('MTTD', 'MTTR'):
-                if tag in name:
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        for tag, count in tag_counts.items():
-            if count > 1:
-                dupes.append(f'duplicate_{tag}')
+        dup_fams, _ = _duplicate_kpi_families_from_rows(rows)
+        for fam in dup_fams:
+            if fam == 'soc_mttd':
+                dupes.append('duplicate_mttd')
+            elif fam == 'incident_response_mttr':
+                dupes.append('duplicate_mttr')
+            else:
+                dupes.append(f'duplicate_{fam}')
         return dupes
     cards = parse_flat_professional_kpi_cards(section)
     if cards:
@@ -1479,14 +1483,18 @@ def repair_document_quality_sections(
     try:
         from release_engine.kpi_model import (
             _apply_inline_kpi_repairs,
-            _dedupe_kpi_metric_labels,
             finalize_kpi_semantics,
+            repair_kpi_canonical_families,
         )
         out, _ = finalize_kpi_semantics(
             out, lang=lang, backend=backend)
+        out, kpi_diag = repair_kpi_canonical_families(
+            out, lang=lang, backend=backend)
+        if not kpi_diag.get('kpi_canonical_repair_passed'):
+            repairs.append('dqs:kpi_canonical_repair_blocked')
+        else:
+            repairs.append('dqs:kpi_canonical_families_repaired')
         out, _ = _apply_inline_kpi_repairs(out)
-        if out.get('kpis'):
-            out['kpis'] = _dedupe_kpi_metric_labels(out['kpis'])
         repairs.append('dqs:kpi_percent_formula_repaired')
     except Exception:  # noqa: BLE001
         pass

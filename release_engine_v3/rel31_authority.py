@@ -799,6 +799,14 @@ def repair_canonical_before_freeze(
         road = validate_rel3_roadmap_output_quality(sections, backend=backend)
         sections = road.get('sections') or sections
         try:
+            from release_engine.kpi_model import repair_kpi_canonical_families
+            sections, kpi_diag = repair_kpi_canonical_families(
+                sections, lang=lang, backend=backend)
+            if kpi_diag.get('action_taken') != 'no_changes':
+                repairs.append('rel31:kpi_canonical_families_repaired')
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from release_engine.kpi_substance_model import finalize_kpi_substance
             sections, _ = finalize_kpi_substance(
                 sections, lang=backend.get('lang', 'ar'), backend=backend)

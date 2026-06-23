@@ -275,6 +275,7 @@ def check_kpi_canonical(blob: str) -> Dict[str, Any]:
     semantic_defects: List[str] = []
 
     mttr_count = 0
+    mttd_count = 0
     numbers: List[int] = []
     for cells in rows:
         num = cells[0] if cells else ''
@@ -286,8 +287,12 @@ def check_kpi_canonical(blob: str) -> Dict[str, Any]:
         row_blob = ' '.join(cells)
         if re.match(r'^NCA\s*(DCC|ECC)\b', str(num).strip(), re.I):
             semantic_defects.append('framework_code_in_kpi_number_column')
-        if re.search(r'\bMTTR\b', name, re.I):
+        if re.search(r'\bMTTR\b', name, re.I) or (
+                'استجاب' in name and 'زمن' in name):
             mttr_count += 1
+        if re.search(r'\bMTTD\b', name, re.I) or (
+                ('كشف' in name or 'اكتشاف' in name) and 'زمن' in name):
+            mttd_count += 1
         if 'عدد حوادث تسرب البيانات الحرجة' in name:
             if '%' in target and 'حوادث' not in target:
                 semantic_defects.append('dlp_incident_kpi_percent_target')
@@ -297,6 +302,8 @@ def check_kpi_canonical(blob: str) -> Dict[str, Any]:
                 generic_formulas.append('generic_formula')
     if mttr_count > 1:
         duplicate_metrics.append('duplicate_MTTR')
+    if mttd_count > 1:
+        duplicate_metrics.append('duplicate_MTTD')
     if main_count > 1:
         semantic_defects.append('duplicated_kpi_sections')
     if formula_count > 1:

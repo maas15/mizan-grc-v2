@@ -31,10 +31,329 @@ _THIRD_PARTY_RISK_BAD = 'درجة مخاطر الأطراف الثالثة'
 _THIRD_PARTY_RISK_TARGET = '≤ 3 (منخفض)'
 _THIRD_PARTY_RISK_FORMULA = 'متوسط درجة مخاطر الموردين السيبرانية المقيمة'
 
-_MTTD_TARGET = '≤ 60 دقيقة'
-_MTTD_FORMULA = 'متوسط زمن الكشف عن الحادث من SIEM/SOC'
-_MTTR_TARGET = '≤ 4 ساعات'
-_MTTR_FORMULA = 'متوسط زمن الاستجابة والاحتواء من سجل الحوادث'
+_MTTD_TARGET = '< 4 ساعات'
+_MTTD_FORMULA = 'مجموع أزمنة اكتشاف الحوادث الحرجة ÷ عدد الحوادث الحرجة'
+_MTTR_TARGET = '< 4 ساعات'
+_MTTR_FORMULA = 'مجموع أزمنة الاستجابة للحوادث الحرجة ÷ عدد الحوادث الحرجة'
+
+# REL3 canonical KPI family registry (cyber strategy)
+KPI_CANONICAL_REGISTRY: Dict[str, Dict[str, str]] = {
+    'soc_mttd': {
+        'label_ar': 'متوسط زمن اكتشاف الحوادث الأمنية الحرجة',
+        'kpi_type': 'KPI',
+        'target': _MTTD_TARGET,
+        'formula': _MTTD_FORMULA,
+        'source': 'SIEM / SOC',
+        'frequency': 'شهري',
+    },
+    'incident_response_mttr': {
+        'label_ar': 'متوسط زمن الاستجابة للحوادث الأمنية الحرجة',
+        'kpi_type': 'KPI',
+        'target': _MTTR_TARGET,
+        'formula': _MTTR_FORMULA,
+        'source': 'ITSM / SOAR / SIEM',
+        'frequency': 'شهري',
+    },
+}
+
+_KPI_CANONICAL_FAMILY_TOKENS: Dict[str, Tuple[str, ...]] = {
+    'soc_mttd': ('mttd', 'زمن الكشف', 'كشف', 'اكتشاف'),
+    'incident_response_mttr': ('mttr', 'زمن الاستجابة', 'استجابة'),
+    'governance': ('حوكمة', 'ciso', 'لجنة'),
+    'compliance': ('امتثال', 'ecc', 'dcc'),
+    'iam_mfa_pam': ('iam', 'pam', 'mfa', 'هوية'),
+    'vulnerability_sla': ('ثغر', 'vulnerability', 'sla'),
+    'awareness_phishing': ('توعية', 'phishing', 'تدريب', 'تصيد'),
+    'backup_dr': ('نسخ', 'backup', 'dr', 'تعافي'),
+    'data_classification': ('تصنيف', 'جرد'),
+    'encryption': ('تشفير', 'مفاتيح'),
+    'dlp': ('dlp', 'تسرب'),
+    'third_party_risk': ('أطراف ثالثة', 'third', 'مورد'),
+}
+
+_PRCY88_FAMILY_ALIASES = {
+    'mttd_detection': 'soc_mttd',
+    'mttr_incident': 'incident_response_mttr',
+    'mttd': 'soc_mttd',
+    'mttr': 'incident_response_mttr',
+}
+
+
+def resolve_kpi_canonical_family(name: str) -> Optional[str]:
+    """Map a KPI label to one canonical cyber strategy family."""
+    n = (name or '').strip()
+    if not n:
+        return None
+    low = n.lower()
+    if 'mttr' in low or ('زمن' in n and 'استجاب' in n):
+        return 'incident_response_mttr'
+    if 'mttd' in low or (
+            ('زمن' in n or 'متوسط' in n) and ('كشف' in n or 'اكتشاف' in n)):
+        return 'soc_mttd'
+    for fam, toks in _KPI_CANONICAL_FAMILY_TOKENS.items():
+        if fam in ('soc_mttd', 'incident_response_mttr'):
+            continue
+        if any(tok in low or tok in n for tok in toks):
+            return fam
+    try:
+        from cyber_board_ready_prcy88 import _detect_kpi_family
+        prcy = _detect_kpi_family(n)
+        if prcy:
+            return _PRCY88_FAMILY_ALIASES.get(prcy, prcy)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _kpi_row_cells_to_dict(cells: List[str]) -> Dict[str, str]:
+    if len(cells) >= 6 and (cells[2] or '').upper() in ('KPI', 'KRI'):
+        return {
+            'num': cells[0],
+            'name': cells[1],
+            'kpi_type': cells[2],
+            'target': cells[3],
+            'formula': cells[4],
+            'source': cells[5],
+            'frequency': cells[6] if len(cells) > 6 else 'شهري',
+        }
+    return {
+        'num': cells[0] if cells else '',
+        'name': cells[1] if len(cells) > 1 else '',
+        'kpi_type': 'KPI',
+        'target': cells[2] if len(cells) > 2 else '',
+        'formula': cells[3] if len(cells) > 3 else '',
+        'source': cells[4] if len(cells) > 4 else '',
+        'frequency': cells[5] if len(cells) > 5 else 'شهري',
+    }
+
+
+def _kpi_dict_to_cells(row: Dict[str, str], *, typed: bool = False) -> List[str]:
+    if typed:
+        return [
+            row.get('num', ''),
+            row.get('name', ''),
+            row.get('kpi_type', 'KPI'),
+            row.get('target', ''),
+            row.get('formula', ''),
+            row.get('source', ''),
+            row.get('frequency', 'شهري'),
+        ]
+    return [
+        row.get('num', ''),
+        row.get('name', ''),
+        row.get('target', ''),
+        row.get('formula', ''),
+        row.get('source', ''),
+        row.get('frequency', 'شهري'),
+    ]
+
+
+def _kpi_table_uses_type_column(lines: List[str], rows: List[List[str]]) -> bool:
+    for ln in lines:
+        if ln.strip().startswith('|') and 'KPI' in ln.upper():
+            return True
+    if rows and len(rows[0]) >= 6:
+        return (rows[0][2] or '').upper() in ('KPI', 'KRI')
+    return False
+
+
+def _duplicate_kpi_families_from_rows(
+        rows: List[List[str]]) -> Tuple[List[str], List[str]]:
+    """Return (duplicate_families, duplicate_metric_labels)."""
+    by_family: Dict[str, List[str]] = {}
+    for cells in rows:
+        name = cells[1] if len(cells) > 1 else ''
+        fam = resolve_kpi_canonical_family(name)
+        if not fam:
+            continue
+        by_family.setdefault(fam, []).append(name)
+    dup_fams = [f for f, names in by_family.items() if len(names) > 1]
+    dup_labels: List[str] = []
+    for fam in dup_fams:
+        dup_labels.extend(by_family[fam])
+    return dup_fams, list(dict.fromkeys(dup_labels))
+
+
+def _canonical_registry_row(fam: str, num: int, *, typed: bool) -> Dict[str, str]:
+    reg = KPI_CANONICAL_REGISTRY.get(fam, {})
+    if reg:
+        return {
+            'num': str(num),
+            'name': reg['label_ar'],
+            'kpi_type': reg.get('kpi_type', 'KPI'),
+            'target': reg.get('target', ''),
+            'formula': reg.get('formula', ''),
+            'source': reg.get('source', ''),
+            'frequency': reg.get('frequency', 'شهري'),
+        }
+    return {'num': str(num), 'name': '', 'kpi_type': 'KPI', 'target': '',
+            'formula': '', 'source': '', 'frequency': 'شهري'}
+
+
+def _pick_stronger_kpi_row(
+        a: Dict[str, str], b: Dict[str, str], fam: str) -> Dict[str, str]:
+    if fam in KPI_CANONICAL_REGISTRY:
+        return _canonical_registry_row(fam, int(a.get('num') or b.get('num') or 1),
+                                       typed=bool(a.get('kpi_type')))
+    def _score(r: Dict[str, str]) -> int:
+        tgt = r.get('target') or ''
+        s = len(tgt)
+        if '÷' in (r.get('formula') or ''):
+            s += 10
+        if re.search(r'[%≥≤<]', tgt):
+            s += 5
+        return s
+    return a if _score(a) >= _score(b) else b
+
+
+def repair_kpi_canonical_families(
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Merge KPI main+formula rows by canonical family before REL3 freeze."""
+    _ = backend
+    text = sections.get('kpis', '') or ''
+    main_blob, tail = _split_kpi_main_and_tail(text)
+    lines, rows = _parse_kpi_rows(main_blob)
+    dup_fams_before, dup_labels_before = _duplicate_kpi_families_from_rows(rows)
+    typed = _kpi_table_uses_type_column(lines, rows)
+
+    merged: Dict[str, Dict[str, str]] = {}
+    dropped: List[str] = []
+    merged_fams: List[str] = []
+    order: List[str] = []
+
+    for cells in rows:
+        row = _kpi_row_cells_to_dict(cells)
+        name = row.get('name', '')
+        fam = resolve_kpi_canonical_family(name) or f'__name__:{name}'
+        if fam in merged:
+            dropped.append(name)
+            if fam not in merged_fams and not fam.startswith('__name__:'):
+                merged_fams.append(fam)
+            merged[fam] = _pick_stronger_kpi_row(merged[fam], row, fam)
+        else:
+            merged[fam] = row
+            order.append(fam)
+
+    canonical_rows: List[Dict[str, str]] = []
+    for i, fam in enumerate(order, 1):
+        row = dict(merged[fam])
+        if fam in KPI_CANONICAL_REGISTRY:
+            row = _canonical_registry_row(fam, i, typed=typed)
+        else:
+            row['num'] = str(i)
+        canonical_rows.append(row)
+
+    if not canonical_rows:
+        diag = {
+            'duplicate_metric_labels_before': dup_labels_before,
+            'duplicate_families_before': dup_fams_before,
+            'merged_families': [],
+            'dropped_duplicate_rows': [],
+            'canonical_metric_families_after': [],
+            'duplicate_metric_labels_after': [],
+            'main_formula_row_count_match': True,
+            'kpi_canonical_repair_passed': not dup_fams_before,
+            'blocking_errors': (
+                [f'kpi_duplicate_family:{f}' for f in dup_fams_before]
+                if dup_fams_before else []),
+            'action_taken': 'no_kpi_rows',
+        }
+        emit_rel3_kpi_canonical_repair(diag)
+        return sections, diag
+
+    rebuilt_rows = [
+        _kpi_dict_to_cells(r, typed=typed) for r in canonical_rows]
+    rebuilt_rows = _renumber_rows(rebuilt_rows)
+    out_lines = list(lines)
+    row_idx = 0
+    for i, ln in enumerate(out_lines):
+        if not ln.strip().startswith('|') or '---' in ln:
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if cells and str(cells[0]).isdigit():
+            if row_idx < len(rebuilt_rows):
+                out_lines[i] = '| ' + ' | '.join(rebuilt_rows[row_idx]) + ' |'
+                row_idx += 1
+            else:
+                out_lines[i] = ''
+    if row_idx < len(rebuilt_rows):
+        insert_at = len(out_lines)
+        for i, ln in enumerate(out_lines):
+            if ln.strip().startswith('###') and ('صيغة' in ln or 'formula' in ln.lower()):
+                insert_at = i
+                break
+        for r in rebuilt_rows[row_idx:]:
+            out_lines.insert(insert_at, '| ' + ' | '.join(r) + ' |')
+            insert_at += 1
+
+    new_main = '\n'.join(ln for ln in out_lines if ln.strip() or ln == '')
+    new_text = _sync_kpi_formula_appendix(new_main, lang=lang)
+    if tail:
+        new_text = new_text.rstrip() + '\n\n' + tail + '\n'
+
+    _, rows_after = _parse_kpi_rows(_split_kpi_main_and_tail(new_text)[0])
+    dup_fams_after, dup_labels_after = _duplicate_kpi_families_from_rows(rows_after)
+    main_count = len(rows_after)
+    _, formula_rows = _parse_kpi_rows(new_text)
+    formula_count = 0
+    in_formula = False
+    for ln in new_text.splitlines():
+        s = ln.strip()
+        if s.startswith('###') and ('صيغة' in s or 'formula' in s.lower()):
+            in_formula = True
+            continue
+        if in_formula and s.startswith('|') and '---' not in s:
+            cells = [c.strip() for c in s.strip('|').split('|')]
+            if cells and str(cells[0]).isdigit():
+                formula_count += 1
+
+    families_after = [
+        resolve_kpi_canonical_family(c[1] if len(c) > 1 else '')
+        for c in rows_after]
+    families_after = [f for f in families_after if f]
+    blockers: List[str] = []
+    if dup_fams_after:
+        blockers.extend(f'kpi_duplicate_family:{f}' for f in dup_fams_after)
+    if dup_labels_after:
+        blockers.append('duplicate_mttd' if any(
+            resolve_kpi_canonical_family(n) == 'soc_mttd' for n in dup_labels_after
+        ) else 'duplicate_metric_labels')
+
+    passed = not blockers and main_count == formula_count
+    out = dict(sections)
+    out['kpis'] = new_text
+    diag = {
+        'duplicate_metric_labels_before': dup_labels_before,
+        'duplicate_families_before': dup_fams_before,
+        'merged_families': list(dict.fromkeys(merged_fams)),
+        'dropped_duplicate_rows': dropped,
+        'canonical_metric_families_after': list(dict.fromkeys(families_after)),
+        'duplicate_metric_labels_after': dup_labels_after,
+        'main_formula_row_count_match': main_count == formula_count,
+        'kpi_canonical_repair_passed': passed,
+        'blocking_errors': blockers,
+        'action_taken': (
+            'kpi_canonical_families_repaired'
+            if dup_fams_before or dropped else 'no_changes'),
+    }
+    emit_rel3_kpi_canonical_repair(diag)
+    return out, diag
+
+
+def emit_rel3_kpi_canonical_repair(payload: Dict[str, Any]) -> None:
+    try:
+        print(
+            '[REL3-KPI-CANONICAL-REPAIR] '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
 
 
 def _is_mttd_metric_name(name: str) -> bool:
@@ -253,43 +572,12 @@ def _repair_row_semantics(cells: List[str]) -> Tuple[List[str], bool]:
 
 
 def _dedupe_kpi_metric_labels(text: str) -> str:
-    """Keep one MTTD/MTTR row in the canonical KPI table."""
-    lines, rows = _parse_kpi_rows(text)
-    if not rows:
+    """Keep one row per canonical KPI family in the main KPI table."""
+    sections, diag = repair_kpi_canonical_families(
+        {'kpis': text}, lang='ar')
+    if diag.get('action_taken') == 'no_kpi_rows':
         return text
-    seen: set = set()
-    kept: List[List[str]] = []
-    for cells in rows:
-        name = (cells[1] if len(cells) > 1 else '').upper()
-        raw_name = cells[1] if len(cells) > 1 else ''
-        tag = ''
-        if 'MTTD' in name or (
-                'زمن' in raw_name and ('كشف' in raw_name or 'اكتشاف' in raw_name)):
-            tag = 'MTTD'
-        elif 'MTTR' in name or ('زمن' in raw_name and 'استجاب' in raw_name):
-            tag = 'MTTR'
-        if tag:
-            if tag in seen:
-                continue
-            seen.add(tag)
-        kept.append(cells)
-    if len(kept) == len(rows):
-        return text
-    kept = _renumber_rows(kept)
-    out_lines = list(lines)
-    row_idx = 0
-    for i, ln in enumerate(out_lines):
-        if not ln.strip().startswith('|') or '---' in ln:
-            continue
-        cells = [c.strip() for c in ln.strip('|').split('|')]
-        if cells and str(cells[0]).isdigit():
-            if row_idx < len(kept):
-                out_lines[i] = '| ' + ' | '.join(kept[row_idx]) + ' |'
-                row_idx += 1
-            else:
-                out_lines[i] = ''
-    return _sync_kpi_formula_appendix(
-        '\n'.join(ln for ln in out_lines if ln.strip() or ln == ''), lang='ar')
+    return sections.get('kpis', text)
 
 
 def _separate_dlp_encryption_formulas(text: str) -> str:
@@ -396,12 +684,15 @@ def finalize_kpi_semantics(
     pre_generic = _count_generic_formulas(text)
     pre_num_valid, pre_dupes, pre_gaps = _kpi_numbering_valid(text)
     flat_blob = _is_flat_kpi_blob(text)
+    _, pre_rows = _parse_kpi_rows(text)
+    pre_dup_fams, _ = _duplicate_kpi_families_from_rows(pre_rows)
     if (
             not flat_blob
             and not pre_invalid
             and pre_generic == 0
             and pre_num_valid
-            and not pre_dupes):
+            and not pre_dupes
+            and not pre_dup_fams):
         return sections, {
             'kpi_semantics_valid': True,
             'invalid_metric_rows': [],

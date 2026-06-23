@@ -499,7 +499,9 @@ def canonicalize_kpi_final_row_model(
             continue
         if parsed.get('kind') == 'formula_only':
             continue
-        key = _normalize_kpi_name(parsed.get('name', ''))
+        key = parsed.get('family') or _detect_kpi_family(parsed.get('name', ''))
+        if not key:
+            key = _normalize_kpi_name(parsed.get('name', ''))
         if not key or key in ('—', '-'):
             continue
         prev = main_rows.get(key)

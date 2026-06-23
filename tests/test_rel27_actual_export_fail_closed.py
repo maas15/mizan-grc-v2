@@ -396,4 +396,13 @@ class Rel271RepairTests(unittest.TestCase):
             artifact, export_diag, domain='cyber', lang='ar', backend={})
         self.assertIn('rel271:kpi_mttd_mttr_deduped', repairs)
         blob = merged['sections']['kpis']
-        self.assertEqual(blob.upper().count('MTTD'), 1)
+        from release_engine.kpi_model import (
+            _parse_kpi_rows,
+            resolve_kpi_canonical_family,
+        )
+        _, rows = _parse_kpi_rows(blob)
+        mttd_rows = [
+            r for r in rows
+            if resolve_kpi_canonical_family(r[1] if len(r) > 1 else '')
+            == 'soc_mttd']
+        self.assertEqual(len(mttd_rows), 1)

@@ -85,7 +85,7 @@ class StagingDqsRepairTests(unittest.TestCase):
             'متوسط زمن من SIEM | SIEM/SOC | شهري |\n'
         )
         _, text = _apply_inline_kpi_repairs({'kpis': kpis})
-        self.assertIn('≤ 60 دقيقة', text)
+        self.assertIn('< 4 ساعات', text)
         self.assertEqual(
             [d for d in check_kpi_row_schema(text)
              if 'kpi_percent_without_denominator' in d],
@@ -104,7 +104,11 @@ class StagingDqsRepairTests(unittest.TestCase):
         self.assertEqual(check_arabic_residue_rel31(repaired), [])
 
     def test_mttr_dedupe_repair(self):
-        from release_engine.kpi_model import _dedupe_kpi_metric_labels
+        from release_engine.kpi_model import (
+            _dedupe_kpi_metric_labels,
+            _parse_kpi_rows,
+            resolve_kpi_canonical_family,
+        )
 
         kpis = (
             '| # | وصف | القيمة | صيغة | مصدر | تواتر |\n|---|---|---|---|---|---|\n'
@@ -112,7 +116,12 @@ class StagingDqsRepairTests(unittest.TestCase):
             '| 2 | MTTR | ≤ 6 س | f | s | m |\n'
         )
         out = _dedupe_kpi_metric_labels(kpis)
-        self.assertEqual(out.upper().count('MTTR'), 1)
+        _, rows = _parse_kpi_rows(out)
+        mttr_rows = [
+            r for r in rows
+            if resolve_kpi_canonical_family(r[1] if len(r) > 1 else '')
+            == 'incident_response_mttr']
+        self.assertEqual(len(mttr_rows), 1)
 
     def test_generic_gap_treatment_diversified(self):
         from release_engine.rel31_content_substance_checks import (
