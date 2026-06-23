@@ -46,20 +46,31 @@ def export_docx(
     content = render_tree.markdown_view
     sections = backend.get('split_sections')
     sec_map = sections(content) if sections else {}
-    docx_bytes = build_fn(
-        content,
-        filename,
-        lang,
-        **_filter_build_kwargs(build_fn, {
-            'org_name': org_name,
-            'sector': sector,
-            'doc_type': doc_type,
-            'domain': domain,
-            'selected_frameworks': selected_frameworks,
-            'cyber_sealed_artifact': cyber_sealed_artifact,
-            'sections': sec_map,
-        }),
-    )
+    try:
+        docx_bytes = build_fn(
+            content,
+            filename,
+            lang,
+            **_filter_build_kwargs(build_fn, {
+                'org_name': org_name,
+                'sector': sector,
+                'doc_type': doc_type,
+                'domain': domain,
+                'selected_frameworks': selected_frameworks,
+                'cyber_sealed_artifact': cyber_sealed_artifact,
+                'sections': sec_map,
+            }),
+        )
+    except ValueError as exc:
+        from release_engine_v3.rel31_authority import normalize_rel3_export_blockers
+        blockers = normalize_rel3_export_blockers([str(exc)], route='docx')
+        return ExportResult(
+            route_name='docx',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=blockers or [str(exc)],
+        )
     if not isinstance(docx_bytes, bytes):
         docx_bytes = bytes(docx_bytes or b'')
     sha = _sha256_bytes(docx_bytes)

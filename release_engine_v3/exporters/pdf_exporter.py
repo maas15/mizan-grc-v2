@@ -42,21 +42,41 @@ def export_pdf(
             blocking_errors=['rel3_export_failed:pdf:build_pdf_bytes_missing'],
         )
     content = render_tree.markdown_view
-    pdf_bytes = build_fn(
-        content,
-        **_filter_build_kwargs(build_fn, {
-            'lang': lang,
-            'org_name': org_name,
-            'sector': sector,
-            'doc_type': doc_type,
-            'domain': domain,
-            'selected_frameworks': selected_frameworks,
-            'cyber_sealed_artifact': cyber_sealed_artifact,
-            'sections': backend.get('split_sections', lambda x: {})(content),
-        }),
-    )
+    try:
+        pdf_bytes = build_fn(
+            content,
+            **_filter_build_kwargs(build_fn, {
+                'lang': lang,
+                'org_name': org_name,
+                'sector': sector,
+                'doc_type': doc_type,
+                'domain': domain,
+                'selected_frameworks': selected_frameworks,
+                'cyber_sealed_artifact': cyber_sealed_artifact,
+                'sections': backend.get('split_sections', lambda x: {})(content),
+            }),
+        )
+    except ValueError as exc:
+        from release_engine_v3.rel31_authority import normalize_rel3_export_blockers
+        blockers = normalize_rel3_export_blockers([str(exc)], route='pdf')
+        return ExportResult(
+            route_name='pdf',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=blockers or [str(exc)],
+        )
     if not isinstance(pdf_bytes, bytes):
         pdf_bytes = bytes(pdf_bytes or b'')
+    if not pdf_bytes:
+        return ExportResult(
+            route_name='pdf',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=[
+                'rel3_export_evidence_failed:pdf:empty_bytes'],
+        )
     sha = _sha256_bytes(pdf_bytes)
     return ExportResult(
         route_name='pdf',

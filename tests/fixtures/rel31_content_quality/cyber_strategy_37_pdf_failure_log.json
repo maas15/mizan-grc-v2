@@ -1,0 +1,19 @@
+{
+  "artifact_label": "استراتيجية الأمن السيبراني (37)",
+  "docx_fixture": "cyber_strategy_37_actual.docx",
+  "pdf_generated": false,
+  "live_raw_error": "pdf_render_failed:docmodel_professional_quality:pdf_table_vertical_stack_warnings",
+  "required_rel3_blocker": "rel3_export_evidence_failed:pdf:vertical_stack_warnings",
+  "log_excerpt": "[PDF-QUALITY-GATE] export_blocked error='pdf_render_failed:docmodel_professional_quality:pdf_table_vertical_stack_warnings'",
+  "legacy_authority_violations": [
+    "route=_build_docx_bytes",
+    "source_used_by_docx='strategies.content'",
+    "mutation_after_contract_detected=True",
+    "CYBER-FINAL-EXPORT-CONTRACT"
+  ],
+  "required_after_fix": {
+    "source_used": "rel3_render_tree",
+    "mutation_after_contract_detected": false,
+    "no_raw_pdf_render_failed_to_ui": true
+  }
+}

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from release_engine.rel27_export_checks import (
@@ -347,6 +349,34 @@ def _enforce_document_quality_blockers(
         domain=domain, lang=lang, flags={'rel3': True, 'rel31': True})
 
 
+_REL31_EXPORT_AUTHORITY_OUTPUT_TYPES = frozenset({
+    'docx', 'pdf', 'preview', 'txt', 'download', 'export',
+})
+
+
+def is_rel31_export_authority_output(
+        output_type: str = '',
+        *,
+        route_name: str = '') -> bool:
+    """True when a legacy contract call would act as returned-file export authority."""
+    ot = str(output_type or '').strip().lower()
+    rn = str(route_name or '').strip().lower()
+    return (
+        ot in _REL31_EXPORT_AUTHORITY_OUTPUT_TYPES
+        or rn in _REL31_EXPORT_AUTHORITY_OUTPUT_TYPES)
+
+
+def _normalize_rel31_domain_code(domain: str) -> str:
+    """Map display/slug domain names to canonical codes for authority checks."""
+    d = str(domain or '').strip().lower().replace('-', '_')
+    compact = d.replace(' ', '_')
+    if compact in ('cyber', 'cyber_security', 'cybersecurity'):
+        return 'cyber'
+    if 'cyber' in compact or 'سيبر' in d:
+        return 'cyber'
+    return compact
+
+
 def is_rel3_authoritative(
         *,
         domain: str = 'cyber',
@@ -356,7 +386,7 @@ def is_rel3_authoritative(
     if not flags.get('rel31') or not flags.get('rel3'):
         return False
     return (
-        str(domain or '').strip().lower() in ('cyber', 'cyber_security')
+        _normalize_rel31_domain_code(domain) == 'cyber'
         and str(lang or '').lower().startswith('ar'))
 
 
@@ -801,6 +831,207 @@ def repair_canonical_before_freeze(
     return art, list(dict.fromkeys(repairs))
 
 
+_REL31_EXPORT_ADAPTER = threading.local()
+
+
+def rel31_in_export_adapter() -> bool:
+    return bool(getattr(_REL31_EXPORT_ADAPTER, 'active', False))
+
+
+def rel31_set_export_adapter(active: bool) -> None:
+    _REL31_EXPORT_ADAPTER.active = bool(active)
+
+
+@contextmanager
+def rel31_export_adapter_context():
+    rel31_set_export_adapter(True)
+    try:
+        yield
+    finally:
+        rel31_set_export_adapter(False)
+
+
+def rel31_guard_legacy_authority(
+        function_name: str,
+        *,
+        domain: str = 'cyber',
+        lang: str = 'ar',
+        document_type: str = 'strategy',
+        flags: Optional[Dict[str, Any]] = None,
+        read_only: bool = False,
+) -> Optional[str]:
+    """Block legacy authoritative calls when REL3.1 is active."""
+    if str(document_type or '').lower() not in ('strategy', ''):
+        return None
+    if read_only:
+        return None
+    if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
+        return None
+    if rel31_in_export_adapter():
+        return None
+    return f'rel3_legacy_route_blocked:{function_name}'
+
+
+def normalize_rel3_export_blockers(
+        blockers: List[str],
+        *,
+        route: str = '',
+) -> List[str]:
+    """Map legacy PDF/DOCX quality codes to REL3 evidence blockers."""
+    out: List[str] = []
+    route_n = (route or 'export').lower()
+    for b in list(blockers or []):
+        bs = str(b or '').strip()
+        if not bs:
+            continue
+        low = bs.lower()
+        if 'pdf_table_vertical_stack' in low or (
+                'vertical_stack' in low and route_n == 'pdf'):
+            bs = f'rel3_export_evidence_failed:pdf:vertical_stack_warnings'
+        elif bs.startswith('pdf_render_failed:docmodel_professional_quality'):
+            bs = f'rel3_export_evidence_failed:pdf:docmodel_professional_quality'
+        elif bs.startswith('pdf_render_failed:'):
+            bs = f'rel3_export_evidence_failed:pdf:{bs.split(":", 1)[-1]}'
+        elif bs.startswith('docmodel_professional_quality'):
+            bs = f'rel3_export_evidence_failed:{route_n}:docmodel_professional_quality'
+        elif bs.startswith('rel3_legacy_route_blocked:'):
+            pass
+        elif 'mutation_after_contract' in low:
+            bs = 'rel3_post_contract_mutation_detected'
+        out.append(bs)
+    return list(dict.fromkeys(out))
+
+
+def rel31_assert_no_legacy_override(
+        gate_name: str,
+        *,
+        contract: Optional[Dict[str, Any]] = None,
+        blockers: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Detect legacy gates overriding a passed REL3 generation contract."""
+    contract = contract or {}
+    if not contract.get('generation_save_allowed'):
+        return None
+    if list(contract.get('blocking_errors') or []):
+        return None
+    legacy = [str(b) for b in (blockers or []) if b]
+    if not legacy:
+        return None
+    audit_only = all(is_legacy_audit_only_blocker(b) for b in legacy)
+    if audit_only:
+        return None
+    return f'rel3_legacy_authority_override_detected:{gate_name}'
+
+
+def rel3_export_authoritative(
+        route: str,
+        artifact_dict: Dict[str, Any],
+        *,
+        backend: Dict[str, Any],
+        export_kwargs: Optional[Dict[str, Any]] = None,
+        flags: Optional[Dict[str, Any]] = None,
+) -> Tuple[Any, Any]:
+    """Approved REL3 export entry — RenderTree → exact bytes → evidence."""
+    from release_engine_v3.contracts import EvidenceResult, ExportResult
+    from release_engine_v3.orchestrator import rel3_freeze_artifact
+
+    flags = dict(flags or {'rel3': True, 'rel31': True})
+    domain = str(artifact_dict.get('domain') or 'cyber')
+    lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
+    route_n = (route or 'preview').lower()
+    if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
+        raise ValueError(f'rel3_export_bypass_detected:{route_n}')
+
+    art = dict(artifact_dict or {})
+    art['domain'] = _normalize_rel31_domain_code(
+        art.get('domain') or domain)
+    _bind_backend_sections(backend, art)
+    with rel31_export_adapter_context():
+        frozen = rel3_freeze_artifact(art)
+        if frozen.blocking_errors and route_n != 'preview':
+            blockers = normalize_rel3_export_blockers(
+                list(frozen.blocking_errors), route=route_n)
+            ev = EvidenceResult(
+                route_name=route_n,
+                artifact_id=frozen.artifact_id,
+                strategy_id=frozen.strategy_id,
+                canonical_hash=frozen.canonical_hash,
+                render_tree_hash='',
+                returned_bytes_sha256='',
+                evidence_bytes_sha256='',
+                returned_equals_evidence_bytes=False,
+                exact_bytes_checked=False,
+                preview_text_checked=False,
+                docx_bytes_checked=False,
+                pdf_bytes_checked=False,
+                evidence_passed=False,
+                export_return_allowed=False,
+                blocking_errors=blockers,
+            )
+            ev.emit_diag()
+            return ExportResult(
+                route_name=route_n,
+                artifact_id=frozen.artifact_id,
+                render_tree_hash='',
+                canonical_hash=frozen.canonical_hash,
+                blocking_errors=blockers,
+            ), ev
+        export, evidence = rel3_export_with_evidence(
+            route_n,
+            frozen,
+            backend=backend,
+            export_kwargs=export_kwargs or {},
+        )
+
+    if export.blocking_errors:
+        export.blocking_errors = normalize_rel3_export_blockers(
+            list(export.blocking_errors), route=route_n)
+    if evidence.blocking_errors:
+        evidence.blocking_errors = normalize_rel3_export_blockers(
+            list(evidence.blocking_errors), route=route_n)
+
+    canon = frozen.canonical_hash or export.canonical_hash or ''
+    tree = export.render_tree_hash or evidence.render_tree_hash or ''
+    returned = (
+        export.returned_bytes_sha256
+        or evidence.returned_bytes_sha256
+        or '')
+    post_canon = export.canonical_hash or canon
+    mutation = bool(canon and post_canon and canon != post_canon)
+    if mutation:
+        mut_blk = 'rel3_post_contract_mutation_detected'
+        export.blocking_errors = list(dict.fromkeys(
+            (export.blocking_errors or []) + [mut_blk]))
+        evidence.blocking_errors = list(dict.fromkeys(
+            (evidence.blocking_errors or []) + [mut_blk]))
+        evidence.export_return_allowed = False
+        evidence.evidence_passed = False
+    emit_rel3_post_contract_hash_check(
+        canonical_hash=canon,
+        render_tree_hash=tree,
+        saved_content_hash=post_canon or canon,
+        derived_from_rel3=True,
+        mutation_after_contract_detected=mutation,
+        route_name=route_n,
+    )
+    emit_rel3_source_authority_check(
+        route_name=route_n,
+        artifact_id=str(art.get('artifact_id') or frozen.artifact_id or ''),
+        strategy_id=str(art.get('strategy_id') or frozen.strategy_id or ''),
+        source_used='rel3_render_tree',
+        sealed_artifact_used=True,
+        render_tree_hash=tree,
+        canonical_hash=canon,
+        strategies_content_direct_used=False,
+        legacy_helper_used_inside_rel3_adapter=True,
+        legacy_helper_authoritative=False,
+        blocking_error_if_any=(
+            (evidence.blocking_errors or export.blocking_errors or [''])[0]
+            if not evidence.export_return_allowed else ''),
+    )
+    return export, evidence
+
+
 def emit_rel3_source_authority_check(
         *,
         route_name: str,
@@ -812,20 +1043,28 @@ def emit_rel3_source_authority_check(
         canonical_hash: str = '',
         raw_markdown_used: bool = False,
         client_content_used: bool = False,
+        strategies_content_direct_used: bool = False,
         cyber_final_export_contract_used: bool = False,
         professional_raw_markdown_used: bool = False,
+        legacy_helper_used_inside_rel3_adapter: bool = False,
+        legacy_helper_authoritative: bool = False,
+        rel3_authoritative: bool = True,
         blocking_error_if_any: str = '',
 ) -> Dict[str, Any]:
     valid = (
-        source_used == 'rel3_render_tree'
+        rel3_authoritative
+        and source_used == 'rel3_render_tree'
         and sealed_artifact_used
         and not raw_markdown_used
         and not client_content_used
+        and not strategies_content_direct_used
         and not cyber_final_export_contract_used
         and not professional_raw_markdown_used
+        and not legacy_helper_authoritative
         and not blocking_error_if_any)
     payload = {
         'route_name': route_name,
+        'rel3_authoritative': bool(rel3_authoritative),
         'artifact_id': artifact_id,
         'strategy_id': strategy_id,
         'source_used': source_used,
@@ -834,8 +1073,12 @@ def emit_rel3_source_authority_check(
         'canonical_hash': canonical_hash,
         'raw_markdown_used': raw_markdown_used,
         'client_content_used': client_content_used,
+        'strategies_content_direct_used': strategies_content_direct_used,
         'cyber_final_export_contract_used': cyber_final_export_contract_used,
         'professional_raw_markdown_used': professional_raw_markdown_used,
+        'legacy_helper_used_inside_rel3_adapter': bool(
+            legacy_helper_used_inside_rel3_adapter),
+        'legacy_helper_authoritative': bool(legacy_helper_authoritative),
         'source_authority_valid': valid,
         'blocking_error_if_any': blocking_error_if_any,
     }

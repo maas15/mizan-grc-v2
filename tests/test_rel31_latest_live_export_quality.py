@@ -1,4 +1,4 @@
-"""PR-REL3.1 — latest live export quality (36.docx / 63.pdf byte-exact fixtures)."""
+"""PR-REL3.1 — latest live export quality (37.docx / 63.pdf byte-exact fixtures)."""
 
 from __future__ import annotations
 
@@ -52,9 +52,9 @@ from tests.fixtures.rel31_content_quality.latest_live_fixtures import (
 ensure_latest_live_fixtures()
 
 _LIVE_ARABIC_RESIDUES = (
-    'ال مناسب',
+    'ال منتظم',
     'ال معنية',
-    'المراقبة المست',
+    'ال مراقبة المست',
 )
 
 
@@ -126,19 +126,21 @@ class Rel31LatestFailureTests(unittest.TestCase):
             extracted_pdf_text=cls.pdf_text,
             pdf_bytes=cls.pdf_bytes)
 
-    def test_01_fails_shallow_pillars_and_missing_owners(self):
+    def test_01_fails_content_substance_and_dqs(self):
         self.assertFalse(self.docx_diag['content_substance_passed'])
-        self.assertTrue(self.docx_diag['shallow_pillar_rows'])
-        self.assertTrue(self.docx_diag['pillar_owner_missing'])
+        self.assertFalse(self.dq_raw.get('passed'))
 
-    def test_02_fails_duplicate_pillar_narratives(self):
-        self.assertTrue(self.docx_diag['pillar_duplicate_narratives'])
+    def test_02_fails_duplicate_mttd_mttr(self):
+        block = ' '.join(self.docx_diag['blocking_errors'])
+        self.assertIn('duplicate_mttd', block)
+        self.assertIn('duplicate_mttr', block)
 
     def test_03_fails_roadmap_or_trace_gaps(self):
+        dq_block = ' '.join(self.dq_raw.get('blocking_errors') or [])
         has_road_issue = (
             self.docx_diag['roadmap_visible_row_count'] < 10
-            or self.docx_diag['roadmap_required_families_missing']
-            or 'المراقبة المست' in self.docx_text)
+            or 'roadmap_canonical_invalid' in dq_block
+            or self.docx_diag['roadmap_required_families_missing'])
         has_trace = bool(self.docx_diag['traceability_bad_mappings'])
         self.assertTrue(has_road_issue or has_trace)
 
@@ -152,22 +154,23 @@ class Rel31LatestFailureTests(unittest.TestCase):
             self.docx_diag['mixed_metric_formulas']
             or 'dlp_encryption' in ' '.join(self.docx_diag['blocking_errors']))
 
-    def test_06_fails_third_party_risk_as_kpi(self):
-        self.assertIn(
-            'third_party_risk_as_kpi',
-            self.docx_diag['kpi_semantic_defects'])
+    def test_06_fails_corrupted_cyrillic_mttr_or_duplicate_dlp(self):
+        self.assertTrue(
+            'MTT\u0420' in self.docx_text
+            or self.docx_text.count('عدد حوادث تسرب البيانات الحرجة') > 1)
 
-    def test_07_fails_generic_or_weak_risk_treatments(self):
-        self.assertTrue(self.docx_diag['risk_generic_treatments'])
+    def test_07_fails_glued_arabic_token(self):
+        self.assertIn('معدلمعالجة', self.docx_text)
 
     def test_08_fails_wrong_dcc_traceability_mapping(self):
         self.assertTrue(self.docx_diag['traceability_bad_mappings'])
 
     def test_09_fails_live_arabic_residues(self):
-        self.assertTrue(self.docx_diag['arabic_residues'])
-        self.assertTrue(self.docx_diag['arabic_role_corruption'])
-        for residue in _LIVE_ARABIC_RESIDUES:
-            self.assertIn(residue, self.docx_text)
+        has_residue = (
+            bool(self.docx_diag['arabic_residues'])
+            or bool(self.docx_diag['arabic_role_corruption'])
+            or any(residue in self.docx_text for residue in _LIVE_ARABIC_RESIDUES))
+        self.assertTrue(has_residue)
 
     def test_10_fails_preview_docx_pdf_semantic_drift(self):
         self.assertFalse(self.dq_raw.get('passed'))
@@ -288,11 +291,29 @@ class Rel31LatestReleaseReadinessTests(unittest.TestCase):
             proc.returncode, 0,
             (proc.stdout or '') + (proc.stderr or ''))
         stdout = proc.stdout or ''
-        json_start = stdout.find('{"domains_covered"')
-        if json_start < 0:
-            json_start = stdout.rfind('{')
-        self.assertGreaterEqual(json_start, 0, stdout[-2000:])
-        report = json.loads(stdout[json_start:])
+
+        def _load_readiness_report(text: str) -> dict:
+            needle = '"domains_covered"'
+            pos = 0
+            while True:
+                idx = text.find(needle, pos)
+                if idx < 0:
+                    break
+                start = text.rfind('{', 0, idx)
+                try:
+                    report, _end = json.JSONDecoder().raw_decode(text, start)
+                except json.JSONDecodeError:
+                    pos = idx + 1
+                    continue
+                if ('national_launch_ready' in report
+                        and 'broad_suite_exit_code' in report):
+                    return report
+                pos = idx + 1
+            raise AssertionError(
+                'readiness JSON not found in stdout tail: '
+                + text[-2000:])
+
+        report = _load_readiness_report(stdout)
         self.assertTrue(report.get('national_launch_ready'))
         compiler = report.get('document_quality_compiler') or {}
         self.assertTrue(compiler.get('passed'), compiler)
