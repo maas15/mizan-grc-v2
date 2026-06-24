@@ -68,6 +68,12 @@ REL2_TESTS = [
 
     'tests/test_rel31_latest_live_export_quality.py',
 
+    'tests/test_rel31_kpi_canonical_dedup.py',
+
+    'tests/test_rel31_traceability_route_equivalence.py',
+
+    'tests/test_rel31_live_export_authority_and_dqs.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',

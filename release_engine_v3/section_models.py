@@ -224,7 +224,13 @@ def section_to_markdown(section: CanonicalSection) -> str:
         elif section.key == 'confidence_risk':
             header = ['المخاطرة', 'الاحتمال', 'الأثر', 'خطة المعالجة', 'المالك']
         elif section.key == 'traceability':
-            header = ['المتطلب', 'الفجوة', 'المبادرة المرتبطة']
+            if width >= 6:
+                header = [
+                    'الإطار المرجعي', 'مجال القدرة / الضابط',
+                    'الفجوة المرتبطة', 'المبادرة / النشاط',
+                    'المؤشر', 'الخطر المرتبط']
+            else:
+                header = ['المتطلب', 'الفجوة', 'المبادرة المرتبطة']
         else:
             header = [f'col{i+1}' for i in range(width)]
         header = header[:width]
@@ -250,6 +256,23 @@ def strategy_document_to_markdown(doc: StrategyDocument) -> str:
         for k in order
         if sections.get(k) and (
             sections[k].narrative or sections[k].table_rows))
+
+
+def enrich_traceability_section(
+        section: CanonicalSection, raw_text: str) -> CanonicalSection:
+    """Prefer repaired canonical traceability rows over lossy table parse."""
+    from release_engine.traceability_substance_model import (
+        _parse_trace_rows,
+    )
+    _, hdr, rows = _parse_trace_rows(raw_text or '')
+    if hdr >= 0 and rows:
+        return CanonicalSection(
+            key=section.key,
+            title=section.title,
+            narrative=section.narrative,
+            table_rows=tuple(TableRow(cells=tuple(c)) for c in rows),
+        )
+    return section
 
 
 def rows_from_kpi_parser(text: str) -> Tuple[TableRow, ...]:

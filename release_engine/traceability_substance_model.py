@@ -4,16 +4,97 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+# REL3 canonical traceability family registry (cyber strategy)
+TRACE_CANONICAL_REGISTRY: Dict[str, Dict[str, str]] = {
+    'data_classification': {
+        'framework': 'NCA DCC',
+        'capability': 'تصنيف البيانات',
+        'expected_gap': 'ضعف تصنيف وجرد البيانات الحساسة',
+        'initiative': 'جرد وتصنيف البيانات الحساسة',
+        'metric': 'نسبة التصنيف',
+        'risk': 'مخاطر بيانات غير مصنفة',
+    },
+    'encryption': {
+        'framework': 'NCA DCC',
+        'capability': 'التشفير',
+        'expected_gap': 'ضعف ضوابط التشفير وإدارة المفاتيح',
+        'initiative': 'تطبيق التشفير وإدارة المفاتيح',
+        'metric': 'نسبة التشفير',
+        'risk': 'مخاطر تشفير',
+    },
+    'dlp': {
+        'framework': 'NCA DCC',
+        'capability': 'منع تسرب البيانات / DLP',
+        'expected_gap': 'ضعف ضوابط منع تسرب البيانات',
+        'initiative': 'تفعيل DLP',
+        'metric': 'نسبة تغطية DLP',
+        'risk': 'مخاطر تسرب',
+    },
+    'sensitive_handling': {
+        'framework': 'NCA DCC',
+        'capability': 'معالجة البيانات الحساسة',
+        'expected_gap': 'ضعف معالجة البيانات الحساسة',
+        'initiative': 'إجراءات المعالجة',
+        'metric': 'نسبة الامتثال',
+        'risk': 'مخاطر معالجة',
+    },
+    'data_protection': {
+        'framework': 'NCA DCC',
+        'capability': 'حماية البيانات',
+        'expected_gap': 'ضعف حماية البيانات أثناء النقل والتخزين',
+        'initiative': 'ضوابط الحماية',
+        'metric': 'نسبة الامتثال',
+        'risk': 'مخاطر بيانات',
+    },
+    'ecc_governance': {
+        'framework': 'NCA ECC',
+        'capability': 'حوكمة الأمن السيبراني',
+        'expected_gap': (
+            'غياب وظيفة CISO وهيكل حوكمة الأمن السيبراني'),
+        'initiative': 'تأسيس حوكمة CISO',
+        'metric': 'نسبة الامتثال',
+        'risk': 'مخاطر حوكمة',
+    },
+    'ecc_iam': {
+        'framework': 'NCA ECC',
+        'capability': 'إدارة الهوية والوصول',
+        'expected_gap': 'ضعف إدارة الهوية والوصول IAM/PAM/MFA',
+        'initiative': 'تفعيل IAM/PAM/MFA',
+        'metric': 'نسبة التغطية',
+        'risk': 'مخاطر وصول',
+    },
+    'ecc_soc': {
+        'framework': 'NCA ECC',
+        'capability': 'الرصد الأمني SOC/SIEM',
+        'expected_gap': 'غياب مركز العمليات الأمنية SOC ومنصة SIEM',
+        'initiative': 'تأسيس SOC/SIEM',
+        'metric': 'MTTD',
+        'risk': 'مخاطر رصد',
+    },
+    'ecc_incident_response': {
+        'framework': 'NCA ECC',
+        'capability': 'الاستجابة للحوادث',
+        'expected_gap': (
+            'غياب فريق الاستجابة للحوادث CSIRT وخطط الاستجابة'),
+        'initiative': 'تأسيس CSIRT',
+        'metric': 'MTTR',
+        'risk': 'مخاطر حوادث',
+    },
+    'ecc_vulnerability': {
+        'framework': 'NCA ECC',
+        'capability': 'إدارة الثغرات',
+        'expected_gap': (
+            'ضعف إدارة الثغرات الأمنية وبرنامج التصحيح الدوري'),
+        'initiative': 'برنامج إدارة الثغرات',
+        'metric': 'نسبة التصحيح',
+        'risk': 'مخاطر ثغرات',
+    },
+}
 
 _EXPECTED_GAPS = {
-    'dlp': 'ضعف ضوابط منع تسرب البيانات',
-    'data_classification': 'ضعف تصنيف وجرد البيانات الحساسة',
-    'data_protection': 'ضعف حماية البيانات أثناء النقل والتخزين',
-    'encryption': 'ضعف ضوابط التشفير وإدارة المفاتيح',
-    'sensitive_handling': 'ضعف معالجة البيانات الحساسة',
-    'ecc_incident_response': (
-        'غياب فريق الاستجابة للحوادث CSIRT وخطة الاستجابة الرسمية'),
+    fam: spec['expected_gap'] for fam, spec in TRACE_CANONICAL_REGISTRY.items()
 }
 
 _FAMILY_DETECT = {
@@ -22,9 +103,36 @@ _FAMILY_DETECT = {
     'data_protection': ('حماية البيانات', 'نقل', 'تخزين', 'data protection'),
     'encryption': ('تشفير', 'مفاتيح', 'encryption'),
     'sensitive_handling': ('معالجة البيانات', 'حساسة', 'sensitive'),
+    'ecc_governance': ('حوكمة الأمن', 'ciso', 'حوكمة'),
+    'ecc_iam': ('إدارة الهوية', 'iam', 'pam', 'mfa', 'هوية'),
+    'ecc_soc': ('soc', 'siem', 'الرصد الأمني', 'مركز العمليات'),
     'ecc_incident_response': (
         'الاستجابة للحوادث', 'استجابة', 'incident', 'حوادث', 'csirt'),
+    'ecc_vulnerability': (
+        'إدارة الثغرات', 'ثغرات', 'vulnerability', 'patch', 'تصحيح'),
 }
+
+_DCC_REGISTRY_ORDER = (
+    'dlp', 'data_classification', 'encryption',
+    'sensitive_handling', 'data_protection',
+)
+_ECC_REGISTRY_ORDER = (
+    'ecc_governance', 'ecc_iam', 'ecc_soc',
+    'ecc_incident_response', 'ecc_vulnerability',
+)
+
+
+def resolve_traceability_canonical_family(
+        capability: str,
+        gap: str = '',
+) -> Optional[str]:
+    """Map a traceability capability/gap pair to one canonical family."""
+    blob = f'{(capability or "").lower()} {(gap or "").lower()}'
+    cap = (capability or '').strip()
+    for fam, kws in _FAMILY_DETECT.items():
+        if any(k in blob or k in cap for k in kws):
+            return fam
+    return None
 
 
 def _parse_trace_rows(text: str) -> Tuple[List[str], int, List[List[str]]]:
@@ -34,8 +142,6 @@ def _parse_trace_rows(text: str) -> Tuple[List[str], int, List[List[str]]]:
         if not ln.strip().startswith('|'):
             continue
         hdr_blob = ln.lower()
-        # Traceability matrix only — not gap-analysis tables that also use
-        # a "الفجوة" column (# | الفجوة | الوصف | الأولوية).
         is_trace = (
             ('مجال القدرة' in ln or 'capability' in hdr_blob)
             and (
@@ -79,8 +185,12 @@ def _cap_col_idx(header: str) -> int:
 
 
 def _detect_family(row: List[str], cap_idx: int) -> str:
+    cap = (row[cap_idx] if len(row) > cap_idx else '').strip().lower()
+    if cap:
+        for fam, kws in _FAMILY_DETECT.items():
+            if any(k in cap for k in kws):
+                return fam
     blob = ' '.join(row).lower()
-    cap = (row[cap_idx] if len(row) > cap_idx else '').lower()
     blob = f'{blob} {cap}'
     for fam, kws in _FAMILY_DETECT.items():
         if any(k in blob for k in kws):
@@ -130,21 +240,48 @@ def is_diagnostic_gap_label(text: str) -> bool:
         'Absence ', 'absence ', 'Missing ', 'missing '))
 
 
+def _incident_gap_valid(gap: str) -> bool:
+    g = (gap or '').lower()
+    return (
+        'csirt' in g
+        and ('خطط' in gap or 'خطة' in gap or 'فريق' in gap))
+
+
 def _bad_mapping(family: str, gap: str) -> bool:
     if pdf_trace_extract_artifact(gap):
         return False
     g = (gap or '').lower()
+    expected = _EXPECTED_GAPS.get(family, '')
+    if expected and expected in gap:
+        return False
     if family == 'ecc_incident_response':
+        if _incident_gap_valid(gap):
+            return False
         if 'soc' in g and 'siem' in g and 'csirt' not in g:
             return True
-        if 'غياب فريق' not in g and 'خطة الاستجابة' not in g:
+        if 'غياب فريق' not in g and 'خطة' not in gap and 'خطط' not in gap:
             if 'soc' in g or 'siem' in g:
                 return True
-    if family == 'data_protection' and gap and _EXPECTED_GAPS['data_protection'] not in gap:
-        if 'حماية' not in gap and 'نقل' not in gap:
+        if 'roadmap' in g or 'مبادرة' in gap and 'csirt' not in g:
+            return True
+        return not _incident_gap_valid(gap) and bool(gap)
+    if family == 'ecc_vulnerability':
+        if expected and expected in gap:
+            return False
+        if any(m in g for m in ('dlp', 'تسرب', 'remote', 'بعيد', 'وصول')):
+            return True
+        if 'ثغر' not in g and 'vulnerability' not in g:
+            return True
+        return bool(gap) and expected not in gap
+    if family == 'data_protection' and gap:
+        if expected in gap or ('حماية' in gap and 'نقل' in gap):
+            return False
+        if 'dlp' in g and 'حماية' not in gap:
+            return True
+        if expected and expected not in gap:
             return True
     if family == 'data_classification' and gap:
-        if _EXPECTED_GAPS['data_classification'] in gap:
+        if expected in gap:
             return False
         if any(m in g for m in ('iam', 'pam', 'مميزة', 'حسابات', 'privileged')):
             return True
@@ -153,47 +290,145 @@ def _bad_mapping(family: str, gap: str) -> bool:
             return True
         if 'وجرد' in gap or 'ضعف تصنيف' in gap:
             return False
-        return _EXPECTED_GAPS['data_classification'] not in gap
+        return expected not in gap
     if family == 'dlp' and _is_blank_gap(gap):
         return True
-    if family == 'encryption' and gap and _EXPECTED_GAPS['encryption'] not in gap:
-        return True
-    if family == 'sensitive_handling' and gap and (
-            _EXPECTED_GAPS['sensitive_handling'] not in gap):
-        return len(gap) < 25
-    if family in _EXPECTED_GAPS and gap and _EXPECTED_GAPS[family] not in gap:
+    if family in _EXPECTED_GAPS and gap and expected not in gap:
         if family == 'data_classification' and 'تصنيف' in gap:
             if 'وجرد' in gap or 'ضعف' in gap:
                 return False
             if any(m in g for m in ('حوكمة', 'إطار تنظيمي', 'سياسة عامة')):
                 return True
             return True
-        if family not in ('dlp', 'ecc_incident_response'):
+        if family not in ('dlp', 'ecc_incident_response', 'ecc_vulnerability'):
             return True
         return True
     return False
 
 
-def _build_canonical_traceability() -> str:
+def _collect_bad_mappings(text: str) -> List[str]:
+    bad: List[str] = []
+    lines, hdr, rows = _parse_trace_rows(text or '')
+    if hdr < 0:
+        return bad
+    gap_idx = _gap_col_idx(lines[hdr])
+    cap_idx = _cap_col_idx(lines[hdr])
+    for cells in rows:
+        fam = _detect_family(cells, cap_idx)
+        gap = cells[gap_idx] if len(cells) > gap_idx else ''
+        cap = cells[cap_idx] if len(cells) > cap_idx else fam
+        if fam and _bad_mapping(fam, gap):
+            bad.append(f'{fam}:{cap}')
+    return bad
+
+
+def build_canonical_traceability_from_registry(
+        *,
+        lang: str = 'ar',
+) -> str:
+    """Build full traceability matrix from canonical family registry only."""
+    _ = lang
+    header = (
+        '| الإطار المرجعي | مجال القدرة / الضابط | الفجوة المرتبطة | '
+        'المبادرة / النشاط | المؤشر | الخطر المرتبط |')
+    sep = '|' + '---|' * 6
+    rows: List[str] = []
+    for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER:
+        spec = TRACE_CANONICAL_REGISTRY[fam]
+        rows.append(
+            '| {fw} | {cap} | {gap} | {init} | {met} | {risk} |'.format(
+                fw=spec['framework'],
+                cap=spec['capability'],
+                gap=spec['expected_gap'],
+                init=spec['initiative'],
+                met=spec['metric'],
+                risk=spec['risk'],
+            ))
     return (
         '## مصفوفة التتبع\n\n'
-        '| الإطار المرجعي | مجال القدرة / الضابط | الفجوة المرتبطة | '
-        'المبادرة / النشاط | المؤشر | الخطر المرتبط |\n'
-        '|---|---|---|---|---|---|\n'
-        '| NCA DCC | DLP | ضعف ضوابط منع تسرب البيانات | '
-        'تفعيل DLP | نسبة تغطية DLP | مخاطر تسرب |\n'
-        '| NCA DCC | تصنيف البيانات | ضعف تصنيف وجرد البيانات الحساسة | '
-        'جرد وتصنيف | نسبة التصنيف | مخاطر بيانات |\n'
-        '| NCA DCC | التشفير | ضعف ضوابط التشفير وإدارة المفاتيح | '
-        'تطبيق التشفير | نسبة التشفير | مخاطر تشفير |\n'
-        '| NCA DCC | معالجة البيانات الحساسة | ضعف معالجة البيانات الحساسة | '
-        'إجراءات المعالجة | نسبة الامتثال | مخاطر معالجة |\n'
-        '| NCA ECC | الاستجابة للحوادث | '
-        'غياب فريق الاستجابة للحوادث CSIRT وخطة الاستجابة الرسمية | '
-        'تأسيس CSIRT | MTTR | مخاطر حوادث |\n'
-        '| NCA DCC | حماية البيانات | ضعف حماية البيانات أثناء النقل والتخزين | '
-        'ضوابط الحماية | نسبة الامتثال | مخاطر بيانات |\n'
+        + header + '\n'
+        + sep + '\n'
+        + '\n'.join(rows) + '\n'
     )
+
+
+def _build_canonical_traceability() -> str:
+    return build_canonical_traceability_from_registry()
+
+
+def repair_traceability_canonical_families(
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Rebuild traceability from canonical gap families before REL3 freeze."""
+    _ = backend
+    text = (
+        sections.get('traceability')
+        or sections.get('traceability_matrix')
+        or ''
+    )
+    bad_before = _collect_bad_mappings(text)
+    if not bad_before and text.strip():
+        try:
+            from release_engine.rel31_content_substance_checks import (
+                check_traceability_bad_mappings,
+            )
+            for defect in check_traceability_bad_mappings(text):
+                if defect.startswith('trace_gap_mismatch:'):
+                    bad_before.append(defect)
+        except Exception:  # noqa: BLE001
+            pass
+
+    canonical_text = build_canonical_traceability_from_registry(lang=lang)
+    bad_after: List[str] = []
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            check_traceability_bad_mappings,
+        )
+        bad_after = check_traceability_bad_mappings(canonical_text)
+    except Exception:  # noqa: BLE001
+        bad_after = _collect_bad_mappings(canonical_text)
+
+    repaired_mappings = [
+        f'{fam}->{TRACE_CANONICAL_REGISTRY[fam]["expected_gap"]}'
+        for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
+    ]
+    blockers = list(bad_after)
+    passed = not blockers
+    out = dict(sections)
+    unchanged = (text or '').strip() == canonical_text.strip()
+    out['traceability'] = canonical_text
+    if 'traceability_matrix' in out:
+        out['traceability_matrix'] = canonical_text
+
+    action = 'no_changes' if unchanged and not bad_before else (
+        'traceability_canonical_families_repaired')
+
+    diag = {
+        'bad_mappings_before': list(dict.fromkeys(bad_before)),
+        'repaired_mappings': repaired_mappings,
+        'canonical_gap_families_after': list(
+            _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER),
+        'trace_gap_mismatch_after': blockers,
+        'traceability_canonical_passed': passed,
+        'blocking_errors': blockers,
+        'action_taken': action,
+    }
+    emit_rel3_traceability_canonical_repair(diag)
+    return out, diag
+
+
+def emit_rel3_traceability_canonical_repair(payload: Dict[str, Any]) -> None:
+    try:
+        print(
+            '[REL3-TRACEABILITY-CANONICAL-REPAIR] '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def finalize_traceability_substance(
@@ -201,102 +436,41 @@ def finalize_traceability_substance(
         *,
         lang: str = 'ar',
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    text = (
-        sections.get('traceability')
-        or sections.get('traceability_matrix')
-        or ''
-    )
-    if not text.strip():
-        text = _build_canonical_traceability()
-        action = 'traceability_rebuilt'
-    else:
+    out, diag = repair_traceability_canonical_families(
+        sections, lang=lang)
+    if diag.get('action_taken') == 'no_changes':
+        text = out.get('traceability') or ''
         action = 'validated'
-
-    lines, hdr, rows = _parse_trace_rows(text)
-    blank_before: List[str] = []
-    bad_before: List[str] = []
-    gap_idx = 2
-    cap_idx = 1
-    if hdr >= 0:
-        gap_idx = _gap_col_idx(lines[hdr])
-        cap_idx = _cap_col_idx(lines[hdr])
-
-    new_rows: List[List[str]] = []
-    for cells in rows:
-        c = list(cells)
-        fam = _detect_family(c, cap_idx)
-        if len(c) > gap_idx:
-            gap = c[gap_idx]
-            if _is_blank_gap(gap):
-                blank_before.append(fam or 'unknown')
-                if fam in _EXPECTED_GAPS:
-                    c[gap_idx] = _EXPECTED_GAPS[fam]
-            elif _bad_mapping(fam, gap):
-                bad_before.append(f'{fam}:{gap}')
-                if fam in _EXPECTED_GAPS:
-                    c[gap_idx] = _EXPECTED_GAPS[fam]
-        new_rows.append(c)
-
-    present_fams = {_detect_family(r, cap_idx) for r in new_rows}
-    for fam, expected in _EXPECTED_GAPS.items():
-        if fam not in present_fams:
-            fw = 'NCA DCC' if fam != 'ecc_incident_response' else 'NCA ECC'
-            cap = {
-                'dlp': 'DLP',
-                'data_classification': 'تصنيف البيانات',
-                'data_protection': 'حماية البيانات',
-                'encryption': 'التشفير',
-                'sensitive_handling': 'معالجة البيانات الحساسة',
-                'ecc_incident_response': 'الاستجابة للحوادث',
-            }[fam]
-            new_rows.append([
-                fw, cap, expected, 'مبادرة مرتبطة', 'مؤشر', 'خطر',
-            ])
-
-    blank_after: List[str] = []
-    bad_after: List[str] = []
-    for c in new_rows:
-        fam = _detect_family(c, cap_idx)
-        if len(c) > gap_idx:
-            gap = c[gap_idx]
-            if _is_blank_gap(gap):
-                blank_after.append(fam)
-            elif _bad_mapping(fam, gap):
-                bad_after.append(f'{fam}:{gap}')
-
-    if bad_after or blank_after:
-        text = _build_canonical_traceability()
-        blank_after = []
-        bad_after = []
-        action = 'traceability_rebuilt_canonical'
-    elif hdr >= 0:
-        out_lines = lines[:hdr + 1]
-        for c in new_rows:
-            out_lines.append('| ' + ' | '.join(c) + ' |')
-        out_lines.extend(lines[hdr + 1 + len(rows):])
-        text = '\n'.join(out_lines)
-    elif new_rows:
-        text = _build_canonical_traceability()
-
-    passed = not blank_after and not bad_after
-    blocking = ''
-    if blank_after:
-        blocking = f'rel2_substantive_quality_failed:traceability:{blank_after[0]}'
-    elif bad_after:
-        blocking = 'rel2_substantive_quality_failed:traceability:bad_mapping'
-
-    out = dict(sections)
-    out['traceability'] = text
-    diag = {
-        'blank_gap_rows_before': blank_before,
-        'blank_gap_rows_after': blank_after,
-        'bad_mappings_before': bad_before,
-        'bad_mappings_after': bad_after,
-        'traceability_substance_passed': passed,
-        'action_taken': action if not blank_before and not bad_before else (
-            'traceability_repaired'),
-        'blocking_error_if_any': blocking,
-    }
+        blank_before: List[str] = []
+        bad_before = _collect_bad_mappings(text)
+        blank_after: List[str] = []
+        bad_after = list(diag.get('trace_gap_mismatch_after') or [])
+        passed = not blank_after and not bad_after
+        blocking = ''
+        if bad_after:
+            blocking = 'rel2_substantive_quality_failed:traceability:bad_mapping'
+        diag = {
+            'blank_gap_rows_before': blank_before,
+            'blank_gap_rows_after': blank_after,
+            'bad_mappings_before': bad_before,
+            'bad_mappings_after': bad_after,
+            'traceability_substance_passed': passed,
+            'action_taken': action if not bad_before else 'traceability_repaired',
+            'blocking_error_if_any': blocking,
+        }
+    else:
+        diag = {
+            'blank_gap_rows_before': [],
+            'blank_gap_rows_after': [],
+            'bad_mappings_before': diag.get('bad_mappings_before') or [],
+            'bad_mappings_after': diag.get('trace_gap_mismatch_after') or [],
+            'traceability_substance_passed': diag.get(
+                'traceability_canonical_passed', False),
+            'action_taken': diag.get('action_taken'),
+            'blocking_error_if_any': (
+                (diag.get('blocking_errors') or [''])[0]
+                if not diag.get('traceability_canonical_passed') else ''),
+        }
     return out, diag
 
 

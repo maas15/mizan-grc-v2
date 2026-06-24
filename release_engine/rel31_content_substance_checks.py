@@ -323,7 +323,12 @@ def check_traceability_bad_mappings(blob: str) -> List[str]:
             pdf_trace_extract_artifact,
             is_diagnostic_gap_label,
         )
-        for trace_text in (trace,):
+        trace_candidates = [t for t in (trace, blob) if (t or '').strip()]
+        seen: set = set()
+        for trace_text in trace_candidates:
+            if trace_text in seen:
+                continue
+            seen.add(trace_text)
             _lines, hdr, rows = _parse_trace_rows(trace_text)
             if hdr >= 0 and rows:
                 cap_idx = _cap_col_idx(_lines[hdr])

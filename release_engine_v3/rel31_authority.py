@@ -66,7 +66,118 @@ def _bind_backend_sections(
         backend: Dict[str, Any], art: Dict[str, Any]) -> None:
     """Ensure export routes render repaired canonical sections, not stale markdown."""
     sections = dict(art.get('sections') or {})
+    backend['_rel31_frozen_sections'] = sections
+    backend['_rel31_sections_bound'] = True
     backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
+
+
+def _verify_rel31_section_binding(
+        backend: Dict[str, Any],
+        art: Dict[str, Any],
+        route: str) -> List[str]:
+    """Block when export would reparse markdown instead of frozen sections."""
+    if not backend.get('_rel31_sections_bound'):
+        return [f'rel3_route_artifact_divergence:{route}']
+    frozen = dict(art.get('sections') or {})
+    bound = backend.get('_rel31_frozen_sections') or {}
+    if frozen and bound and frozen.get('traceability') != bound.get('traceability'):
+        return [f'rel3_route_artifact_divergence:{route}']
+    split_fn = backend.get('split_sections')
+    if split_fn and frozen:
+        probe = split_fn('')
+        if probe.get('traceability') != frozen.get('traceability'):
+            return [f'rel3_route_artifact_divergence:{route}']
+    return []
+
+
+_ROUTE_ARTIFACT_HASHES: Dict[str, Dict[str, Dict[str, str]]] = {}
+
+
+def record_rel3_route_artifact_hashes(
+        strategy_id: str,
+        route: str,
+        *,
+        canonical_hash: str,
+        render_tree_hash: str,
+) -> None:
+    sid = str(strategy_id or '').strip()
+    if not sid:
+        return
+    bucket = _ROUTE_ARTIFACT_HASHES.setdefault(sid, {})
+    bucket[(route or '').lower()] = {
+        'canonical_hash': canonical_hash or '',
+        'render_tree_hash': render_tree_hash or '',
+    }
+
+
+def emit_rel3_route_artifact_equivalence(
+        strategy_id: str,
+        *,
+        generation_route: str = 'generation',
+) -> Dict[str, Any]:
+    sid = str(strategy_id or '').strip()
+    routes = _ROUTE_ARTIFACT_HASHES.get(sid) or {}
+    gen = routes.get(generation_route) or routes.get('generation') or {}
+    preview = routes.get('preview') or {}
+    docx = routes.get('docx') or {}
+    pdf = routes.get('pdf') or {}
+
+    def _h(route_data: Dict[str, str], key: str) -> str:
+        return str((route_data or {}).get(key) or '')
+
+    canon_hashes = [
+        _h(gen, 'canonical_hash'),
+        _h(preview, 'canonical_hash'),
+        _h(docx, 'canonical_hash'),
+        _h(pdf, 'canonical_hash'),
+    ]
+    tree_hashes = [
+        _h(gen, 'render_tree_hash'),
+        _h(preview, 'render_tree_hash'),
+        _h(docx, 'render_tree_hash'),
+        _h(pdf, 'render_tree_hash'),
+    ]
+    present_canon = [h for h in canon_hashes if h]
+    present_tree = [h for h in tree_hashes if h]
+    all_canon_equal = len(set(present_canon)) <= 1 if present_canon else True
+    all_tree_equal = len(set(present_tree)) <= 1 if present_tree else True
+    blockers: List[str] = []
+    if present_canon and not all_canon_equal:
+        for route_name, data in routes.items():
+            if _h(data, 'canonical_hash') and _h(data, 'canonical_hash') != present_canon[0]:
+                blockers.append(f'rel3_route_hash_mismatch:{route_name}')
+    if present_tree and not all_tree_equal:
+        for route_name, data in routes.items():
+            if _h(data, 'render_tree_hash') and _h(data, 'render_tree_hash') != present_tree[0]:
+                blockers.append(f'rel3_route_hash_mismatch:{route_name}')
+    payload = {
+        'strategy_id': sid,
+        'generation_canonical_hash': _h(gen, 'canonical_hash'),
+        'preview_canonical_hash': _h(preview, 'canonical_hash'),
+        'docx_canonical_hash': _h(docx, 'canonical_hash'),
+        'pdf_canonical_hash': _h(pdf, 'canonical_hash'),
+        'generation_render_tree_hash': _h(gen, 'render_tree_hash'),
+        'preview_render_tree_hash': _h(preview, 'render_tree_hash'),
+        'docx_render_tree_hash': _h(docx, 'render_tree_hash'),
+        'pdf_render_tree_hash': _h(pdf, 'render_tree_hash'),
+        'all_route_hashes_equal': all_canon_equal and all_tree_equal,
+        'route_artifact_equivalence_passed': (
+            all_canon_equal and all_tree_equal and not blockers),
+        'blocking_errors': list(dict.fromkeys(blockers)),
+    }
+    try:
+        print(
+            '[REL3-ROUTE-ARTIFACT-EQUIVALENCE] '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return payload
+
+
+def clear_rel3_route_artifact_hashes() -> None:
+    _ROUTE_ARTIFACT_HASHES.clear()
 
 
 def _scrub_art_sections_for_build(
@@ -130,6 +241,7 @@ def _rel31_dq_repairable(
         'ال معنية', 'ال منظمات', 'ال عنصر', 'ال منقولة', 'ل معالجة',
         'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
         'repeated_generic', 'repeated_generic_gap',
+        'trace_gap_mismatch', 'traceability_dcc_classification_invalid',
         'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count'))
 
 
@@ -143,9 +255,10 @@ def _rel31_dq_needs_repair(dq: Dict[str, Any]) -> bool:
                 'arabic_residue', 'arabic_role_corruption',
                 'arabic_canonical_invalid', 'roadmap_preview_docx_pdf_drift',
                 'preview_docx_pdf_roadmap_drift', 'dlp_incident',
-                'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
+        'duplicate_mttd', 'duplicate_mttr', 'duplicate_MTTD', 'duplicate_MTTR',
         'repeated_generic', 'repeated_generic_gap',
-                'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count')):
+        'trace_gap_mismatch', 'traceability_dcc_classification_invalid',
+        'roadmap_weak_owner', 'roadmap_weak_output', 'roadmap_row_count')):
             return True
     return False
 
@@ -807,6 +920,16 @@ def repair_canonical_before_freeze(
         except Exception:  # noqa: BLE001
             pass
         try:
+            from release_engine.traceability_substance_model import (
+                repair_traceability_canonical_families,
+            )
+            sections, trace_diag = repair_traceability_canonical_families(
+                sections, lang=lang, backend=backend)
+            if trace_diag.get('action_taken') != 'no_changes':
+                repairs.append('rel31:traceability_canonical_families_repaired')
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from release_engine.kpi_substance_model import finalize_kpi_substance
             sections, _ = finalize_kpi_substance(
                 sections, lang=backend.get('lang', 'ar'), backend=backend)
@@ -953,7 +1076,35 @@ def rel3_export_authoritative(
     art = dict(artifact_dict or {})
     art['domain'] = _normalize_rel31_domain_code(
         art.get('domain') or domain)
+    art, _pre_rep = repair_canonical_before_freeze(art, backend=backend)
     _bind_backend_sections(backend, art)
+    bind_blockers = _verify_rel31_section_binding(backend, art, route_n)
+    if bind_blockers:
+        ev = EvidenceResult(
+            route_name=route_n,
+            artifact_id=str(art.get('artifact_id') or ''),
+            strategy_id=str(art.get('strategy_id') or ''),
+            canonical_hash='',
+            render_tree_hash='',
+            returned_bytes_sha256='',
+            evidence_bytes_sha256='',
+            returned_equals_evidence_bytes=False,
+            exact_bytes_checked=False,
+            preview_text_checked=False,
+            docx_bytes_checked=False,
+            pdf_bytes_checked=False,
+            evidence_passed=False,
+            export_return_allowed=False,
+            blocking_errors=bind_blockers,
+        )
+        ev.emit_diag()
+        return ExportResult(
+            route_name=route_n,
+            artifact_id=str(art.get('artifact_id') or ''),
+            render_tree_hash='',
+            canonical_hash='',
+            blocking_errors=bind_blockers,
+        ), ev
     with rel31_export_adapter_context():
         frozen = rel3_freeze_artifact(art)
         if frozen.blocking_errors and route_n != 'preview':
@@ -1037,6 +1188,14 @@ def rel3_export_authoritative(
             (evidence.blocking_errors or export.blocking_errors or [''])[0]
             if not evidence.export_return_allowed else ''),
     )
+    record_rel3_route_artifact_hashes(
+        str(art.get('strategy_id') or frozen.strategy_id or ''),
+        route_n,
+        canonical_hash=canon,
+        render_tree_hash=tree,
+    )
+    emit_rel3_route_artifact_equivalence(
+        str(art.get('strategy_id') or frozen.strategy_id or ''))
     return export, evidence
 
 
@@ -1588,6 +1747,12 @@ def apply_rel31_authoritative_contract(
     store_artifact(built)
 
     tree = rel3_build_render_tree(built)
+    _sid = str(art.get('strategy_id') or built.strategy_id or '')
+    record_rel3_route_artifact_hashes(
+        _sid, 'generation',
+        canonical_hash=built.canonical_hash,
+        render_tree_hash=tree.render_tree_hash,
+    )
     _bind_backend_sections(backend, art)
     preview_export, preview_ev = rel3_export_with_evidence(
         'preview', built, backend=backend)
@@ -1924,6 +2089,8 @@ def apply_rel31_authoritative_contract(
         'blocking_errors': blockers,
     }
     art['diagnostics'] = diag
+    emit_rel3_route_artifact_equivalence(
+        str(art.get('strategy_id') or built.strategy_id or ''))
     return art
 
 

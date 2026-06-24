@@ -74,9 +74,13 @@ REQUIRED_TRACE_MAPPINGS: Dict[str, str] = {
     'dlp': 'ضعف ضوابط منع تسرب البيانات',
     'sensitive_data_handling': 'ضعف معالجة البيانات الحساسة',
     'data_protection': 'ضعف حماية البيانات أثناء النقل والتخزين',
+    'ecc_governance': 'غياب وظيفة CISO وهيكل حوكمة الأمن السيبراني',
+    'ecc_iam': 'ضعف إدارة الهوية والوصول IAM/PAM/MFA',
+    'ecc_soc_monitoring': 'غياب مركز العمليات الأمنية SOC ومنصة SIEM',
     'ecc_incident_response': (
-        'غياب فريق الاستجابة للحوادث CSIRT وخطة موثّقة'),
-    'ecc_soc_monitoring': 'غياب مركز العمليات الأمنية SOC / SIEM',
+        'غياب فريق الاستجابة للحوادث CSIRT وخطط الاستجابة'),
+    'ecc_vulnerability': (
+        'ضعف إدارة الثغرات الأمنية وبرنامج التصحيح الدوري'),
 }
 
 _KPI_SPEC_TO_SUBSTANCE = {
@@ -897,9 +901,14 @@ def build_traceability_mapping_report(blob: str) -> List[Dict[str, Any]]:
         cap_idx = _cap_col_idx(lines[hdr])
         gap_idx = _gap_col_idx(lines[hdr])
     actual_by_family: Dict[str, str] = {}
+    _fam_aliases = {
+        'ecc_soc': 'ecc_soc_monitoring',
+        'sensitive_handling': 'sensitive_data_handling',
+    }
     if hdr >= 0:
         for cells in rows:
             fam = _detect_family(cells, cap_idx) or ''
+            fam = _fam_aliases.get(fam, fam)
             gap = cells[gap_idx] if len(cells) > gap_idx else ''
             if fam and gap and gap not in ('—', '-', ''):
                 actual_by_family[fam] = gap
@@ -1496,6 +1505,17 @@ def repair_document_quality_sections(
             repairs.append('dqs:kpi_canonical_families_repaired')
         out, _ = _apply_inline_kpi_repairs(out)
         repairs.append('dqs:kpi_percent_formula_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.traceability_substance_model import (
+            repair_traceability_canonical_families,
+        )
+        out, trace_diag = repair_traceability_canonical_families(
+            out, lang=lang, backend=backend)
+        if trace_diag.get('action_taken') != 'no_changes':
+            repairs.append('dqs:traceability_canonical_families_repaired')
     except Exception:  # noqa: BLE001
         pass
 

@@ -245,6 +245,16 @@ def rel3_export_with_evidence(
         if export.bytes_data:
             _EXPORT_CACHE[cache_key] = export.bytes_data
     update_artifact_manifest(artifact, export, evidence_passed=evidence.evidence_passed)
+    try:
+        from release_engine_v3.rel31_authority import record_rel3_route_artifact_hashes
+        record_rel3_route_artifact_hashes(
+            str(artifact.strategy_id or ''),
+            route,
+            canonical_hash=artifact.canonical_hash,
+            render_tree_hash=tree.render_tree_hash,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return export, evidence
 
 

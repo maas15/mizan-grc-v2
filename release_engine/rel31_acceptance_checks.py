@@ -574,6 +574,13 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
     """Detect semantically wrong flat DOCX/PDF traceability gap mappings."""
     trace = _trace_matrix_blob(blob)
     if not trace.strip():
+        if any(m in (blob or '') for m in (
+                'تصنيف البيانات', 'حماية البيانات', 'الاستجابة للحوادث',
+                'إدارة الثغرات', 'NCA DCC', 'NCA ECC')):
+            trace = blob or ''
+        else:
+            return []
+    if not trace.strip():
         return []
     try:
         from release_engine.traceability_substance_model import (
@@ -601,7 +608,7 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
                 continue
         if ln in (
                 'تصنيف البيانات', 'حماية البيانات', 'الاستجابة للحوادث',
-                'منع تسرب البيانات / DLP', 'DLP', 'التشفير'):
+                'إدارة الثغرات', 'منع تسرب البيانات / DLP', 'DLP', 'التشفير'):
             if i + 1 < len(lines):
                 nxt = lines[i + 1]
                 if not pdf_trace_extract_artifact(ln) and not pdf_trace_extract_artifact(nxt):
@@ -816,6 +823,17 @@ def repair_rel31_canonical_sections(
             out, lang=lang, backend=backend)
         if kpi_diag.get('action_taken') != 'no_changes':
             repairs.append('rel31:kpi_canonical_families_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.traceability_substance_model import (
+            repair_traceability_canonical_families,
+        )
+        out, trace_diag = repair_traceability_canonical_families(
+            out, lang=lang, backend=backend)
+        if trace_diag.get('action_taken') != 'no_changes':
+            repairs.append('rel31:traceability_canonical_families_repaired')
     except Exception:  # noqa: BLE001
         pass
 

@@ -16,6 +16,7 @@ from release_engine_v3.contracts import (
 from release_engine_v3.section_models import (
     build_strategy_document,
     enrich_kpi_section,
+    enrich_traceability_section,
     strategy_document_to_markdown,
 )
 from release_engine_v3.validators import validate_canonical_quality
@@ -49,6 +50,13 @@ def _legacy_to_canonical_sections(
     if raw_kpi:
         sections['kpi_kri'] = enrich_kpi_section(
             sections['kpi_kri'], raw_kpi)
+    raw_trace = (
+        legacy_sections.get('traceability')
+        or legacy_sections.get('traceability_matrix')
+        or '')
+    if raw_trace:
+        sections['traceability'] = enrich_traceability_section(
+            sections['traceability'], raw_trace)
     return sections
 
 

@@ -23,7 +23,7 @@ class DocumentQualitySpecConstantsTests(unittest.TestCase):
         self.assertEqual(len(REQUIRED_KPI_FAMILIES), 12)
 
     def test_required_trace_mappings_count(self):
-        self.assertEqual(len(REQUIRED_TRACE_MAPPINGS), 7)
+        self.assertEqual(len(REQUIRED_TRACE_MAPPINGS), 10)
 
 
 class DocumentQualitySpecSoModelTests(unittest.TestCase):
