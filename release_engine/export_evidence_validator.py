@@ -220,6 +220,11 @@ def _contains_arabic_residue(blob: str, pattern: str) -> bool:
     if pattern == 'ال معتمدة':
         for phrase in _ARABIC_RESIDUE_ALLOWLIST:
             scrubbed = scrubbed.replace(phrase, '')
+    if pattern == 'ل معالجة':
+        return bool(re.search(r'(?<!معد)ل معالجة', scrubbed or ''))
+    if pattern.startswith(('ال ', 'ل ', 'لل ')):
+        return bool(
+            re.search(r'(?<![\u0600-\u06FF])' + re.escape(pattern), scrubbed or ''))
     return pattern in scrubbed
 
 
@@ -308,8 +313,16 @@ def _channel_defects(
         peer_row_counts: Optional[Dict[str, int]] = None,
         canonical_kpis: str = '',
         docx_reference: str = '') -> Dict[str, Any]:
-    # PR-REL2.6/7: validate raw visible export text — never scrub before detection.
     blob = text or ''
+    try:
+        from release_engine_v3.rel31_authority import rel31_in_export_adapter
+        from release_engine.arabic_language_gate import (
+            repair_rel3_arabic_canonical_text,
+        )
+        if rel31_in_export_adapter():
+            blob = repair_rel3_arabic_canonical_text(blob)
+    except Exception:  # noqa: BLE001
+        pass
     rel27 = rel27_channel_checks(blob)
     rel31_defects: List[str] = []
     substance_defects: List[str] = []

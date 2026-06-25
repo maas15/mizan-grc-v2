@@ -72,6 +72,8 @@ REL2_TESTS = [
 
     'tests/test_rel31_traceability_route_equivalence.py',
 
+    'tests/test_rel31_arabic_canonical_repair.py',
+
     'tests/test_rel31_live_export_authority_and_dqs.py',
 
     'tests/test_legacy_gate_retirement_rel2.py',

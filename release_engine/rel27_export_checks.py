@@ -507,6 +507,11 @@ def _contains_arabic_residue(blob: str, pattern: str) -> bool:
     if pattern == 'ال معتمدة':
         for phrase in _ARABIC_RESIDUE_ALLOWLIST:
             scrubbed = scrubbed.replace(phrase, '')
+    if pattern == 'ل معالجة':
+        return bool(re.search(r'(?<!معد)ل معالجة', scrubbed or ''))
+    if pattern.startswith(('ال ', 'ل ', 'لل ')):
+        return bool(
+            re.search(r'(?<![\u0600-\u06FF])' + re.escape(pattern), scrubbed or ''))
     return pattern in scrubbed
 
 

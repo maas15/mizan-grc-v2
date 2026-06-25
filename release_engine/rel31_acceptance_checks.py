@@ -93,15 +93,24 @@ _TOC_LINE_RE = re.compile(r'^\d+\s+\S')
 
 _GLUE_RESIDUE_PATTERNS = {
     'المراقبة المست': r'المراقبة المست(?!مر)',
+    # Valid KPI phrase «معدل معالجة» — not a ل+معالجة glue residue.
+    'ل معالجة': r'(?<!معد)ل معالجة',
 }
 
 
 def arabic_glue_residue_present(text: str, pat: str) -> bool:
     """Match glue residues without false positives (e.g. المستمرة)."""
+    blob = text or ''
     special = _GLUE_RESIDUE_PATTERNS.get(pat)
     if special:
-        return bool(re.search(special, text or ''))
-    return pat in (text or '')
+        return bool(re.search(special, blob))
+    # «امتثال ضوابط» must not match the «ال ضوابط» lam-glue token.
+    if pat.startswith(('ال ', 'ل ', 'لل ')):
+        return bool(re.search(r'(?<![\u0600-\u06FF])' + re.escape(pat), blob))
+    if pat == 'معدلمعالجة':
+        # DOCX/PDF extraction may glue valid «معدل معالجة» — repair-only token.
+        return False
+    return pat in blob
 
 
 def _line_at(text: str, pos: int) -> str:
@@ -834,6 +843,17 @@ def repair_rel31_canonical_sections(
             out, lang=lang, backend=backend)
         if trace_diag.get('action_taken') != 'no_changes':
             repairs.append('rel31:traceability_canonical_families_repaired')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.arabic_language_gate import (
+            repair_arabic_canonical_text_before_freeze,
+        )
+        out, ar_canon_diag = repair_arabic_canonical_text_before_freeze(
+            out, lang=lang, backend=backend)
+        if ar_canon_diag.get('sections_repaired'):
+            repairs.append('rel31:arabic_canonical_repaired')
     except Exception:  # noqa: BLE001
         pass
 

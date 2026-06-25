@@ -139,17 +139,22 @@ def emit_rel3_route_artifact_equivalence(
     ]
     present_canon = [h for h in canon_hashes if h]
     present_tree = [h for h in tree_hashes if h]
-    all_canon_equal = len(set(present_canon)) <= 1 if present_canon else True
-    all_tree_equal = len(set(present_tree)) <= 1 if present_tree else True
     blockers: List[str] = []
-    if present_canon and not all_canon_equal:
-        for route_name, data in routes.items():
-            if _h(data, 'canonical_hash') and _h(data, 'canonical_hash') != present_canon[0]:
-                blockers.append(f'rel3_route_hash_mismatch:{route_name}')
-    if present_tree and not all_tree_equal:
-        for route_name, data in routes.items():
-            if _h(data, 'render_tree_hash') and _h(data, 'render_tree_hash') != present_tree[0]:
-                blockers.append(f'rel3_route_hash_mismatch:{route_name}')
+    if not present_canon and not present_tree:
+        blockers.append('rel3_route_equivalence_not_evaluated:no_route_hashes')
+        all_canon_equal = False
+        all_tree_equal = False
+    else:
+        all_canon_equal = len(set(present_canon)) <= 1 if present_canon else True
+        all_tree_equal = len(set(present_tree)) <= 1 if present_tree else True
+        if present_canon and not all_canon_equal:
+            for route_name, data in routes.items():
+                if _h(data, 'canonical_hash') and _h(data, 'canonical_hash') != present_canon[0]:
+                    blockers.append(f'rel3_route_hash_mismatch:{route_name}')
+        if present_tree and not all_tree_equal:
+            for route_name, data in routes.items():
+                if _h(data, 'render_tree_hash') and _h(data, 'render_tree_hash') != present_tree[0]:
+                    blockers.append(f'rel3_route_hash_mismatch:{route_name}')
     payload = {
         'strategy_id': sid,
         'generation_canonical_hash': _h(gen, 'canonical_hash'),
@@ -195,13 +200,18 @@ def _scrub_art_sections_for_build(
         out['kpis'] = _dedupe_kpi_metric_labels(out['kpis'])
     if str(lang or '').lower().startswith('en'):
         return out
+    from release_engine.arabic_language_gate import (
+        apply_arabic_final_gate,
+        repair_arabic_canonical_text_before_freeze,
+    )
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
-    from release_engine.arabic_language_gate import apply_arabic_final_gate
     out = {
         k: _repair_arabic_blob(v)
         if isinstance(v, str) and not str(k).startswith('_') else v
         for k, v in out.items()}
     out, _ = apply_arabic_final_gate(out, lang=lang)
+    out, _ = repair_arabic_canonical_text_before_freeze(
+        out, lang=lang)
     return out
 
 
@@ -953,6 +963,18 @@ def repair_canonical_before_freeze(
                 min(len(critical), 2),
             )
         repairs.extend(['rel31:objectives_repair', 'rel31:roadmap_repair'])
+    try:
+        from release_engine.arabic_language_gate import (
+            repair_arabic_canonical_text_before_freeze,
+        )
+        sections, ar_canon_diag = repair_arabic_canonical_text_before_freeze(
+            sections, lang=lang, backend=backend)
+        if ar_canon_diag.get('sections_repaired'):
+            repairs.append('rel31:arabic_canonical_repaired')
+        elif not ar_canon_diag.get('arabic_canonical_repair_passed'):
+            repairs.append('rel31:arabic_canonical_blocked')
+    except Exception:  # noqa: BLE001
+        pass
     if backend.get('rebuild_markdown'):
         try:
             art['final_markdown'] = backend['rebuild_markdown'](sections)

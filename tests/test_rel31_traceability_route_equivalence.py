@@ -289,6 +289,15 @@ class RouteArtifactEquivalenceTests(unittest.TestCase):
         self.assertTrue(diag.get('route_artifact_equivalence_passed'))
         self.assertEqual(diag.get('blocking_errors'), [])
 
+    def test_17_empty_route_hashes_not_evaluated_as_passed(self):
+        clear_rel3_route_artifact_hashes()
+        diag = emit_rel3_route_artifact_equivalence('rel31-eq-empty')
+        self.assertFalse(diag.get('route_artifact_equivalence_passed'))
+        self.assertFalse(diag.get('all_route_hashes_equal'))
+        self.assertIn(
+            'rel3_route_equivalence_not_evaluated:no_route_hashes',
+            diag.get('blocking_errors') or [])
+
 
 class TraceabilityLiveExportTests(unittest.TestCase):
 

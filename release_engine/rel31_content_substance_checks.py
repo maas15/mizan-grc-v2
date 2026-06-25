@@ -408,6 +408,16 @@ def evaluate_content_substance(
     )
 
     peer_row_counts = peer_row_counts or {}
+    blob = blob or ''
+    try:
+        from release_engine_v3.rel31_authority import rel31_in_export_adapter
+        if rel31_in_export_adapter():
+            from release_engine.arabic_language_gate import (
+                repair_rel3_arabic_canonical_text,
+            )
+            blob = repair_rel3_arabic_canonical_text(blob)
+    except Exception:  # noqa: BLE001
+        pass
     shallow = check_shallow_pillar_rows(blob)
     owners = check_pillar_owner_missing(blob)
     row_count, road_defects = check_roadmap_substance(blob)

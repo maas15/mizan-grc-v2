@@ -132,6 +132,26 @@ ARABIC_GLUE_RESIDUE_PATTERNS = (
     'ال معالجة',
     'ال منظمة',
     'ال معلومات',
+    'ال بيانات',
+    'ال سيبراني',
+    'ال أمن',
+    'ال حوكمة',
+    'ال حماية',
+    'ال تصنيف',
+    'ال استجابة',
+    'ال ثغرات',
+    'ال حوادث',
+    'ال ضوابط',
+    'ال مخاطر',
+    'ال وصول',
+    'ال هوية',
+    'ال تشفير',
+    'ال نسخ',
+    'ال مراقبة',
+    'ال امتثال',
+    'ال منتظم',
+    'ال منظّمة',
+    'ل منصب',
     'بال منصات',
     'المحددةفي',
     'الحاليةفي',
@@ -953,7 +973,8 @@ def check_arabic_role_corruption(blob: str) -> List[str]:
     if re.search(r'(?<![\u0600-\u06FF])ال\s+(?:معالجة|مناسبة|منظمة|منقولة|معنية|منظمات|عنصر)', text):
         found.append('separated_definite_article')
     if re.search(
-            r'(?<![\u0600-\u06FF])ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة',
+            r'(?<![\u0600-\u06FF])(?<!معد)'
+            r'ل[\s\u200f\u200e\u200b\u200c\u200d\u00a0\u202f]+معالجة',
             text):
         found.append('lam_mualeda_split')
     if re.search(
@@ -1024,6 +1045,9 @@ def _evaluate_visible_route(
         docx_reference: str = '',
         canonical_kpis: str = '',
 ) -> Dict[str, Any]:
+    from release_engine.arabic_language_gate import repair_rel3_arabic_canonical_text
+    blob = repair_rel3_arabic_canonical_text(blob or '')
+    docx_reference = repair_rel3_arabic_canonical_text(docx_reference or '')
     substance = evaluate_content_substance(
         blob, route=route, pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
@@ -1561,6 +1585,17 @@ def repair_document_quality_sections(
         out = repair_sections_for_rendered_evidence(
             out, lang=lang, domain=domain, backend=backend)
         repairs.append('dqs:rendered_evidence_pipeline')
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from release_engine.arabic_language_gate import (
+            repair_arabic_canonical_text_before_freeze,
+        )
+        out, ar_canon_diag = repair_arabic_canonical_text_before_freeze(
+            out, lang=lang, backend=backend)
+        if ar_canon_diag.get('sections_repaired'):
+            repairs.append('dqs:arabic_canonical_repaired')
     except Exception:  # noqa: BLE001
         pass
 
