@@ -519,7 +519,10 @@ def rel31_fingerprint_extension(flags: Optional[Dict[str, Any]] = None) -> Dict[
     return {
         'rel3': bool(flags.get('rel3')),
         'rel31': bool(flags.get('rel31')),
+        'rel32': bool(flags.get('rel32', flags.get('rel31'))),
         'rel3_authoritative': auth,
+        'rel32_compiler_first': auth,
+        'ai_markdown_structural_authority': False,
         'legacy_rel2_authoritative': not auth,
         'legacy_prcy_export_contract_authoritative': not auth,
     }
@@ -894,6 +897,34 @@ def repair_canonical_before_freeze(
     sections = dict(art.get('sections') or {})
     lang = backend.get('lang', 'ar')
     domain = art.get('domain') or 'cyber'
+    flags = backend.get('flags') or {}
+    try:
+        from release_engine_v3.rel32_compiler import (
+            compile_canonical_strategy_document,
+            is_rel32_compiler_first,
+        )
+        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+            compiled = compile_canonical_strategy_document(
+                sections,
+                request_context={
+                    'lang': lang,
+                    'domain': domain,
+                    'selected_frameworks': (
+                        (art.get('contract_meta') or {}).get('selected_frameworks')
+                        or art.get('selected_frameworks') or []),
+                    'backend': backend,
+                },
+            )
+            if compiled.legacy_sections:
+                sections = dict(compiled.legacy_sections)
+                repairs.extend(compiled.repairs or [])
+            art['_rel32_compiled'] = True
+            art['_rel32_compiler_passed'] = compiled.passed
+            if compiled.blocking_errors:
+                art.setdefault('blocking_errors', []).extend(
+                    compiled.blocking_errors)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from release_engine.rel31_acceptance_checks import (
             repair_rel31_canonical_sections,
@@ -1722,6 +1753,7 @@ def apply_rel31_authoritative_contract(
     legacy_audit = collect_legacy_audit_blockers(art)
     art['blocking_errors'] = []
     backend = dict(backend)
+    backend['flags'] = dict(flags)
     backend['lang'] = lang
     backend['selected_frameworks'] = (
         (art.get('contract_meta') or {}).get('selected_frameworks')

@@ -145,7 +145,8 @@ class Rel31AuthoritativeGenerationTests(unittest.TestCase):
         self.assertNotIn('cyber_board_ready', msg)
         self.assertIn('الأهداف', msg)
 
-    def test_07_failing_fixture_blocks_with_rel3_blocker(self):
+    def test_07_empty_ai_sections_backfilled_by_rel32_compiler(self):
+        """REL3.2 compiler-first: empty AI markdown is not a structural blocker."""
         bad = {
             'sections': {'vision': '## 1\n\nno table', 'roadmap': '## 5\n\nempty'},
             'domain': 'cyber',
@@ -156,10 +157,13 @@ class Rel31AuthoritativeGenerationTests(unittest.TestCase):
             bad, backend=_backend(),
             flags={'rel3': True, 'rel31': True})
         contract = out.get('rel31_generation_contract') or {}
-        self.assertFalse(contract.get('generation_save_allowed'))
-        errs = contract.get('blocking_errors') or []
         self.assertTrue(
-            any('rel3_generation_contract_failed' in e for e in errs))
+            contract.get('generation_save_allowed'),
+            contract.get('blocking_errors'))
+        secs = out.get('sections') or {}
+        self.assertIn('الأهداف الاستراتيجية', secs.get('vision', ''))
+        self.assertIn('خارطة الطريق', secs.get('roadmap', ''))
+        self.assertNotIn('## 1', secs.get('vision', ''))
 
     def test_08_generation_contract_requires_export_routes_and_clean_blockers(self):
         from release_engine_v3.contracts import ExportManifest, FinalDocumentArtifact

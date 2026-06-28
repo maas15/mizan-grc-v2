@@ -76,6 +76,8 @@ REL2_TESTS = [
 
     'tests/test_rel31_live_export_authority_and_dqs.py',
 
+    'tests/test_rel32_compiler_first_strategy.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',
@@ -94,17 +96,17 @@ REL2_TESTS = [
 
 
 
-BROAD_FILTER = (
-
+BROAD_K_FILTER = (
     '(release or cyber or data or ai or digital or erm or global '
-
     'or policy or procedure or risk or audit or prcy) '
+    'and not test_13_release_readiness_and_compiler_authority')
 
-    'and not test_13_release_readiness_and_compiler_authority'
+# Keep alias for callers; broad suite must also use `-m not slow` so `-k ai`
+# does not select meta gates like test_17_broad_suite_zero_failures ("failures").
+BROAD_FILTER = BROAD_K_FILTER
 
-)
-
-REL2_K_FILTER = 'not test_13_release_readiness_and_compiler_authority'
+REL2_K_FILTER = (
+    'not slow and not test_13_release_readiness_and_compiler_authority')
 
 
 
@@ -164,9 +166,8 @@ def run_pytest(paths, *, k_expr: str = ''):
 def run_pytest_k(expr):
 
     cmd = [
-
-        sys.executable, '-m', 'pytest', '-q', '--tb=no', '-k', expr,
-
+        sys.executable, '-m', 'pytest', '-m', 'not slow', '-q', '--tb=no',
+        '-k', expr,
     ]
 
     env = dict(os.environ)

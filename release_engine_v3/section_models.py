@@ -56,13 +56,13 @@ _SECTION_TITLES_AR = {
     'executive_summary': 'الملخص التنفيذي',
     'vision_objectives': 'الرؤية والأهداف الاستراتيجية',
     'pillars': 'الركائز الاستراتيجية',
-    'environment': 'البيئة والتهديدات',
+    'environment': 'البيئة التنظيمية والتهديدات',
     'gap_analysis': 'تحليل الفجوات',
-    'roadmap': 'خارطة الطريق',
-    'kpi_kri': 'مؤشرات الأداء والمخاطر',
+    'roadmap': 'خارطة الطريق التنفيذية',
+    'kpi_kri': 'مؤشرات الأداء الرئيسية',
     'confidence_risk': 'تقييم الثقة والمخاطر',
-    'governance': 'الحوكمة والملكية',
-    'traceability': 'مصفوفة التتبع',
+    'governance': 'نموذج الحوكمة والمسؤوليات',
+    'traceability': 'مصفوفة تتبع الأطر المرجعية',
     'appendices': 'الملاحق',
 }
 

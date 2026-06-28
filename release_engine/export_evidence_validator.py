@@ -146,23 +146,46 @@ def _kpi_defects_in(blob: str) -> List[str]:
 
 def _risk_defects_in(blob: str) -> List[str]:
     empty: List[str] = []
-    in_risk = False
+    in_confidence = False
+    in_register = False
     for ln in (blob or '').splitlines():
         low = ln.lower()
-        if any(k in ln for k in (
-                'تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
-            in_risk = True
-        if in_risk and ln.strip().startswith('##') and not any(
-                k in ln for k in ('ثقة', 'مخاطر', 'confidence')):
-            in_risk = False
-        if not in_risk:
+        if any(k in ln for k in ('تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
+            in_confidence = True
+        if 'سجل المخاطر' in ln or 'confidence risk' in low:
+            in_register = True
+        if ln.strip().startswith('|') and 'خطة المعالجة' in ln:
+            in_register = True
             continue
-        if not ln.strip().startswith('|') or '---' in ln:
+        stripped = (ln or '').strip()
+        if (in_confidence
+                and stripped.startswith('##')
+                and not stripped.startswith('###')
+                and not any(k in ln for k in ('ثقة', 'مخاطر', 'confidence'))):
+            in_confidence = False
+            in_register = False
+        if not (in_register or in_confidence):
             continue
-        if 'خطة المعالجة' in ln or 'treatment' in low:
+        if not stripped.startswith('|') or '---' in ln:
+            continue
+        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة')):
+            continue
+        if 'treatment' in low:
             continue
         cells = [c.strip() for c in ln.strip('|').split('|')]
-        if len(cells) >= 5 and cells[-1] in ('—', '-', ''):
+        if len(cells) < 5:
+            continue
+        if cells[0] in ('#', 'العامل', 'عامل'):
+            continue
+        if '%' in (cells[1] if len(cells) > 1 else ''):
+            continue
+        if '%' in (cells[3] if len(cells) > 3 else ''):
+            continue
+        treatment = cells[4]
+        owner = cells[5] if len(cells) > 5 else ''
+        if treatment in ('—', '-', ''):
+            empty.append('empty_treatment_plan')
+        elif len(cells) >= 6 and owner in ('—', '-', ''):
             empty.append('empty_treatment_plan')
     return list(dict.fromkeys(empty))
 

@@ -431,25 +431,39 @@ def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
 
 def check_risk_treatment_exported(blob: str) -> List[str]:
     defects: List[str] = []
-    in_risk = False
+    in_confidence = False
+    in_register = False
     for ln in (blob or '').splitlines():
         low = ln.lower()
-        if any(k in ln for k in (
-                'تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
-            in_risk = True
-        if in_risk and ln.strip().startswith('##') and not any(
+        if any(k in ln for k in ('تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
+            in_confidence = True
+        if 'سجل المخاطر' in ln or 'confidence risk' in low:
+            in_register = True
+        if ln.strip().startswith('|') and 'خطة المعالجة' in ln:
+            in_register = True
+            continue
+        if in_confidence and _is_level2_markdown_heading(ln) and not any(
                 k in ln for k in ('ثقة', 'مخاطر', 'confidence')):
-            in_risk = False
-        if not in_risk:
+            in_confidence = False
+            in_register = False
+        if not (in_register or in_confidence):
             continue
         if not ln.strip().startswith('|') or '---' in ln:
             continue
-        if 'خطة المعالجة' in ln or 'treatment' in low:
+        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة')):
+            continue
+        if 'treatment' in low:
             continue
         cells = [c.strip() for c in ln.strip('|').split('|')]
-        if len(cells) < 4:
+        if len(cells) < 5:
             continue
-        treatment = cells[-1]
+        if cells[0] in ('#', 'العامل', 'عامل'):
+            continue
+        if '%' in (cells[1] if len(cells) > 1 else ''):
+            continue
+        if '%' in (cells[3] if len(cells) > 3 else ''):
+            continue
+        treatment = cells[4]
         if treatment in REL27_EMPTY_TREATMENT:
             defects.append('empty_risk_treatment')
     return list(dict.fromkeys(defects))
@@ -540,11 +554,17 @@ def check_arabic_residues_exported(blob: str) -> Dict[str, Any]:
     return payload
 
 
+def _is_level2_markdown_heading(ln: str) -> bool:
+    """True for ``##`` section headings only — not ``###`` pillar subheadings."""
+    s = (ln or '').strip()
+    return s.startswith('##') and not s.startswith('###')
+
+
 def _section_key_from_heading(ln: str) -> Optional[str]:
     low = (ln or '').lower()
     if 'رؤية' in ln or 'أهداف' in ln or 'vision' in low:
         return 'vision'
-    if 'ركائز' in ln or 'pillar' in low:
+    if 'ركائز' in ln or 'ركيزة' in ln or 'pillar' in low:
         return 'pillars'
     if 'خارطة' in ln or 'roadmap' in low:
         return 'roadmap'
@@ -561,7 +581,7 @@ def _split_sections_from_export_text(text: str) -> Dict[str, str]:
     current: Optional[str] = None
     buf: List[str] = []
     for ln in (text or '').splitlines():
-        if ln.strip().startswith('##'):
+        if _is_level2_markdown_heading(ln):
             new_key = _section_key_from_heading(ln)
             if new_key and new_key == current:
                 buf.append(ln)

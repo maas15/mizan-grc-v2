@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from release_engine.section_model import legacy_sections_to_canonical
 from release_engine_v3.contracts import (
@@ -40,24 +40,49 @@ def _artifact_id_from(legacy: Dict[str, Any]) -> str:
 
 
 def _legacy_to_canonical_sections(
-        legacy_sections: Dict[str, str]) -> Dict[str, CanonicalSection]:
-    doc = build_strategy_document(legacy_sections)
+        legacy_sections: Dict[str, str],
+        *,
+        lang: str = 'ar',
+        domain: str = 'cyber',
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, CanonicalSection], Dict[str, str]]:
+    sections_src = dict(legacy_sections)
+    try:
+        from release_engine_v3.rel32_compiler import (
+            compile_canonical_strategy_document,
+            is_rel32_compiler_first,
+        )
+        flags = (backend or {}).get('flags') or {}
+        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+            compiled = compile_canonical_strategy_document(
+                sections_src,
+                request_context={
+                    'lang': lang,
+                    'domain': domain,
+                    'backend': backend or {},
+                },
+            )
+            if compiled.legacy_sections:
+                sections_src = dict(compiled.legacy_sections)
+    except Exception:  # noqa: BLE001
+        pass
+    doc = build_strategy_document(sections_src)
     sections = doc.as_dict()
     raw_kpi = (
-        legacy_sections.get('kpis')
-        or legacy_sections.get('kpi_kri')
+        sections_src.get('kpis')
+        or sections_src.get('kpi_kri')
         or '')
     if raw_kpi:
         sections['kpi_kri'] = enrich_kpi_section(
             sections['kpi_kri'], raw_kpi)
     raw_trace = (
-        legacy_sections.get('traceability')
-        or legacy_sections.get('traceability_matrix')
+        sections_src.get('traceability')
+        or sections_src.get('traceability_matrix')
         or '')
     if raw_trace:
         sections['traceability'] = enrich_traceability_section(
             sections['traceability'], raw_trace)
-    return sections
+    return sections, sections_src
 
 
 def _scrub_legacy_sections_arabic(
@@ -91,8 +116,6 @@ def build_final_document_artifact(
         cj = legacy_artifact.get('content_json') or {}
         if isinstance(cj, dict):
             legacy_sections = dict(cj.get('sections') or {})
-    canon_map = _legacy_to_canonical_sections(legacy_sections)
-    canon_hash = compute_canonical_hash(canon_map)
     meta = legacy_artifact.get('contract_meta') or {}
     fws = list(
         meta.get('selected_frameworks')
@@ -103,6 +126,17 @@ def build_final_document_artifact(
         or meta.get('domain')
         or 'cyber')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
+    backend = dict(legacy_artifact.get('_rel32_backend') or {})
+    backend.setdefault('flags', {
+        'rel3': True,
+        'rel31': True,
+        'rel32': True,
+    })
+    backend.setdefault('selected_frameworks', fws)
+    backend.setdefault('lang', lang)
+    canon_map, legacy_sections = _legacy_to_canonical_sections(
+        legacy_sections, lang=lang, domain=domain, backend=backend)
+    canon_hash = compute_canonical_hash(canon_map)
     legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
     quality = validate_canonical_quality(

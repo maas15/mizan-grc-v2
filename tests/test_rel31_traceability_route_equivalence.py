@@ -233,7 +233,8 @@ class RouteArtifactEquivalenceTests(unittest.TestCase):
         trees = {h for h in trees if h}
         self.assertEqual(len(trees), 1)
 
-    def test_11_docx_blocks_when_rebuilding_from_content_not_sections(self):
+    def test_11_rel32_compiler_replaces_bad_trace_not_raw_markdown(self):
+        """REL3.2: bad trace in raw input is rebuilt; export uses canonical compiler."""
         bad = _bad_trace_sections()
         backend = _APP._rel31_backend_callables()
         md = _APP._prcy65_rebuild_content_from_sections(bad, None)
@@ -257,10 +258,14 @@ class RouteArtifactEquivalenceTests(unittest.TestCase):
                 'selected_frameworks': ['NCA ECC', 'NCA DCC'],
             },
         )
-        joined = ' '.join(evidence.blocking_errors or export.blocking_errors or [])
         self.assertTrue(
-            'rel3_route_artifact_divergence:docx' in joined
-            or not evidence.export_return_allowed)
+            evidence.export_return_allowed,
+            evidence.blocking_errors or export.blocking_errors)
+        docx_text = ''
+        if export.docx_bytes:
+            docx_text = extract_docx_visible_text(export.docx_bytes)
+        self.assertNotIn('ضعف إدارة IAM', docx_text)
+        self.assertNotIn('DLP فقط', docx_text)
 
     def test_12_docx_uses_frozen_rel3_render_tree(self):
         backend = _APP._rel31_backend_callables()
