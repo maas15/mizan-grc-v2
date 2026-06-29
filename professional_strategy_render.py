@@ -145,22 +145,22 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     'gap_action': {
         'col_weights': [0.10, 0.34, 0.16, 0.18, 0.22],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 80, 'render_mode': 'table',
     },
     'roadmap': {
         'col_weights': [0.14, 0.12, 0.28, 0.12, 0.20, 0.14],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
         'col_weights': [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 72, 'render_mode': 'table',
     },
     'kpi_formula': {
         'col_weights': [0.08, 0.30, 0.32, 0.30],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 110, 'render_mode': 'table',
     },
     'conf_factor': {
@@ -276,10 +276,12 @@ RAW_PIPE_OUTSIDE_TABLE_RE = re.compile(
     r'(?m)^(?!\s*\|)[^\n]*\|[^\n]*\|[^\n]*$')
 CONFIDENCE_BROKEN_RE = re.compile(
     r'\.%\s*(\d+)|%\s*\.(\d+)|\*\*درجة الثقة:\*\*\s*\.%(?!\s*\d)')
-FRAMEWORK_ORDER = (
+FRAMEWORK_FULL_LABELS = (
     'NCA ECC (Essential Cybersecurity Controls)',
     'NCA DCC (Data Cybersecurity Controls)',
 )
+FRAMEWORK_ORDER = ('NCA ECC', 'NCA DCC')
+GAP_ACTION_GUIDE_MIN_ROWS = 3
 
 # PR-CY48 — canonical professional export section order (PDF/DOCX parity).
 PROFESSIONAL_PRE_BODY_SECTIONS = (
@@ -514,6 +516,7 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
     # Strip reversed framework bracket artifacts (e.g. ``ECC + DCC]``).
     out = re.sub(r'[\[\]]+', '', out)
     out = re.sub(r'\bECC\s*\+\s*DCC\b', 'NCA ECC, NCA DCC', out)
+    out = _concise_framework_labels_in_text(out)
     out = re.sub(r'\s{2,}', ' ', out).strip()
     # PR-CY59 — concat fixes must run last; fragment repair can revert them.
     if lang == 'ar':
@@ -1794,15 +1797,65 @@ def contains_forbidden_gap_fragments(text: str) -> bool:
     return False
 
 
+def _to_short_framework_label(label: str) -> str:
+    """Map any framework alias to concise table/exec label (NCA ECC / NCA DCC)."""
+    s = str(label or '').strip()
+    if not s:
+        return s
+    upper = s.upper()
+    if 'ECC' in upper or 'ESSENTIAL CYBER' in upper:
+        return FRAMEWORK_ORDER[0]
+    if 'DCC' in upper or 'DATA CYBER' in upper:
+        return FRAMEWORK_ORDER[1]
+    return s
+
+
+def concise_framework_labels_from_keys(keys: Optional[List[str]]) -> List[str]:
+    """Concise framework labels for executive summary and table cells."""
+    out: List[str] = []
+    for key in keys or []:
+        short = _to_short_framework_label(key)
+        if short and short not in out:
+            out.append(short)
+    if not out:
+        return list(FRAMEWORK_ORDER)
+    ordered = [f for f in FRAMEWORK_ORDER if f in out]
+    ordered += [f for f in out if f not in FRAMEWORK_ORDER]
+    return ordered
+
+
+def _concise_framework_labels_in_text(text: str) -> str:
+    """Remove duplicated long framework expansions outside scope section prose."""
+    if not text:
+        return text
+    out = str(text)
+    out = re.sub(
+        r'NCA ECC,\s*NCA DCC\s*\(\s*NCA ECC \(Essential Cybersecurity Controls\),\s*'
+        r'NCA DCC \(Data Cybersecurity Controls\)\s*\)',
+        'NCA ECC, NCA DCC',
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = out.replace(FRAMEWORK_FULL_LABELS[0], FRAMEWORK_ORDER[0])
+    out = out.replace(FRAMEWORK_FULL_LABELS[1], FRAMEWORK_ORDER[1])
+    out = re.sub(
+        rf'{re.escape(FRAMEWORK_ORDER[0])}\s*\({re.escape(FRAMEWORK_ORDER[0])}\)',
+        FRAMEWORK_ORDER[0],
+        out,
+    )
+    out = re.sub(
+        rf'{re.escape(FRAMEWORK_ORDER[1])}\s*\({re.escape(FRAMEWORK_ORDER[1])}\)',
+        FRAMEWORK_ORDER[1],
+        out,
+    )
+    return out
+
+
 def _clean_framework_labels(labels: List[str]) -> List[str]:
-    """Normalise framework display strings to canonical order without artifacts."""
+    """Normalise framework display strings to concise canonical order."""
     cleaned: List[str] = []
     for lbl in labels or []:
-        s = prepare_final_render_text(str(lbl), 'ar')
-        if 'ECC' in s.upper() and 'Essential' not in s:
-            s = FRAMEWORK_ORDER[0]
-        elif 'DCC' in s.upper() and 'Data Cybersecurity' not in s:
-            s = FRAMEWORK_ORDER[1]
+        s = _to_short_framework_label(str(lbl))
         if s and s not in cleaned:
             cleaned.append(s)
     ordered = [f for f in FRAMEWORK_ORDER if f in cleaned]
@@ -2642,8 +2695,10 @@ def _finalize_professional_blocks(
                 for a, b in (blk.get('entries') or [])]
         if kind == 'scope_frameworks' and blk.get('frameworks'):
             blk['frameworks'] = [
-                {**fw, 'display': prepare_final_render_text(
-                    str(fw.get('display') or ''), lang)}
+                {**fw,
+                 'display': str(fw.get('display') or '').strip(),
+                 'description': prepare_final_render_text(
+                     str(fw.get('description') or ''), lang)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
     out = _normalize_kpi_tables_semantics(out, lang)
@@ -4522,11 +4577,11 @@ def normalize_gap_tables(
                     row[0] = 'الخطوة'
                 row[0] = _normalize_gap_cell(row[0])
                 fixed_rows.append(row)
-            result.append({
+            result.append(ensure_gap_action_table_min_rows({
                 'schema': 'gap_action',
                 'header': list(schema),
                 'rows': fixed_rows,
-            })
+            }, lang))
     return result
 
 
@@ -5178,6 +5233,46 @@ def normalize_confidence_risk(
     }
 
 
+def ensure_gap_action_table_min_rows(
+        table_spec: Optional[Dict[str, Any]],
+        lang: str = 'ar',
+        min_rows: int = GAP_ACTION_GUIDE_MIN_ROWS,
+) -> Optional[Dict[str, Any]]:
+    """Pad shallow gap implementation guides to executive-grade depth."""
+    if not table_spec or table_spec.get('schema') != 'gap_action':
+        return table_spec
+    rows = [list(r) for r in (table_spec.get('rows') or [])]
+    if len(rows) >= min_rows:
+        return table_spec
+    pads_ar = (
+        ('تنسيق تنفيذ الإجراءات مع أصحاب المصلحة المعنيين',
+         'CISO', '1-2 شهر', 'خطة عمل معتمدة'),
+        ('تنفيذ الضوابط ومراقبة مؤشرات التقدم',
+         'فريق الأمن السيبراني', '2-4 أشهر', 'مخرجات تنفيذية موثقة'),
+        ('مراجعة الفاعلية والتحقق من إغلاق الفجوة',
+         'CISO', 'شهري', 'تقرير إغلاق الفجوة'),
+    )
+    pads_en = (
+        ('Align actions with accountable owners and control owners',
+         'CISO', 'Month 1-2', 'Approved action plan'),
+        ('Implement controls and track progress indicators',
+         'Cybersecurity team', 'Months 2-4', 'Documented deliverables'),
+        ('Review effectiveness and formally close the gap',
+         'CISO', 'Monthly', 'Gap closure report'),
+    )
+    pads = pads_ar if lang == 'ar' else pads_en
+    pad_i = 0
+    while len(rows) < min_rows:
+        step = str(len(rows) + 1)
+        action, owner, timeframe, output = pads[pad_i % len(pads)]
+        pad_i += 1
+        rows.append([step, action, owner, timeframe, output])
+    return {
+        **table_spec,
+        'rows': [[_normalize_gap_cell(c) for c in r] for r in rows],
+    }
+
+
 def normalize_gap_action_guides(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     """Normalize per-gap implementation guides (``#### دليل تطبيق الفجوة …``,
@@ -5206,11 +5301,14 @@ def normalize_gap_action_guides(
                              ('حسب الخطة' if lang == 'ar' else 'Per plan'),
                              ('مكتمل' if lang == 'ar' else 'Completed')])
         if rows:
-            out.append({'schema': 'gap_action',
-                        'header': list(schema),
-                        'rows': [[_normalize_gap_cell(c) for c in r]
-                                 for r in rows],
-                        'title': title})
+            spec_tbl = {
+                'schema': 'gap_action',
+                'header': list(schema),
+                'rows': [[_normalize_gap_cell(c) for c in r]
+                         for r in rows],
+                'title': title,
+            }
+            out.append(ensure_gap_action_table_min_rows(spec_tbl, lang))
     return out
 
 
@@ -5533,6 +5631,9 @@ def enrich_professional_blocks(
     gaps = _sec('gap_analysis')
     gap_tables = normalize_gap_tables(gaps, lang_n)
     gap_tables += normalize_gap_action_guides(gaps, lang_n)
+    gap_tables = [
+        ensure_gap_action_table_min_rows(t, lang_n) for t in gap_tables
+    ]
     blocks['gap_analysis'] = {
         **(blocks.get('gap_analysis') or {}),
         'paragraphs': _clean_paras(gaps, 2),
@@ -5921,7 +6022,10 @@ def prcy47_docmodel_professional_checks(
         _no_pipe('gap_analysis')
         and not any('طوة الخ' in str(c)
                     for t in gap_tables for r in (t.get('rows') or [])
-                    for c in r))
+                    for c in r)
+        and all(
+            len(t.get('rows') or []) >= GAP_ACTION_GUIDE_MIN_ROWS
+            for t in gap_tables if t.get('schema') == 'gap_action'))
 
     road_tbls = (blocks.get('roadmap') or {}).get('tables') or []
     road_rows = (road_tbls[0].get('rows') if road_tbls else []) or []
@@ -6448,7 +6552,7 @@ def pdf_peek_follow_lines(lines, start_idx, max_lines=3):
 
 
 def pdf_estimate_follow_height(follow_lines, line_height=16,
-                               table_row_height=34):
+                               table_row_height=38):
     if not follow_lines:
         return line_height * 3
     total = 0

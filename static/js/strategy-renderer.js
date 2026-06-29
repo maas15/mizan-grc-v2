@@ -658,9 +658,11 @@
       qualityIssues.push(isRtl ? 'الجدول يحتوي على صف واحد فقط' : 'Table has only 1 substantive row');
     }
 
-    var banner = renderQualityBanner(qualityIssues, isRtl);
-    var tableHtml = renderTable(block, isRtl);
-    return banner + tableHtml;
+    // Diagnostics only — never surface quality banners in user preview/PDF/DOCX.
+    if (qualityIssues.length && typeof console !== 'undefined' && console.debug) {
+      console.debug('[preview-quality-diag]', schema || (headers || []).slice(0, 2), qualityIssues);
+    }
+    return renderTable(block, isRtl);
   }
 
   // ── Override renderSectionFromJSON to add traceability + quality pass ──────
