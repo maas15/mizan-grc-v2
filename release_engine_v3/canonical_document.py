@@ -208,6 +208,11 @@ def get_frozen_artifact(
             return freeze_artifact(artifact_or_id)
         return artifact_or_id
     if isinstance(artifact_or_id, dict):
+        if artifact_or_id.get('_rel32_persisted_frozen'):
+            from release_engine_v3.rel32_frozen_artifact_persist import (
+                rehydrate_frozen_from_persisted_dict,
+            )
+            return rehydrate_frozen_from_persisted_dict(artifact_or_id)
         sealed = bool(artifact_or_id.get('sealed'))
         art = build_final_document_artifact(
             artifact_or_id,

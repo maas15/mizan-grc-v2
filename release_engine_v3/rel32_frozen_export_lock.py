@@ -6,9 +6,93 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from release_engine_v3.contracts import FinalDocumentArtifact
+from release_engine_v3.rel32_frozen_artifact_persist import (
+    get_rel32_db_load_diag,
+)
 
 _REL32_FROZEN_EXPORT_LOCK: Dict[str, Dict[str, Any]] = {}
 _REL32_EXPORT_ROUTE_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def _default_rel32_load_meta() -> Dict[str, Any]:
+    return {
+        'db_sections_loaded': [],
+        'frozen_artifact_complete': False,
+        'missing_frozen_components': [],
+        'artifact_loaded_from': 'none',
+        'traceability_rows_loaded_from': 'inferred_text',
+        'incomplete_frozen_artifact': False,
+    }
+
+
+def _merge_rel32_load_meta(
+        meta: Dict[str, Any],
+        *,
+        backend: Optional[Dict[str, Any]] = None,
+        artifact_dict: Optional[Dict[str, Any]] = None,
+        loaded_from_memory: bool = False,
+) -> None:
+    diag = dict(get_rel32_db_load_diag())
+    art = dict(artifact_dict or {})
+    if art.get('_rel32_artifact_loaded_from'):
+        diag['artifact_loaded_from'] = art['_rel32_artifact_loaded_from']
+    if art.get('_rel32_traceability_rows_loaded_from'):
+        diag['traceability_rows_loaded_from'] = (
+            art['_rel32_traceability_rows_loaded_from'])
+    if art.get('frozen_artifact_complete') is not None:
+        diag['frozen_artifact_complete'] = bool(
+            art.get('frozen_artifact_complete'))
+    if art.get('incomplete_frozen_artifact'):
+        diag['incomplete_frozen_artifact'] = True
+    if art.get('db_sections_loaded'):
+        diag['db_sections_loaded'] = list(art.get('db_sections_loaded') or [])
+    if loaded_from_memory:
+        diag['artifact_loaded_from'] = 'memory'
+        diag['traceability_rows_loaded_from'] = 'canonical_artifact'
+        diag['frozen_artifact_complete'] = True
+        diag['incomplete_frozen_artifact'] = False
+    be_diag = (backend or {}).get('_rel32_last_db_load') or {}
+    for key in (
+            'db_sections_loaded', 'frozen_artifact_complete',
+            'missing_frozen_components', 'artifact_loaded_from',
+            'traceability_rows_loaded_from', 'incomplete_frozen_artifact'):
+        if key in be_diag and be_diag[key] not in (None, '', []):
+            diag[key] = be_diag[key]
+    meta.update(diag)
+
+
+def _frozen_export_complete(frozen: FinalDocumentArtifact) -> Tuple[bool, List[str]]:
+    missing: List[str] = []
+    canon_hash = str(frozen.canonical_hash or '').strip()
+    if not canon_hash:
+        sid = str(frozen.strategy_id or frozen.artifact_id or '')
+        canon_hash = str(
+            (_REL32_FROZEN_EXPORT_LOCK.get(sid) or {})
+            .get('generation_canonical_hash') or '').strip()
+    if not canon_hash:
+        canon_hash = str(
+            frozen.export_manifest.canonical_hash or '').strip()
+    tree_hash = str(frozen.render_tree_hash or '').strip()
+    if not tree_hash:
+        sid = str(frozen.strategy_id or frozen.artifact_id or '')
+        tree_hash = str(
+            (_REL32_FROZEN_EXPORT_LOCK.get(sid) or {})
+            .get('generation_render_tree_hash') or '').strip()
+    if not tree_hash:
+        tree_hash = str(
+            frozen.export_manifest.render_tree_hash or '').strip()
+    if not canon_hash:
+        missing.append('canonical_hash')
+    if not tree_hash:
+        missing.append('render_tree_hash')
+    legacy = dict(frozen.legacy_sections or {})
+    if not str(legacy.get('traceability') or '').strip():
+        missing.append('canonical_traceability_rows')
+    if not str(legacy.get('gaps') or '').strip():
+        missing.append('canonical_gap_rows')
+    if not frozen.canonical_sections:
+        missing.append('canonical_sections')
+    return (not missing, missing)
 
 
 def clear_rel32_frozen_export_lock() -> None:
@@ -88,11 +172,20 @@ def prepare_rel32_export_artifact_dict(
     if not lookup_keys:
         return art
     try:
+        from release_engine_v3.canonical_document import _ARTIFACT_REGISTRY
         from release_engine_v3.orchestrator import rel3_get_frozen_artifact
         for sid in lookup_keys:
             try:
+                loaded_from_memory = sid in _ARTIFACT_REGISTRY
                 frozen = rel3_get_frozen_artifact(sid, backend=backend)
             except KeyError:
+                continue
+            complete, missing = _frozen_export_complete(frozen)
+            if not complete:
+                art['incomplete_frozen_artifact'] = True
+                art['frozen_artifact_complete'] = False
+                art['missing_frozen_components'] = missing
+                art['_rel32_frozen_loaded'] = False
                 continue
             if frozen.frozen and not frozen.blocking_errors:
                 art['sections'] = dict(frozen.legacy_sections or {})
@@ -100,11 +193,16 @@ def prepare_rel32_export_artifact_dict(
                     art['final_markdown'] = frozen.final_markdown_view
                 art['sealed'] = True
                 art['_rel32_frozen_loaded'] = True
+                art['frozen_artifact_complete'] = True
                 art['rel3_canonical_hash'] = frozen.canonical_hash
                 if frozen.render_tree_hash:
                     art['rel3_render_tree_hash'] = frozen.render_tree_hash
                 art['strategy_id'] = str(
                     frozen.strategy_id or sid or art.get('strategy_id') or '')
+                if loaded_from_memory:
+                    art['_rel32_artifact_loaded_from'] = 'memory'
+                    art['_rel32_traceability_rows_loaded_from'] = (
+                        'canonical_artifact')
                 break
     except KeyError:
         pass
@@ -137,23 +235,69 @@ def resolve_frozen_artifact_for_export(
         'docx_rebuilt_from_markdown': False,
         'pdf_rebuilt_from_markdown': False,
         'blocking_errors': [],
+        **_default_rel32_load_meta(),
     }
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return None, meta
 
+    from release_engine_v3.canonical_document import _ARTIFACT_REGISTRY
+
     frozen: Optional[FinalDocumentArtifact] = None
+    loaded_from_memory = False
     for key in _rel32_lookup_keys(artifact_dict, backend=backend):
         if not key:
             continue
         try:
+            if key in _ARTIFACT_REGISTRY:
+                loaded_from_memory = True
             candidate = rel3_get_frozen_artifact(key, backend=backend)
+            complete, missing = _frozen_export_complete(candidate)
+            if not complete:
+                meta['incomplete_frozen_artifact'] = True
+                meta['frozen_artifact_complete'] = False
+                meta['missing_frozen_components'] = missing
+                meta['blocking_errors'].append(
+                    'rel32_incomplete_frozen_artifact')
+                _merge_rel32_load_meta(
+                    meta, backend=backend, artifact_dict=artifact_dict)
+                if route_n == 'docx':
+                    meta['docx_rebuilt_from_markdown'] = True
+                elif route_n == 'pdf':
+                    meta['pdf_rebuilt_from_markdown'] = True
+                return None, meta
             if candidate.frozen and not candidate.blocking_errors:
+                if not candidate.render_tree_hash:
+                    _lock = _REL32_FROZEN_EXPORT_LOCK.get(key) or {}
+                    if _lock.get('generation_render_tree_hash'):
+                        candidate.render_tree_hash = str(
+                            _lock['generation_render_tree_hash'])
                 frozen = candidate
+                if not loaded_from_memory:
+                    meta['artifact_loaded_from'] = 'db_complete_artifact'
+                    meta['traceability_rows_loaded_from'] = (
+                        'canonical_artifact')
+                    meta['frozen_artifact_complete'] = True
+                    meta['incomplete_frozen_artifact'] = False
                 break
         except KeyError:
             continue
 
     if frozen is None:
+        be_load = dict((backend or {}).get('_rel32_last_db_load') or {})
+        if (backend or {}).get('_rel32_incomplete_frozen_artifact'):
+            be_load['incomplete_frozen_artifact'] = True
+        if be_load.get('incomplete_frozen_artifact'):
+            meta['incomplete_frozen_artifact'] = True
+            if 'rel32_incomplete_frozen_artifact' not in meta['blocking_errors']:
+                meta['blocking_errors'].append(
+                    'rel32_incomplete_frozen_artifact')
+        if artifact_dict.get('incomplete_frozen_artifact'):
+            meta['incomplete_frozen_artifact'] = True
+            if artifact_dict.get('missing_frozen_components'):
+                meta['missing_frozen_components'] = list(
+                    artifact_dict.get('missing_frozen_components') or [])
+        _merge_rel32_load_meta(
+            meta, backend=backend, artifact_dict=artifact_dict)
         if route_n == 'docx':
             meta['docx_rebuilt_from_markdown'] = True
         elif route_n == 'pdf':
@@ -181,6 +325,13 @@ def resolve_frozen_artifact_for_export(
     elif route_n == 'preview':
         meta['frozen_artifact_loaded_for_preview'] = True
 
+    meta['frozen_artifact_complete'] = True
+    _merge_rel32_load_meta(
+        meta,
+        backend=backend,
+        artifact_dict=artifact_dict,
+        loaded_from_memory=loaded_from_memory,
+    )
     return frozen, meta
 
 
@@ -210,6 +361,12 @@ def track_rel32_export_route_state(
             bucket['pdf_rebuilt_from_markdown'] = True
     if route_n == 'preview' and lock_meta.get('frozen_artifact_loaded_for_preview'):
         bucket['frozen_artifact_loaded_for_preview'] = True
+    for diag_key in (
+            'db_sections_loaded', 'frozen_artifact_complete',
+            'missing_frozen_components', 'artifact_loaded_from',
+            'traceability_rows_loaded_from', 'incomplete_frozen_artifact'):
+        if diag_key in lock_meta:
+            bucket[diag_key] = lock_meta[diag_key]
 
 
 def guard_rel32_docx_export_bypass(function_name: str) -> Optional[str]:
@@ -245,6 +402,12 @@ def emit_rel32_frozen_artifact_export_lock(
             k: v for k, v in lock_meta.items()
             if k.startswith('frozen_artifact_loaded')
             or k.endswith('_rebuilt_from_markdown')
+            or k in (
+                'db_sections_loaded', 'frozen_artifact_complete',
+                'missing_frozen_components', 'artifact_loaded_from',
+                'traceability_rows_loaded_from',
+                'incomplete_frozen_artifact',
+            )
         })
 
     def _h(route_name: str, key: str) -> str:
@@ -290,6 +453,8 @@ def emit_rel32_frozen_artifact_export_lock(
         blockers.append('rel32_docx_rebuilt_from_markdown')
     if pdf_rebuilt:
         blockers.append('rel32_pdf_rebuilt_from_markdown')
+    if route_state.get('incomplete_frozen_artifact'):
+        blockers.append('rel32_incomplete_frozen_artifact')
 
     export_lock_passed = (
         all_canon_equal
@@ -319,6 +484,18 @@ def emit_rel32_frozen_artifact_export_lock(
         'pdf_rebuilt_from_markdown': pdf_rebuilt,
         'export_lock_passed': export_lock_passed,
         'blocking_errors': list(dict.fromkeys(blockers)),
+        'db_sections_loaded': list(route_state.get('db_sections_loaded') or []),
+        'frozen_artifact_complete': bool(
+            route_state.get('frozen_artifact_complete')),
+        'missing_frozen_components': list(
+            route_state.get('missing_frozen_components') or []),
+        'artifact_loaded_from': str(
+            route_state.get('artifact_loaded_from') or 'none'),
+        'traceability_rows_loaded_from': str(
+            route_state.get('traceability_rows_loaded_from')
+            or 'inferred_text'),
+        'incomplete_frozen_artifact': bool(
+            route_state.get('incomplete_frozen_artifact')),
     }
     try:
         print(

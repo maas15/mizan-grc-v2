@@ -1172,6 +1172,52 @@ def rel3_export_authoritative(
             blocking_errors=blockers,
         ), ev
 
+    if frozen_pre is None:
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+            if route_n in ('docx', 'pdf'):
+                blockers = list(lock_meta.get('blocking_errors') or [])
+                if lock_meta.get('incomplete_frozen_artifact'):
+                    blockers.append('rel32_incomplete_frozen_artifact')
+                elif lock_meta.get('docx_rebuilt_from_markdown') and (
+                        route_n == 'docx'):
+                    blockers.append('rel32_docx_rebuilt_from_markdown')
+                elif lock_meta.get('pdf_rebuilt_from_markdown') and (
+                        route_n == 'pdf'):
+                    blockers.append('rel32_pdf_rebuilt_from_markdown')
+                else:
+                    blockers.append('rel32_frozen_artifact_not_loaded')
+                blockers = list(dict.fromkeys(blockers))
+                sid = str(art.get('strategy_id') or '')
+                track_rel32_export_route_state(sid, route_n, lock_meta)
+                emit_rel32_frozen_artifact_export_lock(
+                    sid, route=route_n, lock_meta=lock_meta)
+                ev = EvidenceResult(
+                    route_name=route_n,
+                    artifact_id=str(art.get('artifact_id') or ''),
+                    strategy_id=sid,
+                    canonical_hash='',
+                    render_tree_hash='',
+                    returned_bytes_sha256='',
+                    evidence_bytes_sha256='',
+                    returned_equals_evidence_bytes=False,
+                    exact_bytes_checked=False,
+                    preview_text_checked=False,
+                    docx_bytes_checked=False,
+                    pdf_bytes_checked=False,
+                    evidence_passed=False,
+                    export_return_allowed=False,
+                    blocking_errors=blockers,
+                )
+                ev.emit_diag()
+                return ExportResult(
+                    route_name=route_n,
+                    artifact_id=str(art.get('artifact_id') or ''),
+                    render_tree_hash='',
+                    canonical_hash='',
+                    blocking_errors=blockers,
+                ), ev
+
     if frozen_pre is not None:
         frozen = frozen_pre
         with rel31_export_adapter_context():

@@ -63,6 +63,14 @@ from release_engine_v3.rel32_frozen_export_lock import (
     guard_rel32_docx_export_bypass,
     prepare_rel32_export_artifact_dict,
     register_rel32_frozen_export_lock,
+    resolve_frozen_artifact_for_export,
+)
+from release_engine_v3.rel32_frozen_artifact_persist import (
+    LEGACY_SECTION_KEYS_ONLY,
+    build_persist_blob_from_generation_art,
+    clear_rel32_db_load_diag,
+    is_legacy_section_bundle,
+    rehydrate_artifact_dict_from_persisted,
 )
 from tests.fixtures.rel31_content_quality.latest_live_fixtures import (
     ensure_latest_live_fixtures,
@@ -80,7 +88,76 @@ def _reset_export_state() -> None:
     clear_rel3_caches()
     clear_rel3_route_artifact_hashes()
     clear_rel32_frozen_export_lock()
+    clear_rel32_db_load_diag()
     clear_artifact_registry()
+
+
+def _legacy_sections_only() -> dict:
+    full = _minimal_sections()
+    return {k: full[k] for k in LEGACY_SECTION_KEYS_ONLY if k in full}
+
+
+def _db_backend_with_load(
+        loaded: dict | None,
+        *,
+        user_id: int = 1,
+        raise_incomplete: bool = False,
+):
+    from release_engine_v3.rel32_frozen_artifact_persist import (
+        get_rel32_db_load_diag,
+        record_db_load_diag,
+    )
+
+    backend = _APP._rel31_backend_callables()
+    backend['_rel32_export_user_id'] = user_id
+
+    def _load(key):
+        if raise_incomplete:
+            record_db_load_diag({
+                'db_sections_loaded': sorted(LEGACY_SECTION_KEYS_ONLY),
+                'frozen_artifact_complete': False,
+                'missing_frozen_components': [
+                    'canonical_hash',
+                    'render_tree_hash',
+                    'canonical_traceability_rows',
+                    'canonical_gap_rows',
+                    'canonical_sections',
+                    'route_equivalence_metadata',
+                ],
+                'artifact_loaded_from': 'legacy_sections',
+                'traceability_rows_loaded_from': 'legacy_rebuild',
+                'incomplete_frozen_artifact': True,
+            })
+            backend['_rel32_last_db_load'] = get_rel32_db_load_diag()
+            backend['_rel32_incomplete_frozen_artifact'] = True
+            raise KeyError(
+                'rel32_incomplete_frozen_artifact:'
+                + ','.join(sorted(LEGACY_SECTION_KEYS_ONLY)))
+        if loaded is None:
+            raise KeyError(f'rel3_frozen_artifact_not_found:{key}')
+        return loaded
+
+    backend['load_artifact'] = _load
+    return backend
+
+
+def _persisted_load_dict(
+        frozen,
+        tree,
+        *,
+        strategy_id: str,
+) -> dict:
+    blob = build_persist_blob_from_generation_art({
+        'rel3_artifact': frozen.to_dict(),
+        'rel3_canonical_hash': frozen.canonical_hash,
+        'rel3_render_tree_hash': tree.render_tree_hash,
+    })
+    assert blob is not None
+    return rehydrate_artifact_dict_from_persisted(
+        blob,
+        strategy_id=strategy_id,
+        contract_meta={'lang': 'ar', 'domain': 'cyber'},
+    )
 
 
 def _minimal_sections(trace_body: str | None = None) -> dict:
@@ -404,6 +481,132 @@ class Rel32FrozenExportLockTests(unittest.TestCase):
         )
         self.assertEqual(keys[0], '7')
         self.assertIn('hash-058e5a27fdb7d2d9', keys)
+
+
+class Rel32FrozenArtifactPersistTests(unittest.TestCase):
+
+    def setUp(self):
+        _reset_export_state()
+
+    def test_17_legacy_db_bundle_not_frozen_loaded(self):
+        self.assertTrue(is_legacy_section_bundle(_legacy_sections_only()))
+        backend = _db_backend_with_load(None, raise_incomplete=True)
+        good = _minimal_sections()
+        md = _APP._prcy65_rebuild_content_from_sections(good, None)
+        art = {
+            'sections': _legacy_sections_only(),
+            'final_markdown': md,
+            'domain': 'cyber',
+            'sealed': True,
+            'strategy_id': 'rel32-legacy-db',
+            'contract_meta': {'lang': 'ar'},
+        }
+        _, lock_meta = resolve_frozen_artifact_for_export(
+            art, backend=backend, route='docx',
+            flags={'rel3': True, 'rel31': True})
+        self.assertFalse(lock_meta.get('frozen_artifact_loaded_for_docx'))
+        self.assertTrue(lock_meta.get('incomplete_frozen_artifact'))
+        self.assertEqual(
+            lock_meta.get('artifact_loaded_from'), 'legacy_sections')
+
+    def test_18_async_docx_fail_closed_without_traceability_rows(self):
+        backend = _db_backend_with_load(None, raise_incomplete=True)
+        good = _minimal_sections()
+        export, evidence = _export_route(
+            'docx', sections=good, strategy_id='rel32-no-trace-db',
+            backend=backend)
+        self.assertFalse(evidence.export_return_allowed)
+        self.assertTrue(any(
+            'rel32_incomplete_frozen_artifact' in str(b)
+            or 'rel32_docx_rebuilt_from_markdown' in str(b)
+            for b in (evidence.blocking_errors or [])))
+
+    def test_19_async_docx_passes_with_complete_db_artifact(self):
+        good = _minimal_sections()
+        frozen, tree, _ = _freeze_generation(
+            good, strategy_id='rel32-db-complete-docx')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-db-complete-docx')
+        backend = _db_backend_with_load(loaded)
+        export, evidence = _export_route(
+            'docx', sections=good, strategy_id='rel32-db-complete-docx',
+            backend=backend)
+        self.assertEqual(export.canonical_hash, frozen.canonical_hash)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        _, lock_meta = resolve_frozen_artifact_for_export(
+            loaded, backend=backend, route='docx',
+            flags={'rel3': True, 'rel31': True})
+        self.assertTrue(lock_meta.get('frozen_artifact_loaded_for_docx'))
+        self.assertTrue(lock_meta.get('frozen_artifact_complete'))
+        self.assertEqual(
+            lock_meta.get('traceability_rows_loaded_from'),
+            'canonical_artifact')
+
+    def test_20_async_pdf_loads_same_persisted_frozen_artifact(self):
+        good = _minimal_sections()
+        frozen, tree, _ = _freeze_generation(
+            good, strategy_id='rel32-db-complete-pdf')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-db-complete-pdf')
+        backend = _db_backend_with_load(loaded)
+        export, evidence = _export_route(
+            'pdf', sections=good, strategy_id='rel32-db-complete-pdf',
+            backend=backend)
+        self.assertEqual(export.render_tree_hash, tree.render_tree_hash)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        _, lock_meta = resolve_frozen_artifact_for_export(
+            loaded, backend=backend, route='pdf',
+            flags={'rel3': True, 'rel31': True})
+        self.assertTrue(lock_meta.get('frozen_artifact_loaded_for_pdf'))
+
+    def test_21_cross_worker_rehydration_hash_parity(self):
+        good = _minimal_sections()
+        frozen, tree, _ = _freeze_generation(
+            good, strategy_id='rel32-cross-worker')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-cross-worker')
+        backend = _db_backend_with_load(loaded)
+        preview_export, _ = _export_route(
+            'preview', sections=good, strategy_id='rel32-cross-worker',
+            backend=backend)
+        docx_export, _ = _export_route(
+            'docx', sections=good, strategy_id='rel32-cross-worker',
+            backend=backend)
+        pdf_export, _ = _export_route(
+            'pdf', sections=good, strategy_id='rel32-cross-worker',
+            backend=backend)
+        self.assertEqual(preview_export.canonical_hash, frozen.canonical_hash)
+        self.assertEqual(docx_export.canonical_hash, frozen.canonical_hash)
+        self.assertEqual(pdf_export.canonical_hash, frozen.canonical_hash)
+        self.assertEqual(
+            preview_export.render_tree_hash, docx_export.render_tree_hash)
+        self.assertEqual(
+            docx_export.render_tree_hash, pdf_export.render_tree_hash)
+        lock = emit_rel32_frozen_artifact_export_lock('rel32-cross-worker')
+        self.assertTrue(lock.get('export_lock_passed'))
+        self.assertTrue(lock.get('frozen_artifact_complete'))
+
+    def test_22_sensitive_handling_maps_in_db_rehydrated_docx(self):
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        good = _minimal_sections()
+        frozen, tree, _ = _freeze_generation(
+            good, strategy_id='rel32-db-trace-map')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-db-trace-map')
+        backend = _db_backend_with_load(loaded)
+        export, evidence = _export_route(
+            'docx', sections=good, strategy_id='rel32-db-trace-map',
+            backend=backend)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        text = extract_docx_visible_text(export.docx_bytes or b'')
+        self.assertIn(spec['capability'], text)
+        self.assertIn(spec['expected_gap'], text)
+        defects = flat_traceability_bad_mappings(text)
+        self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
 
 
 class Rel32RouteEquivalenceAfterLockTests(unittest.TestCase):
