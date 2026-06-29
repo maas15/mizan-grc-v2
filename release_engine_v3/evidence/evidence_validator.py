@@ -40,6 +40,34 @@ def validate_returned_export_bytes(
                     docx_text = decoded
             except UnicodeDecodeError:
                 pass
+        try:
+            from release_engine_v3.rel32_docx_traceability_evidence import (
+                evaluate_docx_traceability_evidence,
+                emit_rel32_docx_traceability_evidence_diag,
+            )
+            frozen_trace = ''
+            artifact_complete = False
+            if artifact.legacy_sections:
+                frozen_trace = str(
+                    (artifact.legacy_sections or {}).get('traceability') or '')
+            if not frozen_trace.strip() and artifact.canonical_sections:
+                from release_engine_v3.section_models import section_to_markdown
+                tr_sec = (artifact.canonical_sections or {}).get('traceability')
+                if tr_sec is not None:
+                    frozen_trace = section_to_markdown(tr_sec)
+            artifact_complete = bool(
+                getattr(artifact, 'frozen_artifact_complete', False)
+                or (artifact.metadata or {}).get('frozen_artifact_complete'))
+            _trace_defects, _trace_diag = evaluate_docx_traceability_evidence(
+                docx_text or '',
+                frozen_traceability=frozen_trace,
+                artifact_complete=artifact_complete,
+            )
+            _trace_diag['returned_docx_source_matches_export_lock'] = bool(
+                artifact_complete)
+            emit_rel32_docx_traceability_evidence_diag(_trace_diag)
+        except Exception:  # noqa: BLE001
+            pass
     if route_n == 'pdf' and pdf_bytes:
         pdf_text = extract_pdf_visible_text(pdf_bytes)
         if not (pdf_text or '').strip():

@@ -306,6 +306,18 @@ def check_generic_risk_treatments(blob: str) -> List[str]:
 
 def check_traceability_bad_mappings(blob: str) -> List[str]:
     defects = list(check_traceability_dcc_classification_invalid(blob))
+    try:
+        from release_engine_v3.rel32_docx_traceability_evidence import (
+            evaluate_docx_traceability_evidence,
+            extract_docx_flat_traceability_rows,
+        )
+        flat_rows = extract_docx_flat_traceability_rows(blob or '')
+        if flat_rows:
+            flat_defects, _diag = evaluate_docx_traceability_evidence(blob or '')
+            defects.extend(flat_defects)
+            return list(dict.fromkeys(defects))
+    except Exception:  # noqa: BLE001
+        pass
     defects.extend(flat_traceability_bad_mappings(blob))
     trace = _trace_matrix_blob(blob)
     if not trace.strip():

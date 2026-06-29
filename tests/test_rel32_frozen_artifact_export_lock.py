@@ -711,6 +711,76 @@ class Rel32DocxRendererBindTests(unittest.TestCase):
         self.assertTrue(content)
 
 
+class Rel32DocxTraceabilityEvidenceTests(unittest.TestCase):
+
+    def test_28_docx_flat_gap_table_parses_sensitive_handling(self):
+        from release_engine_v3.rel32_docx_traceability_evidence import (
+            evaluate_docx_traceability_evidence,
+            extract_docx_flat_traceability_rows,
+        )
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        blob = (
+            'مصفوفة تتبع الأطر المرجعية\n'
+            'الإطار المرجعي\nمجال القدرة\nالفجوة\n'
+            f'NCA DCC\n{spec["capability"]}\n{spec["expected_gap"]}\n'
+        )
+        rows = extract_docx_flat_traceability_rows(blob)
+        self.assertTrue(any(
+            r.get('capability') == spec['capability']
+            and spec['expected_gap'] in r.get('gap', '')
+            for r in rows))
+        defects, diag = evaluate_docx_traceability_evidence(blob)
+        self.assertEqual(defects, [])
+        self.assertEqual(
+            diag.get('actual_gap_for_sensitive_handling'), spec['expected_gap'])
+
+    def test_29_evidence_does_not_infer_from_initiative_narrative(self):
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        blob = (
+            'مصفوفة تتبع\nالإطار المرجعي\nمجال القدرة\nالفجوة\n'
+            f'NCA DCC\n{spec["capability"]}\n{spec["initiative"]}\n'
+            f'{spec["expected_gap"]}\n'
+        )
+        defects = check_traceability_bad_mappings(blob)
+        self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
+
+    def test_30_post_renderer_traceability_mutation_blocked(self):
+        from release_engine_v3.rel32_docx_traceability_evidence import (
+            validate_frozen_traceability_not_mutated,
+        )
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        frozen = (
+            f'| {spec["framework"]} | {spec["capability"]} | '
+            f'{spec["expected_gap"]} | {spec["initiative"]} | x | y |'
+        )
+        extracted = [{
+            'framework': spec['framework'],
+            'capability': spec['capability'],
+            'gap': 'wrong gap label',
+        }]
+        ok, blockers = validate_frozen_traceability_not_mutated(
+            frozen, extracted)
+        self.assertFalse(ok)
+        self.assertTrue(any(
+            b.startswith('rel32_post_renderer_traceability_mutated:')
+            for b in blockers))
+
+    def test_31_cyber_ar_smoke_docx_traceability_evidence(self):
+        _reset_export_state()
+        good = _minimal_sections()
+        frozen, tree, backend = _freeze_generation(
+            good, strategy_id='rel32-smoke-trace')
+        export, evidence = _export_route(
+            'docx', sections=good, strategy_id='rel32-smoke-trace',
+            backend=backend)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        text = extract_docx_visible_text(export.docx_bytes or b'')
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        self.assertIn(spec['expected_gap'], text)
+        defects = check_traceability_bad_mappings(text)
+        self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
+
+
 class Rel32RouteEquivalenceAfterLockTests(unittest.TestCase):
 
     def setUp(self):

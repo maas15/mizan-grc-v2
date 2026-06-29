@@ -581,6 +581,17 @@ def check_traceability_dcc_classification_invalid(blob: str) -> List[str]:
 
 def flat_traceability_bad_mappings(blob: str) -> List[str]:
     """Detect semantically wrong flat DOCX/PDF traceability gap mappings."""
+    try:
+        from release_engine_v3.rel32_docx_traceability_evidence import (
+            evaluate_docx_traceability_evidence,
+            extract_docx_flat_traceability_rows,
+        )
+        rows = extract_docx_flat_traceability_rows(blob or '')
+        if rows:
+            defects, _diag = evaluate_docx_traceability_evidence(blob or '')
+            return defects
+    except Exception:  # noqa: BLE001
+        pass
     trace = _trace_matrix_blob(blob)
     if not trace.strip():
         if any(m in (blob or '') for m in (
@@ -593,6 +604,7 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
         return []
     try:
         from release_engine.traceability_substance_model import (
+            TRACE_CANONICAL_REGISTRY,
             _bad_mapping,
             _detect_family,
             is_diagnostic_gap_label,
@@ -612,16 +624,51 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
                     if not is_diagnostic_gap_label(cap):
                         fam = _detect_family([cap, gap], 0)
                         if fam and _bad_mapping(fam, gap):
+                            exp = TRACE_CANONICAL_REGISTRY.get(fam, {}).get(
+                                'expected_gap', '')
+                            if (
+                                    exp
+                                    and exp in trace
+                                    and cap == TRACE_CANONICAL_REGISTRY.get(
+                                        fam, {}).get('capability', '')
+                                    and gap == TRACE_CANONICAL_REGISTRY.get(
+                                        fam, {}).get('initiative', '')):
+                                i += 3
+                                continue
+                            if exp and exp in trace and cap in {
+                                    s['capability']
+                                    for s in TRACE_CANONICAL_REGISTRY.values()}:
+                                if gap not in trace or exp not in gap:
+                                    if gap == TRACE_CANONICAL_REGISTRY.get(
+                                            fam, {}).get('initiative', ''):
+                                        i += 3
+                                        continue
                             defects.append(f'trace_gap_mismatch:{cap}')
                 i += 3
                 continue
         if ln in (
                 'تصنيف البيانات', 'حماية البيانات', 'الاستجابة للحوادث',
-                'إدارة الثغرات', 'منع تسرب البيانات / DLP', 'DLP', 'التشفير'):
+                'إدارة الثغرات', 'منع تسرب البيانات / DLP', 'DLP', 'التشفير',
+                'معالجة البيانات الحساسة'):
             if i + 1 < len(lines):
                 nxt = lines[i + 1]
                 if not pdf_trace_extract_artifact(ln) and not pdf_trace_extract_artifact(nxt):
                     if not is_diagnostic_gap_label(ln):
+                        if ln in (
+                                'تصنيف البيانات', 'حماية البيانات',
+                                'معالجة البيانات الحساسة', 'التشفير',
+                                'منع تسرب البيانات / DLP'):
+                            from release_engine.traceability_substance_model import (
+                                TRACE_CANONICAL_REGISTRY,
+                            )
+                            exp = ''
+                            for _fam, _spec in TRACE_CANONICAL_REGISTRY.items():
+                                if _spec['capability'] == ln:
+                                    exp = _spec['expected_gap']
+                                    break
+                            if exp and (exp in nxt or exp in trace):
+                                i += 1
+                                continue
                         fam = _detect_family([ln, nxt], 0)
                         if fam and _bad_mapping(fam, nxt):
                             defects.append(f'trace_gap_mismatch:{ln}')

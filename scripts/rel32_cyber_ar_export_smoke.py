@@ -97,8 +97,10 @@ def main() -> int:
     docx_out = extract_docx_visible_text(routes['docx'].docx_bytes or b'')
     trace_bad = []
     try:
-        from release_engine.rel31_acceptance_checks import flat_traceability_bad_mappings
-        trace_bad = flat_traceability_bad_mappings(docx_out)
+        from release_engine.rel31_content_substance_checks import (
+            check_traceability_bad_mappings,
+        )
+        trace_bad = check_traceability_bad_mappings(docx_out)
     except Exception:  # noqa: BLE001
         pass
 
