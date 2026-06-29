@@ -1394,12 +1394,18 @@ def evaluate_document_quality(
         'national_launch_ready': passed,
         'export_return_allowed': passed,
         'release_ready_final_passed': passed,
+        'phase': (
+            'returned_file_validation' if route_evidence
+            else 'pre_export_model_validation'),
     }
     _emit_quality_compiler({
         'passed': passed,
         'blocking_errors': result['blocking_errors'][:12],
         'route_count': len(route_evidence),
         'equivalence_ok': equivalence_ok,
+        'phase': (
+            'returned_file_validation' if route_evidence
+            else 'pre_export_model_validation'),
     })
     return result
 

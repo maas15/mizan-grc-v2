@@ -98,11 +98,17 @@ class Rel31StaticCallGraphTests(unittest.TestCase):
                 '# test', 't', 'ar', domain='cyber',
                 selected_frameworks=['NCA ECC'],
             )
-        self.assertIn('rel3_legacy_route_blocked:_build_docx_bytes', str(ctx.exception))
+        self.assertIn('_build_docx_bytes', str(ctx.exception))
+        self.assertTrue(
+            'rel32_docx_export_bypass_detected' in str(ctx.exception)
+            or 'rel3_legacy_route_blocked' in str(ctx.exception),
+            str(ctx.exception),
+        )
 
     @_skip_if_no_app
     def test_04_build_docx_bytes_has_rel31_guard(self):
         self.assertIn('rel31_guard_legacy_authority', _APP_SOURCE)
+        self.assertIn('guard_rel32_docx_export_bypass', _APP_SOURCE)
         self.assertIn("'_build_docx_bytes'", _APP_SOURCE)
 
     @_skip_if_no_app

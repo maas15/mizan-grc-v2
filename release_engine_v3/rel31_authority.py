@@ -1126,17 +1126,30 @@ def rel3_export_authoritative(
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
 
+    from release_engine_v3.rel32_frozen_export_lock import (
+        emit_rel32_frozen_artifact_export_lock,
+        register_rel32_frozen_export_lock,
+        resolve_frozen_artifact_for_export,
+        track_rel32_export_route_state,
+    )
+
     art = dict(artifact_dict or {})
     art['domain'] = _normalize_rel31_domain_code(
         art.get('domain') or domain)
-    art, _pre_rep = repair_canonical_before_freeze(art, backend=backend)
-    _bind_backend_sections(backend, art)
-    bind_blockers = _verify_rel31_section_binding(backend, art, route_n)
-    if bind_blockers:
+    backend.setdefault('flags', flags)
+
+    frozen_pre, lock_meta = resolve_frozen_artifact_for_export(
+        art, backend=backend, route=route_n, flags=flags)
+    if lock_meta.get('blocking_errors'):
+        blockers = list(lock_meta['blocking_errors'])
+        sid = str(art.get('strategy_id') or '')
+        track_rel32_export_route_state(sid, route_n, lock_meta)
+        emit_rel32_frozen_artifact_export_lock(
+            sid, route=route_n, lock_meta=lock_meta)
         ev = EvidenceResult(
             route_name=route_n,
             artifact_id=str(art.get('artifact_id') or ''),
-            strategy_id=str(art.get('strategy_id') or ''),
+            strategy_id=sid,
             canonical_hash='',
             render_tree_hash='',
             returned_bytes_sha256='',
@@ -1148,7 +1161,7 @@ def rel3_export_authoritative(
             pdf_bytes_checked=False,
             evidence_passed=False,
             export_return_allowed=False,
-            blocking_errors=bind_blockers,
+            blocking_errors=blockers,
         )
         ev.emit_diag()
         return ExportResult(
@@ -1156,18 +1169,28 @@ def rel3_export_authoritative(
             artifact_id=str(art.get('artifact_id') or ''),
             render_tree_hash='',
             canonical_hash='',
-            blocking_errors=bind_blockers,
+            blocking_errors=blockers,
         ), ev
-    with rel31_export_adapter_context():
-        frozen = rel3_freeze_artifact(art)
-        if frozen.blocking_errors and route_n != 'preview':
-            blockers = normalize_rel3_export_blockers(
-                list(frozen.blocking_errors), route=route_n)
+
+    if frozen_pre is not None:
+        frozen = frozen_pre
+        with rel31_export_adapter_context():
+            export, evidence = rel3_export_with_evidence(
+                route_n,
+                frozen,
+                backend=backend,
+                export_kwargs=export_kwargs or {},
+            )
+    else:
+        art, _pre_rep = repair_canonical_before_freeze(art, backend=backend)
+        _bind_backend_sections(backend, art)
+        bind_blockers = _verify_rel31_section_binding(backend, art, route_n)
+        if bind_blockers:
             ev = EvidenceResult(
                 route_name=route_n,
-                artifact_id=frozen.artifact_id,
-                strategy_id=frozen.strategy_id,
-                canonical_hash=frozen.canonical_hash,
+                artifact_id=str(art.get('artifact_id') or ''),
+                strategy_id=str(art.get('strategy_id') or ''),
+                canonical_hash='',
                 render_tree_hash='',
                 returned_bytes_sha256='',
                 evidence_bytes_sha256='',
@@ -1178,22 +1201,64 @@ def rel3_export_authoritative(
                 pdf_bytes_checked=False,
                 evidence_passed=False,
                 export_return_allowed=False,
-                blocking_errors=blockers,
+                blocking_errors=bind_blockers,
             )
             ev.emit_diag()
             return ExportResult(
                 route_name=route_n,
-                artifact_id=frozen.artifact_id,
+                artifact_id=str(art.get('artifact_id') or ''),
                 render_tree_hash='',
-                canonical_hash=frozen.canonical_hash,
-                blocking_errors=blockers,
+                canonical_hash='',
+                blocking_errors=bind_blockers,
             ), ev
-        export, evidence = rel3_export_with_evidence(
-            route_n,
-            frozen,
-            backend=backend,
-            export_kwargs=export_kwargs or {},
-        )
+        with rel31_export_adapter_context():
+            frozen = rel3_freeze_artifact(art)
+            if frozen.blocking_errors and route_n != 'preview':
+                blockers = normalize_rel3_export_blockers(
+                    list(frozen.blocking_errors), route=route_n)
+                ev = EvidenceResult(
+                    route_name=route_n,
+                    artifact_id=frozen.artifact_id,
+                    strategy_id=frozen.strategy_id,
+                    canonical_hash=frozen.canonical_hash,
+                    render_tree_hash='',
+                    returned_bytes_sha256='',
+                    evidence_bytes_sha256='',
+                    returned_equals_evidence_bytes=False,
+                    exact_bytes_checked=False,
+                    preview_text_checked=False,
+                    docx_bytes_checked=False,
+                    pdf_bytes_checked=False,
+                    evidence_passed=False,
+                    export_return_allowed=False,
+                    blocking_errors=blockers,
+                )
+                ev.emit_diag()
+                return ExportResult(
+                    route_name=route_n,
+                    artifact_id=frozen.artifact_id,
+                    render_tree_hash='',
+                    canonical_hash=frozen.canonical_hash,
+                    blocking_errors=blockers,
+                ), ev
+            from release_engine_v3.orchestrator import rel3_build_render_tree
+            _tree = rel3_build_render_tree(frozen)
+            frozen.render_tree_hash = _tree.render_tree_hash
+            register_rel32_frozen_export_lock(
+                frozen, render_tree_hash=_tree.render_tree_hash)
+            lock_meta = {
+                'frozen_artifact_loaded_for_docx': False,
+                'frozen_artifact_loaded_for_pdf': False,
+                'docx_rebuilt_from_markdown': route_n == 'docx',
+                'pdf_rebuilt_from_markdown': route_n == 'pdf',
+                'blocking_errors': [],
+            }
+            export, evidence = rel3_export_with_evidence(
+                route_n,
+                frozen,
+                backend=backend,
+                export_kwargs=export_kwargs or {},
+            )
 
     if export.blocking_errors:
         export.blocking_errors = normalize_rel3_export_blockers(
@@ -1204,6 +1269,23 @@ def rel3_export_authoritative(
 
     canon = frozen.canonical_hash or export.canonical_hash or ''
     tree = export.render_tree_hash or evidence.render_tree_hash or ''
+    if frozen_pre is not None:
+        expected_canon = backend.get('_rel32_frozen_canonical_hash') or ''
+        expected_tree = backend.get('_rel32_frozen_render_tree_hash') or ''
+        hash_blockers: List[str] = []
+        if expected_canon and canon and canon != expected_canon:
+            hash_blockers.append('rel32_export_lock_canonical_hash_mismatch')
+        if expected_tree and tree and tree != expected_tree:
+            hash_blockers.append('rel32_export_lock_render_tree_hash_mismatch')
+        if hash_blockers:
+            export.blocking_errors = list(dict.fromkeys(
+                (export.blocking_errors or []) + hash_blockers))
+            evidence.blocking_errors = list(dict.fromkeys(
+                (evidence.blocking_errors or []) + hash_blockers))
+            evidence.export_return_allowed = False
+            evidence.evidence_passed = False
+            lock_meta['blocking_errors'] = list(dict.fromkeys(
+                (lock_meta.get('blocking_errors') or []) + hash_blockers))
     returned = (
         export.returned_bytes_sha256
         or evidence.returned_bytes_sha256
@@ -1241,14 +1323,17 @@ def rel3_export_authoritative(
             (evidence.blocking_errors or export.blocking_errors or [''])[0]
             if not evidence.export_return_allowed else ''),
     )
+    _sid = str(art.get('strategy_id') or frozen.strategy_id or '')
     record_rel3_route_artifact_hashes(
-        str(art.get('strategy_id') or frozen.strategy_id or ''),
+        _sid,
         route_n,
         canonical_hash=canon,
         render_tree_hash=tree,
     )
-    emit_rel3_route_artifact_equivalence(
-        str(art.get('strategy_id') or frozen.strategy_id or ''))
+    emit_rel3_route_artifact_equivalence(_sid)
+    track_rel32_export_route_state(_sid, route_n, lock_meta)
+    emit_rel32_frozen_artifact_export_lock(
+        _sid, route=route_n, lock_meta=lock_meta)
     return export, evidence
 
 
@@ -1678,11 +1763,15 @@ def build_generation_contract(
         legacy_audit: Optional[List[str]] = None,
         document_quality_passed: Optional[bool] = None,
         dqs_route_count: int = 0,
+        dqs_phase: str = 'pre_export_model_validation',
         enforce_dq: bool = False,
 ) -> Dict[str, Any]:
     dq_ok = True
     if enforce_dq and document_quality_passed is not None:
-        dq_ok = bool(document_quality_passed) and dqs_route_count >= 1
+        if dqs_phase == 'pre_export_model_validation' and dqs_route_count == 0:
+            dq_ok = bool(document_quality_passed)
+        else:
+            dq_ok = bool(document_quality_passed) and dqs_route_count >= 1
     if document_quality_passed is not None:
         ok = (
             dq_ok
@@ -1724,6 +1813,8 @@ def build_generation_contract(
         'pdf_allowed': ok,
         'blocking_errors': list(blocking_errors),
         'legacy_audit_blockers': list(legacy_audit or []),
+        'dqs_phase': dqs_phase,
+        'dqs_route_count': dqs_route_count,
     }
 
 
@@ -1802,6 +1893,15 @@ def apply_rel31_authoritative_contract(
 
     tree = rel3_build_render_tree(built)
     _sid = str(art.get('strategy_id') or built.strategy_id or '')
+    built.render_tree_hash = tree.render_tree_hash
+    try:
+        from release_engine_v3.rel32_frozen_export_lock import (
+            register_rel32_frozen_export_lock,
+        )
+        register_rel32_frozen_export_lock(
+            built, render_tree_hash=tree.render_tree_hash)
+    except Exception:  # noqa: BLE001
+        pass
     record_rel3_route_artifact_hashes(
         _sid, 'generation',
         canonical_hash=built.canonical_hash,
@@ -2083,6 +2183,7 @@ def apply_rel31_authoritative_contract(
         document_quality_passed=(
             dq.get('passed') if enforce_dq and dq else None),
         dqs_route_count=len(dq.get('route_evidence') or {}) if dq else 0,
+        dqs_phase=str(dq.get('phase') or 'pre_export_model_validation') if dq else 'pre_export_model_validation',
         enforce_dq=enforce_dq,
     )
     emit_rel3_generation_contract(contract)

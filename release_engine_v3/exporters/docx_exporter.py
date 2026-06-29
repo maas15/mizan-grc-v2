@@ -44,8 +44,24 @@ def export_docx(
             blocking_errors=['rel3_export_failed:docx:build_docx_bytes_missing'],
         )
     content = render_tree.markdown_view
-    sections = backend.get('split_sections')
-    sec_map = sections(content) if sections else {}
+    if backend.get('_rel32_frozen_export_lock_active'):
+        frozen_secs = backend.get('_rel31_frozen_sections') or {}
+        if frozen_secs:
+            sec_map = dict(frozen_secs)
+        else:
+            sections = backend.get('split_sections')
+            sec_map = sections(content) if sections else {}
+        if content != (render_tree.markdown_view or ''):
+            return ExportResult(
+                route_name='docx',
+                artifact_id=render_tree.artifact_id,
+                render_tree_hash=render_tree.render_tree_hash,
+                canonical_hash=render_tree.canonical_hash,
+                blocking_errors=['rel32_docx_markdown_divergence'],
+            )
+    else:
+        sections = backend.get('split_sections')
+        sec_map = sections(content) if sections else {}
     try:
         docx_bytes = build_fn(
             content,

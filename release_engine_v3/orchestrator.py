@@ -278,6 +278,13 @@ def rel3_verify_render_tree_parity_across_routes(
 def clear_rel3_caches() -> None:
     _EXPORT_CACHE.clear()
     _RENDER_TREE_CACHE.clear()
+    try:
+        from release_engine_v3.rel32_frozen_export_lock import (
+            clear_rel32_frozen_export_lock,
+        )
+        clear_rel32_frozen_export_lock()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def rel3_get_or_build_frozen_artifact(
