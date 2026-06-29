@@ -65,6 +65,10 @@ from release_engine_v3.rel32_frozen_export_lock import (
     register_rel32_frozen_export_lock,
     resolve_frozen_artifact_for_export,
 )
+from release_engine_v3.rel32_docx_renderer import (
+    bind_rel32_docx_renderer_input,
+    validate_docx_renderer_sections,
+)
 from release_engine_v3.rel32_frozen_artifact_persist import (
     LEGACY_SECTION_KEYS_ONLY,
     build_persist_blob_from_generation_art,
@@ -607,6 +611,104 @@ class Rel32FrozenArtifactPersistTests(unittest.TestCase):
         self.assertIn(spec['expected_gap'], text)
         defects = flat_traceability_bad_mappings(text)
         self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
+
+
+class Rel32DocxRendererBindTests(unittest.TestCase):
+
+    def setUp(self):
+        _reset_export_state()
+
+    def test_23_docx_renders_from_frozen_not_legacy_content(self):
+        good = _minimal_sections()
+        frozen, tree, backend = _freeze_generation(
+            good, strategy_id='rel32-docx-bind')
+        legacy_only = _legacy_sections_only()
+        legacy_md = _APP._prcy65_rebuild_content_from_sections(
+            legacy_only, None)
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-docx-bind')
+        backend = _db_backend_with_load(loaded)
+        backend['_rel32_frozen_export_lock_active'] = True
+        art = {
+            'sections': legacy_only,
+            'final_markdown': legacy_md,
+            'domain': 'cyber',
+            'sealed': True,
+            'strategy_id': 'rel32-docx-bind',
+            'contract_meta': {'lang': 'ar'},
+            '_rel32_frozen_loaded': True,
+            'frozen_artifact_complete': True,
+        }
+        prepared = prepare_rel32_export_artifact_dict(
+            art, backend=backend,
+            flags={'rel3': True, 'rel31': True})
+        self.assertIn('traceability', prepared.get('sections', {}))
+        self.assertIn('governance', prepared.get('sections', {}))
+        export, evidence = _export_route(
+            'docx', sections=legacy_only, strategy_id='rel32-docx-bind',
+            backend=backend)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        text = extract_docx_visible_text(export.docx_bytes or b'')
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        self.assertIn(spec['expected_gap'], text)
+
+    def test_24_docx_renderer_fails_without_traceability(self):
+        backend = _APP._rel31_backend_callables()
+        sections = dict(_legacy_sections_only())
+        ok, blockers = validate_docx_renderer_sections(
+            sections, frozen_complete=True)
+        self.assertFalse(ok)
+        self.assertIn(
+            'rel32_docx_renderer_missing_frozen_traceability', blockers)
+
+    def test_25_docx_evidence_sensitive_handling_mapping(self):
+        good = _minimal_sections()
+        frozen, tree, backend = _freeze_generation(
+            good, strategy_id='rel32-docx-trace-ev')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-docx-trace-ev')
+        backend = _db_backend_with_load(loaded)
+        export, evidence = _export_route(
+            'docx', sections=good, strategy_id='rel32-docx-trace-ev',
+            backend=backend)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        text = extract_docx_visible_text(export.docx_bytes or b'')
+        self.assertIn(spec['capability'], text)
+        self.assertIn(spec['expected_gap'], text)
+        defects = flat_traceability_bad_mappings(text)
+        self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
+
+    def test_26_pdf_still_passes_with_docx_renderer_bind(self):
+        good = _minimal_sections()
+        frozen, tree, backend = _freeze_generation(
+            good, strategy_id='rel32-pdf-bind')
+        clear_artifact_registry()
+        loaded = _persisted_load_dict(
+            frozen, tree, strategy_id='rel32-pdf-bind')
+        backend = _db_backend_with_load(loaded)
+        export, evidence = _export_route(
+            'pdf', sections=good, strategy_id='rel32-pdf-bind',
+            backend=backend)
+        self.assertTrue(evidence.export_return_allowed, evidence.blocking_errors)
+        self.assertEqual(export.render_tree_hash, tree.render_tree_hash)
+
+    def test_27_bind_rel32_docx_renderer_input_meta(self):
+        good = _minimal_sections()
+        frozen, tree, backend = _freeze_generation(
+            good, strategy_id='rel32-bind-meta')
+        content, sections, meta = bind_rel32_docx_renderer_input(
+            frozen, tree, backend=backend,
+            artifact_dict={'frozen_artifact_complete': True})
+        self.assertIn('traceability', sections)
+        self.assertIn('governance', sections)
+        self.assertEqual(meta.get('docx_renderer_source'), 'frozen_artifact')
+        self.assertTrue(meta.get('docx_renderer_received_traceability'))
+        self.assertTrue(meta.get('docx_renderer_received_governance'))
+        self.assertTrue(meta.get('returned_docx_source_matches_export_lock'))
+        self.assertTrue(content)
 
 
 class Rel32RouteEquivalenceAfterLockTests(unittest.TestCase):

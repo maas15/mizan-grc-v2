@@ -1220,6 +1220,7 @@ def rel3_export_authoritative(
 
     if frozen_pre is not None:
         frozen = frozen_pre
+        backend['_rel32_export_artifact_dict'] = art
         with rel31_export_adapter_context():
             export, evidence = rel3_export_with_evidence(
                 route_n,

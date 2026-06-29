@@ -32,6 +32,8 @@ def export_docx(
         domain: str = 'cyber',
         selected_frameworks=None,
         cyber_sealed_artifact: bool = False,
+        frozen_artifact=None,
+        artifact_dict: Optional[Dict[str, Any]] = None,
 ) -> ExportResult:
     """Build DOCX bytes from RenderTree markdown view — never raw client markdown."""
     build_fn = backend.get('build_docx_bytes')
@@ -43,25 +45,46 @@ def export_docx(
             canonical_hash=render_tree.canonical_hash,
             blocking_errors=['rel3_export_failed:docx:build_docx_bytes_missing'],
         )
-    content = render_tree.markdown_view
-    if backend.get('_rel32_frozen_export_lock_active'):
-        frozen_secs = backend.get('_rel31_frozen_sections') or {}
-        if frozen_secs:
-            sec_map = dict(frozen_secs)
-        else:
-            sections = backend.get('split_sections')
-            sec_map = sections(content) if sections else {}
-        if content != (render_tree.markdown_view or ''):
+
+    content = render_tree.markdown_view or ''
+    sec_map: Dict[str, str] = {}
+    renderer_meta: Dict[str, Any] = {}
+
+    if backend.get('_rel32_frozen_export_lock_active') and frozen_artifact is not None:
+        from release_engine_v3.rel32_docx_renderer import (
+            bind_rel32_docx_renderer_input,
+            emit_rel32_docx_renderer_diag,
+        )
+        content, sec_map, renderer_meta = bind_rel32_docx_renderer_input(
+            frozen_artifact,
+            render_tree,
+            backend=backend,
+            artifact_dict=artifact_dict,
+        )
+        emit_rel32_docx_renderer_diag(renderer_meta)
+        if renderer_meta.get('blocking_errors'):
+            blockers = list(renderer_meta['blocking_errors'])
             return ExportResult(
                 route_name='docx',
                 artifact_id=render_tree.artifact_id,
                 render_tree_hash=render_tree.render_tree_hash,
                 canonical_hash=render_tree.canonical_hash,
-                blocking_errors=['rel32_docx_markdown_divergence'],
+                blocking_errors=blockers,
             )
+    elif backend.get('_rel32_frozen_export_lock_active'):
+        frozen_secs = backend.get('_rel31_frozen_sections') or {}
+        if frozen_secs:
+            sec_map = {
+                k: v for k, v in dict(frozen_secs).items()
+                if isinstance(v, str) and not str(k).startswith('_')}
+        else:
+            sections = backend.get('split_sections')
+            sec_map = sections(content) if sections else {}
+        content = render_tree.markdown_view or content
     else:
         sections = backend.get('split_sections')
         sec_map = sections(content) if sections else {}
+
     try:
         docx_bytes = build_fn(
             content,

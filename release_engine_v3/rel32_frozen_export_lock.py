@@ -162,6 +162,7 @@ def prepare_rel32_export_artifact_dict(
 ) -> Dict[str, Any]:
     """Prefer generation-time frozen sections over client POST markdown."""
     from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+    from release_engine_v3.rel32_docx_renderer import sections_from_frozen_artifact
 
     art = dict(artifact_dict or {})
     domain = str(art.get('domain') or 'cyber')
@@ -188,7 +189,7 @@ def prepare_rel32_export_artifact_dict(
                 art['_rel32_frozen_loaded'] = False
                 continue
             if frozen.frozen and not frozen.blocking_errors:
-                art['sections'] = dict(frozen.legacy_sections or {})
+                art['sections'] = sections_from_frozen_artifact(frozen)
                 if frozen.final_markdown_view:
                     art['final_markdown'] = frozen.final_markdown_view
                 art['sealed'] = True
@@ -201,8 +202,10 @@ def prepare_rel32_export_artifact_dict(
                     frozen.strategy_id or sid or art.get('strategy_id') or '')
                 if loaded_from_memory:
                     art['_rel32_artifact_loaded_from'] = 'memory'
-                    art['_rel32_traceability_rows_loaded_from'] = (
-                        'canonical_artifact')
+                else:
+                    art['_rel32_artifact_loaded_from'] = 'db_complete_artifact'
+                art['_rel32_traceability_rows_loaded_from'] = (
+                    'canonical_artifact')
                 break
     except KeyError:
         pass
@@ -220,6 +223,7 @@ def resolve_frozen_artifact_for_export(
     from release_engine_v3.rel32_compiler import is_rel32_compiler_first
     from release_engine_v3.orchestrator import rel3_get_frozen_artifact
     from release_engine_v3.rel31_authority import _bind_backend_sections
+    from release_engine_v3.rel32_docx_renderer import sections_from_frozen_artifact
 
     flags = dict(flags or {})
     route_n = (route or '').lower()
@@ -308,8 +312,13 @@ def resolve_frozen_artifact_for_export(
     if _client_sections_diverge(artifact_dict, frozen):
         meta['client_content_ignored'] = True
 
+    from release_engine_v3.orchestrator import rel3_build_render_tree
+
+    _frozen_tree = rel3_build_render_tree(frozen)
+    _frozen_sections = sections_from_frozen_artifact(
+        frozen, render_tree=_frozen_tree)
     _bind_backend_sections(backend, {
-        'sections': dict(frozen.legacy_sections or {}),
+        'sections': _frozen_sections,
     })
     backend['_rel32_frozen_export_lock_active'] = True
     backend['_rel32_frozen_canonical_hash'] = frozen.canonical_hash or ''

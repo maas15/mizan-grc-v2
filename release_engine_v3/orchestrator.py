@@ -212,7 +212,14 @@ def rel3_export_with_evidence(
             canonical_hash=artifact.canonical_hash,
             blocking_errors=drift,
         ), ev
-    export = rel3_export(route, tree, backend=backend, export_kwargs=export_kwargs)
+    _export_kw = dict(export_kwargs or {})
+    if (route or '').lower() == 'docx':
+        _export_kw['frozen_artifact'] = artifact
+        _export_kw['artifact_dict'] = (
+            _export_kw.get('artifact_dict')
+            or backend.get('_rel32_export_artifact_dict')
+            or {})
+    export = rel3_export(route, tree, backend=backend, export_kwargs=_export_kw)
     if export.blocking_errors:
         ev = EvidenceResult(
             route_name=route,
