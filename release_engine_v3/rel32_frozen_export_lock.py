@@ -46,6 +46,30 @@ def _client_sections_diverge(
     return False
 
 
+def _rel32_lookup_keys(
+        artifact_dict: Dict[str, Any],
+        *,
+        backend: Optional[Dict[str, Any]] = None) -> List[str]:
+    keys: List[str] = []
+    for field in ('strategy_id', 'artifact_id', '_numeric_strategy_id'):
+        val = str((artifact_dict or {}).get(field) or '').strip()
+        if val and val not in keys:
+            keys.append(val)
+    resolver = (backend or {}).get('resolve_strategy_id')
+    uid = int((backend or {}).get('_rel32_export_user_id') or 0)
+    if callable(resolver):
+        for key in list(keys):
+            try:
+                numeric = resolver(key, uid)
+            except Exception:  # noqa: BLE001
+                numeric = None
+            if numeric:
+                num_s = str(numeric)
+                if num_s not in keys:
+                    keys.insert(0, num_s)
+    return keys
+
+
 def prepare_rel32_export_artifact_dict(
         artifact_dict: Dict[str, Any],
         *,
@@ -60,21 +84,28 @@ def prepare_rel32_export_artifact_dict(
     lang = str((art.get('contract_meta') or {}).get('lang') or 'ar')
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return art
-    sid = str(art.get('strategy_id') or art.get('artifact_id') or '').strip()
-    if not sid:
+    lookup_keys = _rel32_lookup_keys(art, backend=backend)
+    if not lookup_keys:
         return art
     try:
         from release_engine_v3.orchestrator import rel3_get_frozen_artifact
-        frozen = rel3_get_frozen_artifact(sid, backend=backend)
-        if frozen.frozen and not frozen.blocking_errors:
-            art['sections'] = dict(frozen.legacy_sections or {})
-            if frozen.final_markdown_view:
-                art['final_markdown'] = frozen.final_markdown_view
-            art['sealed'] = True
-            art['_rel32_frozen_loaded'] = True
-            art['rel3_canonical_hash'] = frozen.canonical_hash
-            if frozen.render_tree_hash:
-                art['rel3_render_tree_hash'] = frozen.render_tree_hash
+        for sid in lookup_keys:
+            try:
+                frozen = rel3_get_frozen_artifact(sid, backend=backend)
+            except KeyError:
+                continue
+            if frozen.frozen and not frozen.blocking_errors:
+                art['sections'] = dict(frozen.legacy_sections or {})
+                if frozen.final_markdown_view:
+                    art['final_markdown'] = frozen.final_markdown_view
+                art['sealed'] = True
+                art['_rel32_frozen_loaded'] = True
+                art['rel3_canonical_hash'] = frozen.canonical_hash
+                if frozen.render_tree_hash:
+                    art['rel3_render_tree_hash'] = frozen.render_tree_hash
+                art['strategy_id'] = str(
+                    frozen.strategy_id or sid or art.get('strategy_id') or '')
+                break
     except KeyError:
         pass
     return art
@@ -111,7 +142,7 @@ def resolve_frozen_artifact_for_export(
         return None, meta
 
     frozen: Optional[FinalDocumentArtifact] = None
-    for key in (sid, aid):
+    for key in _rel32_lookup_keys(artifact_dict, backend=backend):
         if not key:
             continue
         try:

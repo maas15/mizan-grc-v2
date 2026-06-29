@@ -386,6 +386,25 @@ class Rel32FrozenExportLockTests(unittest.TestCase):
             prepared['sections'].get('traceability', '')[:40],
         )
 
+    def test_16_lookup_keys_resolve_hash_to_numeric_strategy_id(self):
+        from release_engine_v3.rel32_frozen_export_lock import _rel32_lookup_keys
+
+        def _resolver(key, _uid):
+            return 7 if str(key).startswith('hash-') else None
+
+        keys = _rel32_lookup_keys(
+            {
+                'strategy_id': 'hash-058e5a27fdb7d2d9',
+                'artifact_id': 'hash-058e5a27fdb7d2d9',
+            },
+            backend={
+                'resolve_strategy_id': _resolver,
+                '_rel32_export_user_id': 1,
+            },
+        )
+        self.assertEqual(keys[0], '7')
+        self.assertIn('hash-058e5a27fdb7d2d9', keys)
+
 
 class Rel32RouteEquivalenceAfterLockTests(unittest.TestCase):
 
