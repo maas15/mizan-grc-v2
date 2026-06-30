@@ -144,6 +144,14 @@ def _kpi_defects_in(blob: str) -> List[str]:
     return list(dict.fromkeys(defects))
 
 
+def _markdown_table_cells(ln: str) -> List[str]:
+    """Split a markdown table row; drop trailing empty cells from closing ``|``."""
+    cells = [c.strip() for c in (ln or '').strip('|').split('|')]
+    while cells and not cells[-1]:
+        cells.pop()
+    return cells
+
+
 def _risk_defects_in(blob: str) -> List[str]:
     empty: List[str] = []
     in_confidence = False
@@ -152,7 +160,7 @@ def _risk_defects_in(blob: str) -> List[str]:
         low = ln.lower()
         if any(k in ln for k in ('تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
             in_confidence = True
-        if 'سجل المخاطر' in ln or 'confidence risk' in low:
+        if 'سجل المخاطر' in ln or 'المخاطر الرئيسية' in ln or 'confidence risk' in low:
             in_register = True
         if ln.strip().startswith('|') and 'خطة المعالجة' in ln:
             in_register = True
@@ -168,11 +176,11 @@ def _risk_defects_in(blob: str) -> List[str]:
             continue
         if not stripped.startswith('|') or '---' in ln:
             continue
-        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة')):
+        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة', 'الأهمية', 'الوصف')):
             continue
         if 'treatment' in low:
             continue
-        cells = [c.strip() for c in ln.strip('|').split('|')]
+        cells = _markdown_table_cells(ln)
         if len(cells) < 5:
             continue
         if cells[0] in ('#', 'العامل', 'عامل'):

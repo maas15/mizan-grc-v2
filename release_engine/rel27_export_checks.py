@@ -437,7 +437,7 @@ def check_risk_treatment_exported(blob: str) -> List[str]:
         low = ln.lower()
         if any(k in ln for k in ('تقييم الثقة', 'سجل المخاطر', 'confidence risk')):
             in_confidence = True
-        if 'سجل المخاطر' in ln or 'confidence risk' in low:
+        if 'سجل المخاطر' in ln or 'المخاطر الرئيسية' in ln or 'confidence risk' in low:
             in_register = True
         if ln.strip().startswith('|') and 'خطة المعالجة' in ln:
             in_register = True
@@ -450,11 +450,13 @@ def check_risk_treatment_exported(blob: str) -> List[str]:
             continue
         if not ln.strip().startswith('|') or '---' in ln:
             continue
-        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة')):
+        if any(k in ln for k in ('العامل', 'الوزن', 'المساهمة', 'خطة المعالجة', 'الأهمية', 'الوصف')):
             continue
         if 'treatment' in low:
             continue
         cells = [c.strip() for c in ln.strip('|').split('|')]
+        while cells and not cells[-1]:
+            cells.pop()
         if len(cells) < 5:
             continue
         if cells[0] in ('#', 'العامل', 'عامل'):
