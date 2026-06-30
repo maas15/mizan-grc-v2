@@ -533,16 +533,28 @@ def _build_confidence_section(
         maturity_target=maturity_target,
         horizon_months=horizon_months,
     )
-    parts.append('| العامل | الوزن | الدرجة | المساهمة |')
+    parts.append('### عوامل النجاح الحرجة')
+    parts.append('')
+    parts.append('| # | العامل | الوصف | الأهمية |')
     parts.append('|---|---|---|---|')
     grade = str(min(5, max(1, round(score_val / 20))))
-    for fname, weight in CONFIDENCE_FACTOR_REGISTRY:
+    _factor_desc = {
+        'اكتمال المدخلات': 'اكتمال مدخلات التقييم والبيانات المرجعية',
+        'تغطية الأطر المرجعية': 'تغطية NCA ECC وNCA DCC والمتطلبات التنظيمية',
+        'جدوى خارطة الطريق': 'قابلية تنفيذ خارطة الطريق ضمن الأفق الزمني',
+        'جاهزية الموارد': 'توفر الموارد البشرية والتقنية والتمويل',
+        'نضج الحوكمة': 'نضج هيكل الحوكمة والمساءلة السيبرانية',
+        'جاهزية حماية البيانات': 'جاهزية ضوابط حماية البيانات والخصوصية',
+    }
+    for i, (fname, weight) in enumerate(CONFIDENCE_FACTOR_REGISTRY, 1):
         w_pct = int(re.sub(r'\D', '', weight) or '0')
         contrib = f'{round(w_pct * score_val / 100, 1)}%'
+        desc = _factor_desc.get(fname, fname)
+        importance = 'عالية' if w_pct >= 20 else 'متوسطة'
         factor_rows.append(ConfidenceFactorRow(fname, weight, grade, contrib))
-        parts.append(f'| {fname} | {weight} | {grade} | {contrib} |')
+        parts.append(f'| {i} | {fname} | {desc} | {importance} |')
     parts.append('')
-    parts.append('### سجل المخاطر')
+    parts.append('### المخاطر الرئيسية')
     parts.append('')
     parts.append(
         '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة | المالك |')
