@@ -1579,7 +1579,11 @@ function _onStrategyResult(result){
         var _elFb=document.getElementById('strategy-content');
         if(_elFb){
           var _rawFb=Object.values(strategyData).filter(Boolean).join('\n\n')||currentStrategyContent||'';
-          _elFb.innerHTML='<div class="document-page">'+_rawFb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>')+'</div>';
+          var _htmlFb='';
+          try{ _htmlFb=grcMarkdownToHTML(_rawFb); }catch(_e){ _htmlFb=_rawFb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>'); }
+          _elFb.innerHTML='<div class="document-page">'+_htmlFb+'</div>';
+          try{ mergeFragmentedPreviewTables(_elFb); }catch(_e){}
+          try{ wrapOutputTables(_elFb); }catch(_e){}
         }
       }catch(_eFb){ console.error('[_onStrategyResult] all render tiers failed',_eFb); }
     }

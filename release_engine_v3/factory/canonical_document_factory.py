@@ -68,8 +68,15 @@ class CanonicalDocumentFactory:
                         request_context={
                             'lang': lang,
                             'domain': dcode,
+                            'selected_frameworks': (
+                                ctx.frameworks or []),
                             'backend': ctx.backend,
                             'flags': flags,
+                            'maturity_level': (
+                                (ctx.backend or {}).get('maturity_level')
+                                or (ctx.backend or {}).get('maturity')
+                                or 'initial'),
+                            'roadmap_horizon_months': 18,
                         },
                     )
                     sections = dict(compiled.legacy_sections or sections)

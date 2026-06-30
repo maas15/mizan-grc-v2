@@ -53,12 +53,93 @@ _ENV_GAP_GUIDE_MARKERS = (
     'دليل تطبيق الفجوة', 'implementation guide', 'gap guide',
     '#### Gap #', '#### دليل',
 )
+_GAP_GAP_PREFIXES = ('ضعف ', 'غياب ', 'قصور ', 'عدم ')
 _PLACEHOLDER_GAP_PATTERNS = (
     r'فجوة\s*(عامة|مؤقتة|placeholder)',
     r'generic\s*gap',
     r'\[REQUIRES_AI',
     r'TBD|tbd',
 )
+
+_MATURITY_ORDER = (
+    'initial', 'developing', 'defined', 'managed', 'optimized',
+)
+_MATURITY_LABEL_AR = {
+    'initial': 'ابتدائي',
+    'developing': 'تطويري',
+    'defined': 'محدد',
+    'managed': 'مُدار',
+    'optimized': 'محسّن',
+}
+_MATURITY_LABEL_EN = {
+    'initial': 'Initial',
+    'developing': 'Developing',
+    'defined': 'Defined',
+    'managed': 'Managed',
+    'optimized': 'Optimized',
+}
+
+
+def _normalize_maturity_level(raw: str) -> str:
+    m = (raw or 'initial').strip().lower()
+    _map = {
+        'أولي': 'initial', 'مبتدئ': 'initial',
+        'قيد التطوير': 'developing', 'تطويري': 'developing',
+        'intermediate': 'developing',
+        'معرّف': 'defined', 'محدد': 'defined',
+        'مُدار': 'managed', 'تحت الإدارة': 'managed',
+        'مُحسّن': 'optimized', 'محسن': 'optimized',
+        'ad-hoc': 'initial', 'ad hoc': 'initial',
+    }
+    m = _map.get(m, m)
+    return m if m in _MATURITY_ORDER else 'initial'
+
+
+def _target_maturity_level(current: str, *, horizon_months: int = 18) -> str:
+    cur = _normalize_maturity_level(current)
+    idx = _MATURITY_ORDER.index(cur)
+    bump = 2 if horizon_months >= 19 else 1
+    return _MATURITY_ORDER[min(idx + bump, len(_MATURITY_ORDER) - 1)]
+
+
+def _append_maturity_trajectory_block(
+        parts: List[str],
+        *,
+        lang: str,
+        maturity_current: str,
+        maturity_target: str,
+        horizon_months: int,
+) -> None:
+    """Deterministic consulting-grade maturity trajectory (not AI-dependent)."""
+    cur = _normalize_maturity_level(maturity_current)
+    tgt = _normalize_maturity_level(maturity_target or _target_maturity_level(
+        cur, horizon_months=horizon_months))
+    months = max(12, min(24, int(horizon_months or 18)))
+    if lang == 'ar':
+        cur_l = _MATURITY_LABEL_AR.get(cur, cur)
+        tgt_l = _MATURITY_LABEL_AR.get(tgt, tgt)
+        parts.append('### مسار النضج المؤسسي')
+        parts.append('')
+        parts.append(f'مستوى النضج الحالي: {cur_l} ({cur})')
+        parts.append(
+            f'مستوى النضج المستهدف: {tgt_l} خلال {months} شهراً')
+        parts.append('')
+        parts.append(
+            'يعكس هذا المسار أفق خارطة الطريق وعوامل الثقة التنظيمية '
+            f'وقابلية التنفيذ خلال {months} شهراً.')
+    else:
+        cur_l = _MATURITY_LABEL_EN.get(cur, cur)
+        tgt_l = _MATURITY_LABEL_EN.get(tgt, tgt)
+        parts.append('### Maturity Trajectory')
+        parts.append('')
+        parts.append(f'Current maturity level: {cur_l} ({cur})')
+        parts.append(
+            f'Target maturity level: {tgt_l} within {months} months')
+        parts.append('')
+        parts.append(
+            'This trajectory aligns with the roadmap horizon, confidence '
+            f'factors, and domain implementation profile over {months} months.')
+    parts.append('')
 
 
 @dataclass
@@ -424,6 +505,9 @@ def _build_confidence_section(
         ai_confidence: str,
         *,
         lang: str,
+        maturity_current: str = 'initial',
+        maturity_target: str = '',
+        horizon_months: int = 18,
 ) -> Tuple[str, Tuple[ConfidenceFactorRow, ...], Tuple[RiskRegisterRow, ...], str, str]:
     from release_engine.risk_treatment_model import (
         _REQUIRED_RISK_THEMES,
@@ -442,6 +526,13 @@ def _build_confidence_section(
     parts.append('مبررات التقييم:')
     parts.append(rationale)
     parts.append('')
+    _append_maturity_trajectory_block(
+        parts,
+        lang=lang,
+        maturity_current=maturity_current,
+        maturity_target=maturity_target,
+        horizon_months=horizon_months,
+    )
     parts.append('| العامل | الوزن | الدرجة | المساهمة |')
     parts.append('|---|---|---|---|')
     grade = str(min(5, max(1, round(score_val / 20))))
@@ -536,8 +627,17 @@ def _document_from_sections(
         lang=lang, domain=domain, backend=backend)
     kpis_text, kpis, formulas = _build_kpis_section(
         sections.get('kpis', ''), lang=lang, backend=backend)
+    _horizon = int(metadata.get('roadmap_horizon_months') or 18)
+    _maturity_cur = str(
+        metadata.get('maturity_level') or metadata.get('maturity') or 'initial')
+    _maturity_tgt = str(metadata.get('maturity_target') or '')
     conf_text, factors, risks, score, rationale = _build_confidence_section(
-        sections.get('confidence', ''), lang=lang)
+        sections.get('confidence', ''),
+        lang=lang,
+        maturity_current=_maturity_cur,
+        maturity_target=_maturity_tgt,
+        horizon_months=_horizon,
+    )
     gov_text, gov_roles = _build_governance_section()
     trace_text, trace_gaps, trace_inits = _build_traceability_section(lang=lang)
     appendices = sections.get('appendices', '') or ''
@@ -683,6 +783,12 @@ def compile_canonical_strategy_document(
         'selected_frameworks': backend.get('selected_frameworks') or [],
         'compiler': 'rel32',
         'ai_input_keys': list(ai_sections.keys()),
+        'maturity_level': _normalize_maturity_level(
+            str(ctx.get('maturity_level') or ctx.get('maturity') or 'initial')),
+        'maturity_target': _normalize_maturity_level(
+            str(ctx.get('maturity_target') or ''))
+        if ctx.get('maturity_target') else '',
+        'roadmap_horizon_months': int(ctx.get('roadmap_horizon_months') or 18),
     }
 
     doc = _document_from_sections(
@@ -744,6 +850,40 @@ def compile_canonical_strategy_document(
         passed=passed,
         diagnostics=diag,
     )
+
+
+def apply_compiler_first_save_gate_sections(
+        sections: Dict[str, str],
+        *,
+        domain: str,
+        lang: str,
+        flags: Optional[Dict[str, Any]] = None,
+        maturity_level: str = 'initial',
+        selected_frameworks: Optional[List[str]] = None,
+        roadmap_horizon_months: int = 18,
+        backend: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], List[str]]:
+    """Replace AI sections with compiler-owned structure before save-gate validation."""
+    if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+        return dict(sections or {}), []
+    compiled = compile_canonical_strategy_document(
+        dict(sections or {}),
+        request_context={
+            'lang': lang,
+            'domain': (domain or 'cyber').strip().lower(),
+            'maturity_level': maturity_level,
+            'maturity': maturity_level,
+            'roadmap_horizon_months': roadmap_horizon_months,
+            'selected_frameworks': list(selected_frameworks or []),
+            'backend': dict(backend or {}),
+            'flags': dict(flags or {}),
+        },
+    )
+    repairs = list(compiled.repairs or [])
+    if compiled.legacy_sections:
+        repairs.insert(0, 'rel32:save_gate_compiler_first')
+        return dict(compiled.legacy_sections), repairs
+    return dict(sections or {}), repairs
 
 
 def rel32_fingerprint_extension(flags: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

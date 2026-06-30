@@ -73,6 +73,24 @@ class TestDocumentExcellenceGate(unittest.TestCase):
 
 
 class TestCanonicalDocumentFactory(unittest.TestCase):
+    def test_compile_confidence_maturity_trajectory_deterministic(self):
+        from release_engine_v3.rel32_compiler import (
+            compile_canonical_strategy_document,
+        )
+        compiled = compile_canonical_strategy_document(
+            {'confidence': 'درجة الثقة: 76%'},
+            request_context={
+                'lang': 'ar',
+                'domain': 'cyber',
+                'maturity_level': 'developing',
+                'roadmap_horizon_months': 18,
+            },
+        )
+        conf = (compiled.legacy_sections or {}).get('confidence') or ''
+        self.assertIn('مستوى النضج الحالي', conf)
+        self.assertIn('مستوى النضج المستهدف', conf)
+        self.assertIn('خلال 18 شهر', conf)
+
     def test_compile_cyber_strategy_ar(self):
         factory = CanonicalDocumentFactory()
         ctx = DocumentRequestContext(
