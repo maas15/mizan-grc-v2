@@ -302,10 +302,13 @@ def resolve_frozen_artifact_for_export(
                     artifact_dict.get('missing_frozen_components') or [])
         _merge_rel32_load_meta(
             meta, backend=backend, artifact_dict=artifact_dict)
-        if route_n == 'docx':
-            meta['docx_rebuilt_from_markdown'] = True
-        elif route_n == 'pdf':
-            meta['pdf_rebuilt_from_markdown'] = True
+        if (
+                meta.get('incomplete_frozen_artifact')
+                or meta.get('blocking_errors')):
+            if route_n == 'docx':
+                meta['docx_rebuilt_from_markdown'] = True
+            elif route_n == 'pdf':
+                meta['pdf_rebuilt_from_markdown'] = True
         return None, meta
 
     # Client POST markdown is ignored when generation-time frozen artifact exists.

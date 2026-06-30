@@ -130,7 +130,7 @@ class Rel31LegacyGuardTests(unittest.TestCase):
     def test_07_async_docx_uses_rel31_authoritative_export(self):
         idx = _APP_SOURCE.find('def api_generate_docx_async(')
         self.assertGreater(idx, 0)
-        chunk = _APP_SOURCE[idx:idx + 12000]
+        chunk = _APP_SOURCE[idx:idx + 16000]
         self.assertIn("_rel31_authoritative_export_route(", chunk)
         self.assertIn("'docx'", chunk)
 

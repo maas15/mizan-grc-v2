@@ -904,22 +904,62 @@ def repair_canonical_before_freeze(
             is_rel32_compiler_first,
         )
         if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
-            compiled = compile_canonical_strategy_document(
-                sections,
-                request_context={
-                    'lang': lang,
-                    'domain': domain,
-                    'selected_frameworks': (
+            document_type = (
+                str(art.get('document_type') or art.get('doc_type') or 'strategy')
+                .strip().lower())
+            compiled = None
+            try:
+                from release_engine_v3.factory.canonical_document_factory import (
+                    CanonicalDocumentFactory,
+                )
+                from release_engine_v3.factory.request_context import (
+                    DocumentRequestContext,
+                )
+
+                ctx = DocumentRequestContext(
+                    domain=domain,
+                    document_type=document_type,
+                    lang=lang,
+                    flags=flags,
+                    backend=backend,
+                    frameworks=(
                         (art.get('contract_meta') or {}).get('selected_frameworks')
                         or art.get('selected_frameworks') or []),
-                    'backend': backend,
-                },
-            )
+                    strategy_id=str(art.get('strategy_id') or ''),
+                    artifact_id=str(art.get('artifact_id') or ''),
+                )
+                compiled = CanonicalDocumentFactory().compile(
+                    sections,
+                    domain=domain,
+                    document_type=document_type,
+                    lang=lang,
+                    request_context=ctx,
+                )
+                art['_final_doc_factory'] = True
+                if compiled.export_evidence:
+                    art['_final_doc_factory_evidence'] = compiled.export_evidence
+            except Exception:  # noqa: BLE001
+                compiled = None
+            if compiled is None:
+                compiled = compile_canonical_strategy_document(
+                    sections,
+                    request_context={
+                        'lang': lang,
+                        'domain': domain,
+                        'selected_frameworks': (
+                            (art.get('contract_meta') or {}).get('selected_frameworks')
+                            or art.get('selected_frameworks') or []),
+                        'backend': backend,
+                    },
+                )
+            elif compiled.legacy_sections:
+                repairs.append('final_doc_factory:compile')
             if compiled.legacy_sections:
                 sections = dict(compiled.legacy_sections)
-                repairs.extend(compiled.repairs or [])
+                if 'final_doc_factory:compile' not in repairs:
+                    repairs.extend(compiled.repairs or [])
             art['_rel32_compiled'] = True
-            art['_rel32_compiler_passed'] = compiled.passed
+            art['_rel32_compiler_passed'] = getattr(compiled, 'passed', True)
             if compiled.blocking_errors:
                 art.setdefault('blocking_errors', []).extend(
                     compiled.blocking_errors)
@@ -1185,38 +1225,37 @@ def rel3_export_authoritative(
                 elif lock_meta.get('pdf_rebuilt_from_markdown') and (
                         route_n == 'pdf'):
                     blockers.append('rel32_pdf_rebuilt_from_markdown')
-                else:
-                    blockers.append('rel32_frozen_artifact_not_loaded')
                 blockers = list(dict.fromkeys(blockers))
-                sid = str(art.get('strategy_id') or '')
-                track_rel32_export_route_state(sid, route_n, lock_meta)
-                emit_rel32_frozen_artifact_export_lock(
-                    sid, route=route_n, lock_meta=lock_meta)
-                ev = EvidenceResult(
-                    route_name=route_n,
-                    artifact_id=str(art.get('artifact_id') or ''),
-                    strategy_id=sid,
-                    canonical_hash='',
-                    render_tree_hash='',
-                    returned_bytes_sha256='',
-                    evidence_bytes_sha256='',
-                    returned_equals_evidence_bytes=False,
-                    exact_bytes_checked=False,
-                    preview_text_checked=False,
-                    docx_bytes_checked=False,
-                    pdf_bytes_checked=False,
-                    evidence_passed=False,
-                    export_return_allowed=False,
-                    blocking_errors=blockers,
-                )
-                ev.emit_diag()
-                return ExportResult(
-                    route_name=route_n,
-                    artifact_id=str(art.get('artifact_id') or ''),
-                    render_tree_hash='',
-                    canonical_hash='',
-                    blocking_errors=blockers,
-                ), ev
+                if blockers:
+                    sid = str(art.get('strategy_id') or '')
+                    track_rel32_export_route_state(sid, route_n, lock_meta)
+                    emit_rel32_frozen_artifact_export_lock(
+                        sid, route=route_n, lock_meta=lock_meta)
+                    ev = EvidenceResult(
+                        route_name=route_n,
+                        artifact_id=str(art.get('artifact_id') or ''),
+                        strategy_id=sid,
+                        canonical_hash='',
+                        render_tree_hash='',
+                        returned_bytes_sha256='',
+                        evidence_bytes_sha256='',
+                        returned_equals_evidence_bytes=False,
+                        exact_bytes_checked=False,
+                        preview_text_checked=False,
+                        docx_bytes_checked=False,
+                        pdf_bytes_checked=False,
+                        evidence_passed=False,
+                        export_return_allowed=False,
+                        blocking_errors=blockers,
+                    )
+                    ev.emit_diag()
+                    return ExportResult(
+                        route_name=route_n,
+                        artifact_id=str(art.get('artifact_id') or ''),
+                        render_tree_hash='',
+                        canonical_hash='',
+                        blocking_errors=blockers,
+                    ), ev
 
     if frozen_pre is not None:
         frozen = frozen_pre

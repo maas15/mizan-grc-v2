@@ -78,6 +78,10 @@ REL2_TESTS = [
 
     'tests/test_rel32_compiler_first_strategy.py',
 
+    'tests/test_enterprise_document_factory_foundation.py',
+
+    'tests/test_rel32_frozen_artifact_export_lock.py',
+
     'tests/test_legacy_gate_retirement_rel2.py',
 
     'tests/test_export_contract_rel2.py',

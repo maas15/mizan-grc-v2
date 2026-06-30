@@ -294,6 +294,39 @@ def clear_rel3_caches() -> None:
         pass
 
 
+def rel3_compile_document(
+        raw_sections: Dict[str, str],
+        *,
+        domain: str = 'cyber',
+        document_type: str = 'strategy',
+        lang: str = 'ar',
+        request_context: Optional[Any] = None,
+        backend: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Canonical Document Factory entry — raw AI sections → CompileResult."""
+    from release_engine_v3.factory.canonical_document_factory import (
+        CanonicalDocumentFactory,
+    )
+    from release_engine_v3.factory.request_context import DocumentRequestContext
+
+    ctx = request_context
+    if ctx is None:
+        ctx = DocumentRequestContext(
+            domain=domain,
+            document_type=document_type,
+            lang=lang,
+            backend=backend or {},
+            flags=(backend or {}).get('flags') or {},
+        )
+    return CanonicalDocumentFactory().compile(
+        raw_sections,
+        domain=domain,
+        document_type=document_type,
+        lang=lang,
+        request_context=ctx,
+    )
+
+
 def rel3_get_or_build_frozen_artifact(
         artifact_or_id,
         *,
