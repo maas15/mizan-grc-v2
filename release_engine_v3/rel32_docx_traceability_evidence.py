@@ -178,6 +178,8 @@ def traceability_defects_from_extracted_rows(
         'post_renderer_traceability_mutated': False,
     }
     spec_sh = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+    wrong_classification_gap = TRACE_CANONICAL_REGISTRY[
+        'data_classification']['expected_gap']
     diag['expected_gap_for_sensitive_handling'] = spec_sh['expected_gap']
     actual_sh = ''
     for row in rows or []:
@@ -213,7 +215,14 @@ def traceability_defects_from_extracted_rows(
                 diag['traceability_evidence_false_positive'] = True
                 continue
         if _bad_mapping(fam, gap):
-            defects.append(f'trace_gap_mismatch:{cap}')
+            if (
+                    cap == spec_sh['capability']
+                    and wrong_classification_gap in gap
+            ):
+                defects.append(
+                    f'rel32_traceability_post_render_mutation:{cap}')
+            else:
+                defects.append(f'trace_gap_mismatch:{cap}')
     diag['traceability_bad_mappings'] = list(dict.fromkeys(defects))
     return list(dict.fromkeys(defects)), diag
 

@@ -322,6 +322,57 @@ def _collect_bad_mappings(text: str) -> List[str]:
     return bad
 
 
+def build_traceability_matrix_rows_from_registry(
+        *,
+        lang: str = 'ar',
+) -> Dict[str, Any]:
+    """Build traceability matrix model rows from TRACE_CANONICAL_REGISTRY only."""
+    if lang == 'ar':
+        header = [
+            'الإطار المرجعي', 'مجال القدرة / الضابط',
+            'الفجوة المرتبطة', 'المبادرة / النشاط',
+            'المؤشر', 'الخطر المرتبط',
+        ]
+    else:
+        header = [
+            'Reference Framework', 'Capability / Control',
+            'Related Gap', 'Initiative / Activity',
+            'Metric', 'Related Risk',
+        ]
+
+    rows: List[List[str]] = []
+    for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER:
+        spec = TRACE_CANONICAL_REGISTRY[fam]
+        rows.append([
+            spec['framework'],
+            spec['capability'],
+            spec['expected_gap'],
+            spec['initiative'],
+            spec['metric'],
+            spec['risk'],
+        ])
+
+    def _is_dash(v: Any) -> bool:
+        if v is None:
+            return True
+        s = str(v).strip()
+        return (not s) or s in ('—', '-', '--', '–')
+
+    informative_rows = [
+        r for r in rows
+        if len(r) >= 6
+        and not _is_dash(r[2])
+        and not _is_dash(r[3])
+        and (not _is_dash(r[4]) or not _is_dash(r[5]))
+    ]
+    return {
+        'header': header,
+        'rows': rows,
+        'informative_rows': informative_rows,
+        'source': 'trace_canonical_registry',
+    }
+
+
 def build_canonical_traceability_from_registry(
         *,
         lang: str = 'ar',

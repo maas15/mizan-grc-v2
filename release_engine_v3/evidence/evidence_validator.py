@@ -77,9 +77,32 @@ def validate_returned_export_bytes(
                     pdf_text = decoded
             except UnicodeDecodeError:
                 pass
+        try:
+            from release_engine_v3.rel32_docx_traceability_evidence import (
+                evaluate_docx_traceability_evidence,
+                emit_rel32_docx_traceability_evidence_diag,
+            )
+            _trace_defects, _trace_diag = evaluate_docx_traceability_evidence(
+                pdf_text or '')
+            _trace_diag['route'] = 'pdf'
+            _trace_diag['pdf_traceability_evidence_shared_with_docx'] = True
+            emit_rel32_docx_traceability_evidence_diag(_trace_diag)
+        except Exception:  # noqa: BLE001
+            pass
     if route_n == 'preview':
         preview_text = extract_preview_text(
             export.preview_html or '', preview_text)
+        try:
+            from release_engine_v3.rel32_docx_traceability_evidence import (
+                evaluate_docx_traceability_evidence,
+                emit_rel32_docx_traceability_evidence_diag,
+            )
+            _trace_defects, _trace_diag = evaluate_docx_traceability_evidence(
+                preview_text or '')
+            _trace_diag['route'] = 'preview'
+            emit_rel32_docx_traceability_evidence_diag(_trace_diag)
+        except Exception:  # noqa: BLE001
+            pass
     pdf_unreliable = bool(pdf_bytes and len((pdf_text or '').strip()) < 80)
     evidence_bytes = docx_bytes or pdf_bytes or b''
     returned_hash = export.returned_bytes_sha256 or _sha256_bytes(evidence_bytes)
@@ -130,6 +153,38 @@ def validate_returned_export_bytes(
         canonical_sections=parity_sections,
         final_hash=artifact.canonical_hash,
     )
+    try:
+        from release_engine_v3.rel32_traceability_immutability import (
+            evaluate_traceability_immutability,
+            emit_rel32_traceability_immutability_check,
+        )
+        frozen_trace = ''
+        artifact_complete = bool(
+            getattr(artifact, 'frozen_artifact_complete', False)
+            or (artifact.metadata or {}).get('frozen_artifact_complete'))
+        if artifact.legacy_sections:
+            frozen_trace = str(
+                (artifact.legacy_sections or {}).get('traceability') or '')
+        if not frozen_trace.strip() and artifact.canonical_sections:
+            from release_engine_v3.section_models import section_to_markdown
+            tr_sec = (artifact.canonical_sections or {}).get('traceability')
+            if tr_sec is not None:
+                frozen_trace = section_to_markdown(tr_sec)
+        imm = evaluate_traceability_immutability(
+            preview_text=preview_text if route_n == 'preview' else '',
+            docx_text=docx_text,
+            pdf_text=pdf_text,
+            frozen_traceability=frozen_trace,
+            artifact_complete=artifact_complete,
+        )
+        emit_rel32_traceability_immutability_check(imm)
+        if not imm.get('traceability_immutability_passed'):
+            gate['blocking_errors'] = list(dict.fromkeys(
+                (gate.get('blocking_errors') or [])
+                + (imm.get('blocking_errors') or [])))
+            gate['traceability_immutability'] = imm
+    except Exception:  # noqa: BLE001
+        pass
     allowed, errors = block_export_if_evidence_fails(gate)
     if not allowed:
         errors = list(gate.get('blocking_errors') or errors)

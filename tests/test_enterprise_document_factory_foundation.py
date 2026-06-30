@@ -68,8 +68,11 @@ class TestDocumentExcellenceGate(unittest.TestCase):
         self.assertTrue(
             any('pdf_traceability_semantic_bypass' in e
                 for e in guard['blocking_errors'])
-            or any('sensitive_handling' in e or 'trace_gap' in e
-                   for e in guard['blocking_errors']))
+            or any(
+                'sensitive_handling' in e
+                or 'trace_gap' in e
+                or 'rel32_traceability_post_render_mutation' in e
+                for e in guard['blocking_errors']))
 
 
 class TestCanonicalDocumentFactory(unittest.TestCase):

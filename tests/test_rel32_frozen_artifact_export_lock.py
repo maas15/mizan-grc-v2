@@ -781,6 +781,94 @@ class Rel32DocxTraceabilityEvidenceTests(unittest.TestCase):
         self.assertNotIn(f'trace_gap_mismatch:{spec["capability"]}', defects)
 
 
+class Rel32TraceabilityImmutabilityTests(unittest.TestCase):
+
+    def _wrong_sensitive_blob(self) -> str:
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        bad_gap = TRACE_CANONICAL_REGISTRY['data_classification']['expected_gap']
+        return (
+            'مصفوفة تتبع الأطر المرجعية\n'
+            'الإطار المرجعي\nمجال القدرة\nالفجوة\n'
+            f'NCA DCC\n{spec["capability"]}\n{bad_gap}\n'
+        )
+
+    def test_32_preview_fails_wrong_sensitive_handling_mapping(self):
+        from release_engine_v3.rel32_traceability_immutability import (
+            evaluate_traceability_immutability,
+        )
+        imm = evaluate_traceability_immutability(
+            preview_text=self._wrong_sensitive_blob())
+        self.assertFalse(imm['traceability_immutability_passed'])
+        self.assertIn(
+            f'rel32_traceability_post_render_mutation:'
+            f'{TRACE_CANONICAL_REGISTRY["sensitive_handling"]["capability"]}',
+            imm['blocking_errors'])
+
+    def test_33_docx_fails_wrong_sensitive_handling_mapping(self):
+        from release_engine_v3.rel32_traceability_immutability import (
+            evaluate_traceability_immutability,
+        )
+        imm = evaluate_traceability_immutability(
+            docx_text=self._wrong_sensitive_blob())
+        self.assertFalse(imm['traceability_immutability_passed'])
+
+    def test_34_pdf_fails_wrong_sensitive_handling_mapping(self):
+        from release_engine_v3.rel32_traceability_immutability import (
+            evaluate_traceability_immutability,
+        )
+        imm = evaluate_traceability_immutability(
+            pdf_text=self._wrong_sensitive_blob())
+        self.assertFalse(imm['traceability_immutability_passed'])
+
+    def test_35_routes_pass_canonical_sensitive_handling_mapping(self):
+        from release_engine_v3.rel32_traceability_immutability import (
+            evaluate_traceability_immutability,
+        )
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        good = (
+            'مصفوفة تتبع الأطر المرجعية\n'
+            'الإطار المرجعي\nمجال القدرة\nالفجوة\n'
+            f'NCA DCC\n{spec["capability"]}\n{spec["expected_gap"]}\n'
+        )
+        imm = evaluate_traceability_immutability(
+            preview_text=good, docx_text=good, pdf_text=good)
+        self.assertTrue(imm['traceability_immutability_passed'])
+        self.assertEqual(imm['mutated_rows'], [])
+        self.assertFalse(imm['post_render_mutation_detected'])
+        self.assertEqual(imm['blocking_errors'], [])
+
+    def test_36_build_traceability_matrix_uses_registry_not_inference(self):
+        sections = _minimal_sections()
+        sections['gaps'] = (
+            '## الفجوات\n\n| # | الفجوة |\n|---|---|\n'
+            '| 1 | ضعف تصنيف وجرد البيانات الحساسة |\n'
+        )
+        matrix = _APP._build_traceability_matrix(
+            sections, ['DCC', 'ECC'], 'ar', domain_code='cyber')
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        sh_rows = [
+            r for r in (matrix.get('rows') or [])
+            if len(r) > 2 and spec['capability'] in str(r[1])
+        ]
+        self.assertTrue(sh_rows, 'sensitive_handling row missing')
+        self.assertIn(spec['expected_gap'], sh_rows[0][2])
+        self.assertNotIn(
+            TRACE_CANONICAL_REGISTRY['data_classification']['expected_gap'],
+            sh_rows[0][2])
+
+    def test_37_polish_cannot_substitute_sensitive_with_classification(self):
+        spec = TRACE_CANONICAL_REGISTRY['sensitive_handling']
+        bad_gap = TRACE_CANONICAL_REGISTRY['data_classification']['expected_gap']
+        rows_in = [[
+            'NCA DCC', spec['capability'], bad_gap,
+            spec['initiative'], spec['metric'], spec['risk'],
+        ]]
+        rows_out, meta = _APP._prcy87_polish_traceability_rows(rows_in, 'ar')
+        self.assertIn(spec['expected_gap'], rows_out[0][2])
+        self.assertNotIn(bad_gap, rows_out[0][2])
+        self.assertTrue(meta.get('rows_repaired', 0) >= 1 or meta.get('gate_passed'))
+
+
 class Rel32RouteEquivalenceAfterLockTests(unittest.TestCase):
 
     def setUp(self):
