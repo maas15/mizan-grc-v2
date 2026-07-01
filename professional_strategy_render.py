@@ -154,8 +154,8 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
-        'col_weights': [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21],
-        'font_size': 9, 'header_font_size': 9, 'padding': 8,
+        'col_weights': [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20],
+        'font_size': 8, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 72, 'render_mode': 'table',
     },
     'kpi_formula': {
@@ -243,8 +243,8 @@ SCHEMA_ROADMAP_AR = (
     'المخرج المتوقع', 'الإطار المرتبط',
 )
 SCHEMA_KPI_MAIN_AR = (
-    '#', 'المؤشر', 'النوع', 'القيمة المستهدفة',
-    'التكرار', 'المالك', 'الإطار الزمني',
+    '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
+    'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
 )
 SCHEMA_KPI_FORMULA_AR = (
     '#', 'المؤشر', 'صيغة الاحتساب', 'مصدر البيانات',
@@ -624,6 +624,8 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
         return [0.10, 0.34, 0.16, 0.18, 0.22]
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
+    if schema == 'kpi_main' and ncols == 8:
+        return [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20]
     if schema == 'kpi_main' and ncols == 7:
         return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
     if schema == 'kpi_formula' and ncols == 4:
@@ -2624,7 +2626,13 @@ def _sanitize_table_spec(
             rows.append(cells)
         elif schema == 'kpi_main':
             cells = [prepare_final_render_text(c, lang) for c in r]
-            if len(cells) > 3:
+            if len(cells) >= 8:
+                name = cells[1] if len(cells) > 1 else ''
+                kpi_type = cells[2] if len(cells) > 2 else ''
+                target = cells[3] if len(cells) > 3 else ''
+                cells[2] = _derive_kpi_type(name, kpi_type, lang)
+                cells[3] = _derive_kpi_target(name, target, lang)
+            elif len(cells) > 3:
                 name = cells[1] if len(cells) > 1 else ''
                 kpi_type = cells[2] if len(cells) > 2 else ''
                 target = cells[3] if len(cells) > 3 else ''
@@ -2704,6 +2712,13 @@ def _finalize_professional_blocks(
     out = _normalize_kpi_tables_semantics(out, lang)
     if lang == 'ar':
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
+    try:
+        from release_engine_v3.rel32_table_schema_binding import (
+            apply_rel32_schema_binding_to_blocks,
+        )
+        out = apply_rel32_schema_binding_to_blocks(out, lang=lang)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -4352,7 +4367,11 @@ def _normalize_kpi_tables_semantics(
             _normalize_kpi_semantic_row(
                 name, kpi_type, target, formula, source, lang))
         tail = list(mr[4:]) if len(mr) > 4 else []
-        new_main.append([idx, name, kpi_type, target] + tail)
+        if len(mr) >= 8:
+            formula = mr[4]
+            source = mr[5]
+            tail = list(mr[6:])
+        new_main.append([idx, name, kpi_type, target, formula, source] + tail)
         new_formula.append([idx, name, formula, source])
     main_tbl['rows'] = new_main
     if formula_tbl:
@@ -4403,8 +4422,8 @@ def split_kpi_tables(
     tables = parse_markdown_tables(section_text)
     out: List[Dict[str, Any]] = []
     main_schema = list(SCHEMA_KPI_MAIN_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Type', 'Target', 'Frequency', 'Owner',
-        'Horizon'))
+        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
+        'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
         '#', 'Indicator', 'Formula', 'Data Source'))
     _canonical_main_hdr_ar = [
@@ -4451,10 +4470,9 @@ def split_kpi_tables(
                 _normalize_kpi_semantic_row(
                     name, kpi_type, target, formula, source, lang))
             main_rows.append([
-                idx, name, kpi_type, target,
+                idx, name, kpi_type, target, formula, source,
                 _cell(r, i_freq),
                 _cell(r, i_owner, 'CISO'),
-                _cell(r, i_horizon),
             ])
             formula_rows.append([idx, name, formula, source])
         if not main_rows:

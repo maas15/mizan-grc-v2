@@ -55,7 +55,85 @@
     if(j===JSON.stringify(['#','المؤشر','النوع kpi/kri','القيمة المستهدفة','صيغة الاحتساب','مصدر البيانات','المالك','التكرار','الإطار الزمني'])) return 'kpi-summary';
     if(j===JSON.stringify(['#','الفجوة','الوصف','الأولوية','الحالة'])) return 'gap-analysis';
     if(j===JSON.stringify(['#','المخاطر','الاحتمالية','التأثير','خطة المعالجة'])) return 'key-risks';
+    if(norm.some(function(h){return /خطوة/.test(h);}) &&
+       norm.some(function(h){return /إجراء/.test(h);})) return 'gap-action';
+    if(norm.some(function(h){return /مرحلة/.test(h);}) &&
+       norm.some(function(h){return /مبادرة/.test(h);}) &&
+       norm.some(function(h){return /مخرج|إطار/.test(h);})) return 'roadmap';
+    if(j===JSON.stringify(['#','وصف المؤشر','النوع','القيمة المستهدفة','صيغة الاحتساب','مصدر','التكرار','المالك'])) return 'kpi-summary';
     return 'generic';
+  }
+
+  function colIndexByKeywords(headers, keywords){
+    for (var i = 0; i < (headers || []).length; i++) {
+      var blob = (headers[i] || '').trim().toLowerCase();
+      for (var k = 0; k < keywords.length; k++) {
+        if (blob.indexOf(String(keywords[k]).toLowerCase()) !== -1) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Schema-key binding — never render positional rows under localized RTL headers.
+  var REL32_SCHEMA_SPECS = {
+    'strategic-objectives': [
+      ['#', ['#', 'م']],
+      ['الهدف الاستراتيجي', ['الهدف', 'objective']],
+      ['المستهدف القابل للقياس', ['مستهدف', 'target']],
+      ['المبرر', ['مبرر', 'justification']],
+      ['الإطار الزمني', ['زمن', 'timeframe', 'الإطار']]
+    ],
+    'kpi-summary': [
+      ['#', ['#', 'م']],
+      ['وصف المؤشر', ['وصف المؤشر', 'المؤشر', 'indicator', 'kpi']],
+      ['النوع', ['النوع', 'type']],
+      ['القيمة المستهدفة', ['مستهدف', 'target', 'القيمة']],
+      ['صيغة الاحتساب', ['صيغة', 'formula', 'احتساب']],
+      ['مصدر', ['مصدر', 'source']],
+      ['التكرار', ['تكرار', 'frequency', 'تواتر']],
+      ['المالك', ['المالك', 'owner', 'مسؤول']]
+    ],
+    'gap-analysis': [
+      ['#', ['#', 'م']],
+      ['الفجوة', ['فجوة', 'gap']],
+      ['الوصف', ['وصف', 'description']],
+      ['الأولوية', ['أولوية', 'priority']],
+      ['الحالة', ['حالة', 'status']]
+    ],
+    'gap-action': [
+      ['الخطوة', ['خطوة', 'step']],
+      ['الإجراء', ['إجراء', 'action']],
+      ['المسؤول', ['مسؤول', 'owner', 'مالك']],
+      ['الإطار الزمني', ['زمن', 'timeframe', 'الإطار']],
+      ['الناتج', ['ناتج', 'output', 'مخرج']]
+    ],
+    'roadmap': [
+      ['المرحلة', ['مرحلة', 'phase']],
+      ['الفترة', ['فترة', 'زمن', 'period', 'timeframe']],
+      ['المبادرة', ['مبادرة', 'initiative']],
+      ['المسؤول', ['مسؤول', 'مالك', 'owner']],
+      ['المخرج المتوقع', ['مخرج', 'deliverable', 'output']],
+      ['الإطار المرتبط', ['إطار', 'framework', 'مرتبط']]
+    ]
+  };
+
+  function bindSchemaTable(headers, rows, schema){
+    var spec = REL32_SCHEMA_SPECS[schema];
+    if (!spec) return {headers: headers, rows: normalizeRows(headers, rows)};
+    var canonHdr = spec.map(function(s){ return s[0]; });
+    var idxMap = spec.map(function(s){ return colIndexByKeywords(headers, s[1]); });
+    var bound = (rows || []).map(function(r, ri){
+      var row = (r || []).map(function(c){ return (c || '').trim(); });
+      return spec.map(function(s, ci){
+        var idx = idxMap[ci];
+        if (ci === 0 && schema !== 'gap-action') {
+          if (idx >= 0 && isNum((row[idx] || ''))) return row[idx];
+          return String(ri + 1);
+        }
+        return idx >= 0 ? ((row[idx] || '').trim() || '—') : '—';
+      });
+    });
+    return {headers: canonHdr, rows: bound};
   }
 
   // Compact values that should never wrap or word-split (Likelihood, Impact, Priority)
@@ -258,7 +336,13 @@
   }
   function renderTable(block,isRtl){
     var headers=block.headers||[];
-    var rows=normalizeRows(headers,block.rows||[]);
+    var schema=tableSchemaName(headers);
+    var bound = bindSchemaTable(headers, block.rows || [], schema);
+    headers = bound.headers;
+    var rows = bound.rows;
+    if (!REL32_SCHEMA_SPECS[schema]) {
+      rows = normalizeRows(headers, block.rows || []);
+    }
     if(!headers.length) return '';
     var align=isRtl?'right':'left';
     var dir=isRtl?' dir="rtl"':'';
