@@ -1280,6 +1280,11 @@ function showSection(s){
     el.innerHTML='<div class="document-page">'+_html+'</div>';
     try{ mergeFragmentedPreviewTables(el); }catch(_e){ console.warn('[showSection] mergeFragmentedPreviewTables:',_e); }
     try{ wrapOutputTables(el); }catch(_e){ console.warn('[showSection] wrapOutputTables:',_e); }
+    try{
+        if(typeof emitRel32PreviewTableDomBindingCheck==='function'){
+            emitRel32PreviewTableDomBindingCheck(el,{ log: true });
+        }
+    }catch(_e){ console.warn('[showSection] REL32 preview DOM binding check:',_e); }
     try{ el.querySelectorAll('p,li').forEach(function(p){if(p.innerHTML.indexOf('☐')!==-1)p.innerHTML=p.innerHTML.replace(/☐/g,'<input type="checkbox" disabled> ');}); }catch(_e){}
 }
 function wrapOutputTables(el){
@@ -1287,7 +1292,10 @@ function wrapOutputTables(el){
     el.querySelectorAll('table').forEach(function(tbl){
         if(!tbl.parentElement.classList.contains('table-wrapper')){
             var wrapper=document.createElement('div');wrapper.className='table-wrapper';
+            if(typeof isRtl!=='undefined'&&isRtl) wrapper.setAttribute('dir','rtl');
             tbl.parentNode.insertBefore(wrapper,tbl);wrapper.appendChild(tbl);
+        } else if(typeof isRtl!=='undefined'&&isRtl&&!tbl.parentElement.getAttribute('dir')){
+            tbl.parentElement.setAttribute('dir','rtl');
         }
     });
     el.querySelectorAll('table').forEach(function(tbl){

@@ -142,8 +142,17 @@
   // Return true if a normalised row looks semantically broken for its schema.
   // When any row is suspicious, validateSectionJSON returns false and the
   // preview falls back to the (cleaner) markdown path instead of broken JSON.
+  var _FREQ_TOKEN_RE=/^(شهري|ربع|سنو|يوم|أسبو|daily|weekly|monthly|quarter|annual|تواتر|تكرار)/i;
+  function isFreqToken(v){ return _FREQ_TOKEN_RE.test((v||'').trim()); }
+  function isTypeToken(v){ return /^(kpi|kri|مؤشر|kpi\/kri)$/i.test((v||'').trim()); }
+
   function rowSuspiciousForSchema(headers, row){
     var schema=tableSchemaName(headers);
+    if(schema==='kpi-summary' && row.length===8){
+      if(isFreqToken(row[7])&&!isFreqToken(row[6])) return true;
+      if(isTypeToken(row[3])&&!isTypeToken(row[2])) return true;
+      return false;
+    }
     if(schema==='strategic-objectives' && row.length===5){
       // Last column must be a timeframe
       if(row[4]==='—'||!isTimeframe(row[4])) return true;
@@ -336,12 +345,24 @@
   }
   function renderTable(block,isRtl){
     var headers=block.headers||[];
+    var rows=block.rows||[];
+
+    // REL32 schema-key preview binding — same schema array for th and td.
+    if(typeof Rel32PreviewTableSchema !== 'undefined'){
+      var rel32Id=Rel32PreviewTableSchema.detectRel32PreviewSchema(headers);
+      if(rel32Id){
+        var rel32=Rel32PreviewTableSchema.renderRel32PreviewTableHtml(
+          headers, rows, { isRtl: !!isRtl, schemaId: rel32Id });
+        if(rel32&&rel32.html) return rel32.html;
+      }
+    }
+
     var schema=tableSchemaName(headers);
-    var bound = bindSchemaTable(headers, block.rows || [], schema);
+    var bound = bindSchemaTable(headers, rows, schema);
     headers = bound.headers;
     var rows = bound.rows;
     if (!REL32_SCHEMA_SPECS[schema]) {
-      rows = normalizeRows(headers, block.rows || []);
+      rows = normalizeRows(headers, rows);
     }
     if(!headers.length) return '';
     var align=isRtl?'right':'left';
@@ -355,7 +376,9 @@
     });
     var thCells=headers.map(function(h){return '<th style="text-align:'+align+'">'+inlineHtml(h)+'</th>';}).join('');
     var trs=rows.map(function(row){
-      return '<tr>'+headers.map(function(_,ci){return cellHtml(row[ci],priorityCols.indexOf(ci)!==-1);}).join('')+'</tr>';
+      return '<tr>'+headers.map(function(_,ci){
+        return cellHtml(row[ci],priorityCols.indexOf(ci)!==-1);
+      }).join('')+'</tr>';
     }).join('');
     return '<div class="table-wrapper" data-schema="'+schema+'"'+dir+'>'
       +'<table'+tableClass+'><thead><tr>'+thCells+'</tr></thead><tbody>'+trs+'</tbody></table></div>';
@@ -854,5 +877,12 @@
 
   // Original exports preserved — overridden above by Phase 3 wrappers
   global.validateSectionJSON=validateSectionJSON;
+  global.emitRel32PreviewTableDomBindingCheck=function(rootOrHtml, options){
+    if(typeof Rel32PreviewTableSchema!=='undefined'){
+      return Rel32PreviewTableSchema.emitRel32PreviewTableDomBindingCheck(rootOrHtml, options);
+    }
+    return { tag:'REL32-PREVIEW-TABLE-DOM-BINDING-CHECK', preview_dom_binding_passed:false,
+      mismatched_headers:[], blocking_errors:['Rel32PreviewTableSchema not loaded'] };
+  };
 
 })(typeof window!=='undefined'?window:this);
