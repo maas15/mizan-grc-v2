@@ -453,71 +453,17 @@ def emit_kpi_assessment_guides_repair_diag(diag: Dict[str, Any]) -> None:
         pass
 
 
-_MANDATORY_REL32_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
-    ('vision', REL32_CANONICAL_HEADINGS['vision'], 'table'),
-    ('pillars', REL32_CANONICAL_HEADINGS['pillars'], 'body'),
-    ('environment', REL32_CANONICAL_HEADINGS['environment'], 'body'),
-    ('gaps', REL32_CANONICAL_HEADINGS['gaps'], 'gap_table'),
-    ('gaps', 'دليل تطبيق', 'gap_guides'),
-    ('roadmap', REL32_CANONICAL_HEADINGS['roadmap'], 'table'),
-    ('kpis', REL32_CANONICAL_HEADINGS['kpis'], 'kpi_table'),
-    ('kpis', 'أدلة تقييم', 'kpi_guides'),
-    ('confidence', REL32_CANONICAL_HEADINGS['confidence'], 'confidence'),
-    ('confidence', 'المخاطر', 'risk_register'),
-    ('governance', REL32_CANONICAL_HEADINGS['governance'], 'table'),
-    ('traceability', REL32_CANONICAL_HEADINGS['traceability'], 'table'),
-)
-
-
 def evaluate_rel32_final_strategy_completeness(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
+        **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Check all mandatory REL3.2 strategy sections/subsections are present."""
-    secs = dict(sections or {})
-    mandatory = [m[1] for m in _MANDATORY_REL32_SECTIONS]
-    present_before: List[str] = []
-    missing: List[str] = []
-    for key, label, kind in _MANDATORY_REL32_SECTIONS:
-        body = secs.get(key, '') or ''
-        ok = False
-        if kind == 'table':
-            ok = label in body and '|' in body
-        elif kind == 'body':
-            ok = label in body and len(body.strip()) > 40
-        elif kind == 'gap_table':
-            ok = 'الفجوة' in body and '|' in body
-        elif kind == 'gap_guides':
-            ok = bool(re.search(
-                r'دليل\s+تطبيق|Implementation Guide', body, re.I))
-        elif kind == 'kpi_table':
-            ok = label in body and '|' in body
-        elif kind == 'kpi_guides':
-            ok = kpi_assessment_guides_present(body)
-        elif kind == 'confidence':
-            ok = label in body and re.search(r'\d+\s*%', body)
-        elif kind == 'risk_register':
-            ok = 'المخاطر' in body and 'خطة المعالجة' in body
-        token = f'{key}:{kind}'
-        if ok:
-            present_before.append(token)
-        else:
-            missing.append(token)
-    complete = not missing
-    return {
-        'mandatory_sections': mandatory,
-        'sections_present_before': present_before,
-        'sections_inserted_or_repaired': [],
-        'sections_present_after': present_before,
-        'missing_sections_after': missing,
-        'saved_content_complete': complete,
-        'preview_complete': complete,
-        'docx_complete': complete,
-        'pdf_complete': complete,
-        'blocking_errors': [] if complete else [
-            f'rel32_mandatory_section_missing:{m}' for m in missing],
-    }
+    """Delegate to authoritative completeness compiler."""
+    from release_engine_v3.rel32_complete_strategy_compiler import (
+        evaluate_rel32_final_strategy_completeness as _eval,
+    )
+    return _eval(sections, lang=lang, **kwargs)
 
 
 def emit_rel32_final_strategy_completeness_diag(diag: Dict[str, Any]) -> None:

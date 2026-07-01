@@ -152,6 +152,14 @@ class CompileResult:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
+def rel32_string_sections(sections: Dict[str, Any]) -> Dict[str, str]:
+    """Return only persisted string section bodies (no internal metadata)."""
+    return {
+        k: v for k, v in (sections or {}).items()
+        if isinstance(v, str) and v.strip() and not k.startswith('_')
+    }
+
+
 def is_rel32_compiler_first(
         *,
         domain: str = 'cyber',
@@ -355,11 +363,16 @@ def _apply_arabic_registry_repairs(text: str) -> str:
 
 def _build_environment_section(narrative: str) -> str:
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
-    body = narrative.strip() or (
+    default = (
         'تشمل البيئة التنظيمية متطلبات NCA ECC وNCA DCC '
-        'وتهديدات التصيد والبرمجيات الخبيثة وتسرب البيانات '
-        'ومخاطر سلسلة التوريد.')
-    body = _apply_arabic_registry_repairs(_repair_arabic_blob(body))
+        'وضوابط حماية البيانات الوطنية، مع سياق تهديدات التصيد '
+        'والبرمجيات الخبيثة وتسرب البيانات ومخاطر سلسلة التوريد '
+        'والتشغيل على الأنظمة الحرجة.')
+    body = (narrative or '').strip()
+    if body:
+        body = _apply_arabic_registry_repairs(_repair_arabic_blob(body))
+    if not body or len(body) < 80:
+        body = default if not body else f'{body}\n\n{default}'
     return f'{_heading_line("environment")}\n\n{body}\n'
 
 
@@ -857,13 +870,15 @@ def compile_canonical_strategy_document(
     passed = not blockers
 
     try:
+        from release_engine_v3.rel32_complete_strategy_compiler import (
+            evaluate_rel32_final_strategy_completeness,
+        )
         from release_engine_v3.rel32_kpi_assessment_guides import (
             emit_rel32_final_strategy_completeness_diag,
-            evaluate_rel32_final_strategy_completeness,
             kpi_assessment_guides_present,
         )
         completeness = evaluate_rel32_final_strategy_completeness(
-            legacy, lang=lang)
+            legacy, lang=lang, domain=domain)
         if not kpi_assessment_guides_present(legacy.get('kpis', '')):
             blockers.append('rel32_kpi_assessment_guides_missing')
             passed = False
@@ -876,8 +891,15 @@ def compile_canonical_strategy_document(
             completeness['docx_complete'] = False
             completeness['pdf_complete'] = False
         emit_rel32_final_strategy_completeness_diag(completeness)
+        if not completeness.get('saved_content_complete'):
+            for err in completeness.get('blocking_errors') or []:
+                blockers.append(err)
+        blockers = list(dict.fromkeys(blockers))
+        passed = not blockers
     except Exception:  # noqa: BLE001
         completeness = {}
+
+    legacy = rel32_string_sections(legacy)
 
     diag = {
         'repairs': repairs,
@@ -886,6 +908,7 @@ def compile_canonical_strategy_document(
         'ai_markdown_authority': False,
         'passed': passed,
         'final_strategy_completeness': completeness,
+        'compiled_sections_cache': dict(legacy),
     }
     try:
         print(
@@ -920,7 +943,12 @@ def apply_compiler_first_save_gate_sections(
     """Replace AI sections with compiler-owned structure before save-gate validation."""
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return dict(sections or {}), []
-    compiled = compile_canonical_strategy_document(
+    from release_engine_v3.rel32_complete_strategy_compiler import (
+        compile_complete_cyber_ar_technical_strategy,
+    )
+    _backend = dict(backend or {})
+    _backend.setdefault('flags', dict(flags or {}))
+    compiled = compile_complete_cyber_ar_technical_strategy(
         dict(sections or {}),
         request_context={
             'lang': lang,
@@ -929,14 +957,19 @@ def apply_compiler_first_save_gate_sections(
             'maturity': maturity_level,
             'roadmap_horizon_months': roadmap_horizon_months,
             'selected_frameworks': list(selected_frameworks or []),
-            'backend': dict(backend or {}),
+            'backend': _backend,
             'flags': dict(flags or {}),
+            'generation_mode': _backend.get('generation_mode') or 'drafting',
         },
     )
     repairs = list(compiled.repairs or [])
     if compiled.legacy_sections:
         repairs.insert(0, 'rel32:save_gate_compiler_first')
-        return dict(compiled.legacy_sections), repairs
+        out = dict(compiled.legacy_sections)
+        cache = (compiled.diagnostics or {}).get('compiled_sections_cache')
+        if isinstance(cache, dict) and cache:
+            out['_rel32_compiled_sections'] = dict(cache)
+        return out, repairs
     return dict(sections or {}), repairs
 
 
