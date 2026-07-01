@@ -946,7 +946,7 @@
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="{{ url_for('static', filename='js/strategy-renderer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/strategy-renderer.js') }}?v={{ static_version }}"></script>
 <script>
 /* ═══ MARKED CONFIGURATION — Ensure GFM tables render properly ═══ */
 if(typeof marked.use === 'function'){
@@ -976,6 +976,7 @@ const CSRF_TOKEN='{{ csrf_token() }}';
 })();
 
 const lang='{{ lang }}';const isRtl={{ 'true' if is_rtl else 'false' }};
+window._rel32StaticVersion='{{ static_version }}';
 const AI_PROVIDER_GENERATE='{{ ai_provider_generate | default("auto") }}';
 const AI_PROVIDER_REVIEW='{{ ai_provider_review | default("auto") }}';
 const providerDisplayNames={claude:'Claude',gpt:'GPT',gemini:'Gemini',groq:'Groq',deepseek:'DeepSeek',auto:'Mizan AI'};
@@ -1282,7 +1283,17 @@ function showSection(s){
     try{ wrapOutputTables(el); }catch(_e){ console.warn('[showSection] wrapOutputTables:',_e); }
     try{
         if(typeof emitRel32PreviewTableDomBindingCheck==='function'){
-            emitRel32PreviewTableDomBindingCheck(el,{ log: true });
+            emitRel32PreviewTableDomBindingCheck(el,{
+                log: true,
+                block: true,
+                isRtl: (typeof isRtl !== 'undefined') ? !!isRtl : false
+            });
+        } else if(typeof Rel32PreviewTableSchema!=='undefined'){
+            Rel32PreviewTableSchema.emitRel32PreviewTableDomBindingCheck(el,{
+                log: true,
+                block: true,
+                isRtl: (typeof isRtl !== 'undefined') ? !!isRtl : false
+            });
         }
     }catch(_e){ console.warn('[showSection] REL32 preview DOM binding check:',_e); }
     try{ el.querySelectorAll('p,li').forEach(function(p){if(p.innerHTML.indexOf('☐')!==-1)p.innerHTML=p.innerHTML.replace(/☐/g,'<input type="checkbox" disabled> ');}); }catch(_e){}

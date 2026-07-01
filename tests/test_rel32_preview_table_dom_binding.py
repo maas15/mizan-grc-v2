@@ -137,6 +137,43 @@ class Rel32PreviewTableDomBindingTests(unittest.TestCase):
         for lbl in ('وصف المؤشر', 'التكرار', 'المالك', 'المؤشر', 'مصدر البيانات'):
             self.assertIn(lbl, text)
         self.assertIn('REL32-PREVIEW-TABLE-DOM-BINDING-CHECK', text)
+        self.assertIn('validateKpiMainSemantics', text)
+        self.assertIn('rel32_preview_table_header_value_mismatch', text)
+
+    def test_08_shifted_positional_kpi_html_fails_runtime_gate(self):
+        """Positional preview (no schema binder) with shifted values must fail."""
+        headers = schema_header_labels('kpi_main', lang='ar')
+        shifted_row = [
+            '1', 'متوسط زمن اكتشاف الحوادث الأمنية', 'KPI', '< 4 ساعات',
+            'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'CISO', 'SIEM / SOC', 'شهري',
+        ]
+        parts = ['<div class="table-wrapper" dir="rtl"><table><thead><tr>']
+        parts.extend(f'<th>{h}</th>' for h in headers)
+        parts.append('</tr></thead><tbody><tr>')
+        parts.extend(f'<td>{c}</td>' for c in shifted_row)
+        parts.append('</tr></tbody></table></div>')
+        html_out = ''.join(parts)
+        diag = evaluate_preview_dom_binding_check(html_out, 'kpi_main')
+        self.assertFalse(diag['preview_dom_binding_passed'])
+        self.assertTrue(any(
+            'rel32_preview_table_header_value_mismatch:kpi_main:المالك' in e
+            or 'rel32_preview_table_schema_binder_not_applied' in e
+            for e in diag['blocking_errors']
+        ))
+
+    def test_09_canonical_kpi_row_from_user_evidence_passes(self):
+        headers = schema_header_labels('kpi_main', lang='ar')
+        row = [
+            '1', 'متوسط زمن اكتشاف الحوادث الأمنية', 'KPI', '< 4 ساعات',
+            'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'SIEM / SOC', 'شهري', 'CISO',
+        ]
+        html_out = render_preview_table_html(
+            headers, [row], schema_id='kpi_main', is_rtl=True)
+        self.assertIn('CISO', cell_under_header(html_out, 'المالك'))
+        self.assertIn('شهري', cell_under_header(html_out, 'التكرار'))
+        self.assertIn('SIEM', cell_under_header(html_out, 'مصدر'))
+        diag = evaluate_preview_dom_binding_check(html_out, 'kpi_main')
+        self.assertTrue(diag['preview_dom_binding_passed'])
 
 
 if __name__ == '__main__':

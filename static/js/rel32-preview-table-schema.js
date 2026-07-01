@@ -197,84 +197,291 @@
     return String(s || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   }
 
-  function extractTableDomBinding(html, tableId){
-    var reTable = new RegExp(
-      '<div class="table-wrapper"[^>]*data-table-id="'+(tableId || '[^"]+')+'"[^>]*>[\\s\\S]*?</div>\\s*</table>\\s*</div>',
-      'i'
-    );
-    var chunk = html;
-    if (tableId) {
-      var m = html.match(reTable);
-      chunk = m ? m[0] : html;
-    }
-    var headers = [];
-    var headerRe = /<thead>\s*<tr>([\s\S]*?)<\/tr>/i;
-    var hm = chunk.match(headerRe);
-    if (hm) {
-      var thRe = /<th[^>]*>([\s\S]*?)<\/th>/gi;
-      var thm;
-      while ((thm = thRe.exec(hm[1])) !== null) headers.push(stripTags(thm[1]));
-    }
-    var firstRow = [];
-    var rowRe = /<tbody>\s*<tr>([\s\S]*?)<\/tr>/i;
-    var rm = chunk.match(rowRe);
-    if (rm) {
-      var tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-      var tdm;
-      while ((tdm = tdRe.exec(rm[1])) !== null) firstRow.push(stripTags(tdm[1]));
-    }
-    var byHeader = {};
-    headers.forEach(function(h, i){ byHeader[h] = firstRow[i] || ''; });
-    return { header_labels_from_dom: headers, first_row_cells_by_header: byHeader, first_row_cells: firstRow };
+  function cellText(node){
+    return stripTags(node ? (node.textContent || node.innerText || '') : '');
   }
 
-  function evaluatePreviewDomBinding(html, tableId, schemaId){
+  function headersLookLikeKpiMain(headers){
+    var h = (headers || []).join('\u0001');
+    return h.indexOf('وصف المؤشر') !== -1 || (h.indexOf('التكرار') !== -1 && h.indexOf('المالك') !== -1 && h.indexOf('النوع') !== -1);
+  }
+
+  function headersLookLikeKpiFormula(headers){
+    var joined = (headers || []).join(' ');
+    return joined.indexOf('صيغة الاحتساب') !== -1 &&
+      (joined.indexOf('المؤشر') !== -1 || joined.indexOf('مصدر البيانات') !== -1) &&
+      joined.indexOf('وصف المؤشر') === -1;
+  }
+
+  function headersLookLikeRoadmap(headers){
+    var joined = (headers || []).join(' ');
+    return (joined.indexOf('المرحلة') !== -1 || joined.indexOf('الفترة') !== -1) &&
+      joined.indexOf('المبادرة') !== -1;
+  }
+
+  function headersLookLikeGapAction(headers){
+    var joined = (headers || []).join(' ');
+    return joined.indexOf('الإجراء') !== -1 && joined.indexOf('المسؤول') !== -1 &&
+      (joined.indexOf('الناتج') !== -1 || joined.indexOf('الإطار الزمني') !== -1);
+  }
+
+  function inferTableSchemaId(headers, tableIdAttr){
+    if (tableIdAttr && REL32_PREVIEW_TABLE_SCHEMAS[tableIdAttr]) return tableIdAttr;
+    var detected = detectRel32PreviewSchema(headers);
+    if (detected) return detected;
+    if (headersLookLikeKpiMain(headers)) return 'kpi_main';
+    if (headersLookLikeKpiFormula(headers)) return 'kpi_formula';
+    if (headersLookLikeRoadmap(headers)) return 'roadmap';
+    if (headersLookLikeGapAction(headers)) return 'gap_action';
+    return null;
+  }
+
+  function extractDomBindingFromTable(table){
+    if (!table) return null;
+    var headers = Array.from(table.querySelectorAll('thead tr th')).map(cellText);
+    if (!headers.length) {
+      var firstRowCells = Array.from(table.querySelectorAll('tr:first-child th, tr:first-child td')).map(cellText);
+      if (firstRowCells.length >= 3) headers = firstRowCells;
+    }
+    var firstDataRow = table.querySelector('tbody tr');
+    var cells = firstDataRow
+      ? Array.from(firstDataRow.querySelectorAll('td')).map(cellText)
+      : [];
+    var byHeader = {};
+    headers.forEach(function(h, i){ byHeader[h] = cells[i] || ''; });
+    var wrapper = table.closest('.table-wrapper');
+    return {
+      table_id: wrapper ? (wrapper.getAttribute('data-table-id') || '') : '',
+      header_labels_from_dom: headers,
+      first_row_cells: cells,
+      first_row_cells_by_header: byHeader,
+      schema_binder_applied: !!(wrapper && wrapper.getAttribute('data-table-id'))
+    };
+  }
+
+  function extractDomBindingsFromRoot(root){
+    var rootEl = null;
+    if (root && root.querySelectorAll) rootEl = root;
+    else if (typeof root === 'string') {
+      var tmp = document.createElement('div');
+      tmp.innerHTML = root;
+      rootEl = tmp;
+    }
+    if (!rootEl) return [];
+    var tables = Array.from(rootEl.querySelectorAll('table'));
+    return tables.map(extractDomBindingFromTable).filter(Boolean);
+  }
+
+  function _targetLike(v){
+    return /^<\s*\d|[\d.]+\s*%|[\d.]+\s*ساع|[\d.]+\s*دقي/i.test(String(v || '').trim());
+  }
+
+  function _formulaLike(v){
+    return /مجموع|عدد|\//.test(String(v || ''));
+  }
+
+  function _sourceLike(v){
+    return /siem|soc|log|ticket|survey|report/i.test(String(v || ''));
+  }
+
+  function validateKpiMainSemantics(byHeader){
+    var errors = [];
+    var owner = byHeader['المالك'] || '';
+    var freq = byHeader['التكرار'] || '';
+    var source = byHeader['مصدر'] || '';
+    var typ = byHeader['النوع'] || '';
+    var target = byHeader['القيمة المستهدفة'] || '';
+    var formula = byHeader['صيغة الاحتساب'] || '';
+
+    if (isFreqToken(owner) && !isFreqToken(freq)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:المالك');
+    }
+    if (_sourceLike(freq) && !_sourceLike(source)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:التكرار');
+    }
+    if (_sourceLike(owner) && !_sourceLike(source)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:المالك');
+    }
+    if (isTypeToken(target) && !isTypeToken(typ)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:النوع');
+    }
+    if (_targetLike(formula) && !_formulaLike(formula)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:صيغة الاحتساب');
+    }
+    if (_formulaLike(source) && !_sourceLike(source)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:مصدر');
+    }
+    if (isTypeToken(owner)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_main:المالك');
+    }
+    return errors;
+  }
+
+  function validateKpiFormulaSemantics(byHeader, headers){
+    var errors = [];
+    var hasIndicator = (headers || []).some(function(h){
+      return String(h || '').trim() === 'المؤشر';
+    });
+    if (!hasIndicator) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر');
+    }
+    var indicator = byHeader['المؤشر'] || '';
+    var formula = byHeader['صيغة الاحتساب'] || '';
+    var source = byHeader['مصدر البيانات'] || byHeader['مصدر'] || '';
+    if (_targetLike(formula) && !_formulaLike(formula)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:صيغة الاحتساب');
+    }
+    if (_formulaLike(source) && !_sourceLike(source)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:مصدر البيانات');
+    }
+    if (_targetLike(indicator)) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر');
+    }
+    if (!indicator && formula && source) {
+      errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر');
+    }
+    return errors;
+  }
+
+  function evaluatePreviewDomBindingLive(domInfo, schemaId){
     var schema = REL32_PREVIEW_TABLE_SCHEMAS[schemaId || ''];
-    var dom = extractTableDomBinding(html, tableId);
     var schemaLabels = schema ? schema.columns.map(function(c){ return c.label_ar; }) : [];
     var mismatched = [];
     var blocking = [];
+    var headers = domInfo.header_labels_from_dom || [];
+    var byHeader = domInfo.first_row_cells_by_header || {};
+
     if (!schema) {
-      blocking.push('unknown_schema:'+String(tableId || schemaId));
-    } else if (dom.header_labels_from_dom.join('\u0001') !== schemaLabels.join('\u0001')) {
-      mismatched.push('header_order');
-      schemaLabels.forEach(function(lbl, i){
-        if ((dom.header_labels_from_dom[i] || '') !== lbl) {
-          mismatched.push('header:'+lbl+':expected_index_'+i);
-        }
-      });
+      blocking.push('unknown_schema:' + String(schemaId || domInfo.table_id || 'generic'));
+    } else {
+      if (headers.join('\u0001') !== schemaLabels.join('\u0001')) {
+        mismatched.push('header_order');
+        schemaLabels.forEach(function(lbl, i){
+          if ((headers[i] || '') !== lbl) {
+            mismatched.push('header:' + lbl + ':expected_index_' + i);
+          }
+        });
+      }
+      if (!domInfo.schema_binder_applied) {
+        blocking.push('rel32_preview_table_schema_binder_not_applied:' + schemaId);
+      }
+      if (schemaId === 'kpi_main') {
+        blocking = blocking.concat(validateKpiMainSemantics(byHeader));
+      }
+      if (schemaId === 'kpi_formula') {
+        blocking = blocking.concat(validateKpiFormulaSemantics(byHeader, headers));
+      }
     }
-    var diag = {
-      table_id: tableId || schemaId,
+
+    return {
+      table_id: schemaId || domInfo.table_id || 'unknown',
       schema_labels: schemaLabels,
-      header_labels_from_dom: dom.header_labels_from_dom,
-      first_row_cells_by_header: dom.first_row_cells_by_header,
+      header_labels_from_dom: headers,
+      first_row_cells_by_header: byHeader,
       mismatched_headers: mismatched,
+      schema_binder_applied: !!domInfo.schema_binder_applied,
       preview_dom_binding_passed: mismatched.length === 0 && blocking.length === 0,
       blocking_errors: blocking
     };
-    return diag;
+  }
+
+  function extractTableDomBinding(html, tableId){
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html || '';
+    var selector = tableId
+      ? '.table-wrapper[data-table-id="' + tableId + '"] table'
+      : 'table';
+    var table = tmp.querySelector(selector) || tmp.querySelector('table');
+    return extractDomBindingFromTable(table) || {
+      header_labels_from_dom: [],
+      first_row_cells_by_header: {},
+      first_row_cells: []
+    };
+  }
+
+  function evaluatePreviewDomBinding(html, tableId, schemaId){
+    var dom = extractTableDomBinding(html, tableId);
+    return evaluatePreviewDomBindingLive(dom, schemaId || tableId);
+  }
+
+  function renderPreviewBindingGateBanner(root, payload, isRtl){
+    if (!root || !root.querySelector) return;
+    var existing = root.querySelector('#rel32-preview-binding-gate');
+    if (existing) existing.remove();
+    if (payload.preview_dom_binding_passed) return;
+    var banner = document.createElement('div');
+    banner.id = 'rel32-preview-binding-gate';
+    banner.setAttribute('dir', isRtl ? 'rtl' : 'ltr');
+    banner.style.cssText = 'background:#fef2f2;border:1px solid #f87171;border-radius:8px;padding:12px 16px;margin:12px 0;color:#991b1b;font-size:.9rem;';
+    var title = isRtl ? 'تحذير: عدم تطابق جدول المعاينة مع المخطط' : 'Preview table schema binding failed';
+    var detail = (payload.blocking_errors || []).slice(0, 4).join('; ');
+    banner.innerHTML = '<strong>' + esc(title) + '</strong><div style="margin-top:.35rem;">' + esc(detail) + '</div>';
+    var page = root.querySelector('.document-page') || root;
+    page.insertBefore(banner, page.firstChild);
   }
 
   function emitRel32PreviewTableDomBindingCheck(rootOrHtml, options){
     options = options || {};
     var checks = [];
-    var html = typeof rootOrHtml === 'string'
-      ? rootOrHtml
-      : (rootOrHtml && rootOrHtml.innerHTML) ? rootOrHtml.innerHTML : '';
-    Object.keys(REL32_PREVIEW_TABLE_SCHEMAS).forEach(function(schemaId){
-      if (html.indexOf('data-table-id="'+schemaId+'"') === -1) return;
-      checks.push(evaluatePreviewDomBinding(html, schemaId, schemaId));
+    var blocking = [];
+    var isRtl = !!options.isRtl;
+
+    if (typeof global.Rel32PreviewTableSchema === 'undefined') {
+      blocking.push('rel32_preview_schema_binder_not_loaded');
+    }
+
+    var domInfos = extractDomBindingsFromRoot(rootOrHtml);
+    var seen = {};
+    domInfos.forEach(function(domInfo){
+      var schemaId = inferTableSchemaId(domInfo.header_labels_from_dom, domInfo.table_id);
+      if (!schemaId || seen[schemaId]) return;
+      seen[schemaId] = true;
+      checks.push(evaluatePreviewDomBindingLive(domInfo, schemaId));
     });
+
+    checks.forEach(function(c){
+      blocking = blocking.concat(c.blocking_errors || []);
+      if ((c.mismatched_headers || []).length) {
+        blocking = blocking.concat(c.mismatched_headers);
+      }
+    });
+
     var payload = {
       tag: 'REL32-PREVIEW-TABLE-DOM-BINDING-CHECK',
+      rel32_preview_schema_loaded: typeof global.Rel32PreviewTableSchema !== 'undefined',
+      static_version: (typeof global._rel32StaticVersion !== 'undefined') ? global._rel32StaticVersion : '',
       checks: checks,
-      preview_dom_binding_passed: checks.every(function(c){ return c.preview_dom_binding_passed; }),
+      preview_dom_binding_passed: blocking.length === 0 && checks.length > 0
+        ? checks.every(function(c){ return c.preview_dom_binding_passed; })
+        : blocking.length === 0,
       mismatched_headers: checks.reduce(function(a,c){ return a.concat(c.mismatched_headers || []); }, []),
-      blocking_errors: checks.reduce(function(a,c){ return a.concat(c.blocking_errors || []); }, [])
+      blocking_errors: blocking
     };
-    if (options.log !== false && typeof console !== 'undefined' && console.debug) {
-      console.debug('[REL32-PREVIEW-TABLE-DOM-BINDING-CHECK]', payload);
+
+    if (!checks.length && domInfos.length && blocking.indexOf('rel32_preview_schema_binder_not_loaded') === -1) {
+      var needsSchema = domInfos.some(function(d){
+        return !!inferTableSchemaId(d.header_labels_from_dom, d.table_id);
+      });
+      if (needsSchema) {
+        payload.preview_dom_binding_passed = false;
+        payload.blocking_errors = payload.blocking_errors.concat(
+          ['rel32_preview_schema_tables_present_but_unvalidated']);
+      }
+    }
+
+    global._rel32PreviewDomBindingPassed = payload.preview_dom_binding_passed;
+    global._rel32PreviewDomBindingCheck = payload;
+
+    if (options.block !== false && rootOrHtml && rootOrHtml.querySelector) {
+      renderPreviewBindingGateBanner(rootOrHtml, payload, isRtl);
+    }
+
+    if (options.log !== false && typeof console !== 'undefined') {
+      if (payload.preview_dom_binding_passed) {
+        if (console.debug) console.debug('[REL32-PREVIEW-TABLE-DOM-BINDING-CHECK]', payload);
+      } else if (console.warn) {
+        console.warn('[REL32-PREVIEW-TABLE-DOM-BINDING-CHECK]', payload);
+      }
     }
     return payload;
   }
@@ -285,7 +492,11 @@
     bindRel32PreviewTable: bindRel32PreviewTable,
     renderRel32PreviewTableHtml: renderRel32PreviewTableHtml,
     extractTableDomBinding: extractTableDomBinding,
+    extractDomBindingsFromRoot: extractDomBindingsFromRoot,
     evaluatePreviewDomBinding: evaluatePreviewDomBinding,
+    evaluatePreviewDomBindingLive: evaluatePreviewDomBindingLive,
+    validateKpiMainSemantics: validateKpiMainSemantics,
+    validateKpiFormulaSemantics: validateKpiFormulaSemantics,
     emitRel32PreviewTableDomBindingCheck: emitRel32PreviewTableDomBindingCheck,
     repairKpiRowDict: repairKpiRowDict
   };
