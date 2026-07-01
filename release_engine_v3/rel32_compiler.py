@@ -498,6 +498,14 @@ def _build_kpis_section(
     from release_engine.kpi_model import repair_kpi_canonical_families
     sections, _ = repair_kpi_canonical_families(
         sections, lang=lang, backend=backend)
+    from release_engine_v3.rel32_kpi_assessment_guides import (
+        build_kpi_assessment_guides_block,
+        _kpi_rows_from_section,
+    )
+    guide_rows = _kpi_rows_from_section(sections['kpis'])
+    sections['kpis'] = (
+        sections['kpis'].rstrip()
+        + build_kpi_assessment_guides_block(guide_rows, lang=lang))
     return sections['kpis'], tuple(kpi_rows), tuple(formula_rows)
 
 
@@ -757,6 +765,16 @@ def _run_post_compile_repairs(
             repairs.append('rel32:arabic_canonical_repair')
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from release_engine_v3.rel32_kpi_assessment_guides import (
+            repair_kpi_assessment_guides_for_sections,
+        )
+        out, kpi_guide_diag = repair_kpi_assessment_guides_for_sections(
+            out, lang=lang, backend=backend)
+        if kpi_guide_diag.get('inserted'):
+            repairs.append('rel32:kpi_assessment_guides_repair')
+    except Exception:  # noqa: BLE001
+        pass
     for key in REL32_SECTION_ORDER:
         if key in out and key in REL32_CANONICAL_HEADINGS and out.get(key):
             out[key] = _ensure_section_heading(key, out[key])
@@ -838,12 +856,36 @@ def compile_canonical_strategy_document(
     blockers = list(dict.fromkeys(blockers))
     passed = not blockers
 
+    try:
+        from release_engine_v3.rel32_kpi_assessment_guides import (
+            emit_rel32_final_strategy_completeness_diag,
+            evaluate_rel32_final_strategy_completeness,
+            kpi_assessment_guides_present,
+        )
+        completeness = evaluate_rel32_final_strategy_completeness(
+            legacy, lang=lang)
+        if not kpi_assessment_guides_present(legacy.get('kpis', '')):
+            blockers.append('rel32_kpi_assessment_guides_missing')
+            passed = False
+            completeness['blocking_errors'] = list(
+                completeness.get('blocking_errors') or [])
+            completeness['blocking_errors'].append(
+                'rel32_kpi_assessment_guides_missing')
+            completeness['saved_content_complete'] = False
+            completeness['preview_complete'] = False
+            completeness['docx_complete'] = False
+            completeness['pdf_complete'] = False
+        emit_rel32_final_strategy_completeness_diag(completeness)
+    except Exception:  # noqa: BLE001
+        completeness = {}
+
     diag = {
         'repairs': repairs,
         'schema': doc.to_diag(),
         'headings_enforced': list(REL32_CANONICAL_HEADINGS.values()),
         'ai_markdown_authority': False,
         'passed': passed,
+        'final_strategy_completeness': completeness,
     }
     try:
         print(

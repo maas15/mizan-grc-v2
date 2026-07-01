@@ -230,6 +230,16 @@ class Rel32CompilerFirstTests(unittest.TestCase):
         self.assertTrue(r.document.confidence_score)
         self.assertTrue(r.document.confidence_rationale)
 
+    def test_11b_kpi_assessment_guides_built_from_registry(self):
+        r = _compile({'kpis': ''})
+        self.assertTrue(r.passed, r.blocking_errors)
+        kpis = r.legacy_sections.get('kpis', '')
+        self.assertIn('أدلة تقييم مؤشرات الأداء', kpis)
+        self.assertIn('طريقة التقييم', kpis)
+        self.assertIn('دليل تقييم المؤشر رقم', kpis)
+        comp = (r.diagnostics or {}).get('final_strategy_completeness') or {}
+        self.assertEqual(comp.get('missing_sections_after'), [])
+
     def test_12_canonical_document_passes_dqs_before_render_tree(self):
         r = _compile({})
         self.assertTrue(r.passed, r.blocking_errors)
