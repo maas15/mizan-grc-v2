@@ -21,9 +21,12 @@ os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 from release_engine_v3.rel32_compiler import compile_canonical_strategy_document
 from release_engine_v3.rel32_preview_table_dom import (
     cell_under_header,
+    dom_index_maps,
     evaluate_preview_dom_binding_check,
     extract_table_dom_binding,
     render_preview_table_html,
+    validate_kpi_formula_by_dom_index,
+    validate_kpi_main_by_dom_index,
 )
 from release_engine_v3.rel32_table_schema_binding import schema_header_labels
 
@@ -174,6 +177,102 @@ class Rel32PreviewTableDomBindingTests(unittest.TestCase):
         self.assertIn('SIEM', cell_under_header(html_out, 'مصدر'))
         diag = evaluate_preview_dom_binding_check(html_out, 'kpi_main')
         self.assertTrue(diag['preview_dom_binding_passed'])
+
+    def test_10_dom_order_headers_i_maps_to_cells_i_kpi_main(self):
+        headers = schema_header_labels('kpi_main', lang='ar')
+        row = [
+            '1', 'متوسط زمن اكتشاف الحوادث الأمنية', 'KPI', '< 4 ساعات',
+            'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'SIEM / SOC', 'شهري', 'CISO',
+        ]
+        html_out = render_preview_table_html(
+            headers, [row], schema_id='kpi_main', is_rtl=True)
+        dom = extract_table_dom_binding(html_out)
+        self.assertEqual(dom['header_labels_from_dom'], headers)
+        self.assertEqual(dom['first_row_cells'], row)
+        self.assertTrue(dom_index_maps(dom['header_labels_from_dom'], dom['first_row_cells']))
+        for i, lbl in enumerate(headers):
+            self.assertEqual(dom['first_row_cells_by_header'][lbl], row[i])
+
+    def test_11_dom_order_headers_i_maps_to_cells_i_kpi_formula(self):
+        headers = schema_header_labels('kpi_formula', lang='ar')
+        row = [
+            '1', 'متوسط زمن اكتشاف الحوادث الأمنية',
+            'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'SIEM / SOC',
+        ]
+        html_out = render_preview_table_html(
+            headers, [row], schema_id='kpi_formula', is_rtl=True)
+        dom = extract_table_dom_binding(html_out)
+        self.assertEqual(dom['header_labels_from_dom'], headers)
+        self.assertEqual(dom['first_row_cells'], row)
+        self.assertTrue(dom_index_maps(dom['header_labels_from_dom'], dom['first_row_cells']))
+
+    def test_12_rtl_dir_does_not_change_dom_index_comparison(self):
+        headers = schema_header_labels('kpi_main', lang='ar')
+        row = [
+            '1', 'MTTD', 'KPI', '< 4 ساعات',
+            'مجموع / عدد', 'SIEM / SOC', 'شهري', 'CISO',
+        ]
+        ltr_html = render_preview_table_html(
+            headers, [row], schema_id='kpi_main', is_rtl=False)
+        rtl_html = render_preview_table_html(
+            headers, [row], schema_id='kpi_main', is_rtl=True)
+        ltr_dom = extract_table_dom_binding(ltr_html)
+        rtl_dom = extract_table_dom_binding(rtl_html)
+        self.assertEqual(ltr_dom['first_row_cells'], rtl_dom['first_row_cells'])
+        self.assertEqual(
+            validate_kpi_main_by_dom_index(ltr_dom['header_labels_from_dom'], ltr_dom['first_row_cells']),
+            [],
+        )
+        self.assertEqual(
+            validate_kpi_main_by_dom_index(rtl_dom['header_labels_from_dom'], rtl_dom['first_row_cells']),
+            [],
+        )
+        self.assertTrue(evaluate_preview_dom_binding_check(rtl_html, 'kpi_main')['preview_dom_binding_passed'])
+
+    def test_13_formula_siem_soc_source_not_formula_false_positive(self):
+        headers = schema_header_labels('kpi_formula', lang='ar')
+        row = ['1', 'MTTD', 'مجموع زمن الكشف / عدد الحوادث', 'SIEM / SOC']
+        html_out = render_preview_table_html(
+            headers, [row], schema_id='kpi_formula', is_rtl=True)
+        errors = validate_kpi_formula_by_dom_index(
+            extract_table_dom_binding(html_out)['header_labels_from_dom'],
+            extract_table_dom_binding(html_out)['first_row_cells'],
+        )
+        self.assertEqual(errors, [])
+        diag = evaluate_preview_dom_binding_check(html_out, 'kpi_formula')
+        self.assertTrue(diag['preview_dom_binding_passed'])
+
+    def test_14_queryselector_dom_extraction_smoke(self):
+        """Simulate thead th / tbody tr:first-child td extraction (browser contract)."""
+        headers = schema_header_labels('kpi_main', lang='ar')
+        row = [
+            '1', 'desc', 'KPI', '< 4 ساعات',
+            'formula text', 'SIEM / SOC', 'شهري', 'CISO',
+        ]
+        html_out = render_preview_table_html(
+            headers, [row], schema_id='kpi_main', is_rtl=True)
+        dom = extract_table_dom_binding(html_out)
+        self.assertEqual(len(dom['header_labels_from_dom']), 8)
+        self.assertEqual(len(dom['first_row_cells']), 8)
+        self.assertIn('table-wrapper', html_out)
+        self.assertIn('data-table-id="kpi_main"', html_out)
+
+    def test_15_render_preview_table_html_passes_runtime_gate(self):
+        """Gate must pass for HTML from renderRel32PreviewTableHtml equivalent."""
+        for schema_id, row in (
+            ('kpi_main', [
+                '1', 'متوسط زمن اكتشاف الحوادث الأمنية', 'KPI', '< 4 ساعات',
+                'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'SIEM / SOC', 'شهري', 'CISO',
+            ]),
+            ('kpi_formula', [
+                '1', 'متوسط زمن اكتشاف الحوادث الأمنية',
+                'مجموع أزمنة اكتشاف الحوادث / عدد الحوادث', 'SIEM / SOC',
+            ]),
+        ):
+            hdr = schema_header_labels(schema_id, lang='ar')
+            html_out = render_preview_table_html(hdr, [row], schema_id=schema_id, is_rtl=True)
+            diag = evaluate_preview_dom_binding_check(html_out, schema_id)
+            self.assertTrue(diag['preview_dom_binding_passed'], diag.get('blocking_errors'))
 
 
 if __name__ == '__main__':

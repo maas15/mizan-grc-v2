@@ -140,8 +140,9 @@ _FREQ_RE = re.compile(
 )
 _TYPE_RE = re.compile(r'^(kpi|kri|مؤشر|kpi/kri)$', re.I)
 _TARGET_RE = re.compile(r'^<\s*\d|[\d.]+\s*%|[\d.]+\s*ساع|[\d.]+\s*دقي', re.I)
-_FORMULA_RE = re.compile(r'مجموع|عدد|/')
+_FORMULA_RE = re.compile(r'مجموع|عدد\s*الحوادث|احتساب', re.I)
 _SOURCE_RE = re.compile(r'siem|soc|log|ticket|survey|report', re.I)
+_PURE_SOURCE_RE = re.compile(r'^siem\s*/\s*soc$', re.I)
 
 
 def _is_freq(v: str) -> bool:
@@ -152,40 +153,46 @@ def _is_type(v: str) -> bool:
     return bool(_TYPE_RE.match((v or '').strip()))
 
 
-def validate_kpi_main_semantics(by_header: Dict[str, str]) -> List[str]:
+def _pure_source_token(v: str) -> bool:
+    s = (v or '').strip()
+    return bool(_PURE_SOURCE_RE.match(s))
+
+
+def validate_kpi_main_by_dom_index(
+        headers: Sequence[str], cells: Sequence[str]) -> List[str]:
+    schema_labels = schema_header_labels('kpi_main', lang='ar')
     errors: List[str] = []
-    owner = by_header.get('المالك', '')
-    freq = by_header.get('التكرار', '')
-    source = by_header.get('مصدر', '')
-    typ = by_header.get('النوع', '')
-    target = by_header.get('القيمة المستهدفة', '')
-    formula = by_header.get('صيغة الاحتساب', '')
-    if _is_freq(owner) and not _is_freq(freq):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:المالك')
-    if _SOURCE_RE.search(freq or '') and not _SOURCE_RE.search(source or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:التكرار')
-    if _SOURCE_RE.search(owner or '') and not _SOURCE_RE.search(source or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:المالك')
-    if _is_type(target) and not _is_type(typ):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:النوع')
-    if _TARGET_RE.search(formula or '') and not _FORMULA_RE.search(formula or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:صيغة الاحتساب')
-    if _FORMULA_RE.search(source or '') and not _SOURCE_RE.search(source or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_main:مصدر')
+    for i, lbl in enumerate(schema_labels):
+        if i >= len(headers) or headers[i] != lbl:
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
+        cell = cells[i] if i < len(cells) else ''
+        if lbl == 'التكرار' and cell and (not _is_freq(cell) or _pure_source_token(cell)):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:التكرار')
+        if lbl == 'مصدر' and cell and (not _SOURCE_RE.search(cell) or _is_freq(cell)):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:مصدر')
+        if lbl == 'المالك' and cell and (_is_freq(cell) or _pure_source_token(cell) or _is_type(cell)):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:المالك')
+        if lbl == 'النوع' and cell and not _is_type(cell) and 'kri' not in cell.lower():
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:النوع')
+        if lbl == 'صيغة الاحتساب' and cell and _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:صيغة الاحتساب')
     return errors
 
 
-def validate_kpi_formula_semantics(
-        by_header: Dict[str, str], headers: Sequence[str]) -> List[str]:
+def validate_kpi_formula_by_dom_index(
+        headers: Sequence[str], cells: Sequence[str]) -> List[str]:
+    schema_labels = schema_header_labels('kpi_formula', lang='ar')
     errors: List[str] = []
-    if 'المؤشر' not in list(headers or []):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر')
-    formula = by_header.get('صيغة الاحتساب', '')
-    source = by_header.get('مصدر البيانات') or by_header.get('مصدر', '')
-    if _TARGET_RE.search(formula or '') and not _FORMULA_RE.search(formula or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:صيغة الاحتساب')
-    if _FORMULA_RE.search(source or '') and not _SOURCE_RE.search(source or ''):
-        errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:مصدر البيانات')
+    for i, lbl in enumerate(schema_labels):
+        if i >= len(headers) or headers[i] != lbl:
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_formula:{lbl}')
+        cell = cells[i] if i < len(cells) else ''
+        if lbl == 'المؤشر' and (not cell or _TARGET_RE.search(cell or '')):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر')
+        if lbl == 'صيغة الاحتساب' and cell and _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:صيغة الاحتساب')
+        if lbl == 'مصدر البيانات' and cell and _FORMULA_RE.search(cell) and not _SOURCE_RE.search(cell):
+            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:مصدر البيانات')
     return errors
 
 
@@ -195,25 +202,27 @@ def evaluate_preview_dom_binding_check(
 ) -> Dict[str, Any]:
     schema_labels = schema_header_labels(schema_id, lang='ar')
     dom = extract_table_dom_binding(html_text)
+    headers = dom['header_labels_from_dom']
+    cells = dom['first_row_cells']
     mismatched: List[str] = []
     blocking: List[str] = []
-    if dom['header_labels_from_dom'] != schema_labels:
+    if headers != schema_labels:
         mismatched.append('header_order')
         for i, lbl in enumerate(schema_labels):
-            got = dom['header_labels_from_dom'][i] if i < len(dom['header_labels_from_dom']) else ''
+            got = headers[i] if i < len(headers) else ''
             if got != lbl:
                 mismatched.append(f'header:{lbl}:expected_index_{i}')
     if not dom.get('schema_binder_applied'):
         blocking.append(f'rel32_preview_table_schema_binder_not_applied:{schema_id}')
     if schema_id == 'kpi_main':
-        blocking.extend(validate_kpi_main_semantics(dom['first_row_cells_by_header']))
+        blocking.extend(validate_kpi_main_by_dom_index(headers, cells))
     if schema_id == 'kpi_formula':
-        blocking.extend(validate_kpi_formula_semantics(
-            dom['first_row_cells_by_header'], dom['header_labels_from_dom']))
+        blocking.extend(validate_kpi_formula_by_dom_index(headers, cells))
     return {
         'table_id': schema_id,
         'schema_labels': schema_labels,
-        'header_labels_from_dom': dom['header_labels_from_dom'],
+        'header_labels_from_dom': headers,
+        'first_row_cells': cells,
         'first_row_cells_by_header': dom['first_row_cells_by_header'],
         'mismatched_headers': mismatched,
         'preview_dom_binding_passed': not mismatched and not blocking,
@@ -224,3 +233,10 @@ def evaluate_preview_dom_binding_check(
 def cell_under_header(html_text: str, header_label: str) -> str:
     dom = extract_table_dom_binding(html_text)
     return str(dom['first_row_cells_by_header'].get(header_label) or '')
+
+
+def dom_index_maps(headers: Sequence[str], cells: Sequence[str]) -> bool:
+    """True when headers[i] maps to cells[i] for all indices (DOM order)."""
+    if len(headers) != len(cells):
+        return False
+    return all(headers[i] and cells[i] is not None for i in range(len(headers)))
