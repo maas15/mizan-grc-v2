@@ -147,10 +147,10 @@ def test_frontend_timeout_message_when_backend_still_running():
     )
     # PR-CY14 — banner helper drives the pending UX.
     assert 'renderStrategyPendingBanner(' in html
-    # New EN message inside the banner.
-    assert 'Generation is still running. Current stage:' in html
-    # New AR message inside the banner.
-    assert 'لا يزال التوليد جارياً. المرحلة الحالية:' in html
+    # Progress/ETA EN message inside the banner.
+    assert 'Generation in progress.' in html
+    # Progress/ETA AR message inside the banner.
+    assert 'لا يزال التوليد جارياً.' in html
     # The legacy "انتهت مهلة الإنشاء" message must still exist as the
     # genuine-timeout branch — we don't want to fully delete it.
     assert 'انتهت مهلة الإنشاء' in html

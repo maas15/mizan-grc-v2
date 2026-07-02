@@ -4343,4 +4343,26 @@ select option,
 .summary-chip-medium  { background: rgba(217,119,6,.1); color: #d97706; border: 1px solid rgba(217,119,6,.2); }
 .summary-chip-low     { background: rgba(22,163,74,.1); color: #16a34a; border: 1px solid rgba(22,163,74,.2); }
 .summary-chip-kpi     { background: rgba(59,130,246,.1);color: #2563eb; border: 1px solid rgba(59,130,246,.2); }
+#strategy-content.grc-document-view {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+#strategy-content .document-page {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+#strategy-content .document-page pre {
+    white-space: pre-wrap !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    font-size: 15px !important;
+    line-height: 1.72 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
 .summary-chip-kri     { background: rgba(139,92,246,.1);color: #7c3aed; border: 1px solid rgba(139,92,246,.2); }

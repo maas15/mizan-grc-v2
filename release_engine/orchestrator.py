@@ -10,6 +10,27 @@ from release_engine.final_quality_contract import evaluate_final_quality
 from release_engine.repair_registry import run_domain_repairs
 from release_engine.scoring import score_artifact
 from release_engine.section_model import legacy_sections_to_canonical
+from release_engine.rel23_finalize import (
+    apply_rel23_cyber_finalize,
+    rel23_blocking_errors,
+)
+from release_engine.roadmap_model import finalize_roadmap
+from release_engine.rel24_finalize import (
+    apply_rel24_cyber_substance_finalize,
+    rel24_blocking_errors,
+)
+from release_engine.rel25_finalize import (
+    apply_rel25_cyber_evidence_finalize,
+    rel25_blocking_errors,
+)
+from release_engine.rel26_finalize import (
+    apply_rel26_cyber_export_evidence_finalize,
+    rel26_blocking_errors,
+)
+from release_engine.rel28_finalize import (
+    apply_rel28_cyber_route_evidence_finalize,
+    rel28_blocking_errors,
+)
 from release_engine.validator_registry import (
     assert_no_post_sealed_blockers,
     run_rel2_validators,
@@ -61,6 +82,130 @@ def process_release_artifact(
     sections = dict(merged.get('sections') or {})
     blocking = list(merged.get('blocking_errors') or [])
     repair_actions = list(merged.get('repair_actions') or [])
+    rel23_diags: dict = {}
+    rel24_diags: dict = {}
+    rel25_diags: dict = {}
+    rel26_diags: dict = {}
+    rel28_diags: dict = {}
+
+    _stale_rel23_prefixes = (
+        'rel2_section_parity_failed',
+        'rel2_pillars_failed',
+        'rel2_roadmap_failed',
+        'rel2_kpi_failed',
+        'rel2_arabic_quality_failed',
+        'rel2_rendered_evidence_failed',
+        'rel2_actual_export_evidence_failed',
+        'export_hash_parity_invalid',
+        'cyber_board_ready_pillars_failed',
+        'pillar_sections_hash_mismatch',
+        'kpi_metric_semantics_invalid',
+        'kpi_formula_alignment_invalid',
+        'kpi_numbering_invalid',
+        'kpi_duplicate_numbers',
+    )
+    if is_cyber and document_type == 'strategy':
+        blocking = [
+            b for b in blocking
+            if not any(
+                (b or '').startswith(p) or (b or '') == p
+                for p in _stale_rel23_prefixes)]
+
+    if is_cyber and document_type == 'strategy':
+        merged, rel23_repairs, rel23_diags = apply_rel23_cyber_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel23_repairs)
+        for rb in rel23_blocking_errors(rel23_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+
+        merged, rel24_repairs, rel24_diags = apply_rel24_cyber_substance_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel24_repairs)
+        for rb in rel24_blocking_errors(rel24_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+        if (rel24_diags.get('arabic') or {}).get('arabic_quality_passed'):
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith('rel2_arabic_quality_failed')]
+        if (rel24_diags.get('roadmap') or {}).get('roadmap_depth_passed'):
+            _fws = (
+                (merged.get('contract_meta') or {}).get('selected_frameworks')
+                or merged.get('selected_frameworks') or [])
+            sections, road_diag = finalize_roadmap(
+                sections,
+                lang=lang,
+                domain=dcode,
+                selected_frameworks=_fws,
+                backend=backend,
+            )
+            rel23_diags['roadmap'] = road_diag
+            merged['sections'] = sections
+            merged['final_markdown'] = _rebuild_markdown(sections)
+            _hash_fn = backend.get('content_hash')
+            if _hash_fn:
+                merged['final_hash'] = _hash_fn(merged['final_markdown'])
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith('rel2_roadmap_failed')]
+            _road_err = (road_diag.get('blocking_error_if_any') or '').strip()
+            if _road_err and _road_err not in blocking:
+                blocking.append(_road_err)
+
+        merged, rel25_repairs, rel25_diags = apply_rel25_cyber_evidence_finalize(
+            merged,
+            domain=dcode,
+            lang=lang,
+            backend=backend,
+        )
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel25_repairs)
+        for rb in rel25_blocking_errors(rel25_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+
+        merged, rel26_repairs, rel26_diags = (
+            apply_rel26_cyber_export_evidence_finalize(
+                merged,
+                domain=dcode,
+                lang=lang,
+                backend=backend,
+            ))
+        sections = dict(merged.get('sections') or {})
+        repair_actions.extend(rel26_repairs)
+        for rb in rel26_blocking_errors(rel26_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+        merged, rel28_repairs, rel28_diags = (
+            apply_rel28_cyber_route_evidence_finalize(
+                merged,
+                domain=dcode,
+                lang=lang,
+                backend=backend,
+            ))
+        repair_actions.extend(rel28_repairs)
+        for rb in rel28_blocking_errors(rel28_diags):
+            if rb not in blocking:
+                blocking.append(rb)
+        _export_gate = rel26_diags.get('export') or {}
+        if _export_gate.get('export_return_allowed'):
+            blocking = [
+                b for b in blocking
+                if not (b or '').startswith((
+                    'rel2_rendered_evidence_failed',
+                    'rel2_actual_export_evidence_failed',
+                ))]
 
     if not is_cyber or merged.get('rel2_force_repair'):
         sections, repairs = run_domain_repairs(
@@ -98,6 +243,21 @@ def process_release_artifact(
     merged['blocking_errors'] = blocking
     merged['repair_actions'] = repair_actions
     merged['sealed'] = not blocking
+    if rel23_diags or rel24_diags or rel25_diags or rel26_diags or rel28_diags:
+        merged['diagnostics'] = dict(merged.get('diagnostics') or {})
+        _rel2_store = dict(merged['diagnostics'].get('rel2') or {})
+        if rel23_diags:
+            _rel2_store['rel23'] = rel23_diags
+        if rel24_diags:
+            _rel2_store['rel24'] = rel24_diags
+        if rel25_diags:
+            _rel2_store['rel25'] = rel25_diags
+        if rel26_diags:
+            _rel2_store['rel26'] = rel26_diags
+            _rel2_store['rel27'] = rel26_diags
+        if rel28_diags:
+            _rel2_store['rel28'] = rel28_diags
+        merged['diagnostics']['rel2'] = _rel2_store
 
     scoring = score_artifact(
         merged,
@@ -167,6 +327,16 @@ def process_release_artifact(
     )
     diag['scoped_validation'] = scoped.get('diag') or {}
     diag['post_sealed_audit'] = post_violations
+    if rel23_diags:
+        diag['rel23'] = rel23_diags
+    if rel24_diags:
+        diag['rel24'] = rel24_diags
+    if rel25_diags:
+        diag['rel25'] = rel25_diags
+    if rel26_diags:
+        diag['rel26'] = rel26_diags
+    if rel28_diags:
+        diag['rel28'] = rel28_diags
     emit_rel2_diag(diag)
 
     merged['rel2_canonical'] = canonical

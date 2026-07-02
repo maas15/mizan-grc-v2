@@ -442,14 +442,22 @@ function grcMarkdownToHTML(md){
                  h.some(function(c){ return /^expected|^المخرج/.test(c); });
         })();
 
-        // ── Detect KPI main table (6-col: # KPIDescription TargetValue Formula Justification Timeframe) ──
-        var isKpiTable = (numCols === 6) && (function(){
+        // ── Detect KPI main table (legacy 6-col OR REL32 8-col schema) ──
+        var isRel32KpiMain = (typeof Rel32PreviewTableSchema !== 'undefined') &&
+          Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'kpi_main';
+        var isRel32KpiFormula = (typeof Rel32PreviewTableSchema !== 'undefined') &&
+          Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'kpi_formula';
+        var isRel32Roadmap = (typeof Rel32PreviewTableSchema !== 'undefined') &&
+          Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'roadmap';
+        var isRel32GapAction = (typeof Rel32PreviewTableSchema !== 'undefined') &&
+          Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'gap_action';
+        var isKpiTable = isRel32KpiMain || ((numCols === 6) && (function(){
           var h = header.map(function(c){ return (c||'').toLowerCase().trim(); });
           return (h[0] === '#' || h[0] === 'م') &&
                  h.some(function(c){ return /^kpi|^وصف المؤشر/.test(c); }) &&
                  h.some(function(c){ return /^target|^القيمة/.test(c); }) &&
                  h.some(function(c){ return /^formula|^calculation|^صيغة/.test(c); });
-        })();
+        })());
 
         // ── Detect Key Risks table (5-col: # Risk Likelihood Impact MitigationPlan) ──
         var isRiskTable = (numCols === 5) && (function(){
@@ -575,9 +583,21 @@ function grcMarkdownToHTML(md){
         else if(isProcDecisionTable) schemaClass = 'schema-procedure-decision';
         else if(isProcEvidenceTable) schemaClass = 'schema-procedure-evidence';
 
+        // ── REL32 schema-key preview binding (same schema order for th + td) ──
+        if(typeof Rel32PreviewTableSchema !== 'undefined' &&
+           (isRel32KpiMain || isRel32KpiFormula || isRel32Roadmap || isRel32GapAction)){
+          var _rtl = (typeof isRtl !== 'undefined') ? !!isRtl : false;
+          var _rel32 = Rel32PreviewTableSchema.renderRel32PreviewTableHtml(
+            header, dataRows, { isRtl: _rtl });
+          if(_rel32 && _rel32.html){
+            return procedureNarrativeParagraph + _rel32.html;
+          }
+        }
+
         var tableClsAttr = schemaClass ? ' class="'+schemaClass+'"' : '';
         var schemaAttr   = schemaClass ? ' data-schema="'+schemaClass.replace('schema-','')+'"' : '';
-        var out = '<div class="table-wrapper"'+schemaAttr+'><table'+tableClsAttr+'><thead><tr>';
+        var _mdRtl = (typeof isRtl !== 'undefined' && isRtl) ? ' dir="rtl"' : '';
+        var out = '<div class="table-wrapper"'+schemaAttr+_mdRtl+'><table'+tableClsAttr+'><thead><tr>';
         header.forEach(function(c){ out += '<th>'+inlineHtml(c)+'</th>'; });
         out += '</tr></thead><tbody>';
 
@@ -595,10 +615,8 @@ function grcMarkdownToHTML(md){
           return inlineHtml(raw);
         }
 
-        // Schema detection vars (isObjTable/isPillarTable/isKpiTable/isRiskTable
-        // isProcRaciTable/isProcControlTable etc.) are declared ABOVE before schemaClass.
-        // This block was the old (duplicate) location — removed to fix JS var hoisting bug.
-
+        var prioColIdx = [];
+        header.forEach(function(h, hi){
           var hl = (h||'').toLowerCase().trim();
           if(/^(priority|الأولوية|likelihood|الاحتمالية|impact|التأثير|status|الحالة|importance|الأهمية)$/.test(hl)){
             prioColIdx.push(hi);

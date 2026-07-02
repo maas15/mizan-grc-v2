@@ -265,16 +265,26 @@ class Prcy82ReleaseAcceptanceTests(unittest.TestCase):
 
     @_skip
     def test_repair_failure_blocker_inside_artifact_only(self):
-        """Unrepairable roadmap must block via artifact, not a stale outer gate."""
+        """Blockers must come from artifact gates only — never stale outer bypass."""
         broken = _sections(roadmap='## 5. خارطة الطريق\n\n')
         art, _ = _artifact(broken)
         blockers = art.get('blocking_errors') or []
         if art.get('sealed'):
-            self.skipTest('empty roadmap unexpectedly sealed')
-        self.assertTrue(
-            all(str(b).startswith('final_quality_gate_failed:')
-                for b in blockers))
-        self.assertEqual(_APP._PRCY82_CONTRACT_BYPASS_EVENTS, [])
+            rm = (art.get('sections') or {}).get('roadmap', '')
+            self.assertGreaterEqual(
+                len(_APP._prcy83_roadmap_parsed_rows(rm, 'ar')), 10)
+        else:
+            self.assertTrue(
+                all(
+                    str(b).startswith((
+                        'final_quality_gate_failed:', 'rel2_roadmap_failed:',
+                        'rel2_section_parity_failed:', 'rel2_pillars_failed:',
+                        'rel3_generation_contract_failed:',
+                        'rel3_export_evidence_failed:',
+                        'rel3_document_quality_failed:',
+                    ))
+                    for b in blockers),
+                blockers)
         self.assertEqual(_APP._PRCY82_CONTRACT_BYPASS_EVENTS, [])
 
     @_skip

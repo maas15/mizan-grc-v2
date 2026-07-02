@@ -122,14 +122,14 @@ class ExportParityPrcy57Tests(unittest.TestCase):
 
     @_skip
     def test_pdf_confidence_card_and_table_spacing(self):
-        self.assertIn('leading=15', _APP_SOURCE)
+        self.assertIn('leading=14', _APP_SOURCE)
         self.assertIn('factor_hdr_sty', _APP_SOURCE)
         self.assertEqual(
             _P41.PDF_TABLE_LAYOUT_PROFILES['conf_factor']['padding'], 6)
         self.assertEqual(
-            _P41.PDF_TABLE_LAYOUT_PROFILES['roadmap']['padding'], 6)
+            _P41.PDF_TABLE_LAYOUT_PROFILES['roadmap']['padding'], 8)
         self.assertEqual(
-            _P41.PDF_TABLE_LAYOUT_PROFILES['kpi_main']['padding'], 6)
+            _P41.PDF_TABLE_LAYOUT_PROFILES['kpi_main']['padding'], 8)
 
     @_skip
     def test_docmodel_all_subgates_pass_on_fixture(self):

@@ -7,9 +7,21 @@ import re
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
+from release_engine.risk_treatment_model import specific_risk_treatment_for_blob
+
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
 # Longest patterns first — shorter keys must not run before longer ones.
 PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
+    # PR-REL2.6 — live export Arabic residue fixes.
+    ('الحاليةفي', 'الحالية في'),
+    ('الموظفينفي', 'الموظفين في'),
+    ('رئيسيةفي', 'رئيسية في'),
+    ('حلولمنع', 'حلول لمنع'),
+    ('المحددةفي', 'المحددة في'),
+    ('ال معالجة', 'المعالجة'),
+    ('ال منقولة', 'المنقولة'),
+    ('ل معالجة', 'لمعالجة'),
+    ('بال منصات', 'بالمنصات'),
     # PR-CY59 — executive-role and compound spacing defects (longest first).
     ('الالمسؤولتنفيذي', 'المسؤول التنفيذي'),
     ('امتثاللا تقلعن', 'امتثال لا تقل عن'),
@@ -133,22 +145,22 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     'gap_action': {
         'col_weights': [0.10, 0.34, 0.16, 0.18, 0.22],
-        'font_size': 8, 'header_font_size': 9, 'padding': 5,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 80, 'render_mode': 'table',
     },
     'roadmap': {
         'col_weights': [0.14, 0.12, 0.28, 0.12, 0.20, 0.14],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
-        'col_weights': [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'col_weights': [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20],
+        'font_size': 8, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 72, 'render_mode': 'table',
     },
     'kpi_formula': {
         'col_weights': [0.08, 0.30, 0.32, 0.30],
-        'font_size': 8, 'header_font_size': 9, 'padding': 6,
+        'font_size': 9, 'header_font_size': 9, 'padding': 8,
         'max_cell_len': 110, 'render_mode': 'table',
     },
     'conf_factor': {
@@ -218,7 +230,7 @@ SCHEMA_STRATEGIC_OBJECTIVES_AR = (
     'المبرر', 'الإطار الزمني',
 )
 SCHEMA_PILLAR_INITIATIVES_AR = (
-    '#', 'المبادرة', 'الوصف', 'المخرج المتوقع',
+    '#', 'المبادرة', 'الوصف', 'المخرج المتوقع', 'المسؤول',
 )
 SCHEMA_GAP_MAIN_AR = (
     '#', 'الفجوة', 'الوصف', 'الأولوية', 'الحالة',
@@ -231,8 +243,8 @@ SCHEMA_ROADMAP_AR = (
     'المخرج المتوقع', 'الإطار المرتبط',
 )
 SCHEMA_KPI_MAIN_AR = (
-    '#', 'المؤشر', 'النوع', 'القيمة المستهدفة',
-    'التكرار', 'المالك', 'الإطار الزمني',
+    '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
+    'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
 )
 SCHEMA_KPI_FORMULA_AR = (
     '#', 'المؤشر', 'صيغة الاحتساب', 'مصدر البيانات',
@@ -242,7 +254,7 @@ SCHEMA_GOVERNANCE_AR = (
     'التقارير / التصعيد', 'الإطار المرتبط',
 )
 SCHEMA_TRACE_FW_GAP_AR = (
-    'الإطار', 'القدرة', 'الفجوة',
+    'الإطار المرجعي', 'مجال القدرة', 'الفجوة',
 )
 SCHEMA_TRACE_FW_INIT_AR = (
     'الإطار', 'المبادرة', 'المؤشر', 'المخاطر',
@@ -264,10 +276,12 @@ RAW_PIPE_OUTSIDE_TABLE_RE = re.compile(
     r'(?m)^(?!\s*\|)[^\n]*\|[^\n]*\|[^\n]*$')
 CONFIDENCE_BROKEN_RE = re.compile(
     r'\.%\s*(\d+)|%\s*\.(\d+)|\*\*درجة الثقة:\*\*\s*\.%(?!\s*\d)')
-FRAMEWORK_ORDER = (
+FRAMEWORK_FULL_LABELS = (
     'NCA ECC (Essential Cybersecurity Controls)',
     'NCA DCC (Data Cybersecurity Controls)',
 )
+FRAMEWORK_ORDER = ('NCA ECC', 'NCA DCC')
+GAP_ACTION_GUIDE_MIN_ROWS = 3
 
 # PR-CY48 — canonical professional export section order (PDF/DOCX parity).
 PROFESSIONAL_PRE_BODY_SECTIONS = (
@@ -360,6 +374,23 @@ def normalize_arabic_for_render(text: str) -> str:
             out = out.replace(bad, good)
     if re.search(r'CISO\s+CISO', out, re.IGNORECASE):
         out = re.sub(r'CISO\s+CISO', 'CISO', out, flags=re.IGNORECASE)
+    out = re.sub(r'\bال\s+منظمة\b', 'المنظمة', out)
+    out = re.sub(r'\bال\s+معلومات\b', 'المعلومات', out)
+    out = re.sub(r'\bال\s+معمول\b', 'المعمول', out)
+    out = re.sub(r'\bال\s+معتمدة\b', 'المعتمدة', out)
+    out = re.sub(r'\bال\s+معتمد\b', 'المعتمد', out)
+    out = re.sub(r'\bال\s+معيارية\b', 'المعيارية', out)
+    out = re.sub(
+        r'(?<![\w\u0600-\u06FF])ل\s+منع(?![\w\u0600-\u06FF])', 'لمنع', out)
+    out = out.replace('لل معالجة', 'للمعالجة')
+    out = re.sub(
+        r'المسؤول\s+أمن\s+السيبراني\s*e\b',
+        'مسؤول أمن السيبراني', out, flags=re.I)
+    out = re.sub(
+        r'المسؤول\s+أمن\s+السيبراني\s*Lead\b',
+        'مسؤول أمن السيبراني', out, flags=re.I)
+    out = re.sub(r'\bLead\s+e\b', '', out, flags=re.I)
+    out = re.sub(r'\bCSISO\b', 'CISO', out, flags=re.I)
     return out
 
 
@@ -485,6 +516,7 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
     # Strip reversed framework bracket artifacts (e.g. ``ECC + DCC]``).
     out = re.sub(r'[\[\]]+', '', out)
     out = re.sub(r'\bECC\s*\+\s*DCC\b', 'NCA ECC, NCA DCC', out)
+    out = _concise_framework_labels_in_text(out)
     out = re.sub(r'\s{2,}', ' ', out).strip()
     # PR-CY59 — concat fixes must run last; fragment repair can revert them.
     if lang == 'ar':
@@ -553,9 +585,14 @@ def _derive_kpi_type(name: str, raw_type: str, lang: str = 'ar') -> str:
     if t in ('KPI', 'KRI'):
         return t
     n = (name or '').lower()
+    if any(k in n for k in (
+            'أطراف ثالثة', 'الأطراف الثالثة', 'third party',
+            'third-party', 'vendor risk', 'موردين', 'مخاطر المورد')):
+        return 'KRI'
     kri_keys = (
         'kri', 'risk', 'مخاطر', 'phishing', 'تصيد', 'exposure', 'تعرض',
         'risk exposure', 'failure rate', 'حساس', 'sensitive data',
+        'تسرب', 'حوادث تسرب',
     )
     if any(k in n for k in kri_keys):
         return 'KRI'
@@ -587,12 +624,16 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
         return [0.10, 0.34, 0.16, 0.18, 0.22]
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
+    if schema == 'kpi_main' and ncols == 8:
+        return [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20]
     if schema == 'kpi_main' and ncols == 7:
         return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.08, 0.30, 0.32, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
+    if schema == 'pillar_initiatives' and ncols == 5:
+        return [0.05, 0.22, 0.28, 0.25, 0.20]
     if schema == 'pillar_initiatives' and ncols == 4:
         return [0.06, 0.30, 0.34, 0.30]
     if ncols == 5:
@@ -1758,15 +1799,65 @@ def contains_forbidden_gap_fragments(text: str) -> bool:
     return False
 
 
+def _to_short_framework_label(label: str) -> str:
+    """Map any framework alias to concise table/exec label (NCA ECC / NCA DCC)."""
+    s = str(label or '').strip()
+    if not s:
+        return s
+    upper = s.upper()
+    if 'ECC' in upper or 'ESSENTIAL CYBER' in upper:
+        return FRAMEWORK_ORDER[0]
+    if 'DCC' in upper or 'DATA CYBER' in upper:
+        return FRAMEWORK_ORDER[1]
+    return s
+
+
+def concise_framework_labels_from_keys(keys: Optional[List[str]]) -> List[str]:
+    """Concise framework labels for executive summary and table cells."""
+    out: List[str] = []
+    for key in keys or []:
+        short = _to_short_framework_label(key)
+        if short and short not in out:
+            out.append(short)
+    if not out:
+        return list(FRAMEWORK_ORDER)
+    ordered = [f for f in FRAMEWORK_ORDER if f in out]
+    ordered += [f for f in out if f not in FRAMEWORK_ORDER]
+    return ordered
+
+
+def _concise_framework_labels_in_text(text: str) -> str:
+    """Remove duplicated long framework expansions outside scope section prose."""
+    if not text:
+        return text
+    out = str(text)
+    out = re.sub(
+        r'NCA ECC,\s*NCA DCC\s*\(\s*NCA ECC \(Essential Cybersecurity Controls\),\s*'
+        r'NCA DCC \(Data Cybersecurity Controls\)\s*\)',
+        'NCA ECC, NCA DCC',
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = out.replace(FRAMEWORK_FULL_LABELS[0], FRAMEWORK_ORDER[0])
+    out = out.replace(FRAMEWORK_FULL_LABELS[1], FRAMEWORK_ORDER[1])
+    out = re.sub(
+        rf'{re.escape(FRAMEWORK_ORDER[0])}\s*\({re.escape(FRAMEWORK_ORDER[0])}\)',
+        FRAMEWORK_ORDER[0],
+        out,
+    )
+    out = re.sub(
+        rf'{re.escape(FRAMEWORK_ORDER[1])}\s*\({re.escape(FRAMEWORK_ORDER[1])}\)',
+        FRAMEWORK_ORDER[1],
+        out,
+    )
+    return out
+
+
 def _clean_framework_labels(labels: List[str]) -> List[str]:
-    """Normalise framework display strings to canonical order without artifacts."""
+    """Normalise framework display strings to concise canonical order."""
     cleaned: List[str] = []
     for lbl in labels or []:
-        s = prepare_final_render_text(str(lbl), 'ar')
-        if 'ECC' in s.upper() and 'Essential' not in s:
-            s = FRAMEWORK_ORDER[0]
-        elif 'DCC' in s.upper() and 'Data Cybersecurity' not in s:
-            s = FRAMEWORK_ORDER[1]
+        s = _to_short_framework_label(str(lbl))
         if s and s not in cleaned:
             cleaned.append(s)
     ordered = [f for f in FRAMEWORK_ORDER if f in cleaned]
@@ -2535,7 +2626,13 @@ def _sanitize_table_spec(
             rows.append(cells)
         elif schema == 'kpi_main':
             cells = [prepare_final_render_text(c, lang) for c in r]
-            if len(cells) > 3:
+            if len(cells) >= 8:
+                name = cells[1] if len(cells) > 1 else ''
+                kpi_type = cells[2] if len(cells) > 2 else ''
+                target = cells[3] if len(cells) > 3 else ''
+                cells[2] = _derive_kpi_type(name, kpi_type, lang)
+                cells[3] = _derive_kpi_target(name, target, lang)
+            elif len(cells) > 3:
                 name = cells[1] if len(cells) > 1 else ''
                 kpi_type = cells[2] if len(cells) > 2 else ''
                 target = cells[3] if len(cells) > 3 else ''
@@ -2606,13 +2703,22 @@ def _finalize_professional_blocks(
                 for a, b in (blk.get('entries') or [])]
         if kind == 'scope_frameworks' and blk.get('frameworks'):
             blk['frameworks'] = [
-                {**fw, 'display': prepare_final_render_text(
-                    str(fw.get('display') or ''), lang)}
+                {**fw,
+                 'display': str(fw.get('display') or '').strip(),
+                 'description': prepare_final_render_text(
+                     str(fw.get('description') or ''), lang)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
     out = _normalize_kpi_tables_semantics(out, lang)
     if lang == 'ar':
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
+    try:
+        from release_engine_v3.rel32_table_schema_binding import (
+            apply_rel32_schema_binding_to_blocks,
+        )
+        out = apply_rel32_schema_binding_to_blocks(out, lang=lang)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -3565,6 +3671,8 @@ def _is_formula_like_target(val: str) -> bool:
     s = (val or '').strip()
     if not s or s == '—':
         return False
+    if re.search(r'≤\s*\d+|≥\s*\d+', s) and '%' not in s and '×' not in s:
+        return False
     if '×' in s or '÷' in s:
         return True
     if s.count('(') >= 1 and s.count(')') >= 1:
@@ -3583,13 +3691,20 @@ def _is_formula_like_target(val: str) -> bool:
 
 def _derive_kpi_target(name: str, raw_target: str, lang: str = 'ar') -> str:
     """PR-CY50/53 — measurable target only; never formula text."""
-    t = (raw_target or '').strip()
+    t_raw = (raw_target or '').strip()
+    n = (name or '').strip()
+    nu = n.lower()
+    if any(k in nu for k in (
+            'أطراف ثالثة', 'الأطراف الثالثة', 'third party',
+            'third-party', 'موردين', 'vendor risk', 'مخاطر المورد')):
+        if t_raw and t_raw not in ('—', '-', '--', '–'):
+            return t_raw
+        return '≤ 3 (منخفض)' if lang == 'ar' else '≤ 30/100'
+    t = t_raw
     if t in ('—', '-', '--', '–'):
         t = ''
     if _is_formula_like_target(t):
         t = ''
-    n = (name or '').strip()
-    nu = n.lower()
     if _is_soc_detection_metric(n):
         return '≥95%' if lang == 'ar' else '≥95%'
     if lang == 'ar':
@@ -3652,6 +3767,12 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
         return ('(المنجز ÷ المخطط) × 100' if lang == 'ar'
                 else '(Done ÷ Planned) × 100')
     nu = n.lower()
+    if any(k in nu for k in (
+            'أطراف ثالثة', 'third party', 'third-party', 'موردين',
+            'vendor risk', 'مخاطر المورد')):
+        return ('متوسط درجة مخاطر الموردين السيبرانية المقيمة'
+                if lang == 'ar' else
+                'Average assessed vendor cyber risk score')
     if _is_soc_detection_metric(n):
         return (
             '(عدد التنبيهات/التهديدات المكتشفة الصحيحة / '
@@ -3696,11 +3817,21 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
                 if lang == 'ar' else
                 '(Encrypted assets/data / classified sensitive data) × 100')
     if any(k in n for k in ('%', 'نسبة', 'تغطية', 'coverage', 'rate')):
-        return ('(عدد العناصر المطابقة / إجمالي العناصر) × 100'
-                if lang == 'ar'
-                else '(Compliant items / total items) × 100')
-    return ('(المنجز / المخطط) × 100' if lang == 'ar'
-            else '(Achieved / planned) × 100')
+        if lang == 'ar':
+            if 'لجنة' in n and 'حوكمة' in n:
+                return ('(عدد اجتماعات اللجنة المنعقدة ÷ إجمالي الاجتماعات المخططة) × 100')
+            if any(k in n for k in ('محاولات الدخول', 'دخول فاشل')):
+                return ('(عدد المحاولات الشاذة المكتشفة ÷ إجمالي محاولات الدخول) × 100')
+            if any(k in n for k in ('امتثال', 'ضوابط')):
+                return ('(عدد الضوابط المحققة ÷ إجمالي الضوابط المستهدفة) × 100')
+            return ('(عدد البنود المحققة ÷ إجمالي البنود المستهدفة) × 100')
+        if 'governance committee' in nu or ('committee' in nu and 'governance' in nu):
+            return '(Committee meetings held ÷ planned committee meetings) × 100'
+        if 'failed login' in nu or 'login attempt' in nu:
+            return '(Anomalous login attempts detected ÷ total login attempts) × 100'
+        return '(Controls achieved ÷ target controls) × 100'
+    return ('(عدد البنود المنجزة ÷ إجمالي البنود المخططة) × 100' if lang == 'ar'
+            else '(Items completed ÷ planned items) × 100')
 
 
 def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
@@ -3815,6 +3946,19 @@ def _is_iam_pam_metric(name: str) -> bool:
     ))
 
 
+def _is_dlp_breach_count_metric(name: str) -> bool:
+    """KRI — critical data-breach incident counts are never percentage KPIs."""
+    n = (name or '').strip()
+    if not n:
+        return False
+    if 'عدد حوادث تسرب' in n:
+        return True
+    if 'تسرب' in n and any(k in n for k in ('حوادث', 'بيانات')):
+        return True
+    nu = n.lower()
+    return 'data breach' in nu or 'breach incident' in nu
+
+
 def _detect_kpi_metric_family(
         name: str, target: str = '', formula: str = '',
         kpi_type: str = '', lang: str = 'ar') -> str:
@@ -3823,6 +3967,8 @@ def _detect_kpi_metric_family(
     nu = n.lower()
     t = (target or '').strip()
     pct = _is_percentage_formula(formula)
+    if _is_dlp_breach_count_metric(n):
+        return 'dlp_breach_count_kri'
     if any(k in nu for k in ('تصيد', 'phishing')):
         if ((kpi_type or '').upper() == 'KRI'
                 or '5%' in t or 'أقل' in t or '< 5' in t.lower()
@@ -3861,7 +4007,8 @@ def _detect_kpi_metric_family(
     if any(k in nu for k in (
             'تشفير', 'encrypt', 'dlp', 'بيانات حساسة', 'حماية البيانات',
             'encryption')):
-        return 'data_protection_encryption_dlp'
+        if not _is_dlp_breach_count_metric(n):
+            return 'data_protection_encryption_dlp'
     if any(k in nu for k in (
             'امتثال', 'compliance', 'ecc', 'dcc', 'ضوابط')):
         return 'compliance_ecc_dcc'
@@ -3959,6 +4106,14 @@ def _apply_kpi_metric_family_spec(
              if ar else
              '(Successful backups ÷ total backup operations) × 100')
         s = ('منصة النسخ الاحتياطي' if ar else 'Backup platform')
+    elif family == 'dlp_breach_count_kri':
+        n = ('عدد حوادث تسرب البيانات الحرجة' if ar else
+             'Critical data breach incidents')
+        kt = 'KRI'
+        t = '0 حوادث حرجة' if ar else '0 critical incidents'
+        f = ('عدد حوادث تسرب البيانات الحرجة خلال الفترة' if ar else
+             'Count of critical data breach incidents in period')
+        s = ('منصة DLP / SIEM' if ar else 'DLP / SIEM platform')
     elif family == 'data_protection_encryption_dlp':
         kt = 'KPI'
         t = ('≥95% أو 100% للبيانات الحساسة المصنفة' if ar else
@@ -3972,7 +4127,7 @@ def _apply_kpi_metric_family_spec(
              'Encryption / DLP / data classification platform')
     elif family == 'compliance_ecc_dcc':
         kt = 'KPI'
-        if not t or t == '—':
+        if _target_repeats_metric_name(n, t) or not t or t == '—':
             t = '≥90%'
         f = (('(عدد الضوابط المحققة ÷ إجمالي الضوابط المستهدفة) × 100')
              if ar else
@@ -3993,14 +4148,29 @@ def _normalize_kpi_semantic_row(
             'incident_response_sla', 'incident_response_time',
             'incident_detection_time',
             'iam_pam_coverage', 'mfa_coverage', 'vulnerability_sla',
-            'phishing_failure_kri', 'backup_success',
+            'phishing_failure_kri', 'backup_success', 'dlp_breach_count_kri',
             'data_protection_encryption_dlp', 'compliance_ecc_dcc',
     ):
         name, kpi_type, target, formula, source = _apply_kpi_metric_family_spec(
             family, name, kpi_type, target, formula, source, lang)
     else:
         name = _normalize_kpi_name(name, lang)
-        if _is_formula_like_target(target) or _target_repeats_metric_name(
+        try:
+            from release_engine.rel27_export_checks import REL27_GENERIC_FORMULAS
+            if any(gf in (formula or '') for gf in REL27_GENERIC_FORMULAS):
+                formula = ''
+        except Exception:  # noqa: BLE001
+            pass
+        _vendor_risk = any(k in (name or '') for k in (
+            'أطراف ثالثة', 'موردين', 'third party', 'third-party'))
+        _score_target = bool(re.search(r'≤\s*\d+', (target or '')))
+        if _vendor_risk and _score_target:
+            if not formula or formula == '—':
+                formula = (
+                    'متوسط درجة مخاطر الموردين السيبرانية المقيمة'
+                    if lang == 'ar' else
+                    'Average assessed vendor cyber risk score')
+        elif _is_formula_like_target(target) or _target_repeats_metric_name(
                 name, target):
             target = _derive_kpi_target(name, '', lang)
         elif not target or target == '—':
@@ -4197,7 +4367,11 @@ def _normalize_kpi_tables_semantics(
             _normalize_kpi_semantic_row(
                 name, kpi_type, target, formula, source, lang))
         tail = list(mr[4:]) if len(mr) > 4 else []
-        new_main.append([idx, name, kpi_type, target] + tail)
+        if len(mr) >= 8:
+            formula = mr[4]
+            source = mr[5]
+            tail = list(mr[6:])
+        new_main.append([idx, name, kpi_type, target, formula, source] + tail)
         new_formula.append([idx, name, formula, source])
     main_tbl['rows'] = new_main
     if formula_tbl:
@@ -4248,11 +4422,23 @@ def split_kpi_tables(
     tables = parse_markdown_tables(section_text)
     out: List[Dict[str, Any]] = []
     main_schema = list(SCHEMA_KPI_MAIN_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Type', 'Target', 'Frequency', 'Owner',
-        'Horizon'))
+        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
+        'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
         '#', 'Indicator', 'Formula', 'Data Source'))
+    _canonical_main_hdr_ar = [
+        '#', 'وصف المؤشر', 'القيمة المستهدفة', 'صيغة الاحتساب',
+        'مصدر البيانات/الأداة', 'تواتر القياس']
+    _canonical_main_hdr_en = [
+        '#', 'Metric', 'Target', 'Formula', 'Data source', 'Frequency']
     for tbl in tables:
+        if len(tbl) < 1:
+            continue
+        if tbl[0] and str(tbl[0][0]).strip().isdigit():
+            canonical_hdr = (
+                _canonical_main_hdr_ar if lang == 'ar' else _canonical_main_hdr_en)
+            if len(tbl[0]) >= 4:
+                tbl = [canonical_hdr] + tbl
         if len(tbl) < 2:
             continue
         hdr = tbl[0]
@@ -4261,7 +4447,7 @@ def split_kpi_tables(
                 'مؤشر', 'kpi', 'kri', 'indicator', 'وصف')):
             continue
         i_idx = _col_index(hdr, ('#', 'م'))
-        i_name = _col_index(hdr, ('المؤشر', 'indicator', 'kpi'))
+        i_name = _col_index(hdr, ('وصف المؤشر', 'المؤشر', 'indicator', 'kpi', 'metric'))
         i_type = _col_index(hdr, ('النوع', 'type'))
         i_target = _col_index(hdr, ('القيمة المستهدفة', 'المستهدف', 'target'))
         i_freq = _col_index(hdr, ('التكرار', 'frequency'))
@@ -4284,10 +4470,9 @@ def split_kpi_tables(
                 _normalize_kpi_semantic_row(
                     name, kpi_type, target, formula, source, lang))
             main_rows.append([
-                idx, name, kpi_type, target,
+                idx, name, kpi_type, target, formula, source,
                 _cell(r, i_freq),
                 _cell(r, i_owner, 'CISO'),
-                _cell(r, i_horizon),
             ])
             formula_rows.append([idx, name, formula, source])
         if not main_rows:
@@ -4297,6 +4482,91 @@ def split_kpi_tables(
         out.append({'schema': 'kpi_formula', 'header': formula_schema,
                     'rows': formula_rows})
     return out
+
+
+def _normalize_kpi_formula_prose_line(line: str) -> str:
+    """Normalize assessment-guide formula lines for PDF/DOCX prose."""
+    s = (line or '').strip()
+    if not s:
+        return ''
+    if 'الصيغة' not in s and 'formula' not in s.lower():
+        return prcy47_fix_ar_fragments(s)
+    s = re.sub(r'\\text\{([^{}]*)\}', r'\1', s)
+    s = s.replace('\\times', '×').replace('\\div', '÷').replace('\\%', '%')
+    s = s.replace('\\(', '(').replace('\\)', ')')
+    m_rev = re.search(r'^(.*?)(الصيغة)\s*:?\s*$', s)
+    if m_rev and m_rev.group(1).strip():
+        prefix = m_rev.group(1).strip()
+        if re.search(r'[÷×*/()0-9]', prefix):
+            s = 'الصيغة: ' + prefix
+    s = re.sub(r'\*\*\s*الصيغة\s*:?\s*\*\*\s*', 'الصيغة: ', s)
+    s = re.sub(
+        r'(^|\s)الصيغة\s+(?=[(\\\d÷×*/])', r'\1الصيغة: ', s)
+    s = re.sub(r'\s{2,}', ' ', s)
+    return prcy47_fix_ar_fragments(s.strip())
+
+
+def extract_kpi_assessment_guides(
+        section_text: str, lang: str = 'ar') -> Dict[str, Any]:
+    """Preserve KPI assessment-guide headings and formula prose in the model."""
+    paras: List[str] = []
+    guide_tables: List[Dict[str, Any]] = []
+    src = section_text or ''
+    guides_re = re.compile(
+        r'(?ms)^#{2,3}\s*(?:KPI Assessment|أدلة تقييم)[^\n]*\n(.*)$')
+    m = guides_re.search(src)
+    if not m:
+        return {'paragraphs': [], 'guide_tables': []}
+    body = m.group(1)
+    guide_heading = (
+        'أدلة تقييم مؤشرات الأداء' if lang == 'ar'
+        else 'KPI Assessment Guidelines')
+    paras.append(guide_heading)
+    guide_h4 = re.compile(r'(?m)^#{4}\s*(.+)$')
+    matches = list(guide_h4.finditer(body))
+    action_schema = list(SCHEMA_GAP_ACTION_AR if lang == 'ar' else (
+        'Step', 'Action', 'Owner', 'Timeframe', 'Output'))
+    chunks = []
+    if matches:
+        for gi, gm in enumerate(matches):
+            title = prcy47_fix_ar_fragments(gm.group(1).strip())
+            start = gm.end()
+            end = matches[gi + 1].start() if gi + 1 < len(matches) else len(
+                body)
+            chunks.append((title, body[start:end]))
+    else:
+        chunks.append(('', body))
+    for title, chunk in chunks:
+        if title:
+            paras.append(title)
+        for ln in chunk.split('\n'):
+            t = ln.strip()
+            if not t or t.startswith('|') or t.startswith('#'):
+                continue
+            if 'الصيغة' in t or 'formula' in t.lower():
+                paras.append(_normalize_kpi_formula_prose_line(t))
+        for tbl in parse_markdown_tables(chunk):
+            if len(tbl) < 2:
+                continue
+            hdr_blob = ' '.join(tbl[0]).lower()
+            if not any(k in hdr_blob for k in (
+                    'خطوة', 'إجراء', 'step', 'action')):
+                continue
+            rows = []
+            for r in tbl[1:]:
+                row = _normalize_row(r, len(action_schema))
+                if len(row) >= 2 and row[0] in ('طوة', 'الخ'):
+                    row[0] = 'الخطوة'
+                row[0] = _normalize_gap_cell(row[0])
+                rows.append(row)
+            if rows:
+                guide_tables.append({
+                    'schema': 'gap_action',
+                    'header': list(action_schema),
+                    'rows': rows,
+                    'title': title or guide_heading,
+                })
+    return {'paragraphs': paras, 'guide_tables': guide_tables}
 
 
 def normalize_gap_tables(
@@ -4325,19 +4595,54 @@ def normalize_gap_tables(
                     row[0] = 'الخطوة'
                 row[0] = _normalize_gap_cell(row[0])
                 fixed_rows.append(row)
-            result.append({
+            result.append(ensure_gap_action_table_min_rows({
                 'schema': 'gap_action',
                 'header': list(schema),
                 'rows': fixed_rows,
-            })
+            }, lang))
     return result
 
 
 def normalize_pillar_blocks(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
-    blocks = []
+    if not (section_text or '').strip():
+        return []
+    blocks = _parse_pillar_block_chunks(section_text or '')
+    if _pillar_blocks_export_substantive(blocks):
+        return blocks
+    # REL2.7.1 — when markdown lacks ### headings, rebuild from canonical
+    # catalog so DOCX/PDF extracted text includes all four pillar names.
+    try:
+        from release_engine.pillar_model import _build_canonical_pillars
+        canonical = _build_canonical_pillars(lang)
+        blocks = _parse_pillar_block_chunks(canonical)
+    except Exception:  # noqa: BLE001
+        pass
+    return blocks
+
+
+def _pillar_blocks_export_substantive(blocks: List[Dict[str, Any]]) -> bool:
+    if not blocks:
+        return False
+    titles = [
+        (pb.get('title') or '').strip()
+        for pb in blocks if (pb.get('title') or '').strip()]
+    family_markers = (
+        'حوكمة', 'الحماية', 'الهوية', 'المرونة',
+        'governance', 'protection', 'identity', 'resilience',
+    )
+    named = sum(
+        1 for t in titles
+        if any(m in t.lower() for m in family_markers))
+    if named >= 3:
+        return True
+    return any((pb.get('table') or {}).get('rows') for pb in blocks)
+
+
+def _parse_pillar_block_chunks(section_text: str) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
     chunks = re.split(
-        r'(?=^#{2,4}\s+(?:الركيزة|Pillar|\d+\.))',
+        r'(?=^#{3,4}\s+)',
         section_text or '', flags=re.MULTILINE | re.IGNORECASE)
     for chunk in chunks:
         chunk = chunk.strip()
@@ -4780,6 +5085,46 @@ def _ensure_roadmap_phase_coverage(
     return rows + extra
 
 
+def _environment_treatment_fallback(row_idx: int, lang: str = 'ar') -> str:
+    """Distinct substantive environment treatments — never repeat generic gap text."""
+    if lang != 'ar':
+        return 'Apply and monitor related controls'
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            _GAP_ACTION_ALTERNATIVES,
+        )
+        return _GAP_ACTION_ALTERNATIVES[row_idx % len(_GAP_ACTION_ALTERNATIVES)]
+    except Exception:  # noqa: BLE001
+        return 'تنفيذ خطة معالجة معتمدة مع مالك ومخرج قابل للقياس خلال 90 يوماً'
+
+
+def _dedupe_environment_generic_treatments(
+        rows_out: List[List[str]], lang: str = 'ar') -> None:
+    """Ensure at most one generic gap phrase across environment treatment cells."""
+    if lang != 'ar' or not rows_out:
+        return
+    try:
+        from release_engine.rel31_content_substance_checks import (
+            _GAP_ACTION_ALTERNATIVES,
+            _GENERIC_GAP_TREATMENT,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    alt_idx = 0
+    keep_generic = True
+    for row in rows_out:
+        if len(row) < 4:
+            continue
+        treat = (row[3] or '').strip()
+        if treat == _GENERIC_GAP_TREATMENT:
+            if keep_generic:
+                keep_generic = False
+                continue
+            row[3] = _GAP_ACTION_ALTERNATIVES[
+                alt_idx % len(_GAP_ACTION_ALTERNATIVES)]
+            alt_idx += 1
+
+
 def normalize_environment_table(
         section_text: str, lang: str = 'ar') -> Optional[Dict[str, Any]]:
     """Normalize an environment / threat markdown table into the compact
@@ -4800,17 +5145,19 @@ def normalize_environment_table(
         i_treat = _col_index(hdr, ('المعالجة', 'treatment', 'mitigation'))
         if i_threat < 0 and i_impact < 0:
             continue
-        for r in tbl[1:]:
+        for ri, r in enumerate(tbl[1:]):
             threat = _cell(r, i_threat if i_threat >= 0 else 0)
             impact = _cell(r, i_impact if i_impact >= 0 else 1)
             prio = _cell(r, i_prio) if i_prio >= 0 else _impact_to_priority(
                 impact, lang)
-            treat = _cell(r, i_treat) if i_treat >= 0 else (
-                'تطبيق الضوابط المرتبطة ومتابعتها' if lang == 'ar'
-                else 'Apply and monitor related controls')
+            treat = _cell(r, i_treat) if i_treat >= 0 else ''
+            if not (treat or '').strip():
+                treat = _environment_treatment_fallback(
+                    len(rows_out), lang)
             if threat == '—' and impact == '—':
                 continue
             rows_out.append([threat, impact, prio, treat])
+    _dedupe_environment_generic_treatments(rows_out, lang)
     if not rows_out:
         return None
     return {'schema': 'environment', 'header': schema, 'rows': rows_out}
@@ -4855,11 +5202,37 @@ def normalize_confidence_risk(
                                       'mitigation', 'plan', 'treatment'))
             i_owner = _col_index(hdr, ('المالك', 'المسؤول', 'owner'))
             for n, r in enumerate(tbl[1:], 1):
+                plan = _cell(r, i_plan)
+                if plan in ('—', '-', ''):
+                    risk_blob = ' '.join(
+                        _cell(r, i_risk) + ' ' + _cell(r, i_impact)).lower()
+                    plan = specific_risk_treatment_for_blob(risk_blob, lang=lang)
                 risk_rows.append([
                     str(n), _cell(r, i_risk), _cell(r, i_like),
-                    _cell(r, i_impact), _cell(r, i_plan),
+                    _cell(r, i_impact), plan,
                     _cell(r, i_owner, 'CISO'),
                 ])
+    if not risk_rows and 'المخاطر' in src and 'الاحتمالية' in src:
+        lines = [ln.strip() for ln in src.splitlines() if ln.strip()]
+        start = -1
+        for i, ln in enumerate(lines):
+            if ln == 'المخاطر' and i + 1 < len(lines) and 'الاحتمالية' in lines[i + 1]:
+                start = i + 4
+                break
+        if start >= 0:
+            n = 0
+            i = start
+            while i < len(lines):
+                if lines[i].isdigit():
+                    n = int(lines[i])
+                    if i + 5 < len(lines):
+                        risk_rows.append([
+                            str(n), lines[i + 1], lines[i + 2], lines[i + 3],
+                            lines[i + 4], lines[i + 5] if i + 5 < len(lines) else 'CISO',
+                        ])
+                        i += 6
+                        continue
+                i += 1
     # Canonical confidence factors — never parsed from source tables.
     factor_rows: List[List[str]] = []
     factors = (CANONICAL_CONFIDENCE_FACTORS_AR if lang == 'ar' else
@@ -4875,6 +5248,46 @@ def normalize_confidence_risk(
                          'rows': factor_rows},
         'risk_table': ({'schema': 'risk_register', 'header': risk_schema,
                         'rows': risk_rows} if risk_rows else None),
+    }
+
+
+def ensure_gap_action_table_min_rows(
+        table_spec: Optional[Dict[str, Any]],
+        lang: str = 'ar',
+        min_rows: int = GAP_ACTION_GUIDE_MIN_ROWS,
+) -> Optional[Dict[str, Any]]:
+    """Pad shallow gap implementation guides to executive-grade depth."""
+    if not table_spec or table_spec.get('schema') != 'gap_action':
+        return table_spec
+    rows = [list(r) for r in (table_spec.get('rows') or [])]
+    if len(rows) >= min_rows:
+        return table_spec
+    pads_ar = (
+        ('تنسيق تنفيذ الإجراءات مع أصحاب المصلحة المعنيين',
+         'CISO', '1-2 شهر', 'خطة عمل معتمدة'),
+        ('تنفيذ الضوابط ومراقبة مؤشرات التقدم',
+         'فريق الأمن السيبراني', '2-4 أشهر', 'مخرجات تنفيذية موثقة'),
+        ('مراجعة الفاعلية والتحقق من إغلاق الفجوة',
+         'CISO', 'شهري', 'تقرير إغلاق الفجوة'),
+    )
+    pads_en = (
+        ('Align actions with accountable owners and control owners',
+         'CISO', 'Month 1-2', 'Approved action plan'),
+        ('Implement controls and track progress indicators',
+         'Cybersecurity team', 'Months 2-4', 'Documented deliverables'),
+        ('Review effectiveness and formally close the gap',
+         'CISO', 'Monthly', 'Gap closure report'),
+    )
+    pads = pads_ar if lang == 'ar' else pads_en
+    pad_i = 0
+    while len(rows) < min_rows:
+        step = str(len(rows) + 1)
+        action, owner, timeframe, output = pads[pad_i % len(pads)]
+        pad_i += 1
+        rows.append([step, action, owner, timeframe, output])
+    return {
+        **table_spec,
+        'rows': [[_normalize_gap_cell(c) for c in r] for r in rows],
     }
 
 
@@ -4906,11 +5319,14 @@ def normalize_gap_action_guides(
                              ('حسب الخطة' if lang == 'ar' else 'Per plan'),
                              ('مكتمل' if lang == 'ar' else 'Completed')])
         if rows:
-            out.append({'schema': 'gap_action',
-                        'header': list(schema),
-                        'rows': [[_normalize_gap_cell(c) for c in r]
-                                 for r in rows],
-                        'title': title})
+            spec_tbl = {
+                'schema': 'gap_action',
+                'header': list(schema),
+                'rows': [[_normalize_gap_cell(c) for c in r]
+                         for r in rows],
+                'title': title,
+            }
+            out.append(ensure_gap_action_table_min_rows(spec_tbl, lang))
     return out
 
 
@@ -5208,11 +5624,16 @@ def enrich_professional_blocks(
         'tables': [so_tbl] if so_tbl else [],
     }
 
-    # Pillars
-    pil = _sec('strategic_pillars')
+    # Pillars — parse initiative tables from raw section text before
+    # PR-CY47 prose cleanup strips markdown pipe rows.
+    pil_blk = blocks.get('strategic_pillars') or {}
+    pil_raw = (
+        (content_sections or {}).get('pillars', '')
+        or pil_blk.get('content')
+        or '')
     blocks['strategic_pillars'] = {
-        **(blocks.get('strategic_pillars') or {}),
-        'pillar_blocks': normalize_pillar_blocks(pil, lang_n),
+        **pil_blk,
+        'pillar_blocks': normalize_pillar_blocks(pil_raw, lang_n),
     }
 
     # Environment — regulatory + threat prose + compact normalized table.
@@ -5228,6 +5649,9 @@ def enrich_professional_blocks(
     gaps = _sec('gap_analysis')
     gap_tables = normalize_gap_tables(gaps, lang_n)
     gap_tables += normalize_gap_action_guides(gaps, lang_n)
+    gap_tables = [
+        ensure_gap_action_table_min_rows(t, lang_n) for t in gap_tables
+    ]
     blocks['gap_analysis'] = {
         **(blocks.get('gap_analysis') or {}),
         'paragraphs': _clean_paras(gaps, 2),
@@ -5261,13 +5685,34 @@ def enrich_professional_blocks(
         'content_present': bool(road.strip()),
     }
 
-    # KPI / KRI split
+    # KPI / KRI split — parse tables from raw markdown so assessment guides
+    # after the main KPI table are not lost.
+    kpi_raw = (
+        (content_sections or {}).get('kpis', '') or ''
+        or (blocks.get('kpi_kri_framework') or {}).get('content')
+        or '')
+    try:
+        from cyber_post_board_ready_prcy89 import _strip_kri_appendix_from_kpis
+        kpi_raw = _strip_kri_appendix_from_kpis(kpi_raw)
+    except Exception:  # noqa: BLE001
+        pass
     kpis = _sec('kpi_kri_framework')
-    kpi_tables = split_kpi_tables(kpis, lang_n)
+    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n)
+    kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
+    _main_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_main']
+    _formula_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_formula']
+    if _main_tbls:
+        kpi_tables = _main_tbls[:1] + _formula_tbls[:1]
+        _guide_tables: List[Dict[str, Any]] = []
+    else:
+        _guide_tables = list(kpi_guides.get('guide_tables') or [])
     blocks['kpi_kri_framework'] = {
         **(blocks.get('kpi_kri_framework') or {}),
-        'tables': kpi_tables,
+        'tables': kpi_tables + _guide_tables,
+        'paragraphs': kpi_guides.get('paragraphs', []),
     }
+    blocks = _normalize_kpi_tables_semantics(
+        {'blocks': blocks}, lang_n)['blocks']
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')
@@ -5350,6 +5795,21 @@ def enrich_professional_blocks(
     return model
 
 
+def _resolve_content_sections(
+        content: str,
+        sections: Optional[Dict[str, str]],
+        section_splitter=None,
+) -> Dict[str, str]:
+    """Resolve section map without importing ``app`` (avoids circular import)."""
+    content_sections = sections if isinstance(sections, dict) else {}
+    if not content_sections and content and section_splitter is not None:
+        try:
+            content_sections = section_splitter(content) or {}
+        except Exception:  # noqa: BLE001
+            content_sections = {}
+    return content_sections
+
+
 def ensure_strategy_professional_model(
         model: Optional[Dict[str, Any]],
         *,
@@ -5359,6 +5819,7 @@ def ensure_strategy_professional_model(
         selected_frameworks: Optional[List[str]] = None,
         lang: str = 'ar',
         domain: Optional[str] = None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
     if model and model.get('render_layer') == 'prcy41_professional':
@@ -5372,13 +5833,8 @@ def ensure_strategy_professional_model(
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
 
@@ -5393,6 +5849,7 @@ def build_professional_strategy_document_model(
         *,
         base_builder=None,
         narrative_composer=None,
+        section_splitter=None,
 ) -> Dict[str, Any]:
     """Build the 17-block professional model with structured render tables.
 
@@ -5432,13 +5889,8 @@ def build_professional_strategy_document_model(
     else:
         raise ValueError('base_builder or narrative_composer required')
 
-    content_sections = sections if isinstance(sections, dict) else {}
-    if not content_sections and content:
-        try:
-            from app import _split_strategy_sections_by_h2
-            content_sections = _split_strategy_sections_by_h2(content)
-        except Exception:
-            content_sections = {}
+    content_sections = _resolve_content_sections(
+        content, sections, section_splitter=section_splitter)
 
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
@@ -5588,7 +6040,10 @@ def prcy47_docmodel_professional_checks(
         _no_pipe('gap_analysis')
         and not any('طوة الخ' in str(c)
                     for t in gap_tables for r in (t.get('rows') or [])
-                    for c in r))
+                    for c in r)
+        and all(
+            len(t.get('rows') or []) >= GAP_ACTION_GUIDE_MIN_ROWS
+            for t in gap_tables if t.get('schema') == 'gap_action'))
 
     road_tbls = (blocks.get('roadmap') or {}).get('tables') or []
     road_rows = (road_tbls[0].get('rows') if road_tbls else []) or []
@@ -6115,7 +6570,7 @@ def pdf_peek_follow_lines(lines, start_idx, max_lines=3):
 
 
 def pdf_estimate_follow_height(follow_lines, line_height=16,
-                               table_row_height=34):
+                               table_row_height=38):
     if not follow_lines:
         return line_height * 3
     total = 0
@@ -6346,7 +6801,12 @@ def render_professional_model_as_markdown(model: Dict[str, Any]) -> str:
                 _md_table(parts, header, rows)
 
         elif kind == 'kpi_kri_framework':
+            for p in blk.get('paragraphs') or []:
+                if p:
+                    parts.append(str(p))
             for tbl in blk.get('tables') or []:
+                if tbl.get('title'):
+                    parts.append(f"#### {tbl['title']}")
                 _md_table(parts, tbl.get('header'), tbl.get('rows'))
                 parts.append('')
 

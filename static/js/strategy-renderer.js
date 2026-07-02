@@ -55,7 +55,85 @@
     if(j===JSON.stringify(['#','المؤشر','النوع kpi/kri','القيمة المستهدفة','صيغة الاحتساب','مصدر البيانات','المالك','التكرار','الإطار الزمني'])) return 'kpi-summary';
     if(j===JSON.stringify(['#','الفجوة','الوصف','الأولوية','الحالة'])) return 'gap-analysis';
     if(j===JSON.stringify(['#','المخاطر','الاحتمالية','التأثير','خطة المعالجة'])) return 'key-risks';
+    if(norm.some(function(h){return /خطوة/.test(h);}) &&
+       norm.some(function(h){return /إجراء/.test(h);})) return 'gap-action';
+    if(norm.some(function(h){return /مرحلة/.test(h);}) &&
+       norm.some(function(h){return /مبادرة/.test(h);}) &&
+       norm.some(function(h){return /مخرج|إطار/.test(h);})) return 'roadmap';
+    if(j===JSON.stringify(['#','وصف المؤشر','النوع','القيمة المستهدفة','صيغة الاحتساب','مصدر','التكرار','المالك'])) return 'kpi-summary';
     return 'generic';
+  }
+
+  function colIndexByKeywords(headers, keywords){
+    for (var i = 0; i < (headers || []).length; i++) {
+      var blob = (headers[i] || '').trim().toLowerCase();
+      for (var k = 0; k < keywords.length; k++) {
+        if (blob.indexOf(String(keywords[k]).toLowerCase()) !== -1) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Schema-key binding — never render positional rows under localized RTL headers.
+  var REL32_SCHEMA_SPECS = {
+    'strategic-objectives': [
+      ['#', ['#', 'م']],
+      ['الهدف الاستراتيجي', ['الهدف', 'objective']],
+      ['المستهدف القابل للقياس', ['مستهدف', 'target']],
+      ['المبرر', ['مبرر', 'justification']],
+      ['الإطار الزمني', ['زمن', 'timeframe', 'الإطار']]
+    ],
+    'kpi-summary': [
+      ['#', ['#', 'م']],
+      ['وصف المؤشر', ['وصف المؤشر', 'المؤشر', 'indicator', 'kpi']],
+      ['النوع', ['النوع', 'type']],
+      ['القيمة المستهدفة', ['مستهدف', 'target', 'القيمة']],
+      ['صيغة الاحتساب', ['صيغة', 'formula', 'احتساب']],
+      ['مصدر', ['مصدر', 'source']],
+      ['التكرار', ['تكرار', 'frequency', 'تواتر']],
+      ['المالك', ['المالك', 'owner', 'مسؤول']]
+    ],
+    'gap-analysis': [
+      ['#', ['#', 'م']],
+      ['الفجوة', ['فجوة', 'gap']],
+      ['الوصف', ['وصف', 'description']],
+      ['الأولوية', ['أولوية', 'priority']],
+      ['الحالة', ['حالة', 'status']]
+    ],
+    'gap-action': [
+      ['الخطوة', ['خطوة', 'step']],
+      ['الإجراء', ['إجراء', 'action']],
+      ['المسؤول', ['مسؤول', 'owner', 'مالك']],
+      ['الإطار الزمني', ['زمن', 'timeframe', 'الإطار']],
+      ['الناتج', ['ناتج', 'output', 'مخرج']]
+    ],
+    'roadmap': [
+      ['المرحلة', ['مرحلة', 'phase']],
+      ['الفترة', ['فترة', 'زمن', 'period', 'timeframe']],
+      ['المبادرة', ['مبادرة', 'initiative']],
+      ['المسؤول', ['مسؤول', 'مالك', 'owner']],
+      ['المخرج المتوقع', ['مخرج', 'deliverable', 'output']],
+      ['الإطار المرتبط', ['إطار', 'framework', 'مرتبط']]
+    ]
+  };
+
+  function bindSchemaTable(headers, rows, schema){
+    var spec = REL32_SCHEMA_SPECS[schema];
+    if (!spec) return {headers: headers, rows: normalizeRows(headers, rows)};
+    var canonHdr = spec.map(function(s){ return s[0]; });
+    var idxMap = spec.map(function(s){ return colIndexByKeywords(headers, s[1]); });
+    var bound = (rows || []).map(function(r, ri){
+      var row = (r || []).map(function(c){ return (c || '').trim(); });
+      return spec.map(function(s, ci){
+        var idx = idxMap[ci];
+        if (ci === 0 && schema !== 'gap-action') {
+          if (idx >= 0 && isNum((row[idx] || ''))) return row[idx];
+          return String(ri + 1);
+        }
+        return idx >= 0 ? ((row[idx] || '').trim() || '—') : '—';
+      });
+    });
+    return {headers: canonHdr, rows: bound};
   }
 
   // Compact values that should never wrap or word-split (Likelihood, Impact, Priority)
@@ -64,8 +142,17 @@
   // Return true if a normalised row looks semantically broken for its schema.
   // When any row is suspicious, validateSectionJSON returns false and the
   // preview falls back to the (cleaner) markdown path instead of broken JSON.
+  var _FREQ_TOKEN_RE=/^(شهري|ربع|سنو|يوم|أسبو|daily|weekly|monthly|quarter|annual|تواتر|تكرار)/i;
+  function isFreqToken(v){ return _FREQ_TOKEN_RE.test((v||'').trim()); }
+  function isTypeToken(v){ return /^(kpi|kri|مؤشر|kpi\/kri)$/i.test((v||'').trim()); }
+
   function rowSuspiciousForSchema(headers, row){
     var schema=tableSchemaName(headers);
+    if(schema==='kpi-summary' && row.length===8){
+      if(isFreqToken(row[7])&&!isFreqToken(row[6])) return true;
+      if(isTypeToken(row[3])&&!isTypeToken(row[2])) return true;
+      return false;
+    }
     if(schema==='strategic-objectives' && row.length===5){
       // Last column must be a timeframe
       if(row[4]==='—'||!isTimeframe(row[4])) return true;
@@ -258,7 +345,25 @@
   }
   function renderTable(block,isRtl){
     var headers=block.headers||[];
-    var rows=normalizeRows(headers,block.rows||[]);
+    var rows=block.rows||[];
+
+    // REL32 schema-key preview binding — same schema array for th and td.
+    if(typeof Rel32PreviewTableSchema !== 'undefined'){
+      var rel32Id=Rel32PreviewTableSchema.detectRel32PreviewSchema(headers);
+      if(rel32Id){
+        var rel32=Rel32PreviewTableSchema.renderRel32PreviewTableHtml(
+          headers, rows, { isRtl: !!isRtl, schemaId: rel32Id });
+        if(rel32&&rel32.html) return rel32.html;
+      }
+    }
+
+    var schema=tableSchemaName(headers);
+    var bound = bindSchemaTable(headers, rows, schema);
+    headers = bound.headers;
+    var rows = bound.rows;
+    if (!REL32_SCHEMA_SPECS[schema]) {
+      rows = normalizeRows(headers, rows);
+    }
     if(!headers.length) return '';
     var align=isRtl?'right':'left';
     var dir=isRtl?' dir="rtl"':'';
@@ -271,7 +376,9 @@
     });
     var thCells=headers.map(function(h){return '<th style="text-align:'+align+'">'+inlineHtml(h)+'</th>';}).join('');
     var trs=rows.map(function(row){
-      return '<tr>'+headers.map(function(_,ci){return cellHtml(row[ci],priorityCols.indexOf(ci)!==-1);}).join('')+'</tr>';
+      return '<tr>'+headers.map(function(_,ci){
+        return cellHtml(row[ci],priorityCols.indexOf(ci)!==-1);
+      }).join('')+'</tr>';
     }).join('');
     return '<div class="table-wrapper" data-schema="'+schema+'"'+dir+'>'
       +'<table'+tableClass+'><thead><tr>'+thCells+'</tr></thead><tbody>'+trs+'</tbody></table></div>';
@@ -658,9 +765,11 @@
       qualityIssues.push(isRtl ? 'الجدول يحتوي على صف واحد فقط' : 'Table has only 1 substantive row');
     }
 
-    var banner = renderQualityBanner(qualityIssues, isRtl);
-    var tableHtml = renderTable(block, isRtl);
-    return banner + tableHtml;
+    // Diagnostics only — never surface quality banners in user preview/PDF/DOCX.
+    if (qualityIssues.length && typeof console !== 'undefined' && console.debug) {
+      console.debug('[preview-quality-diag]', schema || (headers || []).slice(0, 2), qualityIssues);
+    }
+    return renderTable(block, isRtl);
   }
 
   // ── Override renderSectionFromJSON to add traceability + quality pass ──────
@@ -768,5 +877,12 @@
 
   // Original exports preserved — overridden above by Phase 3 wrappers
   global.validateSectionJSON=validateSectionJSON;
+  global.emitRel32PreviewTableDomBindingCheck=function(rootOrHtml, options){
+    if(typeof Rel32PreviewTableSchema!=='undefined'){
+      return Rel32PreviewTableSchema.emitRel32PreviewTableDomBindingCheck(rootOrHtml, options);
+    }
+    return { tag:'REL32-PREVIEW-TABLE-DOM-BINDING-CHECK', preview_dom_binding_passed:false,
+      mismatched_headers:[], blocking_errors:['Rel32PreviewTableSchema not loaded'] };
+  };
 
 })(typeof window!=='undefined'?window:this);

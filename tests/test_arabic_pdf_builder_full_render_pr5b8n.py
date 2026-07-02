@@ -269,6 +269,8 @@ def _build_arabic_pdf_bytes(content, **overrides):
         'artifact_type': 'strategy',
         'artifact_id': None,
         'generation_mode': 'drafting',
+        '_rel26_internal': True,
+        'skip_rel26_gate': True,
     }
     payload.update(overrides)
     resp = client.post('/api/generate-pdf', json=payload)

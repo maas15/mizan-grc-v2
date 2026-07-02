@@ -379,8 +379,8 @@ class TestPRCY19KRIDerivedContent(unittest.TestCase):
                          'gap / framework / data-protection signal is '
                          'present')
         self.assertNotIn('MTTD', sections['kpis'])
-        self.assertNotIn('Patching SLA', sections['kpis'])
-        self.assertNotIn('DLP incidents', sections['kpis'])
+        self.assertNotIn('Critical vulnerability closure within SLA', sections['kpis'])
+        self.assertNotIn('Critical data leakage incidents', sections['kpis'])
 
     @_skip_if_no_app
     def test_kri_changes_when_input_risks_and_gaps_change(self):
@@ -408,9 +408,9 @@ class TestPRCY19KRIDerivedContent(unittest.TestCase):
         kri_a = sections_a['kpis']
         self.assertIn('MTTD', kri_a)
         self.assertIn('MTTR', kri_a)
-        self.assertIn('Patching SLA', kri_a)
+        self.assertIn('Critical vulnerability closure within SLA', kri_a)
         # No DLP / IAM signal → those rows must NOT appear.
-        self.assertNotIn('DLP incidents', kri_a)
+        self.assertNotIn('Critical data leakage incidents', kri_a)
         self.assertNotIn('Anomalous failed login', kri_a)
         self.assertNotIn('Encryption coverage', kri_a)
         self.assertNotIn('Third-party risk score', kri_a)
@@ -428,13 +428,13 @@ class TestPRCY19KRIDerivedContent(unittest.TestCase):
             sections_b, 'en', 'cyber')
         self.assertTrue(diag_b['kri_table_added'])
         kri_b = sections_b['kpis']
-        self.assertIn('DLP incidents', kri_b)
+        self.assertIn('Critical data leakage incidents', kri_b)
         self.assertIn('Encryption coverage', kri_b)
         self.assertIn('Third-party risk score', kri_b)
         # No SOC/SIEM/incident or patching signal → those must NOT appear.
         self.assertNotIn('MTTD', kri_b)
         self.assertNotIn('MTTR', kri_b)
-        self.assertNotIn('Patching SLA', kri_b)
+        self.assertNotIn('Critical vulnerability closure within SLA', kri_b)
         # Content MUST differ between the two scenarios.
         self.assertNotEqual(kri_a, kri_b,
                             'derived KRI rows must change when input '
@@ -459,7 +459,7 @@ class TestPRCY19KRIDerivedContent(unittest.TestCase):
             sections, 'en', 'cyber',
             selected_frameworks=['DCC'])
         self.assertTrue(diag['kri_table_added'])
-        self.assertIn('DLP incidents', sections['kpis'])
+        self.assertIn('Critical data leakage incidents', sections['kpis'])
         self.assertIn('Assets classified', sections['kpis'])
 
     @_skip_if_no_app

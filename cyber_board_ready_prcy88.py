@@ -381,7 +381,10 @@ def baseline_strategic_objectives(
     for spec in specs:
         obj = spec.get('objective') or ''
         fam = _detect_so_family(obj)
-        if fam == 'governance_ciso':
+        gov_theme = (
+            fam == 'governance_ciso'
+            or bool(_GOVERNANCE_DUP_RE.search(obj)))
+        if gov_theme:
             dup_before += 1 if seen_gov else 0
             if seen_gov:
                 consolidated.append({'before': obj, 'action': 'merged_governance'})
@@ -413,23 +416,48 @@ def baseline_strategic_objectives(
             present[fam] = True
     missing_before = [f for f, ok in present.items() if not ok]
     inserted = []
+    _trim_optional = ('awareness_or_resilience', 'compliance_ecc_dcc')
+
+    def _drop_so_row_for_cap(rows: List[dict]) -> None:
+        for pri in _trim_optional:
+            for i, spec in enumerate(rows):
+                if _detect_so_family(spec.get('objective') or '') == pri:
+                    rows.pop(i)
+                    return
+        rows.pop()
+
     for fam in missing_before:
         cat = PRCY88_SO_CATALOG_AR.get(fam)
         if not cat:
             continue
-        cleaned.append({
+        new_spec = {
             'row_index': len(cleaned) + 1,
             'objective': cat[0],
             'measurable_target': cat[1],
             'rationale': cat[2],
             'timeframe': cat[3],
             'source': f'prcy88_insert_{fam}',
-        })
+        }
+        if len(cleaned) >= 8:
+            replaced = False
+            for pri in _trim_optional:
+                for i, spec in enumerate(cleaned):
+                    if _detect_so_family(spec.get('objective') or '') == pri:
+                        cleaned[i] = new_spec
+                        replaced = True
+                        break
+                if replaced:
+                    break
+            if not replaced:
+                _drop_so_row_for_cap(cleaned)
+                cleaned.append(new_spec)
+        else:
+            cleaned.append(new_spec)
         inserted.append(fam)
         present[fam] = True
 
     while len(cleaned) > 8:
-        cleaned.pop()
+        _drop_so_row_for_cap(cleaned)
 
     if len(cleaned) < 6:
         for fam in PRCY88_SO_FAMILIES:
@@ -503,7 +531,7 @@ def baseline_strategic_objectives(
 
     dup_after = sum(
         1 for s in cleaned
-        if _detect_so_family(s.get('objective') or '') == 'governance_ciso')
+        if _GOVERNANCE_DUP_RE.search(s.get('objective') or ''))
     dup_after = max(0, dup_after - 1)
 
     missing_after = [f for f in PRCY88_SO_FAMILIES if not any(
@@ -623,6 +651,14 @@ def baseline_pillars(app, sections: dict, lang: str) -> Tuple[dict, dict]:
                     rebuilt.append('| ' + ' | '.join(cells) + ' |')
         sections = dict(sections)
         sections['pillars'] = '\n\n'.join(rebuilt) + '\n'
+        try:
+            from release_engine.rendered_evidence_validator import (
+                _repair_shallow_pillars,
+            )
+            sections['pillars'] = _repair_shallow_pillars(
+                sections.get('pillars', '') or '')
+        except Exception:  # noqa: BLE001
+            pass
 
     gate = mismatched_after == 0
     diag = {
@@ -940,7 +976,7 @@ def _detect_kpi_family(line: str) -> Optional[str]:
                 k in low for k in ('iam', 'pam', 'mfa', 'هوية')):
             return fam
         if fam == 'mttd_detection' and any(
-                k in low for k in ('mttd', 'كشف', 'detect')):
+                k in low for k in ('mttd', 'كشف', 'اكتشاف', 'detect')):
             return fam
         if fam == 'mttr_incident' and any(
                 k in low for k in ('mttr', 'استجابة', 'respond')):
@@ -1167,17 +1203,33 @@ def baseline_arabic_language(sections: dict, final_markdown: str) -> dict:
     }
 
 
-def baseline_executive_narrative(sections: dict, lang: str) -> dict:
-    conf = sections.get('confidence', '') or ''
-    issues = []
-    gov_count = 0
-    for ln in (sections.get('vision', '') or '').splitlines():
+def _count_governance_so_themes(vision: str) -> int:
+    count = 0
+    for ln in (vision or '').splitlines():
         s = ln.strip()
         if not s.startswith('|') or '---' in s or 'الهدف' in s:
             continue
         cells = [c.strip() for c in s.split('|')[1:-1]]
         if len(cells) >= 2 and _GOVERNANCE_DUP_RE.search(cells[1]):
-            gov_count += 1
+            count += 1
+    return count
+
+
+def baseline_executive_narrative(
+        sections: dict, lang: str, *, app=None) -> dict:
+    conf = sections.get('confidence', '') or ''
+    issues = []
+    action = 'checked'
+    gov_count = _count_governance_so_themes(sections.get('vision', '') or '')
+    if gov_count > 1:
+        _app = app or _load_app_module()
+        repaired, _so_d = baseline_strategic_objectives(
+            _app, dict(sections), lang, [])
+        sections.update(repaired)
+        gov_count = _count_governance_so_themes(
+            sections.get('vision', '') or '')
+        if _so_d.get('action_taken') not in ('no_changes', ''):
+            action = 'governance_consolidated_for_narrative'
     if gov_count > 1:
         issues.append('duplicate_governance_theme')
     is_ar = str(lang or '').lower() != 'en'
@@ -1192,7 +1244,7 @@ def baseline_executive_narrative(sections: dict, lang: str) -> dict:
         'issues': issues,
         'gate_passed': passed,
         'blocking_error_if_any': issues[0] if issues else '',
-        'action_taken': 'checked',
+        'action_taken': action,
     }
 
 
@@ -1412,7 +1464,7 @@ def _prcy88_cyber_board_ready_quality_baseline(
         blocking.append(
             f'cyber_arabic_quality_failed:{ar_d.get("blocking_error_if_any")}')
 
-    nar_d = baseline_executive_narrative(sections, lang_n)
+    nar_d = baseline_executive_narrative(sections, lang_n, app=app)
     _emit('CYBER-EXECUTIVE-NARRATIVE-QUALITY', nar_d)
     if not nar_d.get('gate_passed'):
         blocking.append(
