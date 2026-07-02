@@ -275,7 +275,12 @@
   }
 
   function headersLookLikeKpiFormula(headers){
-    var joined = (headers || []).join(' ');
+    var hdrs = headers || [];
+    if (hdrs.length !== 4) return false;
+    var joined = hdrs.join(' ');
+    if (joined.indexOf('طريقة التقييم') !== -1 || joined.indexOf('Assessment Method') !== -1) {
+      return false;
+    }
     return joined.indexOf('صيغة الاحتساب') !== -1 &&
       (joined.indexOf('المؤشر') !== -1 || joined.indexOf('مصدر البيانات') !== -1) &&
       joined.indexOf('وصف المؤشر') === -1;
@@ -295,6 +300,7 @@
 
   function inferTableSchemaId(headers, tableIdAttr){
     if (tableIdAttr && REL32_PREVIEW_TABLE_SCHEMAS[tableIdAttr]) return tableIdAttr;
+    if (tableIdAttr) return null;
     var detected = detectRel32PreviewSchema(headers);
     if (detected) return detected;
     if (headersLookLikeKpiMain(headers)) return 'kpi_main';
@@ -304,7 +310,39 @@
     return null;
   }
 
-  function extractDomBindingFromTable(table){
+  function isTableVisible(table){
+    if (!table || !table.closest) return false;
+    if (table.closest('[hidden], .hidden, [aria-hidden="true"]')) return false;
+    var node = table;
+    while (node) {
+      if (node.nodeType === 1) {
+        var st = global.getComputedStyle ? global.getComputedStyle(node) : null;
+        if (st && (st.display === 'none' || st.visibility === 'hidden')) return false;
+      }
+      node = node.parentElement;
+    }
+    return table.offsetParent !== null || (table.getClientRects && table.getClientRects().length > 0);
+  }
+
+  function nearestSectionTitle(table){
+    var el = table;
+    while (el) {
+      if (el.matches && el.matches('h2,h3,h4,.section-title')) {
+        return cellText(el);
+      }
+      var prev = el.previousElementSibling;
+      while (prev) {
+        if (prev.matches && prev.matches('h2,h3,h4,.section-title')) {
+          return cellText(prev);
+        }
+        prev = prev.previousElementSibling;
+      }
+      el = el.parentElement;
+    }
+    return '';
+  }
+
+  function extractDomBindingFromTable(table, tableIndex){
     if (!table) return null;
     var headers = Array.from(table.querySelectorAll('thead tr th')).map(cellText);
     if (!headers.length) {
@@ -318,8 +356,12 @@
     var byHeader = {};
     headers.forEach(function(h, i){ byHeader[h] = cells[i] || ''; });
     var wrapper = table.closest('.table-wrapper');
+    var tableId = wrapper ? (wrapper.getAttribute('data-table-id') || '') : '';
     return {
-      table_id: wrapper ? (wrapper.getAttribute('data-table-id') || '') : '',
+      table_index: tableIndex,
+      table_id: tableId,
+      section_title: nearestSectionTitle(table),
+      visible: isTableVisible(table),
       header_labels_from_dom: headers,
       first_row_cells: cells,
       first_row_cells_by_header: byHeader,
@@ -337,7 +379,37 @@
     }
     if (!rootEl) return [];
     var tables = Array.from(rootEl.querySelectorAll('table'));
-    return tables.map(extractDomBindingFromTable).filter(Boolean);
+    return tables.map(function(t, i){ return extractDomBindingFromTable(t, i); }).filter(Boolean);
+  }
+
+  function candidateScore(domInfo, schemaId){
+    var score = 0;
+    if (!domInfo || !domInfo.visible) return -1;
+    if (domInfo.schema_binder_applied && domInfo.table_id === schemaId) score += 100;
+    else if (domInfo.schema_binder_applied) score += 40;
+    if ((domInfo.header_labels_from_dom || []).length === (REL32_PREVIEW_TABLE_SCHEMAS[schemaId] || {}).columns.length) {
+      score += 20;
+    }
+    var check = evaluatePreviewDomBindingLive(domInfo, schemaId);
+    if (check.preview_dom_binding_passed) score += 50;
+    score -= (check.blocking_errors || []).length;
+    return score;
+  }
+
+  function pickBestDomBinding(domInfos, schemaId){
+    var best = null;
+    var bestScore = -1;
+    (domInfos || []).forEach(function(domInfo){
+      if (!domInfo.visible) return;
+      var sid = inferTableSchemaId(domInfo.header_labels_from_dom, domInfo.table_id);
+      if (sid !== schemaId) return;
+      var score = candidateScore(domInfo, schemaId);
+      if (score > bestScore) {
+        best = domInfo;
+        bestScore = score;
+      }
+    });
+    return best;
   }
 
   function _targetLike(v){
@@ -482,6 +554,9 @@
 
     return {
       table_id: schemaId || domInfo.table_id || 'unknown',
+      table_index: domInfo.table_index,
+      section_title: domInfo.section_title || '',
+      visible: domInfo.visible !== false,
       schema_labels: schemaLabels,
       header_labels_from_dom: headers,
       first_row_cells: cells,
@@ -539,11 +614,11 @@
     }
 
     var domInfos = extractDomBindingsFromRoot(rootOrHtml);
-    var seen = {};
-    domInfos.forEach(function(domInfo){
-      var schemaId = inferTableSchemaId(domInfo.header_labels_from_dom, domInfo.table_id);
-      if (!schemaId || seen[schemaId]) return;
-      seen[schemaId] = true;
+    var visibleDomInfos = domInfos.filter(function(d){ return d.visible; });
+    var schemaIds = ['kpi_main', 'kpi_formula', 'roadmap', 'gap_action'];
+    schemaIds.forEach(function(schemaId){
+      var domInfo = pickBestDomBinding(visibleDomInfos, schemaId);
+      if (!domInfo) return;
       checks.push(evaluatePreviewDomBindingLive(domInfo, schemaId));
     });
 
@@ -566,8 +641,8 @@
       blocking_errors: blocking
     };
 
-    if (!checks.length && domInfos.length && blocking.indexOf('rel32_preview_schema_binder_not_loaded') === -1) {
-      var needsSchema = domInfos.some(function(d){
+    if (!checks.length && visibleDomInfos.length && blocking.indexOf('rel32_preview_schema_binder_not_loaded') === -1) {
+      var needsSchema = visibleDomInfos.some(function(d){
         return !!inferTableSchemaId(d.header_labels_from_dom, d.table_id);
       });
       if (needsSchema) {
@@ -609,7 +684,9 @@
     validateKpiFormulaByDomIndex: validateKpiFormulaByDomIndex,
     headersMatchSchemaLabels: headersMatchSchemaLabels,
     emitRel32PreviewTableDomBindingCheck: emitRel32PreviewTableDomBindingCheck,
-    repairKpiRowDict: repairKpiRowDict
+    repairKpiRowDict: repairKpiRowDict,
+    isTableVisible: isTableVisible,
+    pickBestDomBinding: pickBestDomBinding
   };
 
   global.Rel32PreviewTableSchema = api;

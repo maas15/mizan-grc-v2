@@ -115,6 +115,7 @@ def _kpi_row_cells_to_dict(cells: List[str]) -> Dict[str, str]:
             'formula': cells[4],
             'source': cells[5],
             'frequency': cells[6] if len(cells) > 6 else 'شهري',
+            'owner': cells[7] if len(cells) > 7 else 'CISO',
         }
     return {
         'num': cells[0] if cells else '',
@@ -124,6 +125,7 @@ def _kpi_row_cells_to_dict(cells: List[str]) -> Dict[str, str]:
         'formula': cells[3] if len(cells) > 3 else '',
         'source': cells[4] if len(cells) > 4 else '',
         'frequency': cells[5] if len(cells) > 5 else 'شهري',
+        'owner': cells[6] if len(cells) > 6 else 'CISO',
     }
 
 
@@ -137,6 +139,7 @@ def _kpi_dict_to_cells(row: Dict[str, str], *, typed: bool = False) -> List[str]
             row.get('formula', ''),
             row.get('source', ''),
             row.get('frequency', 'شهري'),
+            row.get('owner', 'CISO'),
         ]
     return [
         row.get('num', ''),
@@ -145,6 +148,7 @@ def _kpi_dict_to_cells(row: Dict[str, str], *, typed: bool = False) -> List[str]
         row.get('formula', ''),
         row.get('source', ''),
         row.get('frequency', 'شهري'),
+        row.get('owner', 'CISO'),
     ]
 
 
@@ -175,7 +179,11 @@ def _duplicate_kpi_families_from_rows(
 
 
 def _canonical_registry_row(fam: str, num: int, *, typed: bool) -> Dict[str, str]:
-    reg = KPI_CANONICAL_REGISTRY.get(fam, {})
+    try:
+        from release_engine_v3.rel32_registries import KPI_CANONICAL_REGISTRY_FULL
+        reg = KPI_CANONICAL_REGISTRY_FULL.get(fam) or KPI_CANONICAL_REGISTRY.get(fam, {})
+    except Exception:  # noqa: BLE001
+        reg = KPI_CANONICAL_REGISTRY.get(fam, {})
     if reg:
         return {
             'num': str(num),
@@ -185,9 +193,10 @@ def _canonical_registry_row(fam: str, num: int, *, typed: bool) -> Dict[str, str
             'formula': reg.get('formula', ''),
             'source': reg.get('source', ''),
             'frequency': reg.get('frequency', 'شهري'),
+            'owner': reg.get('owner', 'CISO'),
         }
     return {'num': str(num), 'name': '', 'kpi_type': 'KPI', 'target': '',
-            'formula': '', 'source': '', 'frequency': 'شهري'}
+            'formula': '', 'source': '', 'frequency': 'شهري', 'owner': 'CISO'}
 
 
 def _pick_stronger_kpi_row(
@@ -245,6 +254,11 @@ def repair_kpi_canonical_families(
             row = _canonical_registry_row(fam, i, typed=typed)
         else:
             row['num'] = str(i)
+        try:
+            from release_engine_v3.rel32_table_schema_binding import _repair_kpi_row_dict
+            row = _repair_kpi_row_dict(row)
+        except Exception:  # noqa: BLE001
+            pass
         canonical_rows.append(row)
 
     if not canonical_rows:
@@ -432,7 +446,19 @@ def _split_kpi_main_and_tail(text: str) -> Tuple[str, str]:
     return main_blob, tail
 
 
-def _formula_appendix_header(lang: str = 'ar') -> str:
+def _formula_appendix_header(lang: str = 'ar', *, rel32: bool = False) -> str:
+    if rel32:
+        if str(lang or '').lower() == 'en':
+            return (
+                '\n### Calculation formulas\n\n'
+                '| # | Indicator | Formula | Data Source |\n'
+                '|---|---|---|---|\n'
+            )
+        return (
+            '\n### صيغة الاحتساب\n\n'
+            '| # | المؤشر | صيغة الاحتساب | مصدر البيانات |\n'
+            '|---|---|---|---|\n'
+        )
     if str(lang or '').lower() == 'en':
         return (
             '\n### Calculation formulas\n\n'
@@ -452,12 +478,24 @@ def _sync_kpi_formula_appendix(text: str, *, lang: str = 'ar') -> str:
     _lines, rows = _parse_kpi_rows(main_blob)
     if not rows:
         return text
+    typed = _kpi_table_uses_type_column(_lines, rows)
+    rel32 = typed and len(rows[0]) >= 8
     formula_lines = []
     for i, cells in enumerate(rows, 1):
-        formula = cells[3] if len(cells) > 3 else '—'
-        source = cells[4] if len(cells) > 4 else '—'
-        formula_lines.append(f'| {i} | {formula} | {source} |')
-    out = main_blob.rstrip() + _formula_appendix_header(lang)
+        if rel32:
+            name = cells[1] if len(cells) > 1 else '—'
+            formula = cells[4] if len(cells) > 4 else '—'
+            source = cells[5] if len(cells) > 5 else '—'
+            formula_lines.append(f'| {i} | {name} | {formula} | {source} |')
+        elif typed:
+            formula = cells[4] if len(cells) > 4 else '—'
+            source = cells[5] if len(cells) > 5 else '—'
+            formula_lines.append(f'| {i} | {formula} | {source} |')
+        else:
+            formula = cells[3] if len(cells) > 3 else '—'
+            source = cells[4] if len(cells) > 4 else '—'
+            formula_lines.append(f'| {i} | {formula} | {source} |')
+    out = main_blob.rstrip() + _formula_appendix_header(lang, rel32=rel32)
     out += '\n' + '\n'.join(formula_lines)
     if tail:
         out += '\n\n' + tail
