@@ -242,10 +242,15 @@ SCHEMA_ROADMAP_AR = (
     'المرحلة', 'الفترة', 'المبادرة', 'المسؤول',
     'المخرج المتوقع', 'الإطار المرتبط',
 )
-SCHEMA_KPI_MAIN_AR = (
-    '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
-    'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
-)
+try:
+    from release_engine_v3.rel32_table_schema_binding import (
+        REL32_KPI_MAIN_EXPECTED_SCHEMA_AR as SCHEMA_KPI_MAIN_AR,
+    )
+except Exception:  # noqa: BLE001
+    SCHEMA_KPI_MAIN_AR = (
+        '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
+        'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
+    )
 SCHEMA_KPI_FORMULA_AR = (
     '#', 'المؤشر', 'صيغة الاحتساب', 'مصدر البيانات',
 )
@@ -626,8 +631,6 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
     if schema == 'kpi_main' and ncols == 8:
         return [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20]
-    if schema == 'kpi_main' and ncols == 7:
-        return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.08, 0.30, 0.32, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
@@ -676,10 +679,6 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'gap_action': 'gap_action_cards',
     'gap_table': 'gap_action_cards',
     'roadmap': 'roadmap_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
 }
 
 # PR-CY77 — Arabic PDF fallback modes for warning-driven resolution.
@@ -687,10 +686,6 @@ PRCY77_AR_PDF_FALLBACK_MODES: Dict[str, str] = dict(SCHEMA_STACK_FALLBACK)
 
 # PR-CY72 — Arabic PDF schemas that must use card fallbacks before gate.
 PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
     'governance': 'governance_cards',
     'trace_fw_gap': 'trace_cards',
     'trace_fw_init': 'trace_cards',
@@ -703,10 +698,6 @@ PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
 PRCY77_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
     'strategic_objectives': 'objective_cards',
     'roadmap': 'roadmap_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
     'governance': 'governance_cards',
     'trace_fw_gap': 'trace_cards',
     'trace_fw_init': 'trace_cards',
@@ -1336,8 +1327,6 @@ PRCY62_PROACTIVE_PDF_POLISH: Dict[str, str] = {
     'trace_fw_init': 'trace_cards',
     'traceability': 'trace_cards',
     'gap_action': 'gap_action_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
 }
 
 
@@ -1382,10 +1371,6 @@ def compute_pdf_proactive_polish_fallbacks(
     for tbl in (blocks.get('gap_analysis') or {}).get('tables') or []:
         if tbl.get('schema') == 'gap_action' and tbl.get('rows'):
             fallbacks['gap_action'] = 'gap_action_cards'
-    for tbl in (blocks.get('kpi_kri_framework') or {}).get('tables') or []:
-        schema = tbl.get('schema', '')
-        if schema in ('kpi_main', 'kpi_formula') and tbl.get('rows'):
-            fallbacks[schema] = 'kpi_cards'
     if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
         fallbacks['roadmap'] = 'roadmap_cards'
     conf = blocks.get('confidence_risk_register') or {}
@@ -1407,13 +1392,7 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
     blocks = (model or {}).get('blocks') or {}
     out = dict(fallbacks or {})
     for schema, mode in PRCY72_MANDATORY_AR_PDF_FALLBACKS.items():
-        if schema in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
-            if _model_has_table_rows(
-                    blocks, 'kpi_kri_framework',
-                    _canonical_stack_schema(schema)):
-                out[schema] = mode
-                out[_canonical_stack_schema(schema)] = mode
-        elif schema == 'governance':
+        if schema == 'governance':
             if _model_has_table_rows(blocks, 'governance_ownership'):
                 out['governance'] = mode
         elif schema in ('gap_action', 'gap_table'):
@@ -1447,10 +1426,6 @@ def compute_pdf_export_layout_fallbacks(
         blocks = (model or {}).get('blocks') or {}
         if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
             merged['roadmap'] = 'roadmap_cards'
-        for _ks in ('kpi_main', 'kpi_formula'):
-            if _model_has_table_rows(
-                    blocks, 'kpi_kri_framework', _ks):
-                merged[_ks] = 'kpi_cards'
     return merged
 
 
@@ -1473,8 +1448,40 @@ def collect_remaining_arabic_spacing_issues(
 PRCY62_POLISH_SCHEMAS = frozenset({
     'strategic_objectives', 'pillar_initiatives', 'governance',
     'trace_fw_gap', 'trace_fw_init', 'traceability', 'gap_action',
-    'kpi_main', 'kpi_formula', 'roadmap', 'conf_factor', 'risk_register',
+    'roadmap', 'conf_factor', 'risk_register',
 })
+
+
+def _kpi_table_has_canonical_schema(
+        model: Optional[Dict[str, Any]], schema: str = 'kpi_main') -> bool:
+    """True when KPI table uses the REL32 canonical schema (never card fallback)."""
+    blocks = (model or {}).get('blocks') or {}
+    kpi_blk = blocks.get('kpi_kri_framework') or {}
+    expected_main = list(SCHEMA_KPI_MAIN_AR)
+    expected_formula = list(SCHEMA_KPI_FORMULA_AR)
+    sid = schema
+    if sid in ('kpi_summary',):
+        sid = 'kpi_main'
+    if sid in ('kpi_details',):
+        sid = 'kpi_formula'
+    for tbl in kpi_blk.get('tables') or []:
+        ts = tbl.get('schema', '')
+        if ts != sid and ts not in (schema,):
+            continue
+        hdr = list(tbl.get('header') or [])
+        if sid == 'kpi_main':
+            return hdr == expected_main and len(hdr) == 8
+        if sid == 'kpi_formula':
+            return hdr == expected_formula and len(hdr) == 4
+    return False
+
+
+def kpi_canonical_table_layout_applied(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """REL32 — KPI main uses canonical 8-column table in PDF export."""
+    if lang != 'ar':
+        return True
+    return _kpi_table_has_canonical_schema(model, 'kpi_main')
 
 
 def _count_dense_table_schemas(
@@ -1591,8 +1598,7 @@ def build_pdf_final_polish_diag(
             fallbacks.get('roadmap') == 'roadmap_cards'
             if lang == 'ar' else True),
         'kpi_layout_readable': (
-            fallbacks.get('kpi_main') == 'kpi_cards'
-            or fallbacks.get('kpi_formula') == 'kpi_cards'
+            kpi_canonical_table_layout_applied(model, lang)
             if lang == 'ar' else True),
         'no_excessive_orphan_objective_pages': True,
         'pdf_layout_fallbacks': fallbacks,
@@ -1658,9 +1664,9 @@ def _apply_prcy87_executive_ar_pdf_layout(
         out['strategic_objectives'] = 'objective_cards'
     if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
         out['roadmap'] = 'roadmap_cards'
-    for _ks in ('kpi_main', 'kpi_formula', 'conf_factor', 'risk_register'):
+    for _ks in ('conf_factor', 'risk_register'):
         if _model_has_table_rows(blocks, 'kpi_kri_framework', _ks):
-            out[_ks] = 'kpi_cards'
+            out[_ks] = 'cards'
         elif _ks in ('conf_factor', 'risk_register'):
             conf = blocks.get('confidence_risk_register') or {}
             for tbl in conf.get('tables') or []:
@@ -1685,6 +1691,11 @@ def evaluate_vertical_stack_gate(
         fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     for w in all_warnings:
         schema = w.get('schema', '')
+        if schema in (
+                'kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _kpi_table_has_canonical_schema(model, schema):
+                w['action_taken'] = 'canonical_8col_table'
+                continue
         fb = _stack_fallback_for_schema(schema, fallbacks or {})
         if fb:
             w['action_taken'] = f'fallback:{fb}'
@@ -4426,11 +4437,10 @@ def split_kpi_tables(
         'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
         '#', 'Indicator', 'Formula', 'Data Source'))
-    _canonical_main_hdr_ar = [
-        '#', 'وصف المؤشر', 'القيمة المستهدفة', 'صيغة الاحتساب',
-        'مصدر البيانات/الأداة', 'تواتر القياس']
+    _canonical_main_hdr_ar = list(SCHEMA_KPI_MAIN_AR)
     _canonical_main_hdr_en = [
-        '#', 'Metric', 'Target', 'Formula', 'Data source', 'Frequency']
+        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
+        'Frequency', 'Owner']
     for tbl in tables:
         if len(tbl) < 1:
             continue
@@ -5825,8 +5835,7 @@ def ensure_strategy_professional_model(
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
-        blocks = _normalize_kpi_tables_semantics(blocks, lang_n)
-        blocks = apply_final_arabic_cleanup_to_blocks(blocks, lang_n)
+        blocks = _finalize_professional_blocks(blocks, lang_n)
         return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')

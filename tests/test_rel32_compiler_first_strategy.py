@@ -363,12 +363,16 @@ class Rel32CompilerFirstTests(unittest.TestCase):
 class Rel32AuthorityFlagsTests(unittest.TestCase):
 
     def test_compiler_first_flag_for_cyber_ar(self):
+        flags = {'rel3': True, 'rel31': True}
         self.assertTrue(is_rel32_compiler_first(
-            domain='cyber', lang='ar',
-            flags={'rel3': True, 'rel31': True}))
+            domain='cyber', lang='ar', flags=flags))
+        self.assertTrue(is_rel32_compiler_first(
+            domain='data', lang='ar', flags=flags))
         self.assertFalse(is_rel32_compiler_first(
-            domain='cyber', lang='en',
-            flags={'rel3': True, 'rel31': True}))
+            domain='cyber', lang='en', flags=flags))
+        self.assertFalse(is_rel32_compiler_first(
+            domain='cyber', lang='ar', flags=flags,
+            document_type='policy'))
 
 
 if __name__ == '__main__':

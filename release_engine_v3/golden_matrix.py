@@ -40,6 +40,7 @@ GOLDEN_MATRIX: List[Dict[str, Any]] = [
     {'domain': 'erm', 'document_type': 'risk', 'lang': 'ar', 'tier': 'P1'},
     {'domain': 'erm', 'document_type': 'executive_summary', 'lang': 'ar', 'tier': 'P2'},
     # Global Standards
+    {'domain': 'global', 'document_type': 'strategy', 'lang': 'ar', 'tier': 'P2'},
     {'domain': 'global', 'document_type': 'gap_assessment', 'lang': 'ar', 'tier': 'P1'},
     {'domain': 'global', 'document_type': 'audit', 'lang': 'ar', 'tier': 'P2'},
 ]

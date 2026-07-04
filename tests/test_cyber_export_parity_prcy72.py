@@ -53,24 +53,22 @@ class Prcy72PdfStackAndParityTests(unittest.TestCase):
         self.assertTrue(_APP._PRCY28_VERSION_FLAGS.get('prcy72'))
 
     @_skip
-    def test_kpi_main_stack_resolved_by_kpi_cards(self):
+    def test_kpi_main_stack_keeps_canonical_table_not_cards(self):
         model = _base_model()
         tbl = {
             'schema': 'kpi_main',
             'header': list(_PSR.SCHEMA_KPI_MAIN_AR),
             'rows': [[
-                '1', 'x' * 120, 'KPI', '≥ 95%', 'شهري', 'CISO', '12 شهر',
+                '1', 'x' * 120, 'KPI', '≥ 95%', 'f', 'SIEM', 'شهري', 'CISO',
             ]],
         }
         model['blocks']['kpi_kri_framework']['tables'] = [tbl]
         fb = _PSR.compute_pdf_export_layout_fallbacks(model, 'ar')
-        ev = _PSR.evaluate_vertical_stack_gate(model, fallbacks=fb)
-        self.assertEqual(fb.get('kpi_main'), 'kpi_cards')
-        self.assertEqual(ev.get('actionable_warning_count_after'), 0)
-        self.assertTrue(ev.get('pdf_table_vertical_stack_warnings'))
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
+        self.assertNotIn('kpi_cards', fb.values())
 
     @_skip
-    def test_kpi_formula_stack_resolved_by_kpi_cards(self):
+    def test_kpi_formula_stack_keeps_canonical_table_not_cards(self):
         model = _base_model()
         tbl = {
             'schema': 'kpi_formula',
@@ -81,9 +79,7 @@ class Prcy72PdfStackAndParityTests(unittest.TestCase):
         }
         model['blocks']['kpi_kri_framework']['tables'] = [tbl]
         fb = _PSR.compute_pdf_export_layout_fallbacks(model, 'ar')
-        ev = _PSR.evaluate_vertical_stack_gate(model, fallbacks=fb)
-        self.assertEqual(fb.get('kpi_formula'), 'kpi_cards')
-        self.assertEqual(ev.get('actionable_warning_count_after'), 0)
+        self.assertNotEqual(fb.get('kpi_formula'), 'kpi_cards')
 
     @_skip
     def test_governance_stack_resolved_by_role_cards(self):

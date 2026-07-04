@@ -49,10 +49,14 @@ jobs:
             tests/test_rel32_table_schema_binding.py \
             tests/test_rel32_preview_table_dom_binding.py \
             tests/test_enterprise_document_factory_foundation.py \
+            tests/test_rel33_all_domain_document_quality_matrix.py \
             -q
 
       - name: rel32 cyber AR export smoke
         run: python scripts/rel32_cyber_ar_export_smoke.py
+
+      - name: smoke all domains preview docx pdf
+        run: python scripts/smoke_all_domains_preview_docx_pdf.py
 
       - name: smoke document type matrix
         run: python scripts/smoke_document_type_matrix.py

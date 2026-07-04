@@ -171,7 +171,7 @@ class Prcy86PdfDenseTableTests(unittest.TestCase):
         model['blocks']['kpi_kri_framework']['tables'] = [tbl]
         fb = _PSR.compute_pdf_export_layout_fallbacks(model, 'ar')
         ev = _PSR.evaluate_vertical_stack_gate(model, fallbacks=fb)
-        self.assertEqual(fb.get('kpi_main'), 'kpi_cards')
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
         self.assertEqual(ev.get('actionable_warning_count_after'), 0)
 
     @_skip

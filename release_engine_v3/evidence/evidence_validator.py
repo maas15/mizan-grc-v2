@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from release_engine.export_evidence_validator import block_export_if_evidence_fails
 from release_engine_v3.contracts import (
@@ -183,6 +183,31 @@ def validate_returned_export_bytes(
                 (gate.get('blocking_errors') or [])
                 + (imm.get('blocking_errors') or [])))
             gate['traceability_immutability'] = imm
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from release_engine_v3.rel32_kpi_main_schema_evidence import (
+            evaluate_kpi_main_schema_from_export_text,
+            evaluate_kpi_main_schema_from_preview_html,
+            merge_kpi_main_schema_blockers,
+        )
+        kpi_diag: Dict[str, Any] = {}
+        if route_n == 'preview':
+            preview_html = export.preview_html or ''
+            if preview_html.strip():
+                kpi_diag = evaluate_kpi_main_schema_from_preview_html(
+                    preview_html, route_name='preview')
+            elif preview_text.strip():
+                kpi_diag = evaluate_kpi_main_schema_from_export_text(
+                    preview_text, route_name='preview')
+        elif route_n == 'docx' and docx_text.strip():
+            kpi_diag = evaluate_kpi_main_schema_from_export_text(
+                docx_text, route_name='docx')
+        elif route_n == 'pdf' and pdf_text.strip():
+            kpi_diag = evaluate_kpi_main_schema_from_export_text(
+                pdf_text, route_name='pdf')
+        if kpi_diag:
+            gate = merge_kpi_main_schema_blockers(gate, kpi_diag)
     except Exception:  # noqa: BLE001
         pass
     allowed, errors = block_export_if_evidence_fails(gate)

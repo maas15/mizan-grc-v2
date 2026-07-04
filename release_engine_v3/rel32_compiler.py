@@ -164,10 +164,16 @@ def is_rel32_compiler_first(
         *,
         domain: str = 'cyber',
         lang: str = 'ar',
-        flags: Optional[Dict[str, Any]] = None) -> bool:
-    """REL3.2 compiler applies to cyber Arabic authoritative strategy paths."""
-    from release_engine_v3.rel31_authority import is_rel3_authoritative
-    return is_rel3_authoritative(domain=domain, lang=lang, flags=flags)
+        flags: Optional[Dict[str, Any]] = None,
+        document_type: str = 'strategy') -> bool:
+    """REL3.2 compiler applies to REL3.3 strategy paths (all domains, Arabic)."""
+    from release_engine_v3.rel33_authority import is_rel33_compiler_first
+    return is_rel33_compiler_first(
+        domain=domain,
+        lang=lang,
+        flags=flags,
+        document_type=document_type,
+    )
 
 
 def _heading_line(section_key: str) -> str:
@@ -941,7 +947,10 @@ def apply_compiler_first_save_gate_sections(
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Replace AI sections with compiler-owned structure before save-gate validation."""
-    if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+    if not is_rel32_compiler_first(
+            domain=domain, lang=lang, flags=flags,
+            document_type=str(
+                (backend or {}).get('document_type') or 'strategy')):
         return dict(sections or {}), []
     from release_engine_v3.rel32_complete_strategy_compiler import (
         compile_complete_cyber_ar_technical_strategy,

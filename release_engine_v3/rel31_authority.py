@@ -505,12 +505,9 @@ def is_rel3_authoritative(
         domain: str = 'cyber',
         lang: str = 'ar',
         flags: Optional[Dict[str, Any]] = None) -> bool:
-    flags = flags or {}
-    if not flags.get('rel31') or not flags.get('rel3'):
-        return False
-    return (
-        _normalize_rel31_domain_code(domain) == 'cyber'
-        and str(lang or '').lower().startswith('ar'))
+    from release_engine_v3.rel33_authority import is_rel33_domain_authoritative
+    return is_rel33_domain_authoritative(
+        domain=domain, lang=lang, flags=flags or {})
 
 
 def rel31_fingerprint_extension(flags: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -903,10 +900,12 @@ def repair_canonical_before_freeze(
             compile_canonical_strategy_document,
             is_rel32_compiler_first,
         )
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
-            document_type = (
-                str(art.get('document_type') or art.get('doc_type') or 'strategy')
-                .strip().lower())
+        document_type = (
+            str(art.get('document_type') or art.get('doc_type') or 'strategy')
+            .strip().lower())
+        if is_rel32_compiler_first(
+                domain=domain, lang=lang, flags=flags,
+                document_type=document_type):
             compiled = None
             try:
                 from release_engine_v3.factory.canonical_document_factory import (
@@ -1214,7 +1213,12 @@ def rel3_export_authoritative(
 
     if frozen_pre is None:
         from release_engine_v3.rel32_compiler import is_rel32_compiler_first
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+        document_type = str(
+            (art.get('contract_meta') or {}).get('document_type')
+            or art.get('document_type') or 'strategy').strip().lower()
+        if is_rel32_compiler_first(
+                domain=domain, lang=lang, flags=flags,
+                document_type=document_type):
             if route_n in ('docx', 'pdf'):
                 blockers = list(lock_meta.get('blocking_errors') or [])
                 if lock_meta.get('incomplete_frozen_artifact'):
@@ -1957,11 +1961,15 @@ def apply_rel31_authoritative_contract(
     art['blocking_errors'] = []
     built = _rel31_rebuild_frozen_artifact(
         art, lang=lang, strategy_id=str(art.get('strategy_id') or ''))
+    _contract_doc_type = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type') or 'strategy').strip().lower()
     quality = validate_canonical_quality(
         built.canonical_sections,
         legacy_sections=art.get('sections') or {},
         domain=domain,
         lang=lang,
+        document_type=_contract_doc_type,
     )
     for err in quality.get('blocking_errors') or []:
         if not err.startswith('rel3_'):
@@ -2254,8 +2262,10 @@ def apply_rel31_authoritative_contract(
         artifact=built,
         render_tree_hash=tree.render_tree_hash,
         task_id=task_id,
-        objectives_valid=bool(obj.get('valid')),
-        roadmap_valid=bool(road.get('valid')),
+        objectives_valid=(
+            bool(obj.get('valid')) if require_strategy else True),
+        roadmap_valid=(
+            bool(road.get('valid')) if require_strategy else True),
         pillars_valid=pillars_valid,
         kpi_valid=kpi_valid,
         risk_valid=risk_valid,

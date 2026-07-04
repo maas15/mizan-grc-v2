@@ -113,7 +113,7 @@ class Prcy70FinalParityAndPdfStackTests(unittest.TestCase):
         }
         model['blocks']['kpi_kri_framework']['tables'] = [tbl]
         fb = _PSR.compute_pdf_export_layout_fallbacks(model, 'ar')
-        self.assertEqual(fb.get('kpi_main'), 'kpi_cards')
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
         ev = _PSR.evaluate_vertical_stack_gate(model, fallbacks=fb)
         self.assertTrue(ev.get('pdf_table_vertical_stack_warnings'))
         self.assertEqual(ev.get('actionable_warning_count_after'), 0)

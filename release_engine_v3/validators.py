@@ -23,10 +23,27 @@ def validate_canonical_quality(
         legacy_sections: Optional[Dict[str, str]] = None,
         domain: str = 'cyber',
         lang: str = 'ar',
+        document_type: str = 'strategy',
 ) -> Dict[str, Any]:
     """Validate canonical model; delegates visible checks to REL2 validators."""
-    blockers: List[str] = []
+    dtype = str(document_type or 'strategy').strip().lower()
     legacy = legacy_sections or {}
+    if dtype != 'strategy':
+        blob = '\n\n'.join(
+            str(v).strip()
+            for v in legacy.values()
+            if isinstance(v, str) and v.strip())
+        ch = rel27_channel_checks(blob) if blob.strip() else {}
+        blockers: List[str] = []
+        blockers.extend(ch.get('arabic_residues') or [])
+        return {
+            'blocking_errors': list(dict.fromkeys(blockers)),
+            'kpi_valid': None,
+            'roadmap_row_count': None,
+            'pillar_check': True,
+            'document_type': dtype,
+        }
+    blockers: List[str] = []
     blob = '\n\n'.join(
         (legacy.get(k) or '')
         for k in ('vision', 'pillars', 'environment', 'gaps',
@@ -54,6 +71,7 @@ def validate_canonical_quality(
         'kpi_valid': kpi_chk.get('exported_kpi_canonical_valid'),
         'roadmap_row_count': road.get('visible_row_count'),
         'pillar_check': not check_pillars_after_strategic_heading(blob),
+        'document_type': dtype,
     }
 
 
