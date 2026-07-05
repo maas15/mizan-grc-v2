@@ -144,26 +144,43 @@ def _csrf_from_html(html: str) -> Optional[str]:
     return None
 
 
-def _login(session: requests.Session) -> None:
+def _login(session: requests.Session, *, retries: int = 4) -> None:
     pwd = os.environ.get('STAGING_PASSWORD', '').strip()
     if not pwd:
         raise RuntimeError('STAGING_PASSWORD unset')
     user = os.environ.get('STAGING_USERNAME', 'admin').strip()
-    session.get(f'{BASE}/login', timeout=90)
-    r = session.post(
-        f'{BASE}/login', data={'username': user, 'password': pwd},
-        timeout=90, allow_redirects=True)
-    if '/login' in r.url and 'Invalid' in (r.text or ''):
-        raise RuntimeError('staging login failed')
-    dash = session.get(f'{BASE}/dashboard', timeout=90, allow_redirects=True)
-    if '/login' in dash.url:
-        raise RuntimeError('redirected to login after auth')
-    csrf = _csrf_from_html(dash.text)
-    if not csrf:
-        raise RuntimeError('csrf-token missing')
-    session.headers['X-CSRFToken'] = csrf
-    session.headers['Content-Type'] = 'application/json'
-    session.headers['Referer'] = f'{BASE}/dashboard'
+    last_err: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            session.cookies.clear()
+            login_page = session.get(f'{BASE}/login', timeout=90)
+            r = session.post(
+                f'{BASE}/login', data={'username': user, 'password': pwd},
+                timeout=90, allow_redirects=True)
+            text = r.text or ''
+            if '/login' in r.url and (
+                    'Invalid username' in text or 'Invalid' in text):
+                raise RuntimeError('staging login failed')
+            dash = session.get(f'{BASE}/dashboard', timeout=90, allow_redirects=True)
+            csrf = _csrf_from_html(dash.text)
+            if not csrf:
+                csrf = _csrf_from_html(login_page.text)
+            if not csrf:
+                raise RuntimeError('csrf-token missing')
+            session.headers['X-CSRFToken'] = csrf
+            session.headers['Content-Type'] = 'application/json'
+            session.headers['Referer'] = f'{BASE}/dashboard'
+            probe = session.get(
+                f'{BASE}/api/strategy-status/00000000-0000-0000-0000-000000000000',
+                timeout=30)
+            if probe.status_code == 401:
+                raise RuntimeError('session not authenticated')
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            print(f'[login-retry] attempt {attempt + 1}/{retries}: {exc}', flush=True)
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(str(last_err) if last_err else 'login failed')
 
 
 def _poll_gen(session: requests.Session, tid: str) -> Dict[str, Any]:
@@ -643,13 +660,20 @@ def main() -> int:
         'passed': False,
     }
 
-    deploy = _trigger_deploy()
+    skip_deploy = os.environ.get('STAGING_SKIP_DEPLOY', '').strip().lower() in (
+        '1', 'true', 'yes')
+    if skip_deploy:
+        deploy = {'triggered': False, 'reason': 'STAGING_SKIP_DEPLOY=1'}
+        report['deploy_verify'] = _verify_deployed()
+    else:
+        deploy = _trigger_deploy()
+        if deploy.get('triggered'):
+            report['deploy_verify'] = _poll_deploy()
+        else:
+            report['deploy_verify'] = _verify_deployed()
     report['deploy'] = deploy
     print('[deploy]', deploy, flush=True)
-    if deploy.get('triggered'):
-        report['deploy_verify'] = _poll_deploy()
-    else:
-        report['deploy_verify'] = _verify_deployed()
+    print('[deploy-verify]', report['deploy_verify'], flush=True)
 
     if not report['deploy_verify'].get('ready'):
         report['blocker'] = (
@@ -668,13 +692,36 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 2
 
-    rows = []
+    out = OUT / 'rel33_all_domain_staging_acceptance.json'
+
+    def _flush_report() -> None:
+        report['routes'] = rows
+        report['all_p1_accepted'] = bool(rows) and all(r.get('accepted') for r in rows)
+        report['passed'] = report['all_p1_accepted'] and not report['git'].get('merged_to_main')
+        out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, default=str),
+            encoding='utf-8')
+
+    rows: List[Dict[str, Any]] = []
+    session = requests.Session()
+    session.headers['User-Agent'] = 'REL33-all-domain-staging/1.0'
     for case in P1_ROUTES:
         print(f"[route] {_route_key(case)}", flush=True)
-        session = requests.Session()
-        session.headers['User-Agent'] = 'REL33-all-domain-staging/1.0'
-        _login(session)
-        rows.append(_run_route(session, case))
+        try:
+            _login(session)
+            row = _run_route(session, case)
+        except Exception as exc:  # noqa: BLE001
+            row = {
+                'route': _route_key(case),
+                'route_key': _route_key(case),
+                'deployed_commit': TARGET_COMMIT,
+                'accepted': False,
+                'app_blockers': [f'route_runner_failed:{exc}'],
+                'script_blockers': [],
+                'blockers': [f'route_runner_failed:{exc}'],
+            }
+        rows.append(row)
+        _flush_report()
 
     report['routes'] = rows
     report['all_p1_accepted'] = all(r.get('accepted') for r in rows)
