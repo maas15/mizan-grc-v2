@@ -343,8 +343,12 @@ def _channel_defects(
         internal_roadmap_row_count: int | None = None,
         peer_row_counts: Optional[Dict[str, int]] = None,
         canonical_kpis: str = '',
-        docx_reference: str = '') -> Dict[str, Any]:
+        docx_reference: str = '',
+        document_type: str = 'strategy',
+        canonical_sections: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     blob = text or ''
+    dtype = str(document_type or 'strategy').strip().lower()
     try:
         from release_engine_v3.rel31_authority import rel31_in_export_adapter
         from release_engine.arabic_language_gate import (
@@ -354,7 +358,17 @@ def _channel_defects(
             blob = repair_rel3_arabic_canonical_text(blob)
     except Exception:  # noqa: BLE001
         pass
-    rel27 = rel27_channel_checks(blob)
+    rel27 = rel27_channel_checks(blob) if dtype == 'strategy' else {
+        'missing_sections': [],
+        'kpi_defects': [],
+        'roadmap_defects': [],
+        'risk_defects': [],
+        'traceability_defects': [],
+        'arabic_residues': [],
+        'kpi_canonical': {},
+        'roadmap_coverage': {},
+        'arabic_check': {},
+    }
     rel31_defects: List[str] = []
     substance_defects: List[str] = []
     try:
@@ -362,7 +376,8 @@ def _channel_defects(
             run_rel31_acceptance_checks,
         )
         rel31_defects = run_rel31_acceptance_checks(
-            blob, route=route, pdf_bytes=pdf_bytes)
+            blob, route=route, pdf_bytes=pdf_bytes,
+            document_type=dtype)
     except Exception:  # noqa: BLE001
         rel31_defects = []
     try:
@@ -395,6 +410,20 @@ def _channel_defects(
             if str(d).startswith('roadmap_bad_initiative')]
     risk_defects = list(dict.fromkeys(
         _risk_defects_in(blob) + (rel27.get('risk_defects') or [])))
+    if dtype == 'risk':
+        try:
+            from release_engine_v3.rel33_risk_treatment_evidence import (
+                risk_treatment_defects_for_channel,
+            )
+            risk_defects = risk_treatment_defects_for_channel(
+                blob,
+                route=route,
+                document_type=dtype,
+                canonical_sections=canonical_sections,
+                pdf_blob=docx_reference if route == 'pdf' else '',
+            )
+        except Exception:  # noqa: BLE001
+            risk_defects = list(dict.fromkeys(risk_defects))
     traceability_defects = list(dict.fromkeys(
         _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
     arabic_residues = list(dict.fromkeys(
@@ -492,19 +521,25 @@ def validate_actual_export_evidence(
             route='preview',
             internal_roadmap_row_count=internal_roadmap_row_count,
             peer_row_counts=peer_row_counts,
-            canonical_kpis=_canon_kpis)
+            canonical_kpis=_canon_kpis,
+            document_type=document_type,
+            canonical_sections=canonical_sections)
         if preview_text else {})
     docx_def = (
         _channel_defects(
             docx_text, route='docx',
             peer_row_counts=peer_row_counts,
-            canonical_kpis=_canon_kpis)
+            canonical_kpis=_canon_kpis,
+            document_type=document_type,
+            canonical_sections=canonical_sections)
         if docx_text else {})
     pdf_def = _channel_defects(
         pdf_text, route='pdf', pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
         canonical_kpis=_canon_kpis,
-        docx_reference=docx_text) if (pdf_text or pdf_bytes) else {}
+        docx_reference=docx_text,
+        document_type=document_type,
+        canonical_sections=canonical_sections) if (pdf_text or pdf_bytes) else {}
 
     blocking: List[str] = []
     route_norm = normalize_route(route_name or '')

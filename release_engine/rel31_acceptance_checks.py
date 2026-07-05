@@ -733,9 +733,13 @@ def run_rel31_acceptance_checks(
         blob: str,
         *,
         route: str = 'docx',
-        pdf_bytes: bytes = b'') -> List[str]:
+        pdf_bytes: bytes = b'',
+        document_type: str = 'strategy') -> List[str]:
     """Return standardized REL3.1 defect codes for one export channel."""
     if not (blob or '').strip() and not pdf_bytes:
+        return []
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype == 'risk':
         return []
     defects: List[str] = []
     route_n = (route or 'docx').lower()
