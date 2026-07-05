@@ -12,7 +12,9 @@ from release_engine_v3.rel32_preview_table_dom import (
 from release_engine_v3.rel32_table_schema_binding import (
     REL32_KPI_MAIN_EXPECTED_SCHEMA_AR,
     emit_rel32_kpi_main_schema_consistency_diag,
+    emit_rel32_kpi_owner_consistency_diag,
     evaluate_kpi_main_schema_consistency,
+    evaluate_kpi_owner_consistency,
     find_kpi_main_table,
     rebind_table_spec,
 )
@@ -98,14 +100,22 @@ def evaluate_kpi_main_schema_from_preview_html(
         *,
         route_name: str = 'preview',
 ) -> Dict[str, Any]:
-    dom = extract_table_dom_binding(html_text or '')
-    headers = dom.get('header_labels_from_dom') or []
-    cells = dom.get('first_row_cells') or []
+    from release_engine_v3.rel32_kpi_owner_consistency_evidence import (
+        _KpiTableRowsParser,
+        _bound_rows_from_cells,
+        evaluate_kpi_owner_consistency_from_preview_html,
+    )
     dom_check = evaluate_preview_dom_binding_check(html_text or '', 'kpi_main')
+    owner_diag = evaluate_kpi_owner_consistency_from_preview_html(
+        html_text, route_name=route_name)
+    parser = _KpiTableRowsParser()
+    parser.feed(html_text or '')
+    headers = parser.headers or list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    all_br = _bound_rows_from_cells(headers, parser.rows, repair=False)
     diag = evaluate_kpi_main_schema_consistency(
         route_name=route_name,
         header_labels=headers,
-        rows=[cells] if cells else [],
+        bound_rows=all_br,
         lang='ar',
     )
     if dom_check.get('blocking_errors'):
@@ -113,6 +123,12 @@ def evaluate_kpi_main_schema_from_preview_html(
             (diag.get('blocking_errors') or [])
             + (dom_check.get('blocking_errors') or [])))
         diag['kpi_main_schema_passed'] = not diag['blocking_errors']
+    if not owner_diag.get('kpi_owner_consistency_passed'):
+        diag['blocking_errors'] = list(dict.fromkeys(
+            (diag.get('blocking_errors') or [])
+            + (owner_diag.get('blocking_errors') or [])))
+        diag['kpi_main_schema_passed'] = not diag['blocking_errors']
+    diag['kpi_owner_consistency'] = owner_diag
     emit_rel32_kpi_main_schema_consistency_diag(diag)
     return diag
 
@@ -130,6 +146,7 @@ def evaluate_kpi_main_schema_from_export_text(
         header_labels=headers,
         rows=rows,
         lang=lang,
+        repair_rows=False,
     )
     if not headers:
         diag['blocking_errors'] = list(dict.fromkeys(
