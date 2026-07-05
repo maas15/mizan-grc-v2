@@ -141,6 +141,15 @@ def validate_returned_export_bytes(
             blocking_errors=blockers,
         )
     parity_sections = dict(artifact.legacy_sections or {})
+    if dtype == 'risk':
+        if not parity_sections.get('register'):
+            parity_sections['register'] = (
+                parity_sections.get('risk_register')
+                or parity_sections.get('confidence') or '')
+        if not parity_sections.get('treatments'):
+            parity_sections['treatments'] = (
+                parity_sections.get('treatment')
+                or parity_sections.get('risk_treatment') or '')
     if route_n == 'preview' and artifact.canonical_sections:
         from release_engine_v3.section_models import (
             canonical_legacy_sections_for_parity,
@@ -158,6 +167,7 @@ def validate_returned_export_bytes(
         pdf_text_extraction_unreliable=pdf_unreliable,
         pdf_bytes_had=bool(pdf_bytes),
         pdf_bytes=pdf_bytes if route_n == 'pdf' else b'',
+        docx_bytes=docx_bytes if route_n == 'docx' else b'',
         canonical_sections=parity_sections,
         final_hash=artifact.canonical_hash,
     )

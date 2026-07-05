@@ -304,6 +304,7 @@ def _export_live(
             if case['domain'] == 'cyber'
             else ['ISO 27001']),
         'artifact_id': artifact_id,
+        'strategy_id': artifact_id,
         'artifact_type': case['document_type'],
         'document_type': case['document_type'],
         'generation_mode': os.environ.get('STAGING_GENERATION_MODE', 'drafting'),

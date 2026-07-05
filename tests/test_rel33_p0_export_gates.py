@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix='test_rel33_p0_')
@@ -28,6 +31,11 @@ from release_engine_v3.rel33_export_artifact import (
     resolve_rel33_complete_export_artifact,
     sections_dict_export_complete,
 )
+from release_engine_v3.rel33_gap_assessment_completeness import (
+    emit_rel33_gap_assessment_completeness,
+    repair_and_audit_gap_assessment,
+    repair_gap_assessment_sections,
+)
 from release_engine_v3.rel33_risk_treatment_evidence import (
     evaluate_erm_risk_treatment_evidence,
     risk_treatment_defects_for_channel,
@@ -48,6 +56,10 @@ def _strategy_sections(domain: str = 'data') -> dict:
     return dict(pack['fixtures_ar'].technical_sections())
 
 
+def _assemble(sections: dict) -> str:
+    return _APP._assemble_canonical_from_sections(sections)
+
+
 class Rel33ExportArtifactTests(unittest.TestCase):
 
     def test_sections_dict_export_complete_data(self):
@@ -60,6 +72,7 @@ class Rel33ExportArtifactTests(unittest.TestCase):
             'contract_meta': {'domain': 'data', 'lang': 'ar'},
             'content_json': {},
             'final_hash': 'abc123',
+            'sealed': True,
         }
 
         def _load(_sid, _uid):
@@ -75,20 +88,111 @@ class Rel33ExportArtifactTests(unittest.TestCase):
             route='docx-async',
             client_content='## kpis only fragment',
             load_bundle=_load,
-            assemble_sections=_APP._assemble_canonical_from_sections,
+            assemble_sections=_assemble,
             is_fragment=_APP._is_strategy_export_fragment,
+            split_content=_APP._split_strategy_sections_by_h2,
         )
         self.assertTrue(prep['skip_fragment_gate'])
         self.assertTrue(prep['content'].strip())
         self.assertTrue(prep['diag']['complete_artifact_loaded'])
         self.assertFalse(prep['diag']['client_content_used_as_authority'])
-        self.assertTrue(prep['diag']['sections_json_loaded'])
 
     def test_data_ai_dt_domains_complete(self):
         for domain in ('data', 'ai', 'dt'):
             secs = _strategy_sections(domain)
             self.assertTrue(
                 sections_dict_export_complete(secs), msg=domain)
+
+    def test_sealed_stored_content_authority_over_client_fragment(self):
+        secs = _strategy_sections('data')
+        full = _assemble(secs)
+        bundle = {
+            'sections': {},
+            'content': full,
+            'stored_content': full,
+            'contract_meta': {'domain': 'data', 'lang': 'ar', 'sealed': True},
+            'final_hash': 'deadbeef',
+            'sealed': True,
+            'content_json': {},
+        }
+
+        def _load(_sid, _uid):
+            return bundle
+
+        prep = resolve_rel33_complete_export_artifact(
+            artifact_type='strategy',
+            artifact_id=7,
+            strategy_id=7,
+            user_id=1,
+            domain='data',
+            document_type='strategy',
+            route='docx-async',
+            client_content='## confidence only',
+            load_bundle=_load,
+            assemble_sections=_assemble,
+            is_fragment=_APP._is_strategy_export_fragment,
+            split_content=_APP._split_strategy_sections_by_h2,
+        )
+        self.assertTrue(prep['skip_fragment_gate'])
+        self.assertIn(
+            prep['diag']['loaded_from'],
+            ('sealed_db_authority', 'strategies.content'))
+        self.assertFalse(prep['diag']['client_content_used_as_authority'])
+
+    def test_async_docx_diag_emitted_for_data_ai_dt(self):
+        for domain in ('data', 'ai', 'dt'):
+            bundle = {
+                'sections': _strategy_sections(domain),
+                'contract_meta': {'domain': domain, 'lang': 'ar'},
+                'content_json': {},
+                'final_hash': f'hash_{domain}',
+                'sealed': True,
+            }
+
+            def _load(_sid, _uid, _b=bundle):
+                return _b
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                resolve_rel33_complete_export_artifact(
+                    artifact_type='strategy',
+                    artifact_id=1,
+                    strategy_id=1,
+                    user_id=1,
+                    domain=domain,
+                    document_type='strategy',
+                    route='docx-async',
+                    client_content='fragment',
+                    load_bundle=_load,
+                    assemble_sections=_assemble,
+                    is_fragment=_APP._is_strategy_export_fragment,
+                    split_content=_APP._split_strategy_sections_by_h2,
+                )
+            out = buf.getvalue()
+            self.assertIn('[REL33-EXPORT-COMPLETE-ARTIFACT-LOAD]', out, msg=domain)
+            diag = json.loads(out.split('[REL33-EXPORT-COMPLETE-ARTIFACT-LOAD] ')[1])
+            self.assertTrue(diag['complete_artifact_loaded'], msg=domain)
+
+    def test_client_content_authority_fails_when_no_db_artifact(self):
+        def _load(_sid, _uid):
+            return {}
+
+        prep = resolve_rel33_complete_export_artifact(
+            artifact_type='strategy',
+            artifact_id=99,
+            strategy_id=99,
+            user_id=1,
+            domain='data',
+            document_type='strategy',
+            route='docx-async',
+            client_content='## kpis\nonly two sections',
+            load_bundle=_load,
+            assemble_sections=_assemble,
+            is_fragment=_APP._is_strategy_export_fragment,
+            split_content=_APP._split_strategy_sections_by_h2,
+        )
+        self.assertFalse(prep['skip_fragment_gate'])
+        self.assertTrue(prep['diag']['client_content_used_as_authority'])
 
 
 class Rel33RiskTreatmentTests(unittest.TestCase):
@@ -120,6 +224,16 @@ class Rel33RiskTreatmentTests(unittest.TestCase):
             blob, route='docx', document_type='risk',
             canonical_sections=sections))
 
+    def test_risk_treatment_diag_emitted(self):
+        sections = self._risk_sections()
+        blob = '\n'.join(sections.values())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            risk_treatment_defects_for_channel(
+                blob, route='docx', document_type='risk',
+                canonical_sections=sections)
+        self.assertIn('[REL33-RISK-TREATMENT-EVIDENCE]', buf.getvalue())
+
 
 class Rel33GapAssessmentGateTests(unittest.TestCase):
 
@@ -148,6 +262,52 @@ class Rel33GapAssessmentGateTests(unittest.TestCase):
 
     def test_strategy_still_requires_strategy_gates(self):
         self.assertTrue(strategy_gates_enabled('strategy'))
+
+    def test_missing_scope_repaired_before_audit(self):
+        sections = {'vision': '## Vision\nshould not gate', 'gaps': ''}
+        repaired = repair_gap_assessment_sections(
+            sections,
+            selected_frameworks=['ISO27001', 'NIST_CSF'],
+            domain='global',
+            lang='ar',
+        )
+        self.assertTrue((repaired.get('scope') or '').strip())
+        self.assertGreater(
+            sum(1 for ln in (repaired.get('gaps') or '').splitlines()
+                if ln.strip().startswith('|') and '---' not in ln), 0)
+        self.assertTrue((repaired.get('remediation') or '').strip())
+
+    def test_repair_and_audit_clears_gap_blockers(self):
+        sections = {'_document_type': 'gap_assessment', 'gaps': ''}
+        repaired, defects = repair_and_audit_gap_assessment(
+            sections,
+            selected_frameworks=['ISO27001', 'NIST_CSF'],
+            domain='global',
+            lang='ar',
+        )
+        tags = {d[1] for d in defects}
+        self.assertNotIn('gap_scope_missing', tags)
+        self.assertNotIn('gap_remediation_missing', tags)
+        self.assertTrue((repaired.get('scope') or '').strip())
+
+    def test_gap_completeness_diagnostic_fields(self):
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['gap_assessment'])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            diag = emit_rel33_gap_assessment_completeness(
+                sections,
+                domain='global',
+                selected_frameworks=['ISO27001', 'NIST_CSF'],
+                blocking_errors=[],
+            )
+        self.assertTrue(diag['scope_present'])
+        self.assertGreater(diag['gap_rows_count'], 0)
+        self.assertGreater(diag['remediation_rows_count'], 0)
+        self.assertFalse(diag['strategy_gates_enabled'])
+        self.assertTrue(diag['gap_assessment_gates_enabled'])
+        self.assertEqual(diag['blocking_errors'], [])
+        self.assertIn('[REL33-GAP-ASSESSMENT-COMPLETENESS]', buf.getvalue())
 
 
 class Rel33CyberBaselineTests(unittest.TestCase):

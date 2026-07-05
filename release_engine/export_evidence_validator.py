@@ -346,6 +346,7 @@ def _channel_defects(
         docx_reference: str = '',
         document_type: str = 'strategy',
         canonical_sections: Optional[Dict[str, str]] = None,
+        docx_bytes: bytes = b'',
 ) -> Dict[str, Any]:
     blob = text or ''
     dtype = str(document_type or 'strategy').strip().lower()
@@ -415,12 +416,13 @@ def _channel_defects(
             from release_engine_v3.rel33_risk_treatment_evidence import (
                 risk_treatment_defects_for_channel,
             )
-            risk_defects = risk_treatment_defects_for_channel(
+            risk_defects =             risk_treatment_defects_for_channel(
                 blob,
                 route=route,
                 document_type=dtype,
                 canonical_sections=canonical_sections,
                 pdf_blob=docx_reference if route == 'pdf' else '',
+                docx_bytes=docx_bytes if route == 'docx' else b'',
             )
         except Exception:  # noqa: BLE001
             risk_defects = list(dict.fromkeys(risk_defects))
@@ -479,6 +481,7 @@ def validate_actual_export_evidence(
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
         pdf_bytes: bytes = b'',
+        docx_bytes: bytes = b'',
         route_name: str = '',
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
@@ -531,8 +534,9 @@ def validate_actual_export_evidence(
             peer_row_counts=peer_row_counts,
             canonical_kpis=_canon_kpis,
             document_type=document_type,
-            canonical_sections=canonical_sections)
-        if docx_text else {})
+            canonical_sections=canonical_sections,
+            docx_bytes=docx_bytes)
+        if (docx_text or docx_bytes) else {})
     pdf_def = _channel_defects(
         pdf_text, route='pdf', pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
