@@ -22,11 +22,8 @@ class DocumentRequestContext:
     artifact_id: str = ''
 
     def normalized_domain(self) -> str:
-        try:
-            from app import normalize_domain
-            return normalize_domain(self.domain or 'cyber')
-        except Exception:  # noqa: BLE001
-            return (self.domain or 'cyber').strip().lower()
+        from release_engine_v3.domain_codes import normalize_domain_code
+        return normalize_domain_code(self.domain or 'cyber', default='cyber')
 
     def normalized_document_type(self) -> str:
         dt = (self.document_type or 'strategy').strip().lower()

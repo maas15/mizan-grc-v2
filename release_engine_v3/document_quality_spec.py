@@ -586,15 +586,18 @@ def _so_target_has_scope(target: str, timeframe: str = '') -> bool:
     return False
 
 
-def check_strategic_objectives_positive_model(vision: str) -> List[str]:
+def check_strategic_objectives_positive_model(
+        vision: str,
+        *,
+        domain: str = 'cyber') -> List[str]:
     """Positive SO schema: complete rows, scoped targets, unique families."""
-    from cyber_board_ready_prcy88 import _detect_so_family
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain, default='cyber')
 
     defects: List[str] = []
     rows = _parse_so_table_rows(vision)
     if not rows:
         return ['so_table_missing']
-    family_hits: Dict[str, int] = {}
     for row in rows:
         obj = row.get('objective') or ''
         target = row.get('target') or ''
@@ -608,21 +611,49 @@ def check_strategic_objectives_positive_model(vision: str) -> List[str]:
             defects.append('so_target_percent_only')
         elif target.strip().endswith('%') and _arabic_word_count(target) < 3:
             defects.append('so_target_percent_only')
-        if target and not _so_target_has_scope(target, timeframe):
-            defects.append('so_target_without_scope')
+        if dcode == 'cyber':
+            if target and not _so_target_has_scope(target, timeframe):
+                defects.append('so_target_without_scope')
+    if dcode != 'cyber':
+        return list(dict.fromkeys(defects))[:12]
+
+    from cyber_board_ready_prcy88 import _detect_so_family
+
+    family_hits: Dict[str, int] = {}
+    for row in rows:
+        obj = row.get('objective') or ''
+        target = row.get('target') or ''
         prcy = _detect_so_family(obj)
         if prcy:
             spec = _PRCY88_SO_TO_SPEC.get(prcy)
             if spec:
                 family_hits[spec] = family_hits.get(spec, 0) + 1
+        if target and not _so_target_has_scope(target, row.get('timeframe') or ''):
+            defects.append('so_target_without_scope')
     for fam, count in family_hits.items():
         if count > 1:
             defects.append(f'so_duplicate_family:{fam}')
     return list(dict.fromkeys(defects))[:12]
 
 
-def check_so_families_present(vision: str) -> Tuple[List[str], Dict[str, bool]]:
-    """Positive SO family coverage (maps PRCY88 families to spec families)."""
+def check_so_families_present(
+        vision: str,
+        *,
+        domain: str = 'cyber') -> Tuple[List[str], Dict[str, bool]]:
+    """Positive SO family coverage (domain-aware)."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel32_registries import resolve_strategic_objective_registry
+
+    dcode = normalize_domain_code(domain, default='cyber')
+    if dcode != 'cyber':
+        registry = resolve_strategic_objective_registry(dcode)
+        rows = _count_so_objective_rows(vision)
+        present = {fam: rows >= len(registry) for fam in registry}
+        missing = (
+            [] if rows >= min(8, len(registry))
+            else list(registry.keys())[:8])
+        return missing, present
+
     from cyber_board_ready_prcy88 import (
         PRCY88_SO_FAMILIES,
         PRCY88_SO_FAMILY_TOKENS,
@@ -1142,7 +1173,10 @@ def _evaluate_visible_route(
     return evidence
 
 
-def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
+def _evaluate_canonical_sections(
+        sections: Dict[str, str],
+        *,
+        domain: str = 'cyber') -> Dict[str, Any]:
     """Positive model on canonical section markdown (pre-export)."""
     blob = '\n\n'.join(
         str(v) for v in (sections or {}).values() if isinstance(v, str))
@@ -1151,8 +1185,10 @@ def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
 
     vision = (sections or {}).get('vision', '') or ''
     so_rows = _count_so_objective_rows(vision)
-    so_missing_fams, so_fam_present = check_so_families_present(vision)
-    so_schema_defects = check_strategic_objectives_positive_model(vision)
+    so_missing_fams, so_fam_present = check_so_families_present(
+        vision, domain=domain)
+    so_schema_defects = check_strategic_objectives_positive_model(
+        vision, domain=domain)
     so_ok = (
         MIN_SO_OBJECTIVES <= so_rows <= MAX_SO_OBJECTIVES
         and not so_missing_fams
@@ -1279,8 +1315,11 @@ def evaluate_document_quality(
         extracted_docx_text: str = '',
         extracted_pdf_text: str = '',
         pdf_bytes: bytes = b'',
+        domain: str = 'cyber',
 ) -> Dict[str, Any]:
-    """Single authority compiler for Cyber Arabic Technical board-ready quality."""
+    """Single authority compiler for strategy document quality."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain, default='cyber')
     sections = dict(legacy_sections or {})
     if canonical_artifact is not None:
         if hasattr(canonical_artifact, 'legacy_sections'):
@@ -1288,7 +1327,7 @@ def evaluate_document_quality(
         elif isinstance(canonical_artifact, dict):
             sections.update(dict(canonical_artifact.get('sections') or {}))
 
-    canonical_eval = _evaluate_canonical_sections(sections)
+    canonical_eval = _evaluate_canonical_sections(sections, domain=dcode)
     canonical_kpis = (sections or {}).get('kpis', '') or ''
 
     peer_counts: Dict[str, int] = {}

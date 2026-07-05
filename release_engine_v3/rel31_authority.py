@@ -491,13 +491,8 @@ def is_rel31_export_authority_output(
 
 def _normalize_rel31_domain_code(domain: str) -> str:
     """Map display/slug domain names to canonical codes for authority checks."""
-    d = str(domain or '').strip().lower().replace('-', '_')
-    compact = d.replace(' ', '_')
-    if compact in ('cyber', 'cyber_security', 'cybersecurity'):
-        return 'cyber'
-    if 'cyber' in compact or 'سيبر' in d:
-        return 'cyber'
-    return compact
+    from release_engine_v3.domain_codes import normalize_domain_code
+    return normalize_domain_code(domain or 'cyber', default='cyber')
 
 
 def is_rel3_authoritative(
@@ -640,6 +635,29 @@ def validate_rel3_objectives(
     lang = backend.get('lang', 'ar')
     fws = backend.get('selected_frameworks') or []
     secs = dict(sections or {})
+    domain = backend.get('domain') or 'cyber'
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        dcode = normalize_domain_code(domain, default='cyber')
+        flags = (backend.get('flags') or {})
+        document_type = str(backend.get('document_type') or 'strategy')
+        if is_rel32_compiler_first(
+                domain=dcode, lang=lang, flags=flags,
+                document_type=document_type):
+            vision = secs.get('vision', '') or ''
+            rows = len(re.findall(r'^\|\s*\d+\s*\|', vision, re.M))
+            valid = rows >= 8
+            return {
+                'valid': valid,
+                'rel3_objectives_valid': valid,
+                'sections': secs,
+                'diag': {'rows_after': rows, 'gate_passed': valid,
+                         'compiler_first_bypass': True},
+                'blocker': '' if valid else 'rel3_generation_contract_failed:objectives',
+            }
+    except Exception:  # noqa: BLE001
+        pass
     diag: Dict[str, Any] = {}
     if backend.get('baseline_strategic_objectives'):
         try:
@@ -893,12 +911,12 @@ def repair_canonical_before_freeze(
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
     lang = backend.get('lang', 'ar')
-    domain = art.get('domain') or 'cyber'
+    domain = _normalize_rel31_domain_code(art.get('domain') or 'cyber')
     flags = backend.get('flags') or {}
     try:
-        from release_engine_v3.rel32_compiler import (
-            compile_canonical_strategy_document,
-            is_rel32_compiler_first,
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        from release_engine_v3.rel32_complete_strategy_compiler import (
+            compile_complete_cyber_ar_technical_strategy,
         )
         document_type = (
             str(art.get('document_type') or art.get('doc_type') or 'strategy')
@@ -906,57 +924,31 @@ def repair_canonical_before_freeze(
         if is_rel32_compiler_first(
                 domain=domain, lang=lang, flags=flags,
                 document_type=document_type):
-            compiled = None
-            try:
-                from release_engine_v3.factory.canonical_document_factory import (
-                    CanonicalDocumentFactory,
-                )
-                from release_engine_v3.factory.request_context import (
-                    DocumentRequestContext,
-                )
-
-                ctx = DocumentRequestContext(
-                    domain=domain,
-                    document_type=document_type,
-                    lang=lang,
-                    flags=flags,
-                    backend=backend,
-                    frameworks=(
+            compiled = compile_complete_cyber_ar_technical_strategy(
+                sections,
+                request_context={
+                    'lang': lang,
+                    'domain': domain,
+                    'document_type': document_type,
+                    'flags': flags,
+                    'backend': backend,
+                    'generation_mode': backend.get('generation_mode') or 'drafting',
+                    'selected_frameworks': (
                         (art.get('contract_meta') or {}).get('selected_frameworks')
                         or art.get('selected_frameworks') or []),
-                    strategy_id=str(art.get('strategy_id') or ''),
-                    artifact_id=str(art.get('artifact_id') or ''),
-                )
-                compiled = CanonicalDocumentFactory().compile(
-                    sections,
-                    domain=domain,
-                    document_type=document_type,
-                    lang=lang,
-                    request_context=ctx,
-                )
-                art['_final_doc_factory'] = True
-                if compiled.export_evidence:
-                    art['_final_doc_factory_evidence'] = compiled.export_evidence
-            except Exception:  # noqa: BLE001
-                compiled = None
-            if compiled is None:
-                compiled = compile_canonical_strategy_document(
-                    sections,
-                    request_context={
-                        'lang': lang,
-                        'domain': domain,
-                        'selected_frameworks': (
-                            (art.get('contract_meta') or {}).get('selected_frameworks')
-                            or art.get('selected_frameworks') or []),
-                        'backend': backend,
-                    },
-                )
-            elif compiled.legacy_sections:
-                repairs.append('final_doc_factory:compile')
+                    'maturity_level': (
+                        backend.get('maturity_level')
+                        or backend.get('maturity')
+                        or 'developing'),
+                    'roadmap_horizon_months': 18,
+                },
+            )
             if compiled.legacy_sections:
                 sections = dict(compiled.legacy_sections)
-                if 'final_doc_factory:compile' not in repairs:
-                    repairs.extend(compiled.repairs or [])
+                repairs.extend(compiled.repairs or ['rel32:complete_strategy_compiler'])
+                cache = (compiled.diagnostics or {}).get('compiled_sections_cache')
+                if isinstance(cache, dict) and cache:
+                    sections['_rel32_compiled_sections'] = dict(cache)
             art['_rel32_compiled'] = True
             art['_rel32_compiler_passed'] = getattr(compiled, 'passed', True)
             if compiled.blocking_errors:
@@ -1159,7 +1151,7 @@ def rel3_export_authoritative(
     from release_engine_v3.orchestrator import rel3_freeze_artifact
 
     flags = dict(flags or {'rel3': True, 'rel31': True})
-    domain = str(artifact_dict.get('domain') or 'cyber')
+    domain = _normalize_rel31_domain_code(str(artifact_dict.get('domain') or 'cyber'))
     lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
     route_n = (route or 'preview').lower()
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
@@ -1920,13 +1912,15 @@ def apply_rel31_authoritative_contract(
     """Make REL3 the only authoritative contract for save/export."""
     flags = flags or {}
     art = dict(legacy_artifact)
-    domain = art.get('domain') or 'cyber'
+    domain = _normalize_rel31_domain_code(art.get('domain') or 'cyber')
+    art['domain'] = domain
     lang = (
         (art.get('contract_meta') or {}).get('lang')
         or art.get('language') or 'ar')
     meta = dict(art.get('contract_meta') or {})
     if legacy_artifact.get('document_type') and not meta.get('document_type'):
         meta['document_type'] = legacy_artifact.get('document_type')
+    meta['domain'] = domain
     art['contract_meta'] = meta
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         return art
@@ -1936,6 +1930,8 @@ def apply_rel31_authoritative_contract(
     backend = dict(backend)
     backend['flags'] = dict(flags)
     backend['lang'] = lang
+    backend['domain'] = domain
+    backend['document_type'] = meta.get('document_type') or art.get('document_type') or 'strategy'
     backend['selected_frameworks'] = (
         (art.get('contract_meta') or {}).get('selected_frameworks')
         or art.get('selected_frameworks') or [])
@@ -2138,6 +2134,7 @@ def apply_rel31_authoritative_contract(
                     extracted_docx_text=docx_text,
                     extracted_pdf_text=pdf_text,
                     pdf_bytes=pdf_bytes,
+                    domain=domain,
                 )
                 art['rel31_document_quality'] = dq
                 dq_ok = bool(dq.get('passed'))

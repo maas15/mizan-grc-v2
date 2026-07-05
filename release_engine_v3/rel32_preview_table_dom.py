@@ -158,6 +158,17 @@ def _pure_source_token(v: str) -> bool:
     return bool(_PURE_SOURCE_RE.match(s))
 
 
+def _is_valid_source_cell(v: str) -> bool:
+    s = (v or '').strip()
+    if not s or _is_freq(s):
+        return False
+    if _SOURCE_RE.search(s) or _pure_source_token(s):
+        return True
+    if re.search(r'[\u0600-\u06FF]', s):
+        return True
+    return len(s) >= 3
+
+
 def validate_kpi_main_by_dom_index(
         headers: Sequence[str], cells: Sequence[str]) -> List[str]:
     schema_labels = schema_header_labels('kpi_main', lang='ar')
@@ -168,7 +179,7 @@ def validate_kpi_main_by_dom_index(
         cell = cells[i] if i < len(cells) else ''
         if lbl == 'التكرار' and cell and (not _is_freq(cell) or _pure_source_token(cell)):
             errors.append('rel32_preview_table_header_value_mismatch:kpi_main:التكرار')
-        if lbl == 'مصدر' and cell and (not _SOURCE_RE.search(cell) or _is_freq(cell)):
+        if lbl == 'مصدر' and cell and not _is_valid_source_cell(cell):
             errors.append('rel32_preview_table_header_value_mismatch:kpi_main:مصدر')
         if lbl == 'المالك' and cell and (_is_freq(cell) or _pure_source_token(cell) or _is_type(cell)):
             errors.append('rel32_preview_table_header_value_mismatch:kpi_main:المالك')

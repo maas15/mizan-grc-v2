@@ -32,6 +32,92 @@ def _kpi_main_section_blob(blob: str) -> str:
         return blob or ''
 
 
+def extract_kpi_main_header_labels_from_docx(raw: bytes) -> List[str]:
+    """Extract KPI main header from structured DOCX table cells."""
+    try:
+        from io import BytesIO
+        from docx import Document
+        doc = Document(BytesIO(raw))
+        expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [(c.text or '').strip() for c in row.cells]
+                if not cells:
+                    continue
+                blob_ln = ' '.join(cells).lower()
+                if not any(k in blob_ln for k in ('مؤشر', 'kpi', 'indicator', 'وصف')):
+                    continue
+                if cells[0] in ('#', 'رقم') or 'وصف المؤشر' in blob_ln:
+                    return cells
+                if cells[:len(expected)] == expected:
+                    return list(expected)
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def extract_kpi_main_rows_from_docx(raw: bytes) -> List[List[str]]:
+    """Extract KPI main data rows from structured DOCX tables."""
+    rows_out: List[List[str]] = []
+    try:
+        from io import BytesIO
+        from docx import Document
+        doc = Document(BytesIO(raw))
+        for table in doc.tables:
+            header_idx = -1
+            headers: List[str] = []
+            for i, row in enumerate(table.rows):
+                cells = [(c.text or '').strip() for c in row.cells]
+                blob_ln = ' '.join(cells).lower()
+                if header_idx < 0 and any(
+                        k in blob_ln for k in ('مؤشر', 'kpi', 'indicator', 'وصف')):
+                    header_idx = i
+                    headers = cells
+                    continue
+                if header_idx >= 0 and i > header_idx:
+                    if not cells or not cells[0]:
+                        continue
+                    if cells[0] in ('#', 'رقم') or '---' in cells[0]:
+                        continue
+                    if cells[0].replace('.', '').isdigit():
+                        rows_out.append(cells)
+            if rows_out:
+                break
+    except Exception:  # noqa: BLE001
+        return []
+    return rows_out
+
+
+def evaluate_kpi_main_schema_from_docx_bytes(
+        raw: bytes,
+        *,
+        route_name: str = 'docx',
+        lang: str = 'ar',
+) -> Dict[str, Any]:
+    headers = extract_kpi_main_header_labels_from_docx(raw)
+    rows = extract_kpi_main_rows_from_docx(raw)
+    if headers and rows:
+        diag = evaluate_kpi_main_schema_consistency(
+            route_name=route_name,
+            header_labels=headers,
+            rows=rows,
+            lang=lang,
+            repair_rows=False,
+        )
+        emit_rel32_kpi_main_schema_consistency_diag(diag)
+        return diag
+    text = ''
+    try:
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        text = extract_docx_visible_text(raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return evaluate_kpi_main_schema_from_export_text(
+        text, route_name=route_name, lang=lang)
+
+
 def extract_kpi_main_header_labels_from_text(blob: str) -> List[str]:
     """Extract KPI main header labels from returned DOCX/PDF/preview text."""
     section = _kpi_main_section_blob(blob)

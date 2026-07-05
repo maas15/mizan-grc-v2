@@ -40,7 +40,10 @@ from release_engine_v3.rel32_registries import (
     STRATEGIC_OBJECTIVE_REGISTRY,
     TRACEABILITY_CANONICAL_REGISTRY,
     TRACEABILITY_FAMILY_ORDER,
+    resolve_kpi_canonical_registry,
+    resolve_strategic_objective_registry,
 )
+from release_engine_v3.domain_codes import normalize_domain_code
 
 _RAW_AI_MARKDOWN_FORBIDDEN_AS_AUTHORITY = (
     'rel32_forbidden:raw_ai_markdown_structural_authority',
@@ -298,6 +301,7 @@ def _build_vision_section(
         *,
         lang: str,
         backend: Dict[str, Any],
+        domain: str = 'cyber',
 ) -> Tuple[str, Tuple[StrategicObjectiveRow, ...]]:
     rows: List[StrategicObjectiveRow] = []
     parts = [_heading_line('vision'), '']
@@ -310,8 +314,9 @@ def _build_vision_section(
         '| # | الهدف الاستراتيجي | المستهدف القابل للقياس | '
         'المبرر | الإطار الزمني |')
     parts.append('|---|---|---|---|---|')
-    for i, fam in enumerate(STRATEGIC_OBJECTIVE_REGISTRY, 1):
-        cat = STRATEGIC_OBJECTIVE_REGISTRY[fam]
+    so_registry = resolve_strategic_objective_registry(domain)
+    for i, fam in enumerate(so_registry, 1):
+        cat = so_registry[fam]
         obj, tgt, rationale, tf = cat[0], cat[1], cat[2], cat[3]
         rows.append(StrategicObjectiveRow(
             str(i), obj, tgt, rationale, tf, family=fam))
@@ -480,6 +485,7 @@ def _build_kpis_section(
         *,
         lang: str,
         backend: Dict[str, Any],
+        domain: str = 'cyber',
 ) -> Tuple[str, Tuple[KpiRow, ...], Tuple[KpiFormulaRow, ...]]:
     parts = [_heading_line('kpis'), '']
     parts.append(
@@ -488,20 +494,25 @@ def _build_kpis_section(
     parts.append('|---|---|---|---|---|---|---|---|')
     kpi_rows: List[KpiRow] = []
     formula_rows: List[KpiFormulaRow] = []
-    order = list(KPI_CANONICAL_REGISTRY_FULL.keys())
+    kpi_registry = resolve_kpi_canonical_registry(domain)
+    order = list(kpi_registry.keys())
     if not order:
-        order = ['soc_mttd', 'incident_response_mttr']
+        order = list(KPI_CANONICAL_REGISTRY_FULL.keys()) or [
+            'soc_mttd', 'incident_response_mttr']
     for i, fam in enumerate(order, 1):
-        reg = KPI_CANONICAL_REGISTRY_FULL[fam]
+        reg = kpi_registry[fam]
+        owner = reg.get('owner') or 'CISO'
+        freq = reg.get('frequency') or 'شهري'
+        if owner in ('—', '-', '—', '') or owner == freq:
+            owner = 'CISO' if normalize_domain_code(domain) == 'cyber' else 'CDO'
         kpi_rows.append(KpiRow(
             str(i), reg['label_ar'], reg.get('kpi_type', 'KPI'),
             reg['target'], reg['formula'], reg['source'],
-            reg.get('frequency', 'شهري'),
-            reg.get('owner', 'CISO'), family=fam))
+            freq, owner, family=fam))
         parts.append(
             f'| {i} | {reg["label_ar"]} | {reg.get("kpi_type", "KPI")} | '
             f'{reg["target"]} | {reg["formula"]} | {reg["source"]} | '
-            f'{reg.get("frequency", "شهري")} | {reg.get("owner", "CISO")} |')
+            f'{freq} | {owner} |')
         formula_rows.append(KpiFormulaRow(
             str(i), reg['label_ar'], reg['formula'], reg['source']))
     parts.append('')
@@ -654,7 +665,7 @@ def _document_from_sections(
 ) -> CanonicalStrategyDocument:
     vision_text, objectives = _build_vision_section(
         _extract_narrative_from_blob(sections.get('vision', '')),
-        lang=lang, backend=backend)
+        lang=lang, backend=backend, domain=domain)
     pillars_text, pillars, initiatives = _build_pillars_section(
         _extract_narrative_from_blob(sections.get('pillars', '')),
         lang=lang)
@@ -665,7 +676,7 @@ def _document_from_sections(
         sections.get('roadmap', ''),
         lang=lang, domain=domain, backend=backend)
     kpis_text, kpis, formulas = _build_kpis_section(
-        sections.get('kpis', ''), lang=lang, backend=backend)
+        sections.get('kpis', ''), lang=lang, backend=backend, domain=domain)
     _horizon = int(metadata.get('roadmap_horizon_months') or 18)
     _maturity_cur = str(
         metadata.get('maturity_level') or metadata.get('maturity') or 'initial')
@@ -816,7 +827,7 @@ def compile_canonical_strategy_document(
     """
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    domain = normalize_domain_code(str(ctx.get('domain') or 'cyber'), default='cyber')
     backend = dict(ctx.get('backend') or {})
     backend.setdefault('lang', lang)
     backend.setdefault('selected_frameworks', ctx.get('selected_frameworks') or [])
@@ -865,7 +876,7 @@ def compile_canonical_strategy_document(
         from release_engine_v3.document_quality_spec import (
             evaluate_document_quality,
         )
-        dqs = evaluate_document_quality(legacy_sections=legacy)
+        dqs = evaluate_document_quality(legacy_sections=legacy, domain=domain)
         if not dqs.get('passed'):
             for err in dqs.get('blocking_errors') or []:
                 blockers.append(f'rel32_dqs:{err}')
@@ -948,7 +959,8 @@ def apply_compiler_first_save_gate_sections(
 ) -> Tuple[Dict[str, str], List[str]]:
     """Replace AI sections with compiler-owned structure before save-gate validation."""
     if not is_rel32_compiler_first(
-            domain=domain, lang=lang, flags=flags,
+            domain=normalize_domain_code(domain, default='cyber'),
+            lang=lang, flags=flags,
             document_type=str(
                 (backend or {}).get('document_type') or 'strategy')):
         return dict(sections or {}), []
@@ -957,11 +969,12 @@ def apply_compiler_first_save_gate_sections(
     )
     _backend = dict(backend or {})
     _backend.setdefault('flags', dict(flags or {}))
+    dcode = normalize_domain_code(domain, default='cyber')
     compiled = compile_complete_cyber_ar_technical_strategy(
         dict(sections or {}),
         request_context={
             'lang': lang,
-            'domain': (domain or 'cyber').strip().lower(),
+            'domain': dcode,
             'maturity_level': maturity_level,
             'maturity': maturity_level,
             'roadmap_horizon_months': roadmap_horizon_months,
