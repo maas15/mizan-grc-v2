@@ -71,14 +71,15 @@ KPI_CANONICAL_REGISTRY_FULL: Dict[str, Dict[str, str]] = dict(
 for _kf in PRCY88_KPI_FAMILIES:
     if _kf in PRCY88_KPI_CATALOG_AR:
         _cells = PRCY88_KPI_CATALOG_AR[_kf]
+        # PRCY88 catalog order: … | source | owner | frequency |
         KPI_CANONICAL_REGISTRY_FULL[_kf] = {
             'label_ar': _cells[1],
             'kpi_type': _cells[2],
             'target': _cells[3],
             'formula': _cells[4],
             'source': _cells[5],
-            'frequency': _cells[6],
-            'owner': _cells[7] if len(_cells) > 7 else 'CISO',
+            'owner': _cells[6] if len(_cells) > 6 else 'CISO',
+            'frequency': _cells[7] if len(_cells) > 7 else 'شهري',
         }
 
 # ── Traceability canonical registry ─────────────────────────────────────────

@@ -45,6 +45,7 @@ KPI_CANONICAL_REGISTRY: Dict[str, Dict[str, str]] = {
         'formula': _MTTD_FORMULA,
         'source': 'SIEM / SOC',
         'frequency': 'شهري',
+        'owner': 'مدير SOC',
     },
     'incident_response_mttr': {
         'label_ar': 'متوسط زمن الاستجابة للحوادث الأمنية الحرجة',
@@ -53,6 +54,7 @@ KPI_CANONICAL_REGISTRY: Dict[str, Dict[str, str]] = {
         'formula': _MTTR_FORMULA,
         'source': 'ITSM / SOAR / SIEM',
         'frequency': 'شهري',
+        'owner': 'قائد CSIRT',
     },
 }
 

@@ -26,10 +26,17 @@ from release_engine_v3.rel32_kpi_main_schema_evidence import (
     extract_kpi_main_header_labels_from_text,
 )
 from release_engine_v3.rel32_preview_table_dom import render_preview_table_html
+from release_engine_v3.rel32_kpi_owner_consistency_evidence import (
+    evaluate_kpi_owner_consistency_from_export_text,
+    evaluate_kpi_owner_consistency_from_preview_html,
+)
 from release_engine_v3.rel32_table_schema_binding import (
     REL32_KPI_MAIN_EXPECTED_SCHEMA_AR,
+    _infer_kpi_owner_from_indicator,
+    _is_invalid_kpi_owner,
     _repair_kpi_row_dict,
     evaluate_kpi_main_schema_consistency,
+    evaluate_kpi_owner_consistency,
     rebind_table_spec,
     schema_header_labels,
 )
@@ -210,7 +217,7 @@ class Rel32KpiMainSchemaConsistencyTests(unittest.TestCase):
         bound = (tbl or {}).get('bound_rows') or []
         self.assertTrue(bound)
         row = bound[0]
-        self.assertIn('CISO', row.get('owner', '').upper())
+        self.assertIn('SOC', row.get('owner', '').upper())
         self.assertIn('شهري', row.get('frequency', ''))
         self.assertNotIn('CISO', row.get('frequency', ''))
 
@@ -226,6 +233,125 @@ class Rel32KpiMainSchemaConsistencyTests(unittest.TestCase):
         main = next(t for t in tables if t.get('schema') == 'kpi_main')
         self.assertEqual(len(main['header']), 8)
         self.assertNotIn('الإطار الزمني', main['header'])
+
+    def _bad_row(self, indicator, freq, owner):
+        return {
+            'row_num': '1',
+            'indicator': indicator,
+            'type': 'KPI',
+            'target': '≥ 90%',
+            'formula': 'عدد / إجمالي × 100',
+            'source': 'منصة',
+            'frequency': freq,
+            'owner': owner,
+        }
+
+    def test_kpi_row_with_dash_owner_is_repaired_before_render(self):
+        row = self._bad_row(
+            'نضج حوكمة الأمن السيبراني وسياسات معتمدة', 'ربع سنوي', '—')
+        fixed = _repair_kpi_row_dict(row)
+        self.assertFalse(_is_invalid_kpi_owner(fixed['owner'], frequency=fixed['frequency']))
+        self.assertEqual(fixed['owner'], 'CISO')
+        self.assertEqual(fixed['frequency'], 'ربع سنوي')
+
+    def test_kpi_row_with_monthly_owner_is_repaired_before_render(self):
+        row = self._bad_row(
+            'معدل معالجة الثغرات الحرجة ضمن SLA', 'شهري', 'شهري')
+        fixed = _repair_kpi_row_dict(row)
+        self.assertEqual(fixed['owner'], 'مدير الثغرات')
+        self.assertEqual(fixed['frequency'], 'شهري')
+
+    def test_kpi_row_with_quarterly_owner_is_repaired_before_render(self):
+        row = self._bad_row(
+            'معدل فشل اختبارات التصيد الاحتيالي', 'ربع سنوي', 'ربع سنوي')
+        fixed = _repair_kpi_row_dict(row)
+        self.assertEqual(fixed['owner'], 'مدير التوعية')
+        self.assertEqual(fixed['frequency'], 'ربع سنوي')
+
+    def test_docx_evidence_fails_when_owner_equals_frequency(self):
+        md = (
+            '## مؤشرات الأداء الرئيسية\n\n'
+            '| ' + ' | '.join(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR) + ' |\n'
+            '|---|---|---|---|---|---|---|---|\n'
+            '| 1 | معدل معالجة الثغرات | KPI | ≥ 95% | f | s | شهري | شهري |\n'
+        )
+        diag = evaluate_kpi_owner_consistency_from_export_text(md, route_name='docx')
+        self.assertFalse(diag['kpi_owner_consistency_passed'])
+        self.assertIn(1, diag['owner_equals_frequency_rows'])
+        self.assertIn('rel32_kpi_owner_equals_frequency', diag['blocking_errors'])
+
+    def test_pdf_evidence_fails_when_owner_equals_frequency(self):
+        md = (
+            '## مؤشرات الأداء الرئيسية\n\n'
+            '| ' + ' | '.join(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR) + ' |\n'
+            '|---|---|---|---|---|---|---|---|\n'
+            '| 2 | نسبة الامتثال | KPI | ≥ 90% | f | s | ربع سنوي | ربع سنوي |\n'
+        )
+        diag = evaluate_kpi_owner_consistency_from_export_text(md, route_name='pdf')
+        self.assertFalse(diag['kpi_owner_consistency_passed'])
+        self.assertIn('rel32_kpi_owner_invalid', diag['blocking_errors'])
+
+    def test_preview_evidence_fails_when_owner_is_dash(self):
+        hdr = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+        row = ['1', 'نضج حوكمة', 'KPI', '≥ 90%', 'f', 's', 'ربع سنوي', '—']
+        cells = ''.join(f'<td>{c}</td>' for c in row)
+        headers = ''.join(f'<th>{h}</th>' for h in hdr)
+        html = (
+            '<div data-table-id="kpi_main"><table><thead><tr>'
+            + headers + '</tr></thead><tbody><tr>' + cells + '</tr></tbody></table></div>'
+        )
+        diag = evaluate_kpi_owner_consistency_from_preview_html(html, route_name='preview')
+        self.assertFalse(diag['kpi_owner_consistency_passed'])
+        self.assertIn(1, diag['blank_owner_rows'])
+
+    def test_compiler_all_kpi_rows_have_valid_owners(self):
+        compiled = compile_canonical_strategy_document({}, request_context=_ctx())
+        kpis = compiled.legacy_sections.get('kpis', '')
+        diag = evaluate_kpi_owner_consistency_from_export_text(kpis, route_name='compiler')
+        self.assertTrue(diag['kpi_owner_consistency_passed'], diag)
+        self.assertEqual(diag['invalid_owner_rows'], [])
+        self.assertEqual(diag['blank_owner_rows'], [])
+        self.assertEqual(diag['owner_equals_frequency_rows'], [])
+
+    def test_kpi_main_row_count_identical_across_preview_docx_pdf(self):
+        compiled = compile_canonical_strategy_document({}, request_context=_ctx())
+        kpis = compiled.legacy_sections.get('kpis', '')
+        model = {
+            'lang': 'ar',
+            'render_layer': 'prcy41_professional',
+            'blocks': {'cover': {'title': 'x'}},
+            'order': ['cover'],
+        }
+        enriched = enrich_professional_blocks(
+            model, compiled.legacy_sections, {}, 'ar')
+        docx_diag = evaluate_kpi_main_schema_from_export_text(kpis, route_name='docx')
+        model_diag = evaluate_kpi_main_schema_from_model(enriched, route_name='model')
+        tables = split_kpi_tables(kpis, 'ar')
+        main = next(t for t in tables if t.get('schema') == 'kpi_main')
+        html = render_preview_table_html(
+            main['header'], main['rows'], schema_id='kpi_main')
+        preview_diag = evaluate_kpi_main_schema_from_preview_html(html, route_name='preview')
+        self.assertEqual(docx_diag['row_count'], model_diag['row_count'])
+        self.assertEqual(preview_diag['row_count'], model_diag['row_count'])
+        self.assertGreaterEqual(model_diag['row_count'], 11)
+
+    def test_schema_consistency_fails_on_blank_owner(self):
+        hdr = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+        diag = evaluate_kpi_main_schema_consistency(
+            route_name='preview',
+            header_labels=hdr,
+            bound_rows=[self._bad_row('نضج حوكمة', 'ربع سنوي', '—')],
+        )
+        self.assertFalse(diag['kpi_main_schema_passed'])
+        self.assertIn('rel32_kpi_owner_blank', diag['blocking_errors'])
+
+    def test_infer_owner_from_indicator_keywords(self):
+        self.assertEqual(
+            _infer_kpi_owner_from_indicator('نسبة تغطية DLP للبيانات'),
+            'مدير حماية البيانات')
+        self.assertEqual(
+            _infer_kpi_owner_from_indicator('مخاطر الأطراف الثالثة'),
+            'مدير إدارة الموردين')
 
 
 if __name__ == '__main__':

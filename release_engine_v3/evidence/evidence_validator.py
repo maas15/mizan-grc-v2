@@ -208,6 +208,28 @@ def validate_returned_export_bytes(
                 pdf_text, route_name='pdf')
         if kpi_diag:
             gate = merge_kpi_main_schema_blockers(gate, kpi_diag)
+        from release_engine_v3.rel32_kpi_owner_consistency_evidence import (
+            evaluate_kpi_owner_consistency_from_export_text,
+            evaluate_kpi_owner_consistency_from_preview_html,
+            merge_kpi_owner_consistency_blockers,
+        )
+        owner_diag: Dict[str, Any] = {}
+        if route_n == 'preview':
+            preview_html = export.preview_html or ''
+            if preview_html.strip():
+                owner_diag = evaluate_kpi_owner_consistency_from_preview_html(
+                    preview_html, route_name='preview')
+            elif preview_text.strip():
+                owner_diag = evaluate_kpi_owner_consistency_from_export_text(
+                    preview_text, route_name='preview')
+        elif route_n == 'docx' and docx_text.strip():
+            owner_diag = evaluate_kpi_owner_consistency_from_export_text(
+                docx_text, route_name='docx')
+        elif route_n == 'pdf' and pdf_text.strip():
+            owner_diag = evaluate_kpi_owner_consistency_from_export_text(
+                pdf_text, route_name='pdf')
+        if owner_diag:
+            gate = merge_kpi_owner_consistency_blockers(gate, owner_diag)
     except Exception:  # noqa: BLE001
         pass
     allowed, errors = block_export_if_evidence_fails(gate)
