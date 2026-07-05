@@ -144,22 +144,36 @@ def _csrf_from_html(html: str) -> Optional[str]:
     return None
 
 
-def _login(session: requests.Session, *, retries: int = 4) -> None:
+def _login(session: requests.Session, *, retries: int = 4, force: bool = False) -> None:
     pwd = os.environ.get('STAGING_PASSWORD', '').strip()
     if not pwd:
         raise RuntimeError('STAGING_PASSWORD unset')
     user = os.environ.get('STAGING_USERNAME', 'admin').strip()
+    if not force:
+        try:
+            probe = session.get(
+                f'{BASE}/api/strategy-status/00000000-0000-0000-0000-000000000000',
+                timeout=30)
+            if probe.status_code != 401:
+                dash = session.get(f'{BASE}/dashboard', timeout=90, allow_redirects=True)
+                csrf = _csrf_from_html(dash.text)
+                if csrf:
+                    session.headers['X-CSRFToken'] = csrf
+                    session.headers['Content-Type'] = 'application/json'
+                    session.headers['Referer'] = f'{BASE}/dashboard'
+                    return
+        except Exception:  # noqa: BLE001
+            pass
     last_err: Optional[Exception] = None
     for attempt in range(retries):
         try:
-            session.cookies.clear()
             login_page = session.get(f'{BASE}/login', timeout=90)
             r = session.post(
                 f'{BASE}/login', data={'username': user, 'password': pwd},
                 timeout=90, allow_redirects=True)
             text = r.text or ''
             if '/login' in r.url and (
-                    'Invalid username' in text or 'Invalid' in text):
+                    'Invalid username' in text or 'Invalid password' in text):
                 raise RuntimeError('staging login failed')
             dash = session.get(f'{BASE}/dashboard', timeout=90, allow_redirects=True)
             csrf = _csrf_from_html(dash.text)
@@ -179,6 +193,7 @@ def _login(session: requests.Session, *, retries: int = 4) -> None:
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             print(f'[login-retry] attempt {attempt + 1}/{retries}: {exc}', flush=True)
+            session.cookies.clear()
             time.sleep(5 * (attempt + 1))
     raise RuntimeError(str(last_err) if last_err else 'login failed')
 
@@ -322,13 +337,9 @@ def _kpi_schema_from_bytes(fmt: str, raw: bytes) -> Dict[str, Any]:
         )
         return evaluate_kpi_main_schema_from_docx_bytes(raw, route_name='docx')
     from release_engine_v3.rel32_kpi_main_schema_evidence import (
-        evaluate_kpi_main_schema_from_export_text,
+        evaluate_kpi_main_schema_from_pdf_bytes,
     )
-    from release_engine_v3.evidence.pdf_text_extractor import (
-        extract_pdf_visible_text,
-    )
-    text = extract_pdf_visible_text(raw)
-    return evaluate_kpi_main_schema_from_export_text(text, route_name='pdf')
+    return evaluate_kpi_main_schema_from_pdf_bytes(raw, route_name='pdf')
 
 
 def _local_hash_lock(
@@ -546,14 +557,10 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
 
     kpi = lock.get('kpi_main_schema') or {}
     if case['document_type'] == 'strategy':
-        row['kpi_main_schema_passed'] = bool(kpi.get('kpi_main_schema_passed'))
+        row['kpi_main_schema'] = kpi
         owner = kpi.get('kpi_owner_consistency') or {}
         row['kpi_owner_consistency_passed'] = bool(
             owner.get('kpi_owner_consistency_passed'))
-        row['kpi_main_schema'] = kpi
-        if not row['kpi_main_schema_passed']:
-            script_blockers.extend(
-                kpi.get('blocking_errors') or ['kpi_main_schema_failed'])
 
     dash = session.get(f'{BASE}/dashboard', timeout=90)
     csrf = _csrf_from_html(dash.text)
@@ -581,24 +588,30 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         app_blockers.extend(pdf.get('blocking_errors') or [
             'pdf_export_return_allowed=false'])
 
+    live_kpi_pass = {'docx': None, 'pdf': None}
     if case['document_type'] == 'strategy':
         for fmt, meta in (('docx', docx), ('pdf', pdf)):
             path = meta.get('path')
             if path and Path(path).exists():
                 live_kpi = _kpi_schema_from_bytes(fmt, Path(path).read_bytes())
+                live_kpi_pass[fmt] = bool(live_kpi.get('kpi_main_schema_passed'))
                 row['evidence_extractor_source'] = (
-                    'docx_structured_table' if fmt == 'docx' else 'pdf_text')
-                if not live_kpi.get('kpi_main_schema_passed'):
+                    'docx_structured_table' if fmt == 'docx' else 'pdf_structured_table')
+                if not live_kpi_pass[fmt]:
                     script_blockers.extend(
                         live_kpi.get('blocking_errors')
                         or [f'live_{fmt}_kpi_schema_failed'])
-                    row['kpi_main_schema_passed'] = False
-                else:
-                    row['kpi_main_schema_passed'] = True
-                    owner = live_kpi.get('kpi_owner_consistency') or {}
-                    if owner:
-                        row['kpi_owner_consistency_passed'] = bool(
-                            owner.get('kpi_owner_consistency_passed'))
+                owner = live_kpi.get('kpi_owner_consistency') or {}
+                if owner and not owner.get('kpi_owner_consistency_passed'):
+                    script_blockers.extend(
+                        owner.get('blocking_errors') or [f'live_{fmt}_kpi_owner_failed'])
+                    row['kpi_owner_consistency_passed'] = False
+                elif owner.get('kpi_owner_consistency_passed'):
+                    row['kpi_owner_consistency_passed'] = True
+                row[f'kpi_main_schema_{fmt}'] = live_kpi
+        row['kpi_main_schema_passed'] = all(
+            live_kpi_pass.get(fmt) for fmt in ('docx', 'pdf')
+            if live_kpi_pass.get(fmt) is not None)
 
     if not row['generation_save_allowed']:
         app_blockers.append('generation_save_allowed=false')
