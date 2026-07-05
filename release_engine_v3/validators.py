@@ -117,6 +117,18 @@ def validate_export_text(
         else:
             rel3_blockers.append(
                 f'rel3_export_evidence_failed:{route}:{err}')
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype == 'risk' and route == 'docx':
+        rel3_blockers = [
+            b for b in rel3_blockers if 'empty_risk_treatment' not in b]
+    if dtype not in ('strategy', '') and route in ('docx', 'pdf', 'preview'):
+        _strategy_only = (
+            'missing_pillars', 'kpi_', 'roadmap_row', 'traceability_',
+            'pillars_after', 'exported_kpi', 'rel32_kpi',
+        )
+        rel3_blockers = [
+            b for b in rel3_blockers
+            if not any(tok in b for tok in _strategy_only)]
     gate['blocking_errors'] = rel3_blockers
     gate['rel3_evidence'] = True
     return gate

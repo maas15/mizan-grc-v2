@@ -743,6 +743,7 @@ def main() -> int:
     out = OUT / 'rel33_all_domain_staging_acceptance.json'
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     print('[REL33-ALL-DOMAIN-STAGING-ACCEPTANCE]')
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     print('REL33_STAGING_ACCEPTANCE_PASS=1' if report['passed'] else 'REL33_STAGING_ACCEPTANCE_PASS=0')
     return 0 if report['passed'] else 1
