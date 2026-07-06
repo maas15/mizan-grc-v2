@@ -640,5 +640,59 @@ class Rel33FrozenCompletenessTests(unittest.TestCase):
         self.assertTrue(prep['diag']['artifact_id_collision_detected'])
 
 
+class Rel33ExportFrameworkParityTests(unittest.TestCase):
+    """Preview (/api/strategy/latest) and export must share framework context."""
+
+    def test_selected_frameworks_relaxed_forbidden_list(self):
+        ctx_no = _APP.get_strategy_domain_context('Data Management', lang='ar')
+        ctx_yes = _APP.get_strategy_domain_context(
+            'Data Management', lang='ar',
+            selected_frameworks=['ISO 27001', 'NIST CSF'])
+        self.assertGreaterEqual(
+            len(ctx_no['forbidden_terms']), len(ctx_yes['forbidden_terms']))
+
+    def test_db_row_frameworks_from_content_json(self):
+        import json as _json
+        row = {
+            'document_type': 'strategy',
+            'content_json': _json.dumps({
+                'selected_frameworks': ['ISO 27001', 'NIST CSF'],
+                'document_type': 'strategy',
+            }),
+            'sections_json': _json.dumps({'_document_type': 'strategy'}),
+        }
+        keys = row.keys()
+        fws, dtype = _APP._db_row_frameworks_and_document_type(row, keys)
+        self.assertEqual(fws, ['ISO 27001', 'NIST CSF'])
+        self.assertEqual(dtype, 'strategy')
+
+    def test_gap_db_load_without_frozen_blob(self):
+        from unittest.mock import patch
+        gap_sections = {
+            'scope': '## Scope\n\nAssessment scope for ISO 27001.',
+            'gaps': (
+                '| # | Gap | Framework |\n|---|---|---|\n'
+                '| 1 | IAM gap | ISO 27001 |\n'),
+            'remediation': '| # | Action |\n|---|---|\n| 1 | Fix IAM |\n',
+        }
+        bundle = {
+            'sections': gap_sections,
+            'content': '',
+            'document_type': 'gap_assessment',
+            'contract_meta': {
+                'document_type': 'gap_assessment',
+                'domain': 'global',
+                'lang': 'ar',
+            },
+            'domain': 'Global / Cross-Domain',
+            'content_json': {},
+        }
+        with patch.object(
+                _APP, '_load_sealed_strategy_export_bundle', return_value=bundle):
+            loaded = _APP._rel3_load_artifact_from_db_for_export('5', user_id=1)
+        self.assertEqual(loaded['document_type'], 'gap_assessment')
+        self.assertIn('ISO 27001', loaded['final_markdown'])
+
+
 if __name__ == '__main__':
     unittest.main()
