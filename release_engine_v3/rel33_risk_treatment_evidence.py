@@ -157,13 +157,22 @@ def evaluate_erm_risk_treatment_evidence(
     if pdf_extracted == 0 and pdf_blob.strip().startswith('|'):
         pdf_extracted = _count_markdown_table_data_rows(pdf_blob)
 
-    # Artifact sections are authoritative when present
+    if treatment_rows > 0 and docx_extracted == 0 and docx_bytes:
+        _table_rows = _count_treatment_rows_from_docx_bytes(docx_bytes)
+        if _table_rows > 0:
+            docx_extracted = _table_rows
     if treatment_rows > 0 and docx_extracted == 0:
         docx_extracted = treatment_rows
     if treatment_rows > 0 and pdf_extracted == 0:
         pdf_extracted = treatment_rows
 
     route_n = (route or 'docx').lower()
+    extractor_mismatch = (
+        route_n == 'docx'
+        and treatment_rows > 0
+        and pdf_extracted > 0
+        and docx_extracted <= 0
+    )
     extracted = docx_extracted if route_n == 'docx' else pdf_extracted
     empty = treatment_rows <= 0 and extracted <= 0
     blocking: List[str] = []
@@ -173,6 +182,8 @@ def evaluate_erm_risk_treatment_evidence(
     evidence_source = 'artifact_sections' if treatment_rows > 0 else 'exported_text'
     if extracted > 0 and treatment_rows <= 0:
         evidence_source = 'exported_text'
+    if extractor_mismatch and treatment_rows > 0:
+        evidence_source = 'artifact_sections'
 
     return {
         'route': route_n,
@@ -182,6 +193,7 @@ def evaluate_erm_risk_treatment_evidence(
         'docx_treatment_rows_extracted': docx_extracted,
         'pdf_treatment_rows_extracted': pdf_extracted,
         'evidence_source': evidence_source,
+        'extractor_mismatch': extractor_mismatch,
         'empty_risk_treatment': empty,
         'blocking_errors': blocking,
     }

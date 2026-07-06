@@ -110,6 +110,9 @@ def emit_rel33_gap_assessment_completeness(
         domain: str = 'global',
         selected_frameworks: Optional[List[str]] = None,
         blocking_errors: Optional[List[str]] = None,
+        phase: str = 'save_gate',
+        repair_applied: bool = False,
+        repaired_sections_persisted: bool = False,
 ) -> Dict[str, Any]:
     scope_present = bool((sections.get('scope') or '').strip())
     gap_rows = _count_table_rows(sections.get('gaps') or '')
@@ -133,6 +136,7 @@ def emit_rel33_gap_assessment_completeness(
             'executive_summary') or '').splitlines()
         if ln.strip() and not ln.strip().startswith('#')])
     diag = {
+        'phase': phase,
         'domain': domain,
         'document_type': 'gap_assessment',
         'selected_frameworks': _norm_frameworks(selected_frameworks),
@@ -140,6 +144,8 @@ def emit_rel33_gap_assessment_completeness(
         'gap_rows_count': gap_rows,
         'remediation_rows_count': remediation_rows,
         'recommendations_count': rec_count,
+        'repair_applied': repair_applied,
+        'repaired_sections_persisted': repaired_sections_persisted,
         'strategy_gates_enabled': strategy_gates_enabled('gap_assessment'),
         'gap_assessment_gates_enabled': gap_assessment_gates_enabled(
             'gap_assessment'),
@@ -169,6 +175,7 @@ def repair_and_audit_gap_assessment(
         selected_frameworks: Optional[List[str]] = None,
         domain: str = 'global',
         lang: str = 'ar',
+        phase: str = 'save_gate',
 ) -> tuple[Dict[str, str], List[tuple]]:
     repaired = repair_gap_assessment_sections(
         sections,
@@ -188,5 +195,8 @@ def repair_and_audit_gap_assessment(
         selected_frameworks=selected_frameworks,
         blocking_errors=[
             f'{tag}' for _sec, tag, _c, _m in defects],
+        phase=phase,
+        repair_applied=True,
+        repaired_sections_persisted=True,
     )
     return repaired, defects

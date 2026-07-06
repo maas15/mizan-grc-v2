@@ -36,6 +36,11 @@ from release_engine_v3.rel33_gap_assessment_completeness import (
     repair_and_audit_gap_assessment,
     repair_gap_assessment_sections,
 )
+from release_engine_v3.rel33_domain_guard import (
+    evaluate_export_domain_guard,
+    filter_compiler_first_contamination,
+)
+from release_engine_v3.rel33_risk_artifact import resolve_rel33_risk_export_artifact
 from release_engine_v3.rel33_risk_treatment_evidence import (
     evaluate_erm_risk_treatment_evidence,
     risk_treatment_defects_for_channel,
@@ -308,6 +313,8 @@ class Rel33GapAssessmentGateTests(unittest.TestCase):
         self.assertTrue(diag['gap_assessment_gates_enabled'])
         self.assertEqual(diag['blocking_errors'], [])
         self.assertIn('[REL33-GAP-ASSESSMENT-COMPLETENESS]', buf.getvalue())
+        self.assertIn('phase', diag)
+        self.assertIn('repair_applied', diag)
 
 
 class Rel33CyberBaselineTests(unittest.TestCase):
@@ -315,6 +322,162 @@ class Rel33CyberBaselineTests(unittest.TestCase):
     def test_cyber_strategy_fixture_complete(self):
         secs = _strategy_sections('cyber')
         self.assertTrue(sections_dict_export_complete(secs))
+
+
+class Rel33DomainGuardTests(unittest.TestCase):
+
+    def _domain_ctx(self, domain: str):
+        return _APP.get_strategy_domain_context(domain, lang='ar')
+
+    def test_data_allowed_control_reference_in_gaps(self):
+        sections = _strategy_sections('data')
+        sections['gaps'] = (
+            '## Gaps\n\n| # | Gap | Control ref |\n|---|---|---|\n'
+            '| 1 | IAM gap | NCA ECC control mapping |\n'
+        )
+        raw = _APP.validate_domain_isolation(
+            sections, self._domain_ctx('data'))
+        filtered = filter_compiler_first_contamination(
+            raw, domain_code='data', sections=sections)
+        self.assertEqual(filtered, [])
+
+    def test_data_cyber_canonical_vision_still_blocks(self):
+        from domains.cyber.fixtures_ar import technical_sections as cyber_secs
+        sections = dict(cyber_secs())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(_APP.DomainContaminationError):
+                evaluate_export_domain_guard(
+                    sections,
+                    domain='Data Management',
+                    language='ar',
+                    artifact_type='strategy',
+                    artifact_id=99,
+                    route='data:strategy:ar',
+                    validate_fn=_APP.validate_domain_isolation,
+                    domain_context_fn=_APP.get_strategy_domain_context,
+                    normalize_domain_fn=_APP.normalize_domain,
+                    contamination_error_cls=_APP.DomainContaminationError,
+                )
+        self.assertIn('[REL33-DOMAIN-GUARD-DECISION]', buf.getvalue())
+
+    def test_domain_guard_diag_emitted_on_pass(self):
+        sections = _strategy_sections('data')
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            diag = evaluate_export_domain_guard(
+                sections,
+                domain='Data Management',
+                language='ar',
+                artifact_type='strategy',
+                artifact_id=2,
+                route='data:strategy:ar',
+                validate_fn=_APP.validate_domain_isolation,
+                domain_context_fn=_APP.get_strategy_domain_context,
+                normalize_domain_fn=_APP.normalize_domain,
+                contamination_error_cls=_APP.DomainContaminationError,
+            )
+        self.assertTrue(diag['domain_guard_passed'])
+        self.assertIn('[REL33-DOMAIN-GUARD-DECISION]', buf.getvalue())
+
+
+class Rel33RiskArtifactTests(unittest.TestCase):
+
+    def _risk_row(self) -> dict:
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['risk'])
+        content = '\n\n'.join(sections.values())
+        return {
+            'id': 42,
+            'content': content,
+            'analysis': content,
+            'sections': sections,
+            'domain': 'Enterprise Risk Management',
+        }
+
+    def test_risk_loads_from_risks_table_not_strategy(self):
+        row = self._risk_row()
+
+        def _load_risk(rid, uid):
+            return row if int(rid) == 42 else None
+
+        def _load_strategy(sid, uid, domain=''):
+            return {'id': 1, 'domain': 'Cyber Security', 'document_type': 'strategy',
+                    'sections': {}, 'content': 'cyber'}
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            prep = resolve_rel33_risk_export_artifact(
+                artifact_id=42,
+                risk_id=42,
+                user_id=1,
+                domain='Enterprise Risk Management',
+                route='erm:risk:ar',
+                load_risk_row=_load_risk,
+                load_strategy_risk_row=_load_strategy,
+                assemble_sections=_APP._assemble_risk_from_sections,
+                normalize_domain_fn=_APP.normalize_domain,
+            )
+        self.assertGreater(prep['diag']['treatment_rows_count'], 0)
+        self.assertFalse(prep['diag']['artifact_id_collision_detected'])
+        self.assertEqual(prep['diag']['source_table_or_store'], 'risks')
+        self.assertIn('[REL33-RISK-ARTIFACT-LOAD]', buf.getvalue())
+
+    def test_cyber_strategy_id_collision_detected(self):
+        def _load_risk(rid, uid):
+            return None
+
+        def _load_strategy(sid, uid, domain=''):
+            return {'id': 1, 'domain': 'Cyber Security', 'document_type': 'strategy',
+                    'sections': {}, 'content': 'cyber'}
+
+        prep = resolve_rel33_risk_export_artifact(
+            artifact_id=1,
+            risk_id=1,
+            user_id=1,
+            domain='Enterprise Risk Management',
+            route='erm:risk:ar',
+            load_risk_row=_load_risk,
+            load_strategy_risk_row=_load_strategy,
+            assemble_sections=_APP._assemble_risk_from_sections,
+            normalize_domain_fn=_APP.normalize_domain,
+        )
+        self.assertTrue(prep['diag']['artifact_id_collision_detected'])
+
+    def test_docx_evidence_passes_with_canonical_rows_only(self):
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['risk'])
+        diag = evaluate_erm_risk_treatment_evidence(
+            '', route='docx', canonical_sections=sections)
+        self.assertFalse(diag['empty_risk_treatment'])
+        self.assertEqual(diag['blocking_errors'], [])
+
+
+class Rel33GapPreAuditTests(unittest.TestCase):
+
+    def test_pre_final_audit_repair_clears_blockers(self):
+        sections = {'_document_type': 'gap_assessment', 'gaps': ''}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            repaired, defects = repair_and_audit_gap_assessment(
+                sections,
+                selected_frameworks=['ISO27001', 'NIST_CSF'],
+                domain='global',
+                lang='ar',
+                phase='pre_final_audit',
+            )
+        tags = {d[1] for d in defects}
+        self.assertNotIn('gap_scope_missing', tags)
+        self.assertNotIn('gap_remediation_missing', tags)
+        self.assertTrue((repaired.get('scope') or '').strip())
+        self.assertTrue((repaired.get('remediation') or '').strip())
+        out = buf.getvalue()
+        self.assertIn('[REL33-GAP-ASSESSMENT-COMPLETENESS]', out)
+        _line = out.split('[REL33-GAP-ASSESSMENT-COMPLETENESS] ')[1].split('\n')[0]
+        diag = json.loads(_line)
+        self.assertEqual(diag['phase'], 'pre_final_audit')
+        self.assertTrue(diag['repair_applied'])
+        self.assertTrue(diag['repaired_sections_persisted'])
 
 
 if __name__ == '__main__':

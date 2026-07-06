@@ -304,11 +304,14 @@ def _export_live(
             if case['domain'] == 'cyber'
             else ['ISO 27001']),
         'artifact_id': artifact_id,
-        'strategy_id': artifact_id,
         'artifact_type': case['document_type'],
         'document_type': case['document_type'],
         'generation_mode': os.environ.get('STAGING_GENERATION_MODE', 'drafting'),
     }
+    if case['document_type'] == 'risk':
+        payload['risk_id'] = artifact_id
+    else:
+        payload['strategy_id'] = artifact_id
     r = session.post(f'{BASE}/api/generate-{fmt}-async', json=payload, timeout=90)
     r.raise_for_status()
     tid = r.json().get('task_id')
