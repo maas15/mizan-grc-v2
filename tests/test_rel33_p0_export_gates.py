@@ -387,6 +387,7 @@ class Rel33DomainGuardTests(unittest.TestCase):
                     domain_context_fn=_APP.get_strategy_domain_context,
                     normalize_domain_fn=_APP.normalize_domain,
                     contamination_error_cls=_APP.DomainContaminationError,
+                    is_compiler_first_fn=lambda **_: False,
                 )
         self.assertIn('[REL33-DOMAIN-GUARD-DECISION]', buf.getvalue())
 

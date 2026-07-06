@@ -97,8 +97,6 @@ def filter_compiler_first_contamination(
         return list(contamination or [])
     if row_domain_code and row_domain_code != domain_code:
         return list(contamination or [])
-    if _is_cyber_canonical_strategy_sections(sections):
-        return list(contamination or [])
     filtered: List[Dict[str, Any]] = []
     for rec in contamination or []:
         sec = str(rec.get('section') or '')
@@ -189,7 +187,9 @@ def evaluate_export_domain_guard(
             f'Export blocked — artifact domain {row_code!r} does not match '
             f'requested {domain_code!r}')
 
-    if _is_cyber_canonical_strategy_sections(sections_dict) and domain_code != 'cyber':
+    if (_is_cyber_canonical_strategy_sections(sections_dict)
+            and domain_code != 'cyber'
+            and not (compiler_first and domain_code in COMPILER_FIRST_DOMAIN_CODES)):
         diag['blocking_errors'] = ['cyber_canonical_artifact_in_non_cyber_domain']
         diag['contaminating_sections'] = ['vision', 'pillars']
         emit_rel33_domain_guard_decision(diag)

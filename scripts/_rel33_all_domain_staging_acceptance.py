@@ -348,7 +348,20 @@ def _export_live(
         payload['strategy_id'] = artifact_id
         payload['artifact_id'] = artifact_id
     r = session.post(f'{BASE}/api/generate-{fmt}-async', json=payload, timeout=90)
-    r.raise_for_status()
+    if r.status_code >= 400:
+        try:
+            body = r.json()
+        except Exception:  # noqa: BLE001
+            body = {'raw': (r.text or '')[:800]}
+        err = (
+            body.get('error') or body.get('reason')
+            or f'http_{r.status_code}')
+        return {
+            'export_return_allowed': False,
+            'blocking_errors': [err],
+            'http_status': r.status_code,
+            'response_body': body,
+        }
     tid = r.json().get('task_id')
     done = _poll_export(session, tid)
     meta: Dict[str, Any] = {'task_id': tid, 'export_status': done}
