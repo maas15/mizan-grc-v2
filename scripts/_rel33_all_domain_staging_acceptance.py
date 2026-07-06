@@ -249,6 +249,24 @@ def _poll_export(session: requests.Session, task_id: str) -> Dict[str, Any]:
 def _base_payload(case: Dict[str, str]) -> Dict[str, Any]:
     domain = case['domain']
     label = DOMAIN_LABELS.get(domain, domain)
+    if domain == 'cyber':
+        org_structure = 'CISO reports to CIO'
+        technologies = ['SIEM', 'IAM']
+    elif domain == 'data':
+        org_structure = 'Chief Data Officer reports to CIO'
+        technologies = ['Data Catalog', 'MDM Platform']
+    elif domain == 'ai':
+        org_structure = 'AI Governance Lead reports to CIO'
+        technologies = ['ML Platform', 'Model Registry']
+    elif domain == 'dt':
+        org_structure = 'Digital Transformation Lead reports to CIO'
+        technologies = ['ERP', 'Cloud Platform']
+    elif domain == 'erm':
+        org_structure = 'Chief Risk Officer reports to Board'
+        technologies = ['Risk Register', 'GRC Platform']
+    else:
+        org_structure = 'Compliance Lead reports to CIO'
+        technologies = ['GRC Tool', 'Audit Platform']
     payload: Dict[str, Any] = {
         'domain': label,
         'language': 'ar',
@@ -261,8 +279,8 @@ def _base_payload(case: Dict[str, str]) -> Dict[str, Any]:
              'NCA DCC (Data Cybersecurity Controls)']
             if domain == 'cyber'
             else ['ISO 27001', 'NIST CSF']),
-        'org_structure': 'CISO reports to CIO',
-        'technologies': ['SIEM', 'IAM'],
+        'org_structure': org_structure,
+        'technologies': technologies,
         'additional_tech': '',
         'maturity_level': 'developing',
         'challenges': f'REL3.3 P1 staging acceptance for {label}.',
