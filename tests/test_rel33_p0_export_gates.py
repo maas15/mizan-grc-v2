@@ -370,6 +370,42 @@ class Rel33DomainGuardTests(unittest.TestCase):
         )
         self.assertTrue(diag['domain_guard_passed'])
 
+    def test_data_bleed_passes_with_rel33_authority_flags(self):
+        from release_engine_v3.rel33_authority import is_rel33_compiler_first
+
+        sections = _strategy_sections('data')
+        sections['vision'] = (
+            '## Vision\n\nNCA ECC alignment with CISO oversight for data strategy.\n'
+        )
+        sections['environment'] = (
+            '## Environment\n\nSIEM and SOC references in regulatory context.\n'
+        )
+
+        def _compiler_first(**kw):
+            return is_rel33_compiler_first(
+                domain=kw.get('domain', 'Data Management'),
+                lang=kw.get('lang', 'ar'),
+                document_type=kw.get('document_type', 'strategy'),
+                flags={'rel3': True, 'rel31': True},
+            )
+
+        self.assertTrue(_compiler_first(domain='Data Management', lang='ar'))
+        diag = evaluate_export_domain_guard(
+            sections,
+            domain='Data Management',
+            language='ar',
+            artifact_type='strategy',
+            artifact_id=8,
+            route='data:strategy:ar',
+            validate_fn=_APP.validate_domain_isolation,
+            domain_context_fn=_APP.get_strategy_domain_context,
+            normalize_domain_fn=_APP.normalize_domain,
+            contamination_error_cls=_APP.DomainContaminationError,
+            is_compiler_first_fn=_compiler_first,
+        )
+        self.assertTrue(diag['domain_guard_passed'])
+        self.assertTrue(diag['compiler_first_artifact'])
+
     def test_data_cyber_canonical_vision_still_blocks(self):
         from domains.cyber.fixtures_ar import technical_sections as cyber_secs
         sections = dict(cyber_secs())
