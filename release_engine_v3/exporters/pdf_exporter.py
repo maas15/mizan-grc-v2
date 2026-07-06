@@ -54,6 +54,13 @@ def export_pdf(
                 'selected_frameworks': selected_frameworks,
                 'cyber_sealed_artifact': cyber_sealed_artifact,
                 'sections': backend.get('split_sections', lambda x: {})(content),
+                'metadata': {
+                    'document_type': str(
+                        backend.get('document_type') or 'strategy').strip().lower(),
+                    'org_name': org_name,
+                    'sector': sector,
+                    'selected_frameworks': selected_frameworks or [],
+                },
             }),
         )
     except ValueError as exc:

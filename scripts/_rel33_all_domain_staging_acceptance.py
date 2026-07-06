@@ -198,11 +198,20 @@ def _login(session: requests.Session, *, retries: int = 4, force: bool = False) 
     raise RuntimeError(str(last_err) if last_err else 'login failed')
 
 
-def _poll_gen(session: requests.Session, tid: str) -> Dict[str, Any]:
+def _poll_gen(
+        session: requests.Session,
+        tid: str,
+        *,
+        document_type: str = 'strategy',
+) -> Dict[str, Any]:
+    poll_path = (
+        f'/api/risk-status/{tid}'
+        if document_type == 'risk'
+        else f'/api/strategy-status/{tid}')
     deadline = time.time() + GEN_TIMEOUT
     null_streak = 0
     while time.time() < deadline:
-        r = session.get(f'{BASE}/api/strategy-status/{tid}', timeout=90)
+        r = session.get(f'{BASE}{poll_path}', timeout=90)
         if r.status_code == 401:
             raise RuntimeError('session expired during generation poll')
         data = r.json()
@@ -218,6 +227,12 @@ def _poll_gen(session: requests.Session, tid: str) -> Dict[str, Any]:
             null_streak = 0
         time.sleep(15)
     raise TimeoutError(f'generation {tid}')
+
+
+def _poll_endpoint_for(document_type: str) -> str:
+    if document_type == 'risk':
+        return '/api/risk-status'
+    return '/api/strategy-status'
 
 
 def _poll_export(session: requests.Session, task_id: str) -> Dict[str, Any]:
@@ -277,7 +292,7 @@ def _generate_live(session: requests.Session, case: Dict[str, str]) -> Dict[str,
     tid = start.get('task_id')
     if not tid:
         return {'status': 'error', 'error': f'no task_id: {start}'}
-    return _poll_gen(session, tid)
+    return _poll_gen(session, tid, document_type=dtype)
 
 
 def _export_live(
@@ -303,15 +318,17 @@ def _export_live(
              'NCA DCC (Data Cybersecurity Controls)']
             if case['domain'] == 'cyber'
             else ['ISO 27001']),
-        'artifact_id': artifact_id,
         'artifact_type': case['document_type'],
         'document_type': case['document_type'],
         'generation_mode': os.environ.get('STAGING_GENERATION_MODE', 'drafting'),
     }
-    if case['document_type'] == 'risk':
+    dtype = case['document_type']
+    if dtype == 'risk':
         payload['risk_id'] = artifact_id
+        payload['artifact_id'] = artifact_id
     else:
         payload['strategy_id'] = artifact_id
+        payload['artifact_id'] = artifact_id
     r = session.post(f'{BASE}/api/generate-{fmt}-async', json=payload, timeout=90)
     r.raise_for_status()
     tid = r.json().get('task_id')
@@ -495,7 +512,11 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         'deployed_commit': TARGET_COMMIT,
         'generation_saved_real': False,
         'strategy_id': None,
+        'risk_id': None,
         'artifact_id': None,
+        'artifact_type': case['document_type'],
+        'poll_endpoint': _poll_endpoint_for(case['document_type']),
+        'export_payload_artifact_id': None,
         'preview_rendered': False,
         'generation_save_allowed': False,
         'preview_dom_binding_passed': False,
@@ -531,19 +552,36 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         return row
 
     result = gen.get('result') or gen
+    poll_endpoint = row['poll_endpoint']
+    if case['document_type'] == 'risk':
+        if '/api/strategy-status' in poll_endpoint:
+            script_blockers.append('risk_route_uses_strategy_status_poll')
     sections = result.get('sections') or {}
     content = result.get('content') or result.get('analysis') or ''
     if isinstance(content, dict):
         content = json.dumps(content, ensure_ascii=False)
     if not str(content).strip() and sections:
         content = '\n\n'.join(str(v) for v in sections.values() if v)
-    artifact_id = (
-        result.get('strategy_id')
-        or result.get('risk_id')
-        or result.get('artifact_id')
-        or gen.get('task_id'))
-    row['strategy_id'] = artifact_id
+    risk_id = result.get('risk_id')
+    strategy_id = result.get('strategy_id')
+    if case['document_type'] == 'risk':
+        artifact_id = risk_id or result.get('artifact_id')
+        if not risk_id:
+            script_blockers.append('risk_id_missing_from_poll_result')
+        if strategy_id and not risk_id:
+            script_blockers.append('strategy_id_used_as_risk_authority')
+        if strategy_id and risk_id and str(strategy_id) != str(risk_id):
+            script_blockers.append('risk_poll_strategy_id_collision')
+        row['risk_id'] = risk_id
+        row['strategy_id'] = strategy_id
+    else:
+        artifact_id = strategy_id or result.get('artifact_id') or gen.get('task_id')
+        row['strategy_id'] = artifact_id
+        row['risk_id'] = None
     row['artifact_id'] = artifact_id
+    row['export_payload_artifact_id'] = artifact_id
+    if case['document_type'] == 'risk' and strategy_id and artifact_id == strategy_id:
+        script_blockers.append('export_uses_strategy_id_as_risk_authority')
     row['generation_saved_real'] = bool(artifact_id)
     row['generation_save_allowed'] = bool(
         result.get('success', True) and artifact_id)

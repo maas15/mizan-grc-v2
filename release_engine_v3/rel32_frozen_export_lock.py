@@ -61,7 +61,25 @@ def _merge_rel32_load_meta(
     meta.update(diag)
 
 
-def _frozen_export_complete(frozen: FinalDocumentArtifact) -> Tuple[bool, List[str]]:
+def _frozen_export_complete(
+        frozen: FinalDocumentArtifact,
+        *,
+        document_type: str = 'strategy',
+) -> Tuple[bool, List[str]]:
+    from release_engine_v3.rel33_frozen_completeness import (
+        evaluate_frozen_completeness_by_document_type,
+    )
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype != 'strategy':
+        complete, _, missing, _diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=dtype,
+                artifact_id=str(frozen.artifact_id or frozen.strategy_id or ''),
+                frozen=frozen if dtype == 'strategy' else None,
+                sections=dict(frozen.legacy_sections or {}),
+                loaded_from='frozen_artifact',
+            ))
+        return complete, missing
     missing: List[str] = []
     canon_hash = str(frozen.canonical_hash or '').strip()
     if not canon_hash:
@@ -167,6 +185,10 @@ def prepare_rel32_export_artifact_dict(
     art = dict(artifact_dict or {})
     domain = str(art.get('domain') or 'cyber')
     lang = str((art.get('contract_meta') or {}).get('lang') or 'ar')
+    document_type = str(
+        art.get('document_type')
+        or (art.get('contract_meta') or {}).get('document_type')
+        or 'strategy').strip().lower()
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return art
     lookup_keys = _rel32_lookup_keys(art, backend=backend)
@@ -181,7 +203,8 @@ def prepare_rel32_export_artifact_dict(
                 frozen = rel3_get_frozen_artifact(sid, backend=backend)
             except KeyError:
                 continue
-            complete, missing = _frozen_export_complete(frozen)
+            complete, missing = _frozen_export_complete(
+                frozen, document_type=document_type)
             if not complete:
                 art['incomplete_frozen_artifact'] = True
                 art['frozen_artifact_complete'] = False
@@ -229,6 +252,10 @@ def resolve_frozen_artifact_for_export(
     route_n = (route or '').lower()
     domain = str(artifact_dict.get('domain') or 'cyber')
     lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
+    document_type = str(
+        artifact_dict.get('document_type')
+        or (artifact_dict.get('contract_meta') or {}).get('document_type')
+        or 'strategy').strip().lower()
     sid = str(artifact_dict.get('strategy_id') or '').strip()
     aid = str(artifact_dict.get('artifact_id') or '').strip()
 
@@ -241,7 +268,9 @@ def resolve_frozen_artifact_for_export(
         'blocking_errors': [],
         **_default_rel32_load_meta(),
     }
-    if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+    if not is_rel32_compiler_first(
+            domain=domain, lang=lang, flags=flags,
+            document_type=document_type):
         return None, meta
 
     from release_engine_v3.canonical_document import _ARTIFACT_REGISTRY
@@ -255,7 +284,8 @@ def resolve_frozen_artifact_for_export(
             if key in _ARTIFACT_REGISTRY:
                 loaded_from_memory = True
             candidate = rel3_get_frozen_artifact(key, backend=backend)
-            complete, missing = _frozen_export_complete(candidate)
+            complete, missing = _frozen_export_complete(
+                candidate, document_type=document_type)
             if not complete:
                 meta['incomplete_frozen_artifact'] = True
                 meta['frozen_artifact_complete'] = False
@@ -467,6 +497,26 @@ def emit_rel32_frozen_artifact_export_lock(
         blockers.append('rel32_pdf_rebuilt_from_markdown')
     if route_state.get('incomplete_frozen_artifact'):
         blockers.append('rel32_incomplete_frozen_artifact')
+
+    # Non-strategy document types use REL33 completeness — not REL32 lock.
+    _lock_doc_type = str(
+        route_state.get('document_type')
+        or (lock_meta or {}).get('document_type')
+        or gen_lock.get('document_type') or 'strategy').strip().lower()
+    if _lock_doc_type in ('strategy', '') and sid.startswith('rel33-'):
+        _tail = sid[len('rel33-'):]
+        if '-' in _tail:
+            _lock_doc_type = _tail.split('-', 1)[1].split('-')[0].strip().lower()
+    if _lock_doc_type not in ('strategy', ''):
+        blockers = [
+            b for b in blockers
+            if b not in (
+                'rel32_docx_rebuilt_from_markdown',
+                'rel32_pdf_rebuilt_from_markdown',
+                'rel32_incomplete_frozen_artifact',
+            )]
+        docx_rebuilt = False
+        pdf_rebuilt = False
 
     export_lock_passed = (
         all_canon_equal

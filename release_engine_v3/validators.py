@@ -123,7 +123,8 @@ def validate_export_text(
     if dtype not in ('strategy', '') and route in ('docx', 'pdf', 'preview'):
         _strategy_only = (
             'missing_pillars', 'kpi_', 'roadmap_row', 'traceability_',
-            'pillars_after', 'exported_kpi', 'rel32_kpi',
+            'pillars_after', 'exported_kpi', 'rel32_kpi', 'pillar_owner',
+            'placeholder_pillar', 'strategic_heading', 'objectives',
         )
         rel3_blockers = [
             b for b in rel3_blockers

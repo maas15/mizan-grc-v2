@@ -385,11 +385,12 @@ def _channel_defects(
         from release_engine.rel31_content_substance_checks import (
             run_rel31_content_substance_checks,
         )
-        substance_defects = run_rel31_content_substance_checks(
-            blob, route=route, pdf_bytes=pdf_bytes,
-            peer_row_counts=peer_row_counts,
-            canonical_kpis=canonical_kpis,
-            docx_reference=docx_reference)
+        if dtype in ('strategy', ''):
+            substance_defects = run_rel31_content_substance_checks(
+                blob, route=route, pdf_bytes=pdf_bytes,
+                peer_row_counts=peer_row_counts,
+                canonical_kpis=canonical_kpis,
+                docx_reference=docx_reference)
     except Exception:  # noqa: BLE001
         substance_defects = []
     kpi_defects = list(dict.fromkeys(

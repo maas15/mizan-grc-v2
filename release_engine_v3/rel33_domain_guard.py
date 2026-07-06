@@ -13,6 +13,17 @@ REFERENCE_CONTEXT_SECTIONS = frozenset({
     'traceability', 'governance', 'flattened',
 })
 
+NON_STRATEGY_DOMAIN_GUARD_TYPES = frozenset({
+    'gap_assessment', 'risk', 'risk_assessment', 'policy', 'procedure',
+    'audit', 'roadmap', 'executive_summary',
+})
+
+COMPILER_FIRST_ALLOWED_REFERENCE_TERMS = frozenset({
+    'nca ecc', 'nca dcc', 'essential cybersecurity controls',
+    'ciso', 'csirt', 'soc', 'iso 27001', 'nist csf', 'ecc', 'dcc',
+    'الأمن السيبراني', 'ضوابط الأمن السيبراني',
+})
+
 PRIMARY_IDENTITY_SECTIONS = frozenset({'vision', 'pillars'})
 
 CYBER_PRIMARY_IDENTITY_MARKERS = (
@@ -107,6 +118,11 @@ def filter_compiler_first_contamination(
                     'reason': 'cyber_primary_in_reference_section',
                 })
             continue
+        if sec == 'flattened':
+            sec_text = _section_text(sections, sec)
+            if _has_cyber_primary_identity(sec_text):
+                filtered.append(rec)
+            continue
         filtered.append(rec)
     return filtered
 
@@ -142,6 +158,13 @@ def evaluate_export_domain_guard(
         except Exception:  # noqa: BLE001
             compiler_first = domain_code in COMPILER_FIRST_DOMAIN_CODES
 
+    allowed_refs = sorted({
+        str(t).strip()
+        for t in (selected_frameworks or [])
+        if str(t).strip()
+    })
+    allowed_refs.extend(sorted(COMPILER_FIRST_ALLOWED_REFERENCE_TERMS))
+
     diag: Dict[str, Any] = {
         'route': route or 'export',
         'domain': domain_code,
@@ -149,6 +172,8 @@ def evaluate_export_domain_guard(
         'artifact_type': str(artifact_type or 'strategy'),
         'document_type': dtype,
         'guard_phase': route or 'export_domain_isolation',
+        'blocked_terms': [],
+        'allowed_reference_terms': allowed_refs,
         'contaminating_terms': [],
         'contaminating_sections': [],
         'allowed_framework_terms': list(selected_frameworks or []),
@@ -157,6 +182,11 @@ def evaluate_export_domain_guard(
         'domain_guard_passed': False,
         'blocking_errors': [],
     }
+
+    if dtype in NON_STRATEGY_DOMAIN_GUARD_TYPES:
+        diag['domain_guard_passed'] = True
+        emit_rel33_domain_guard_decision(diag)
+        return diag
 
     if (artifact_type or 'strategy') != 'strategy':
         diag['domain_guard_passed'] = True
@@ -198,7 +228,9 @@ def evaluate_export_domain_guard(
             secs.add(str(rec.get('section') or ''))
             for t in rec.get('found_terms') or []:
                 terms.add(str(t))
-        diag['contaminating_terms'] = sorted(terms)
+        blocked = sorted(terms)
+        diag['blocked_terms'] = blocked
+        diag['contaminating_terms'] = blocked
         diag['contaminating_sections'] = sorted(secs)
         diag['blocking_errors'] = ['domain_contamination']
         emit_rel33_domain_guard_decision(diag)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 STRATEGY_EXPORT_SECTION_KEYS = frozenset({
     'vision', 'pillars', 'environment', 'gaps', 'roadmap', 'kpis',
@@ -44,6 +44,33 @@ def emit_rel33_export_complete_artifact_load(diag: Dict[str, Any]) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _gap_assessment_sections_complete(sections: Optional[Dict[str, Any]]) -> bool:
+    from release_engine_v3.rel33_frozen_completeness import (
+        evaluate_gap_assessment_sections_complete,
+    )
+    complete, _, _ = evaluate_gap_assessment_sections_complete(sections or {})
+    return complete
+
+
+def _assemble_gap_assessment_from_sections(sections: Dict[str, Any]) -> str:
+    order = ('scope', 'findings', 'executive_summary', 'gaps', 'remediation',
+             'guides', 'recommendations')
+    parts: List[str] = []
+    seen = set()
+    for key in order:
+        val = str((sections or {}).get(key) or '').strip()
+        if val:
+            parts.append(val)
+            seen.add(key)
+    for key, val in sorted((sections or {}).items()):
+        if str(key).startswith('_') or key in seen:
+            continue
+        vs = str(val or '').strip()
+        if vs:
+            parts.append(vs)
+    return '\n\n'.join(parts)
 
 
 def _legacy_sections_usable(sections: Dict[str, Any]) -> bool:
@@ -105,6 +132,49 @@ def resolve_rel33_complete_export_artifact(
         'skip_fragment_gate': False,
         'diag': diag,
     }
+
+    if atype == 'gap_assessment' or dtype == 'gap_assessment':
+        sid = strategy_id or artifact_id
+        if not sid:
+            diag['blocking_errors'] = ['missing_strategy_id']
+            emit_rel33_export_complete_artifact_load(diag)
+            return out
+        bundle = load_bundle(sid, user_id) or {}
+        out['bundle'] = bundle
+        sections = dict(bundle.get('sections') or {})
+        stored_content = str(bundle.get('content') or bundle.get('stored_content') or '')
+        if _gap_assessment_sections_complete(sections):
+            content = _assemble_gap_assessment_from_sections(sections)
+            if content.strip():
+                diag.update({
+                    'loaded_from': 'gap_assessment_sections_json',
+                    'sections_json_loaded': True,
+                    'complete_artifact_loaded': True,
+                    'export_fragment_checked_against': 'gap_assessment_complete',
+                })
+                out.update({
+                    'content': content,
+                    'sections': sections,
+                    'skip_fragment_gate': True,
+                })
+                emit_rel33_export_complete_artifact_load(diag)
+                return out
+        if stored_content.strip():
+            diag.update({
+                'loaded_from': 'gap_assessment_content',
+                'complete_artifact_loaded': True,
+                'export_fragment_checked_against': 'gap_assessment_content',
+            })
+            out.update({
+                'content': stored_content,
+                'sections': sections,
+                'skip_fragment_gate': True,
+            })
+            emit_rel33_export_complete_artifact_load(diag)
+            return out
+        diag['blocking_errors'] = ['gap_assessment_incomplete']
+        emit_rel33_export_complete_artifact_load(diag)
+        return out
 
     if atype != 'strategy':
         diag['export_fragment_checked_against'] = 'non_strategy_artifact'

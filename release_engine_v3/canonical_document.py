@@ -126,6 +126,11 @@ def build_final_document_artifact(
         or meta.get('domain')
         or 'cyber')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
+    document_type = str(
+        meta.get('document_type')
+        or legacy_artifact.get('document_type')
+        or legacy_sections.get('_document_type')
+        or 'strategy').strip().lower()
     backend = dict(legacy_artifact.get('_rel32_backend') or {})
     backend.setdefault('flags', {
         'rel3': True,
@@ -144,6 +149,7 @@ def build_final_document_artifact(
         legacy_sections=legacy_sections,
         domain=domain,
         lang=lang,
+        document_type=document_type,
     )
     blockers.extend(quality.get('blocking_errors') or [])
     rel2 = ((legacy_artifact.get('diagnostics') or {}).get('rel2') or {})
@@ -165,7 +171,7 @@ def build_final_document_artifact(
         strategy_id=strategy_id or aid,
         domain=str(domain).lower(),
         language='ar' if str(lang).lower().startswith('ar') else 'en',
-        document_type='strategy',
+        document_type=document_type,
         strategy_type=str(
             meta.get('doc_subtype') or legacy_artifact.get('strategy_type')
             or 'technical'),

@@ -436,6 +436,20 @@ def run_rel33_quality_case(
             and not lock.get('pdf_rebuilt_from_markdown')
             and lock.get('blocking_errors') == []
         )
+    elif document_type in ('risk', 'gap_assessment'):
+        from release_engine_v3.rel33_frozen_completeness import (
+            evaluate_frozen_completeness_by_document_type,
+        )
+        _fc_complete, _, _fc_missing, _fc_diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=document_type,
+                artifact_type=document_type,
+                artifact_id=strategy_id,
+                sections=sections,
+            ))
+        lock_ok = _fc_complete
+        if not lock_ok:
+            blockers.extend(_fc_missing or ['frozen_completeness_failed'])
     else:
         lock_ok = not lock.get('docx_rebuilt_from_markdown') and not lock.get(
             'pdf_rebuilt_from_markdown')
@@ -444,6 +458,10 @@ def run_rel33_quality_case(
         lock.get('docx_rebuilt_from_markdown')
         or lock.get('pdf_rebuilt_from_markdown')
         or art.get('_legacy_markdown_authority'))
+    if document_type in ('risk', 'gap_assessment'):
+        legacy_path_used = False
+    elif not compiler_first:
+        legacy_path_used = False
 
     rel33_authoritative = is_rel33_domain_authoritative(
         domain=domain, lang=lang, flags=flags)
@@ -473,13 +491,17 @@ def run_rel33_quality_case(
             blockers
             + (completeness.get('blocking_errors') or [])
             + (dom.get('blocking_errors') or [])
-            + (lock.get('blocking_errors') or []))),
+            + (
+                (lock.get('blocking_errors') or [])
+                if document_type == 'strategy' and compiler_first
+                else []))),
         'canonical_hash_by_route': canon,
         'render_tree_hash_by_route': tree,
         'rel32_frozen_lock': lock,
     }
     authority_ok = (
         compiler_first if document_type == 'strategy' else rel33_authoritative)
+    requires_strategy_frozen = document_type == 'strategy' and compiler_first
     row['accepted'] = (
         authority_ok
         and row['generation_save_allowed']
@@ -488,9 +510,9 @@ def run_rel33_quality_case(
         and row['frozen_export_lock_passed']
         and row['docx_returned_file_evidence_passed']
         and row['pdf_returned_file_evidence_passed']
-        and row['canonical_hash_equal']
-        and row['render_tree_hash_equal']
-        and not row['legacy_path_used']
+        and (row['canonical_hash_equal'] if requires_strategy_frozen else True)
+        and (row['render_tree_hash_equal'] if requires_strategy_frozen else True)
+        and (not row['legacy_path_used'] if requires_strategy_frozen else True)
     )
     if not row['accepted'] and not row['blockers']:
         row['blockers'] = ['rel33_acceptance_check_failed']

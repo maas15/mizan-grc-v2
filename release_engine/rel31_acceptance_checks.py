@@ -739,7 +739,7 @@ def run_rel31_acceptance_checks(
     if not (blob or '').strip() and not pdf_bytes:
         return []
     dtype = str(document_type or 'strategy').strip().lower()
-    if dtype == 'risk':
+    if dtype not in ('strategy', ''):
         return []
     defects: List[str] = []
     route_n = (route or 'docx').lower()

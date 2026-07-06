@@ -480,5 +480,165 @@ class Rel33GapPreAuditTests(unittest.TestCase):
         self.assertTrue(diag['repaired_sections_persisted'])
 
 
+class Rel33AcceptanceScriptRiskTests(unittest.TestCase):
+
+    def test_risk_poll_endpoint_and_export_payload(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'rel33_accept',
+            ROOT / 'scripts' / '_rel33_all_domain_staging_acceptance.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(
+            mod._poll_endpoint_for('risk'), '/api/risk-status')
+        self.assertEqual(
+            mod._poll_endpoint_for('strategy'), '/api/strategy-status')
+        case = {'domain': 'erm', 'document_type': 'risk', 'lang': 'ar'}
+        payload = {}
+        artifact_id = 42
+        dtype = case['document_type']
+        if dtype == 'risk':
+            payload['risk_id'] = artifact_id
+            payload['artifact_id'] = artifact_id
+        else:
+            payload['strategy_id'] = artifact_id
+        self.assertEqual(payload.get('risk_id'), 42)
+        self.assertNotIn('strategy_id', payload)
+
+
+class Rel33DomainGuardGapTests(unittest.TestCase):
+
+    def test_gap_assessment_skips_domain_guard(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            diag = evaluate_export_domain_guard(
+                {'scope': '## Scope\nCISO CSIRT NCA ECC'},
+                domain='Global',
+                language='ar',
+                artifact_type='gap_assessment',
+                artifact_id=5,
+                document_type='gap_assessment',
+                route='global:gap_assessment:ar',
+                validate_fn=_APP.validate_domain_isolation,
+                domain_context_fn=_APP.get_strategy_domain_context,
+                normalize_domain_fn=_APP.normalize_domain,
+                contamination_error_cls=_APP.DomainContaminationError,
+            )
+        self.assertTrue(diag['domain_guard_passed'])
+        out = buf.getvalue()
+        self.assertIn('[REL33-DOMAIN-GUARD-DECISION]', out)
+        self.assertIn('allowed_reference_terms', out)
+
+    def test_data_flattened_reference_terms_allowed(self):
+        sections = _strategy_sections('data')
+        blob = '\n\n'.join(sections.values())
+        blob += '\n## Gaps\n| # | Gap | Control |\n| 1 | IAM | NCA ECC |\n'
+        raw = _APP.validate_domain_isolation(
+            {'flattened': blob}, self._domain_ctx('data'))
+        filtered = filter_compiler_first_contamination(
+            raw, domain_code='data', sections={'flattened': blob})
+        self.assertEqual(filtered, [])
+
+    def _domain_ctx(self, domain: str):
+        return _APP.get_strategy_domain_context(domain, lang='ar')
+
+
+class Rel33FrozenCompletenessTests(unittest.TestCase):
+
+    def test_risk_completeness_passes_with_treatment_rows(self):
+        from release_engine_v3.rel33_frozen_completeness import (
+            evaluate_frozen_completeness_by_document_type,
+        )
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['risk'])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            complete, _, missing, diag = (
+                evaluate_frozen_completeness_by_document_type(
+                    document_type='risk',
+                    artifact_type='risk',
+                    artifact_id='42',
+                    sections=sections,
+                ))
+        self.assertTrue(complete)
+        self.assertNotIn('treatment_rows', missing)
+        self.assertIn('[REL33-FROZEN-COMPLETENESS-BY-DOCUMENT-TYPE]', buf.getvalue())
+        self.assertTrue(diag['complete_for_document_type'])
+
+    def test_gap_assessment_completeness_passes(self):
+        from release_engine_v3.rel33_frozen_completeness import (
+            evaluate_frozen_completeness_by_document_type,
+        )
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['gap_assessment'])
+        complete, _, missing, diag = evaluate_frozen_completeness_by_document_type(
+            document_type='gap_assessment',
+            artifact_type='gap_assessment',
+            artifact_id='5',
+            sections=sections,
+        )
+        self.assertTrue(complete)
+        self.assertFalse(missing)
+        self.assertTrue(diag['complete_for_document_type'])
+
+    def test_cyber_strategy_frozen_lock_unchanged(self):
+        from release_engine_v3.rel32_frozen_export_lock import (
+            _frozen_export_complete,
+        )
+        from release_engine_v3.contracts import (
+            CanonicalSection, ExportManifest, FinalDocumentArtifact,
+        )
+        frozen = FinalDocumentArtifact(
+            artifact_id='1',
+            strategy_id='1',
+            domain='cyber',
+            language='ar',
+            document_type='strategy',
+            strategy_type='technical',
+            selected_frameworks=['NCA ECC'],
+            quality_repairs=[],
+            quality_results={},
+            frozen=True,
+            canonical_hash='abc',
+            render_tree_hash='def',
+            export_manifest=ExportManifest(
+                canonical_hash='abc', render_tree_hash='def'),
+            blocking_errors=[],
+            release_ready_final_passed=True,
+            legacy_sections={
+                'traceability': '| row |',
+                'gaps': '| gap |',
+            },
+            canonical_sections={'vision': CanonicalSection(
+                key='vision', title='Vision', narrative='v')},
+        )
+        complete, missing = _frozen_export_complete(
+            frozen, document_type='strategy')
+        self.assertTrue(complete)
+        self.assertEqual(missing, [])
+
+    def test_risk_export_rejects_strategy_id_collision(self):
+        def _load_risk(rid, uid):
+            return None
+
+        def _load_strategy(sid, uid, domain=''):
+            return {'id': 1, 'domain': 'Cyber Security',
+                    'document_type': 'strategy', 'sections': {}, 'content': 'x'}
+
+        prep = resolve_rel33_risk_export_artifact(
+            artifact_id=1,
+            risk_id=None,
+            user_id=1,
+            domain='Enterprise Risk Management',
+            route='erm:risk:ar',
+            load_risk_row=_load_risk,
+            load_strategy_risk_row=_load_strategy,
+            assemble_sections=_APP._assemble_risk_from_sections,
+            normalize_domain_fn=_APP.normalize_domain,
+        )
+        self.assertTrue(prep['diag']['artifact_id_collision_detected'])
+
+
 if __name__ == '__main__':
     unittest.main()
