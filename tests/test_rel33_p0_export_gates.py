@@ -341,6 +341,35 @@ class Rel33DomainGuardTests(unittest.TestCase):
             raw, domain_code='data', sections=sections)
         self.assertEqual(filtered, [])
 
+    def test_data_partial_cyber_bleed_in_vision_allowed(self):
+        sections = _strategy_sections('data')
+        sections['vision'] = (
+            '## Vision\n\nNCA ECC alignment with CISO oversight for data strategy.\n'
+        )
+        sections['environment'] = (
+            '## Environment\n\nSIEM and SOC references in regulatory context.\n'
+        )
+        raw = _APP.validate_domain_isolation(
+            sections, self._domain_ctx('data'))
+        self.assertTrue(raw)
+        filtered = filter_compiler_first_contamination(
+            raw, domain_code='data', sections=sections)
+        self.assertEqual(filtered, [])
+        diag = evaluate_export_domain_guard(
+            sections,
+            domain='Data Management',
+            language='ar',
+            artifact_type='strategy',
+            artifact_id=7,
+            route='data:strategy:ar',
+            validate_fn=_APP.validate_domain_isolation,
+            domain_context_fn=_APP.get_strategy_domain_context,
+            normalize_domain_fn=_APP.normalize_domain,
+            contamination_error_cls=_APP.DomainContaminationError,
+            is_compiler_first_fn=lambda **_: True,
+        )
+        self.assertTrue(diag['domain_guard_passed'])
+
     def test_data_cyber_canonical_vision_still_blocks(self):
         from domains.cyber.fixtures_ar import technical_sections as cyber_secs
         sections = dict(cyber_secs())
