@@ -1171,6 +1171,20 @@ def rel3_export_authoritative(
 
     frozen_pre, lock_meta = resolve_frozen_artifact_for_export(
         art, backend=backend, route=route_n, flags=flags)
+    from release_engine_v3.rel33_frozen_completeness import (
+        rel33_compiler_first_sections_authority,
+    )
+    document_type = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type') or 'strategy').strip().lower()
+    if lock_meta.get('blocking_errors') and rel33_compiler_first_sections_authority(
+            art, domain=domain, lang=lang, flags=flags,
+            document_type=document_type):
+        lock_meta = dict(lock_meta)
+        lock_meta['blocking_errors'] = []
+        lock_meta['incomplete_frozen_artifact'] = False
+        lock_meta['frozen_artifact_complete'] = True
+        lock_meta['artifact_loaded_from'] = 'rel33_compiler_first_sections'
     if lock_meta.get('blocking_errors'):
         blockers = list(lock_meta['blocking_errors'])
         sid = str(art.get('strategy_id') or '')
@@ -1205,16 +1219,18 @@ def rel3_export_authoritative(
 
     if frozen_pre is None:
         from release_engine_v3.rel32_compiler import is_rel32_compiler_first
-        document_type = str(
-            (art.get('contract_meta') or {}).get('document_type')
-            or art.get('document_type') or 'strategy').strip().lower()
         if is_rel32_compiler_first(
                 domain=domain, lang=lang, flags=flags,
                 document_type=document_type):
             if route_n in ('docx', 'pdf'):
                 blockers = list(lock_meta.get('blocking_errors') or [])
                 if lock_meta.get('incomplete_frozen_artifact'):
-                    blockers.append('rel32_incomplete_frozen_artifact')
+                    if rel33_compiler_first_sections_authority(
+                            art, domain=domain, lang=lang, flags=flags,
+                            document_type=document_type):
+                        blockers = []
+                    else:
+                        blockers.append('rel32_incomplete_frozen_artifact')
                 elif lock_meta.get('docx_rebuilt_from_markdown') and (
                         route_n == 'docx'):
                     blockers.append('rel32_docx_rebuilt_from_markdown')

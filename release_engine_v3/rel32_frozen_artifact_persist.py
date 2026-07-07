@@ -273,9 +273,13 @@ def assess_db_bundle_for_export(
         persisted_blob: Optional[Dict[str, Any]],
         *,
         document_type: str = 'strategy',
+        domain: str = '',
+        lang: str = 'ar',
+        flags: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from release_engine_v3.rel33_frozen_completeness import (
         evaluate_frozen_completeness_by_document_type,
+        rel33_compiler_first_sections_authority,
     )
 
     dtype = str(document_type or 'strategy').strip().lower()
@@ -288,20 +292,25 @@ def assess_db_bundle_for_export(
         'traceability_rows_loaded_from': 'inferred_text',
         'incomplete_frozen_artifact': False,
         'document_type': dtype,
+        'domain': domain,
     }
     if dtype == 'gap_assessment':
         complete, _, missing, _fc_diag = (
             evaluate_frozen_completeness_by_document_type(
                 document_type=dtype,
+                domain=domain,
                 sections=sections,
                 persisted_blob=persisted_blob,
                 loaded_from='sections_json',
+                flags=flags,
             ))
         if complete:
             diag.update({
                 'frozen_artifact_complete': True,
                 'artifact_loaded_from': 'gap_assessment_sections',
                 'traceability_rows_loaded_from': 'gap_assessment',
+                'completeness_rule_used': _fc_diag.get(
+                    'completeness_rule_used'),
             })
             return diag
         diag.update({
@@ -310,6 +319,29 @@ def assess_db_bundle_for_export(
             'artifact_loaded_from': 'gap_assessment_sections',
         })
         return diag
+    if rel33_compiler_first_sections_authority(
+            {'sections': sections},
+            domain=domain,
+            lang=lang,
+            flags=flags,
+            document_type=dtype):
+        complete, _, missing, _fc_diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=dtype,
+                domain=domain,
+                sections=sections,
+                loaded_from='sections_json',
+                flags=flags,
+            ))
+        if complete:
+            diag.update({
+                'frozen_artifact_complete': True,
+                'artifact_loaded_from': 'rel33_compiler_first_sections',
+                'traceability_rows_loaded_from': 'sections_json',
+                'completeness_rule_used': _fc_diag.get(
+                    'completeness_rule_used'),
+            })
+            return diag
     if persisted_blob:
         complete, _, missing, _ = evaluate_frozen_completeness_by_document_type(
             document_type=dtype,

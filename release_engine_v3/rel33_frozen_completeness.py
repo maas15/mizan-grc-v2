@@ -36,6 +36,61 @@ GAP_REQUIRED = (
     'framework_mapping',
 )
 
+COMPILER_FIRST_NON_CYBER_DOMAINS = frozenset({'data', 'ai', 'dt'})
+
+REL33_COMPILER_FIRST_STRATEGY_REQUIRED = (
+    'strategy_sections',
+)
+
+
+def _norm_domain_code(domain: str) -> str:
+    try:
+        from release_engine_v3.rel31_authority import _normalize_rel31_domain_code
+        return _normalize_rel31_domain_code(domain or '')
+    except Exception:  # noqa: BLE001
+        return str(domain or '').strip().lower()
+
+
+def rel32_legacy_frozen_required(
+        *,
+        domain: str = 'cyber',
+        document_type: str = 'strategy',
+        flags: Optional[Dict[str, Any]] = None) -> bool:
+    """True when export must load a full REL3.2 cyber frozen artifact blob."""
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype != 'strategy':
+        return False
+    dcode = _norm_domain_code(domain)
+    if dcode == 'cyber':
+        return True
+    if dcode in COMPILER_FIRST_NON_CYBER_DOMAINS:
+        return False
+    return True
+
+
+def rel33_compiler_first_sections_authority(
+        artifact_dict: Dict[str, Any],
+        *,
+        domain: str = '',
+        lang: str = 'ar',
+        flags: Optional[Dict[str, Any]] = None,
+        document_type: str = 'strategy') -> bool:
+    """REL3.3 compiler-first data/ai/dt may export from complete sections_json."""
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype != 'strategy':
+        return False
+    from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+    from release_engine_v3.rel33_export_artifact import (
+        sections_dict_export_complete,
+    )
+    if not is_rel32_compiler_first(
+            domain=domain, lang=lang, flags=flags, document_type=dtype):
+        return False
+    if rel32_legacy_frozen_required(domain=domain, document_type=dtype, flags=flags):
+        return False
+    sections = dict((artifact_dict or {}).get('sections') or {})
+    return sections_dict_export_complete(sections)
+
 
 def emit_rel33_frozen_completeness_by_document_type(diag: Dict[str, Any]) -> None:
     try:
@@ -214,6 +269,8 @@ def evaluate_persisted_blob_complete(
 
 def evaluate_frozen_completeness_by_document_type(
         *,
+        route_name: str = '',
+        domain: str = '',
         document_type: str,
         artifact_type: str = '',
         artifact_id: str = '',
@@ -222,17 +279,37 @@ def evaluate_frozen_completeness_by_document_type(
         persisted_blob: Optional[Dict[str, Any]] = None,
         loaded_from: str = 'none',
         final_hash: str = '',
+        flags: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, List[str], List[str], Dict[str, Any]]:
     dtype = str(document_type or artifact_type or 'strategy').strip().lower()
     atype = str(artifact_type or dtype or 'strategy').strip().lower()
+    dcode = _norm_domain_code(domain or (frozen.domain if frozen else ''))
+    legacy_frozen = rel32_legacy_frozen_required(
+        domain=dcode, document_type=dtype, flags=flags)
+    completeness_rule = 'rel32_cyber_frozen' if legacy_frozen and dtype == 'strategy' else dtype
     complete = False
     present: List[str] = []
     missing: List[str] = []
     blocking: List[str] = []
 
     if frozen is not None and dtype == 'strategy':
-        complete, present, missing = evaluate_strategy_frozen_complete(frozen)
-        loaded_from = loaded_from or 'frozen_artifact'
+        if legacy_frozen:
+            complete, present, missing = evaluate_strategy_frozen_complete(frozen)
+            loaded_from = loaded_from or 'frozen_artifact'
+        else:
+            from release_engine_v3.rel33_export_artifact import (
+                sections_dict_export_complete,
+            )
+            secs = dict(frozen.legacy_sections or {})
+            if sections_dict_export_complete(secs):
+                present = list(REL33_COMPILER_FIRST_STRATEGY_REQUIRED)
+                missing = []
+                complete = True
+            else:
+                missing = ['strategy_sections_incomplete']
+                complete = False
+            completeness_rule = 'rel33_compiler_first_sections'
+            loaded_from = loaded_from or 'frozen_artifact_sections'
     elif persisted_blob is not None:
         complete, present, missing = evaluate_persisted_blob_complete(
             persisted_blob, document_type=dtype)
@@ -251,12 +328,14 @@ def evaluate_frozen_completeness_by_document_type(
                 sections_dict_export_complete,
             )
             if sections_dict_export_complete(sections):
-                present = ['strategy_sections']
+                present = list(REL33_COMPILER_FIRST_STRATEGY_REQUIRED)
                 missing = []
                 complete = True
+                completeness_rule = 'rel33_compiler_first_sections'
             else:
                 missing = ['strategy_sections_incomplete']
                 complete = False
+                completeness_rule = 'rel33_compiler_first_sections'
             loaded_from = loaded_from or 'sections_json'
     else:
         missing = ['no_artifact_source']
@@ -265,15 +344,23 @@ def evaluate_frozen_completeness_by_document_type(
     if missing:
         blocking = [f'missing:{m}' for m in missing]
 
+    required = list(
+        STRATEGY_REQUIRED if dtype == 'strategy' and legacy_frozen
+        else REL33_COMPILER_FIRST_STRATEGY_REQUIRED
+        if dtype == 'strategy'
+        else GAP_REQUIRED if dtype == 'gap_assessment'
+        else RISK_REQUIRED if dtype in ('risk', 'risk_assessment')
+        else ['strategy_sections'])
+
     diag: Dict[str, Any] = {
+        'route_name': str(route_name or ''),
+        'domain': dcode,
         'document_type': dtype,
         'artifact_type': atype,
         'artifact_id': str(artifact_id or ''),
-        'required_components': list(
-            STRATEGY_REQUIRED if dtype == 'strategy'
-            else GAP_REQUIRED if dtype == 'gap_assessment'
-            else RISK_REQUIRED if dtype in ('risk', 'risk_assessment')
-            else ['strategy_sections']),
+        'completeness_rule_used': completeness_rule,
+        'rel32_legacy_frozen_required': legacy_frozen,
+        'required_components': required,
         'present_components': present,
         'missing_components': missing,
         'complete_for_document_type': complete,

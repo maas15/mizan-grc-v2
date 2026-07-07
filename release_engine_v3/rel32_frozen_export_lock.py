@@ -65,18 +65,36 @@ def _frozen_export_complete(
         frozen: FinalDocumentArtifact,
         *,
         document_type: str = 'strategy',
+        domain: str = '',
+        lang: str = 'ar',
+        flags: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, List[str]]:
     from release_engine_v3.rel33_frozen_completeness import (
         evaluate_frozen_completeness_by_document_type,
+        rel32_legacy_frozen_required,
     )
     dtype = str(document_type or 'strategy').strip().lower()
+    dcode = str(domain or frozen.domain or 'cyber')
     if dtype != 'strategy':
         complete, _, missing, _diag = (
             evaluate_frozen_completeness_by_document_type(
                 document_type=dtype,
+                domain=dcode,
                 artifact_id=str(frozen.artifact_id or frozen.strategy_id or ''),
-                frozen=frozen if dtype == 'strategy' else None,
                 sections=dict(frozen.legacy_sections or {}),
+                loaded_from='frozen_artifact',
+                flags=flags,
+            ))
+        return complete, missing
+    if not rel32_legacy_frozen_required(
+            domain=dcode, document_type=dtype, flags=flags):
+        complete, _, missing, _diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=dtype,
+                domain=dcode,
+                artifact_id=str(frozen.artifact_id or frozen.strategy_id or ''),
+                frozen=frozen,
+                flags=flags,
                 loaded_from='frozen_artifact',
             ))
         return complete, missing
@@ -181,6 +199,9 @@ def prepare_rel32_export_artifact_dict(
     """Prefer generation-time frozen sections over client POST markdown."""
     from release_engine_v3.rel32_compiler import is_rel32_compiler_first
     from release_engine_v3.rel32_docx_renderer import sections_from_frozen_artifact
+    from release_engine_v3.rel33_frozen_completeness import (
+        rel33_compiler_first_sections_authority,
+    )
 
     art = dict(artifact_dict or {})
     domain = str(art.get('domain') or 'cyber')
@@ -204,8 +225,13 @@ def prepare_rel32_export_artifact_dict(
             except KeyError:
                 continue
             complete, missing = _frozen_export_complete(
-                frozen, document_type=document_type)
+                frozen, document_type=document_type,
+                domain=domain, lang=lang, flags=flags)
             if not complete:
+                if rel33_compiler_first_sections_authority(
+                        art, domain=domain, lang=lang, flags=flags,
+                        document_type=document_type):
+                    continue
                 art['incomplete_frozen_artifact'] = True
                 art['frozen_artifact_complete'] = False
                 art['missing_frozen_components'] = missing
@@ -248,6 +274,10 @@ def resolve_frozen_artifact_for_export(
     from release_engine_v3.rel31_authority import _bind_backend_sections
     from release_engine_v3.rel32_docx_renderer import sections_from_frozen_artifact
 
+    from release_engine_v3.rel33_frozen_completeness import (
+        rel33_compiler_first_sections_authority,
+    )
+
     flags = dict(flags or {})
     route_n = (route or '').lower()
     domain = str(artifact_dict.get('domain') or 'cyber')
@@ -285,8 +315,13 @@ def resolve_frozen_artifact_for_export(
                 loaded_from_memory = True
             candidate = rel3_get_frozen_artifact(key, backend=backend)
             complete, missing = _frozen_export_complete(
-                candidate, document_type=document_type)
+                candidate, document_type=document_type,
+                domain=domain, lang=lang, flags=flags)
             if not complete:
+                if rel33_compiler_first_sections_authority(
+                        artifact_dict, domain=domain, lang=lang, flags=flags,
+                        document_type=document_type):
+                    continue
                 meta['incomplete_frozen_artifact'] = True
                 meta['frozen_artifact_complete'] = False
                 meta['missing_frozen_components'] = missing
@@ -332,6 +367,16 @@ def resolve_frozen_artifact_for_export(
                     artifact_dict.get('missing_frozen_components') or [])
         _merge_rel32_load_meta(
             meta, backend=backend, artifact_dict=artifact_dict)
+        if rel33_compiler_first_sections_authority(
+                artifact_dict, domain=domain, lang=lang, flags=flags,
+                document_type=document_type):
+            meta['incomplete_frozen_artifact'] = False
+            meta['blocking_errors'] = []
+            meta['artifact_loaded_from'] = 'rel33_compiler_first_sections'
+            meta['frozen_artifact_complete'] = True
+            meta['docx_rebuilt_from_markdown'] = False
+            meta['pdf_rebuilt_from_markdown'] = False
+            return None, meta
         if (
                 meta.get('incomplete_frozen_artifact')
                 or meta.get('blocking_errors')):

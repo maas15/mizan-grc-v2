@@ -760,5 +760,163 @@ class Rel33ExportFrameworkParityTests(unittest.TestCase):
         self.assertIn('ISO 27001', loaded['final_markdown'])
 
 
+class Rel33CompilerFirstDocxParityTests(unittest.TestCase):
+
+    def _data_sections(self):
+        return _strategy_sections('data')
+
+    def test_data_sections_authority_without_cyber_frozen(self):
+        from release_engine_v3.rel33_frozen_completeness import (
+            rel32_legacy_frozen_required,
+            rel33_compiler_first_sections_authority,
+        )
+        sections = self._data_sections()
+        art = {'sections': sections, 'domain': 'Data Management'}
+        flags = {'rel3': True, 'rel31': True}
+        self.assertFalse(rel32_legacy_frozen_required(
+            domain='data', document_type='strategy', flags=flags))
+        self.assertTrue(rel33_compiler_first_sections_authority(
+            art, domain='Data Management', lang='ar', flags=flags))
+
+    def test_cyber_still_requires_legacy_frozen(self):
+        from release_engine_v3.rel33_frozen_completeness import (
+            rel32_legacy_frozen_required,
+        )
+        flags = {'rel3': True, 'rel31': True}
+        self.assertTrue(rel32_legacy_frozen_required(
+            domain='cyber', document_type='strategy', flags=flags))
+
+    def test_data_docx_export_allowed_without_frozen_blob(self):
+        from release_engine_v3.rel31_authority import rel3_export_authoritative
+        from release_engine_v3.rel32_frozen_export_lock import (
+            clear_rel32_frozen_export_lock,
+        )
+        from release_engine_v3.canonical_document import clear_artifact_registry
+
+        clear_rel32_frozen_export_lock()
+        clear_artifact_registry()
+        sections = self._data_sections()
+        content = '\n\n'.join(sections.values())
+        backend = _APP._rel31_backend_callables()
+        backend['_rel32_export_user_id'] = 1
+        art = {
+            'sections': sections,
+            'final_markdown': content,
+            'domain': 'Data Management',
+            'document_type': 'strategy',
+            'strategy_id': '77',
+            'artifact_id': '77',
+            'contract_meta': {
+                'lang': 'ar',
+                'domain': 'data',
+                'document_type': 'strategy',
+            },
+        }
+        flags = {'rel3': True, 'rel31': True}
+        kwargs = {
+            'filename': 'data.docx',
+            'lang': 'ar',
+            'domain': 'Data Management',
+            'selected_frameworks': ['ISO 27001'],
+            'doc_type': 'Strategy Document',
+        }
+        for route in ('docx', 'pdf'):
+            export, evidence = rel3_export_authoritative(
+                route, art, backend=backend, flags=flags,
+                export_kwargs=kwargs)
+            self.assertTrue(
+                evidence.export_return_allowed,
+                msg=f'{route} blocked: {evidence.blocking_errors}')
+            self.assertNotIn(
+                'rel32_incomplete_frozen_artifact',
+                evidence.blocking_errors or [])
+
+    def test_ai_dt_docx_same_authority_as_pdf(self):
+        from release_engine_v3.rel31_authority import rel3_export_authoritative
+        from release_engine_v3.rel32_frozen_export_lock import (
+            clear_rel32_frozen_export_lock,
+        )
+        from release_engine_v3.canonical_document import clear_artifact_registry
+
+        for domain_code, domain_label in (
+                ('ai', 'Artificial Intelligence'),
+                ('dt', 'Digital Transformation')):
+            clear_rel32_frozen_export_lock()
+            clear_artifact_registry()
+            sections = _strategy_sections(domain_code)
+            content = '\n\n'.join(sections.values())
+            backend = _APP._rel31_backend_callables()
+            art = {
+                'sections': sections,
+                'final_markdown': content,
+                'domain': domain_label,
+                'document_type': 'strategy',
+                'strategy_id': f'rel33-{domain_code}',
+                'artifact_id': f'rel33-{domain_code}',
+                'contract_meta': {
+                    'lang': 'ar',
+                    'domain': domain_code,
+                    'document_type': 'strategy',
+                },
+            }
+            flags = {'rel3': True, 'rel31': True}
+            kwargs = {
+                'filename': f'{domain_code}.docx',
+                'lang': 'ar',
+                'domain': domain_label,
+                'selected_frameworks': ['ISO 27001'],
+                'doc_type': 'Strategy Document',
+            }
+            docx, docx_ev = rel3_export_authoritative(
+                'docx', art, backend=backend, flags=flags,
+                export_kwargs=kwargs)
+            pdf, pdf_ev = rel3_export_authoritative(
+                'pdf', art, backend=backend, flags=flags,
+                export_kwargs=kwargs)
+            self.assertTrue(docx_ev.export_return_allowed, docx_ev.blocking_errors)
+            self.assertTrue(pdf_ev.export_return_allowed, pdf_ev.blocking_errors)
+
+    def test_gap_domain_guard_allows_framework_reference_terms(self):
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['gap_assessment'])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            diag = evaluate_export_domain_guard(
+                sections,
+                domain='Global',
+                language='ar',
+                artifact_type='gap_assessment',
+                artifact_id=6,
+                document_type='gap_assessment',
+                route='global:gap_assessment:ar',
+                validate_fn=_APP.validate_domain_isolation,
+                domain_context_fn=_APP.get_strategy_domain_context,
+                normalize_domain_fn=_APP.normalize_domain,
+                contamination_error_cls=_APP.DomainContaminationError,
+            )
+        self.assertTrue(diag['domain_guard_passed'])
+        self.assertIn('[REL33-DOMAIN-GUARD-DECISION]', buf.getvalue())
+
+    def test_gap_assessment_export_completeness_not_strategy_frozen(self):
+        from release_engine_v3.rel32_frozen_artifact_persist import (
+            assess_db_bundle_for_export,
+        )
+        from release_engine_v3.rel33_quality_matrix import REL33_TYPE_FIXTURES_AR
+        sections = dict(REL33_TYPE_FIXTURES_AR['gap_assessment'])
+        diag = assess_db_bundle_for_export(
+            sections, None, document_type='gap_assessment', domain='global')
+        self.assertTrue(diag.get('frozen_artifact_complete'))
+        self.assertEqual(
+            diag.get('artifact_loaded_from'), 'gap_assessment_sections')
+
+    def test_rel33_export_document_type_helper(self):
+        self.assertEqual(
+            _APP._rel33_export_document_type('gap_assessment'),
+            'gap_assessment')
+        self.assertEqual(_APP._rel33_export_document_type('risk'), 'risk')
+        self.assertEqual(
+            _APP._rel33_export_document_type('strategy'), 'strategy')
+
+
 if __name__ == '__main__':
     unittest.main()
