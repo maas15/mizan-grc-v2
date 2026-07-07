@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+_REL33_FAMILY_MARKER_RE = re.compile(
+    r'family:([a-z][a-z0-9_]{1,48})', re.IGNORECASE)
 
 _TASHKEEL_RE = re.compile(r'[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]')
 _TATWEEL = '\u0640'
@@ -94,6 +97,43 @@ ROADMAP_FAMILY_ALIASES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def detect_family_markers(text: str) -> List[str]:
+    """Return roadmap family ids embedded as ``family:<id>`` in returned text."""
+    if not text:
+        return []
+    try:
+        from release_engine.roadmap_model import ROADMAP_FAMILIES
+        allowed = set(ROADMAP_FAMILIES)
+    except Exception:  # noqa: BLE001
+        allowed = set()
+    found: List[str] = []
+    for m in _REL33_FAMILY_MARKER_RE.finditer(str(text)):
+        fam = (m.group(1) or '').strip().lower()
+        if fam and (not allowed or fam in allowed):
+            found.append(fam)
+    return list(dict.fromkeys(found))
+
+
+def stamp_roadmap_family_markers(row: Dict[str, str]) -> str:
+    """Build a compact ASCII marker suffix for a roadmap row's families."""
+    try:
+        from release_engine.roadmap_model import (
+            ROADMAP_FAMILIES,
+            _FAMILY_TOKENS,
+            _families_for_row,
+        )
+        fams = list(_families_for_row(row or {}))
+        if not fams:
+            blob = ' '.join(str(v) for v in (row or {}).values())
+            present = detect_families_normalized(
+                blob, dict(_FAMILY_TOKENS))
+            fams = [f for f in ROADMAP_FAMILIES if present.get(f)]
+        markers = [f'family:{f}' for f in fams if f in ROADMAP_FAMILIES]
+        return ' '.join(markers)
+    except Exception:  # noqa: BLE001
+        return ''
+
+
 def detect_families_normalized(
         text: str,
         family_tokens: Dict[str, Tuple[str, ...]],
@@ -106,6 +146,8 @@ def detect_families_normalized(
     parsing); this only flips additional families to ``True``.
     """
     out: Dict[str, bool] = dict(present or {})
+    for fam in detect_family_markers(text):
+        out[fam] = True
     for fam, tokens in family_tokens.items():
         if out.get(fam):
             continue

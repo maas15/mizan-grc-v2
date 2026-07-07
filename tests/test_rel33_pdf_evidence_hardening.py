@@ -226,6 +226,13 @@ class Rel33RoadmapFamilyDetectionTests(unittest.TestCase):
         self.assertIn('awareness_training', diag['detected_families'])
         self.assertTrue(diag['normalized_text_used'])
 
+    def test_family_marker_detected_in_export_text(self):
+        blob = 'مخرج المرحلة family:awareness_training family:governance_ciso'
+        d = detect_families_normalized(
+            blob, {'awareness_training': ('توعية',)})
+        self.assertTrue(d.get('awareness_training'))
+        self.assertTrue(d.get('governance_ciso'))
+
 
 if __name__ == '__main__':
     unittest.main()

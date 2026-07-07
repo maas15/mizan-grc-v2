@@ -581,6 +581,19 @@ def _compact_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         out[5] = 'NCA DCC' if 'DCC' in fw.upper() else 'NCA ECC'
     elif len(fw) > 24:
         out[5] = _compact_roadmap_cell(fw, lang, max_len=24)
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import (
+            stamp_roadmap_family_markers,
+        )
+        row_dict = {
+            'phase': out[0], 'period': out[1], 'initiative': out[2],
+            'owner': out[3], 'output': out[4], 'framework': out[5],
+        }
+        markers = stamp_roadmap_family_markers(row_dict)
+        if markers and markers not in str(out[4]):
+            out[4] = f'{out[4].strip()} {markers}'.strip()
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -1422,6 +1435,15 @@ def compute_pdf_export_layout_fallbacks(
     merged = _apply_prcy86_mandatory_ar_pdf_fallbacks(model, lang, merged)
     merged = _apply_prcy87_executive_ar_pdf_layout(model, lang, merged)
     merged = _apply_prcy77_warning_driven_ar_pdf_fallbacks(model, lang, merged)
+    # REL3.3 — canonical KPI main must stay a real 8-column table in PDF
+    # (never kpi_cards) so returned-file structured extraction can recover the
+    # schema headers and rows for evidence validation.
+    for _ks in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+        if _kpi_table_has_canonical_schema(model, _ks):
+            merged.pop(_ks, None)
+            canon = _canonical_stack_schema(_ks)
+            if canon:
+                merged.pop(canon, None)
     if lang == 'ar' and (model or {}).get('_prcy86'):
         blocks = (model or {}).get('blocks') or {}
         if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):

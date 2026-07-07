@@ -195,6 +195,17 @@ def _emit_kpi_extractability(
     return diag
 
 
+def _kpi_table_looks_like_main(rows: List[List[str]]) -> bool:
+    if not rows:
+        return False
+    blob = ' '.join(' '.join(r) for r in rows[:4])
+    tokens = (
+        'KPI', 'KRI', 'SOC', 'SIEM', 'CISO', 'CDO', 'DPO', 'CSIRT',
+        'مدير', 'مؤشر', 'مالك', 'مصدر', 'التكرار',
+    )
+    return any(t in blob for t in tokens)
+
+
 def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
     """Aggregate canonical 8-column KPI data rows across all PDF pages.
 
@@ -202,7 +213,12 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
     page break (header + first rows on page 1, remaining rows on page 2) and
     per-page structured detection would otherwise see too few rows.
     """
+    from release_engine_v3.rel33_pdf_evidence_norm import (
+        arabic_token_present,
+        normalize_arabic_loose,
+    )
     expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected_norm = [normalize_arabic_loose(h) for h in expected]
     rows: List[List[str]] = []
     try:
         import fitz
@@ -223,22 +239,42 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
                 df = table.to_pandas()
             except Exception:  # noqa: BLE001
                 continue
-            if df.shape[1] != len(expected):
+            ncol = int(df.shape[1])
+            if ncol < len(expected):
                 continue
-            table_rows: List[List[str]] = []
+            raw_rows: List[List[str]] = []
             for _, series in df.iterrows():
                 cells = [
                     str(v).strip().replace('\n', ' ')
-                    for v in series.tolist()
+                    for v in series.tolist()[:len(expected)]
                 ]
-                if cells and cells[0].replace('.', '').isdigit():
-                    table_rows.append(cells)
-            if not table_rows:
+                raw_rows.append(cells)
+            if not raw_rows:
                 continue
-            blob = ' '.join(' '.join(r) for r in table_rows[:3])
-            if not any(k in blob for k in ('KPI', 'SOC', 'SIEM', 'CISO', 'مدير')):
+            header_idx = -1
+            for i, cells in enumerate(raw_rows):
+                hdr_norm = [normalize_arabic_loose(c) for c in cells]
+                if hdr_norm[:len(expected)] == expected_norm:
+                    header_idx = i
+                    break
+                if arabic_token_present(
+                        ' '.join(cells), 'وصف المؤشر') and '#' in cells[0]:
+                    header_idx = i
+                    break
+            data_rows: List[List[str]] = []
+            start = header_idx + 1 if header_idx >= 0 else 0
+            for cells in raw_rows[start:]:
+                if not cells or not cells[0]:
+                    continue
+                if cells[0].replace('.', '').isdigit():
+                    data_rows.append(cells[:len(expected)])
+            if not data_rows and header_idx < 0 and ncol == len(expected):
+                data_rows = [
+                    r for r in raw_rows
+                    if r and r[0].replace('.', '').isdigit()]
+            if not data_rows or not _kpi_table_looks_like_main(data_rows):
                 continue
-            rows.extend(table_rows)
+            rows.extend(data_rows)
     return rows
 
 
