@@ -1421,6 +1421,22 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
     return out
 
 
+def _rel33_force_canonical_kpi_table_in_pdf(
+        model: Optional[Dict[str, Any]]) -> bool:
+    """REL3.3 — only compiler-first data/ai/dt need KPI table (not cards) in PDF.
+
+    Cyber legacy frozen strategy must keep existing card/table fallback
+    behaviour; forcing a dense 8-column table there can yield empty PDF bytes
+    on Render (regression: rel3_export_evidence_failed:pdf:empty_bytes).
+    """
+    domain = str((model or {}).get('domain') or '').strip().lower()
+    return domain in (
+        'data', 'data_management',
+        'ai', 'artificial_intelligence',
+        'dt', 'digital_transformation',
+    )
+
+
 def compute_pdf_export_layout_fallbacks(
         model: Optional[Dict[str, Any]], lang: str = 'ar') -> Dict[str, str]:
     """PR-CY62/77 — merge stack-triggered and proactive PDF layout fallbacks."""
@@ -1435,15 +1451,15 @@ def compute_pdf_export_layout_fallbacks(
     merged = _apply_prcy86_mandatory_ar_pdf_fallbacks(model, lang, merged)
     merged = _apply_prcy87_executive_ar_pdf_layout(model, lang, merged)
     merged = _apply_prcy77_warning_driven_ar_pdf_fallbacks(model, lang, merged)
-    # REL3.3 — canonical KPI main must stay a real 8-column table in PDF
-    # (never kpi_cards) so returned-file structured extraction can recover the
-    # schema headers and rows for evidence validation.
-    for _ks in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
-        if _kpi_table_has_canonical_schema(model, _ks):
-            merged.pop(_ks, None)
-            canon = _canonical_stack_schema(_ks)
-            if canon:
-                merged.pop(canon, None)
+    # REL3.3 — compiler-first data/ai/dt only: keep canonical KPI main as a
+    # real 8-column PDF table for returned-file structured extraction.
+    if _rel33_force_canonical_kpi_table_in_pdf(model):
+        for _ks in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _kpi_table_has_canonical_schema(model, _ks):
+                merged.pop(_ks, None)
+                canon = _canonical_stack_schema(_ks)
+                if canon:
+                    merged.pop(canon, None)
     if lang == 'ar' and (model or {}).get('_prcy86'):
         blocks = (model or {}).get('blocks') or {}
         if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
