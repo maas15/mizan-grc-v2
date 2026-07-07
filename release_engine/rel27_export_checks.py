@@ -392,6 +392,22 @@ def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
                     (t.lower() in low if t.isascii() else t in scan_blob)
                     for t in tokens):
                 present[fam] = True
+    # REL3.3 — returned-PDF Arabic text can lose base-form tokens to
+    # presentation-form / diacritic / reversed-glyph extraction. Re-scan the
+    # whole blob with loose Arabic matching + family aliases so families that
+    # ARE rendered in the returned PDF are not falsely reported missing.
+    # This only flips undetected families to present; it never masks a family
+    # that is genuinely absent from the returned file's own text.
+    if not all(present.get(f) for f in ROADMAP_FAMILIES):
+        try:
+            from release_engine_v3.rel33_pdf_evidence_norm import (
+                detect_families_normalized,
+            )
+            fallback_blob = scan_blob or blob or ''
+            present = detect_families_normalized(
+                fallback_blob, dict(_FAMILY_TOKENS), present=present)
+        except Exception:  # noqa: BLE001
+            pass
     missing_families = [f for f in ROADMAP_FAMILIES if not present.get(f)]
     weak_outputs: List[str] = []
     weak_owners: List[str] = []

@@ -161,60 +161,145 @@ def evaluate_kpi_main_schema_from_docx_bytes(
         text, route_name=route_name, lang=lang)
 
 
+def _emit_kpi_extractability(
+        *,
+        route_name: str,
+        domain: str,
+        document_type: str,
+        table_render_mode: str,
+        used_cards_fallback: bool,
+        header_labels: List[str],
+        row_count_rendered: int,
+        row_count_extracted: int,
+        kpi_pdf_extractable: bool,
+        blocking_errors: List[str],
+) -> Dict[str, Any]:
+    """Emit the [REL33-PDF-KPI-MAIN-EXTRACTABILITY] diagnostic."""
+    from release_engine_v3.rel33_pdf_evidence_norm import (
+        emit_rel33_pdf_kpi_main_extractability,
+    )
+    diag = {
+        'route_name': route_name,
+        'domain': domain,
+        'document_type': document_type,
+        'table_render_mode': table_render_mode,
+        'used_cards_fallback': used_cards_fallback,
+        'header_labels': list(header_labels or []),
+        'expected_header_labels': list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR),
+        'row_count_rendered': row_count_rendered,
+        'row_count_extracted': row_count_extracted,
+        'kpi_pdf_extractable': kpi_pdf_extractable,
+        'blocking_errors': list(blocking_errors or []),
+    }
+    emit_rel33_pdf_kpi_main_extractability(diag)
+    return diag
+
+
+def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
+    """Aggregate canonical 8-column KPI data rows across all PDF pages.
+
+    Aggregating across pages fixes the case where a dense KPI table spans a
+    page break (header + first rows on page 1, remaining rows on page 2) and
+    per-page structured detection would otherwise see too few rows.
+    """
+    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    rows: List[List[str]] = []
+    try:
+        import fitz
+    except Exception:  # noqa: BLE001
+        return rows
+    try:
+        doc = fitz.open(stream=raw, filetype='pdf')
+    except Exception:  # noqa: BLE001
+        return rows
+    for page in doc:
+        try:
+            found = page.find_tables()
+            tables = found.tables if hasattr(found, 'tables') else list(found)
+        except Exception:  # noqa: BLE001
+            continue
+        for table in tables:
+            try:
+                df = table.to_pandas()
+            except Exception:  # noqa: BLE001
+                continue
+            if df.shape[1] != len(expected):
+                continue
+            table_rows: List[List[str]] = []
+            for _, series in df.iterrows():
+                cells = [
+                    str(v).strip().replace('\n', ' ')
+                    for v in series.tolist()
+                ]
+                if cells and cells[0].replace('.', '').isdigit():
+                    table_rows.append(cells)
+            if not table_rows:
+                continue
+            blob = ' '.join(' '.join(r) for r in table_rows[:3])
+            if not any(k in blob for k in ('KPI', 'SOC', 'SIEM', 'CISO', 'مدير')):
+                continue
+            rows.extend(table_rows)
+    return rows
+
+
 def evaluate_kpi_main_schema_from_pdf_bytes(
         raw: bytes,
         *,
         route_name: str = 'pdf',
         lang: str = 'ar',
+        domain: str = '',
+        document_type: str = 'strategy',
 ) -> Dict[str, Any]:
-    """Evaluate KPI main schema from PDF bytes via structured table extraction."""
+    """Evaluate KPI main schema from PDF bytes via structured table extraction.
+
+    Uses PyMuPDF structured table detection (aggregated across pages) as the
+    primary returned-file evidence — this is the canonical 8-column KPI table
+    the renderer emitted. Falls back to normalized visible-text extraction so a
+    KPI table that IS present in the returned PDF is not falsely reported as
+    header-not-found because Arabic glyphs did not survive naive extraction.
+    """
     expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
-    try:
-        import fitz
-        doc = fitz.open(stream=raw, filetype='pdf')
-        for page in doc:
-            try:
-                found = page.find_tables()
-                tables = found.tables if hasattr(found, 'tables') else list(found)
-            except Exception:  # noqa: BLE001
-                continue
-            for table in tables:
-                try:
-                    df = table.to_pandas()
-                except Exception:  # noqa: BLE001
-                    continue
-                if df.shape[1] != len(expected):
-                    continue
-                rows: List[List[str]] = []
-                for _, series in df.iterrows():
-                    cells = [
-                        str(v).strip().replace('\n', ' ')
-                        for v in series.tolist()
-                    ]
-                    if cells and cells[0].replace('.', '').isdigit():
-                        rows.append(cells)
-                if len(rows) < 4:
-                    continue
-                blob = ' '.join(' '.join(r) for r in rows[:3])
-                if not any(k in blob for k in ('KPI', 'SOC', 'SIEM', 'CISO', 'مدير')):
-                    continue
-                diag = evaluate_kpi_main_schema_consistency(
-                    route_name=route_name,
-                    header_labels=list(expected),
-                    rows=rows,
-                    lang=lang,
-                    repair_rows=False,
-                )
-                if diag.get('kpi_main_schema_passed'):
-                    emit_rel32_kpi_main_schema_consistency_diag(diag)
-                    return diag
-    except Exception:  # noqa: BLE001
-        pass
+    rows = _kpi_rows_from_pdf_tables(raw)
+    if rows:
+        diag = evaluate_kpi_main_schema_consistency(
+            route_name=route_name,
+            header_labels=list(expected),
+            rows=rows,
+            lang=lang,
+            repair_rows=False,
+        )
+        if diag.get('kpi_main_schema_passed'):
+            emit_rel32_kpi_main_schema_consistency_diag(diag)
+            _emit_kpi_extractability(
+                route_name=route_name, domain=domain,
+                document_type=document_type,
+                table_render_mode='structured_table',
+                used_cards_fallback=False,
+                header_labels=diag.get('header_labels') or expected,
+                row_count_rendered=len(rows),
+                row_count_extracted=diag.get('row_count') or len(rows),
+                kpi_pdf_extractable=True,
+                blocking_errors=[],
+            )
+            return diag
     from release_engine_v3.evidence.pdf_text_extractor import extract_pdf_visible_text
     text = extract_pdf_visible_text(raw)
     norm = (text or '').replace('#وصف المؤشر', '# وصف المؤشر')
-    return evaluate_kpi_main_schema_from_export_text(
+    text_diag = evaluate_kpi_main_schema_from_export_text(
         norm, route_name=route_name, lang=lang)
+    _emit_kpi_extractability(
+        route_name=route_name, domain=domain,
+        document_type=document_type,
+        table_render_mode=(
+            'structured_table' if rows else 'text_fallback'),
+        used_cards_fallback=False,
+        header_labels=text_diag.get('header_labels') or [],
+        row_count_rendered=len(rows),
+        row_count_extracted=text_diag.get('row_count') or 0,
+        kpi_pdf_extractable=bool(text_diag.get('kpi_main_schema_passed')),
+        blocking_errors=text_diag.get('blocking_errors') or [],
+    )
+    return text_diag
 
 
 def extract_kpi_main_header_labels_from_text(blob: str) -> List[str]:

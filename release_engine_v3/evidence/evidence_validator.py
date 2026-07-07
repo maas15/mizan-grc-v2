@@ -95,6 +95,18 @@ def validate_returned_export_bytes(
                 emit_rel32_docx_traceability_evidence_diag(_trace_diag)
         except Exception:  # noqa: BLE001
             pass
+        if dtype == 'strategy':
+            try:
+                from release_engine_v3.rel33_pdf_evidence_norm import (
+                    evaluate_pdf_roadmap_family_evidence,
+                )
+                evaluate_pdf_roadmap_family_evidence(
+                    pdf_text or '',
+                    domain=artifact.domain,
+                    document_type=dtype,
+                    route_name='pdf')
+            except Exception:  # noqa: BLE001
+                pass
     if route_n == 'preview':
         preview_text = extract_preview_text(
             export.preview_html or '', preview_text)
@@ -229,6 +241,17 @@ def validate_returned_export_bytes(
             elif route_n == 'docx' and docx_text.strip():
                 kpi_diag = evaluate_kpi_main_schema_from_export_text(
                     docx_text, route_name='docx')
+            elif route_n == 'pdf' and pdf_bytes:
+                # REL3.3 — evaluate KPI main from structured PDF-bytes table
+                # extraction (canonical 8-column table the renderer emitted),
+                # not from naive visible-text parsing which cannot recover a
+                # rendered RTL Arabic table (false header-not-found).
+                from release_engine_v3.rel32_kpi_main_schema_evidence import (
+                    evaluate_kpi_main_schema_from_pdf_bytes,
+                )
+                kpi_diag = evaluate_kpi_main_schema_from_pdf_bytes(
+                    pdf_bytes, route_name='pdf',
+                    domain=artifact.domain, document_type=dtype)
             elif route_n == 'pdf' and pdf_text.strip():
                 kpi_diag = evaluate_kpi_main_schema_from_export_text(
                     pdf_text, route_name='pdf')
