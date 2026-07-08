@@ -1220,7 +1220,8 @@ def _evaluate_canonical_sections(
         'positive_model_defects': pillar_defects,
     }
 
-    road = check_roadmap_coverage((sections or {}).get('roadmap', '') or blob)
+    road = check_roadmap_coverage(
+        (sections or {}).get('roadmap', '') or blob, domain=domain)
     road_count = int(road.get('visible_row_count') or 0)
     road_ok = (
         MIN_ROADMAP_ROWS <= road_count <= MAX_ROADMAP_ROWS

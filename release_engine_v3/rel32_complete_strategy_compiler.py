@@ -73,7 +73,7 @@ def _objectives_table_valid(vision: str) -> bool:
     return _count_table_rows(blob, 5) >= 8
 
 
-def _section_check(body: str, kind: str) -> bool:
+def _section_check(body: str, kind: str, domain: str = 'cyber') -> bool:
     if not (body or '').strip():
         return False
     if kind == 'so_table':
@@ -87,7 +87,9 @@ def _section_check(body: str, kind: str) -> bool:
     if kind == 'gap_guides':
         return bool(re.search(r'دليل\s+تطبيق|Implementation Guide', body, re.I))
     if kind == 'roadmap_table':
-        return _count_table_rows(body, 5) >= 12
+        from release_engine_v3.rel32_registries import resolve_roadmap_families
+        min_rows = max(10, len(resolve_roadmap_families(domain)))
+        return _count_table_rows(body, 5) >= min_rows
     if kind == 'kpi_table':
         return _count_table_rows(body, 6) >= 11
     if kind == 'kpi_guides':
@@ -124,7 +126,7 @@ def evaluate_rel32_final_strategy_completeness(
     for key, _label, kind in _MANDATORY_CHECKS:
         body = secs.get(key, '') or ''
         token = f'{key}:{kind}'
-        ok = _section_check(body, kind)
+        ok = _section_check(body, kind, domain=domain)
         if kind in ('so_table', 'gap_table', 'roadmap_table', 'kpi_table',
                     'gov_table', 'trace_table'):
             row_counts[token] = _count_table_rows(

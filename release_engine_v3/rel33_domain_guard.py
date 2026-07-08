@@ -113,6 +113,30 @@ def filter_compiler_first_contamination(
     return filtered
 
 
+def _data_roadmap_has_cyber_primary_initiatives(sections: Dict[str, Any]) -> List[str]:
+    """Block data strategy when roadmap uses cyber canonical initiatives as primary."""
+    from release_engine_v3.rel32_registries import CYBER_ROADMAP_PRIMARY_MARKERS
+    roadmap = _section_text(sections, 'roadmap')
+    if not roadmap.strip():
+        return []
+    blob = roadmap.lower()
+    hits = [
+        m for m in CYBER_ROADMAP_PRIMARY_MARKERS
+        if m.lower() in blob or m in roadmap]
+    # Require at least two cyber-primary signals to avoid false positives on
+    # allowed cross-domain reference mentions in environment/traceability.
+    if len(hits) >= 2:
+        return hits
+    strong = (
+        'تأسيس حوكمة الأمن السيبراني',
+        'تمكين SOC/SIEM',
+        'تشغيل SOC وSIEM',
+    )
+    if any(s in roadmap for s in strong):
+        return [h for h in hits if h] or list(strong[:1])
+    return []
+
+
 def evaluate_export_domain_guard(
         sections_dict: Dict[str, Any],
         *,
@@ -195,6 +219,17 @@ def evaluate_export_domain_guard(
         emit_rel33_domain_guard_decision(diag)
         raise contamination_error_cls(
             'Export blocked — saved artifact is a Cyber canonical strategy')
+
+    if domain_code == 'data':
+        cyber_road_hits = _data_roadmap_has_cyber_primary_initiatives(sections_dict)
+        if cyber_road_hits:
+            diag['blocking_errors'] = ['data_roadmap_cyber_contamination']
+            diag['contaminating_terms'] = cyber_road_hits
+            diag['contaminating_sections'] = ['roadmap']
+            emit_rel33_domain_guard_decision(diag)
+            raise contamination_error_cls(
+                'Export blocked — data roadmap contains cyber canonical initiatives: '
+                + ', '.join(cyber_road_hits[:6]))
 
     ctx = domain_context_fn(
         domain, lang=(language or 'en'),

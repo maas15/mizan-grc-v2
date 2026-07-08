@@ -14,10 +14,19 @@ bypass evidence (structured table + real Arabic tokens must be present).
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+
+_TMP = tempfile.mkdtemp(prefix='test_rel33_pdf_ev_')
+os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
+os.environ.setdefault('SECRET_KEY', 'test-secret-key')
+os.environ.setdefault('DATABASE_URL', 'sqlite:///' + os.path.join(_TMP, 'test.db'))
+os.environ.setdefault('OPENAI_API_KEY', '')
+os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -341,6 +350,169 @@ class TestRel33RoadmapRenderAwareness(unittest.TestCase):
         compact = _compact_roadmap_row(filled[:6], 'ar')
         self.assertIn('family:soc_siem', compact[4])
         self.assertNotIn('awareness_training', compact[4])
+
+
+class Rel33P0ReviewBlockerTests(unittest.TestCase):
+    """P0 review blockers — DOCX authority, data roadmap, AI KPI, PDF table lock."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        if 'app' in sys.modules and hasattr(sys.modules['app'], '_rel31_backend_callables'):
+            cls._app = sys.modules['app']
+            return
+        spec = importlib.util.spec_from_file_location(
+            'app', ROOT / 'app.py')
+        cls._app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls._app)
+        sys.modules['app'] = cls._app
+
+    def _export_docx(self, domain_code: str, domain_label: str):
+        from domains._registry import get_domain_pack
+        from release_engine_v3.rel31_authority import rel3_export_authoritative
+        from release_engine_v3.rel32_frozen_export_lock import (
+            clear_rel32_frozen_export_lock,
+        )
+        from release_engine_v3.canonical_document import clear_artifact_registry
+
+        clear_rel32_frozen_export_lock()
+        clear_artifact_registry()
+        pack = get_domain_pack(domain_code)
+        sections = dict(pack['fixtures_ar'].technical_sections())
+        content = self._app._assemble_canonical_from_sections(sections)
+        backend = self._app._rel31_backend_callables()
+        art = {
+            'sections': sections,
+            'final_markdown': content,
+            'domain': domain_label,
+            'document_type': 'strategy',
+            'strategy_id': f'rel33-p0-{domain_code}',
+            'artifact_id': f'rel33-p0-{domain_code}',
+            'contract_meta': {
+                'lang': 'ar',
+                'domain': domain_code,
+                'document_type': 'strategy',
+            },
+        }
+        flags = {'rel3': True, 'rel31': True}
+        kwargs = {
+            'filename': f'{domain_code}.docx',
+            'lang': 'ar',
+            'domain': domain_label,
+            'doc_type': 'Strategy Document',
+        }
+        return rel3_export_authoritative(
+            'docx', art, backend=backend, flags=flags, export_kwargs=kwargs)
+
+    def test_01_cyber_docx_no_export_bypass(self):
+        export, evidence = self._export_docx('cyber', 'Cyber Security')
+        blockers = list(evidence.blocking_errors or [])
+        self.assertTrue(evidence.export_return_allowed, blockers)
+        self.assertFalse(any(
+            'rel32_docx_export_bypass_detected' in str(b) for b in blockers))
+
+    def test_02_data_docx_no_export_bypass(self):
+        export, evidence = self._export_docx('data', 'Data Management')
+        blockers = list(evidence.blocking_errors or [])
+        self.assertTrue(evidence.export_return_allowed, blockers)
+        self.assertFalse(any(
+            'rel32_docx_export_bypass_detected' in str(b) for b in blockers))
+
+    def test_03_ai_docx_no_export_bypass(self):
+        export, evidence = self._export_docx('ai', 'Artificial Intelligence')
+        blockers = list(evidence.blocking_errors or [])
+        self.assertTrue(evidence.export_return_allowed, blockers)
+        self.assertFalse(any(
+            'rel32_docx_export_bypass_detected' in str(b) for b in blockers))
+
+    def test_04_data_roadmap_has_no_cyber_canonical_initiatives(self):
+        from release_engine_v3.rel32_compiler import compile_canonical_strategy_document
+        from release_engine_v3.rel32_registries import CYBER_ROADMAP_PRIMARY_MARKERS
+
+        backend = self._app._rel31_backend_callables()
+        compiled = compile_canonical_strategy_document(
+            {'roadmap': '', 'kpis': '', 'vision': '', 'pillars': ''},
+            request_context={
+                'lang': 'ar',
+                'domain': 'data',
+                'backend': backend,
+                'selected_frameworks': ['NDMO', 'PDPL'],
+            },
+        )
+        roadmap = (compiled.legacy_sections or {}).get('roadmap') or ''
+        self.assertIn('NDMO', roadmap)
+        strong_hits = [
+            m for m in CYBER_ROADMAP_PRIMARY_MARKERS
+            if m in roadmap and m not in ('NCA ECC',)]
+        self.assertEqual(strong_hits, [], f'cyber contamination: {strong_hits}')
+        self.assertNotIn('تأسيس حوكمة الأمن السيبراني', roadmap)
+        self.assertNotIn('SOC/SIEM', roadmap)
+
+    def test_05_ai_kpi_schema_binding_passes_before_pdf_render(self):
+        from release_engine_v3.rel32_compiler import _build_kpis_section
+        from release_engine_v3.rel32_table_schema_binding import (
+            apply_rel32_schema_binding_to_blocks,
+            evaluate_table_schema_binding_check,
+        )
+        from professional_strategy_render import parse_markdown_tables
+
+        backend = self._app._rel31_backend_callables()
+        kpis_text, _, _ = _build_kpis_section(
+            '', lang='ar', backend=backend, domain='ai')
+        tables = parse_markdown_tables(kpis_text)
+        self.assertTrue(tables)
+        blocks = {
+            'kpi_kri_framework': {
+                'tables': [
+                    {'schema': 'kpi_main', 'header': tables[0][0],
+                     'rows': tables[0][1:]},
+                ],
+            },
+        }
+        bound = apply_rel32_schema_binding_to_blocks(blocks, lang='ar')
+        tbl = (bound.get('kpi_kri_framework') or {}).get('tables') or []
+        self.assertTrue(tbl)
+        diag = evaluate_table_schema_binding_check(tbl[0], lang='ar')
+        self.assertTrue(diag.get('schema_binding_passed'), diag)
+
+    def _pdf_kpi_fallbacks(self, domain_code: str, domain_label: str):
+        from domains._registry import get_domain_pack
+        from professional_strategy_render import (
+            build_professional_strategy_document_model,
+            compute_pdf_export_layout_fallbacks,
+        )
+
+        pack = get_domain_pack(domain_code)
+        sections = dict(pack['fixtures_ar'].technical_sections())
+        content = self._app._assemble_canonical_from_sections(sections)
+        model = build_professional_strategy_document_model(
+            content,
+            sections=sections,
+            metadata={'domain': domain_label, 'lang': 'ar'},
+            lang='ar',
+            domain=domain_label,
+            base_builder=lambda **kw: {'blocks': {}, 'lang': 'ar',
+                                       'domain': domain_code},
+            narrative_composer=None,
+            section_splitter=self._app._split_strategy_sections_by_h2,
+        )
+        from professional_strategy_render import enrich_professional_blocks
+        model = enrich_professional_blocks(
+            model, sections, {'domain': domain_label}, 'ar')
+        model['domain'] = domain_code
+        return compute_pdf_export_layout_fallbacks(model, 'ar')
+
+    def test_06_ai_pdf_kpi_main_is_table_not_cards(self):
+        fb = self._pdf_kpi_fallbacks('ai', 'Artificial Intelligence')
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
+
+    def test_07_data_pdf_kpi_main_is_table_not_cards(self):
+        fb = self._pdf_kpi_fallbacks('data', 'Data Management')
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
+
+    def test_08_cyber_pdf_kpi_main_is_table_not_cards(self):
+        fb = self._pdf_kpi_fallbacks('cyber', 'Cyber Security')
+        self.assertNotEqual(fb.get('kpi_main'), 'kpi_cards')
 
 
 if __name__ == '__main__':

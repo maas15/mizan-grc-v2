@@ -429,29 +429,28 @@ def _build_roadmap_section(
         domain: str,
         backend: Dict[str, Any],
 ) -> Tuple[str, Tuple[RoadmapRow, ...]]:
-    """Always build roadmap from registry — AI table structure is ignored."""
+    """Build roadmap from domain registry — never cyber fallback for data."""
     _ = ai_roadmap
-    from release_engine.roadmap_model import (
-        ROADMAP_FAMILIES,
-        _ROADMAP_CATALOG_AR,
-        finalize_roadmap,
+    from release_engine_v3.rel32_registries import (
+        resolve_roadmap_families,
+        resolve_roadmap_family_registry,
     )
+    families = resolve_roadmap_families(domain)
+    registry = resolve_roadmap_family_registry(domain)
     parts = [_heading_line('roadmap'), '']
     parts.append(
         '| المرحلة | الإطار الزمني | المبادرة | المالك | '
         'المخرج | الإطار |')
     parts.append('|---|---|---|---|---|---|')
-    for fam in ROADMAP_FAMILIES:
-        cat = tuple(
-            ROADMAP_FAMILY_REGISTRY.get(fam)
-            or _ROADMAP_CATALOG_AR.get(fam)
-            or ())
+    for fam in families:
+        cat = tuple(registry.get(fam) or ())
         if len(cat) < 6:
             continue
         parts.append(
             f'| {cat[0]} | {cat[1]} | {cat[2]} | {cat[3]} | '
             f'{cat[4]} | {cat[5]} |')
     text = '\n'.join(parts) + '\n'
+    from release_engine.roadmap_model import finalize_roadmap
     sections, _ = finalize_roadmap(
         {'roadmap': text},
         lang=lang,
@@ -495,16 +494,24 @@ def _build_kpis_section(
     kpi_rows: List[KpiRow] = []
     formula_rows: List[KpiFormulaRow] = []
     kpi_registry = resolve_kpi_canonical_registry(domain)
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
     order = list(kpi_registry.keys())
     if not order:
         order = list(KPI_CANONICAL_REGISTRY_FULL.keys()) or [
             'soc_mttd', 'incident_response_mttr']
+    _domain_default_owner = {
+        'cyber': 'CISO',
+        'data': 'CDO',
+        'ai': 'مدير حوكمة AI',
+        'dt': 'مدير التحول الرقمي',
+    }
     for i, fam in enumerate(order, 1):
         reg = kpi_registry[fam]
-        owner = reg.get('owner') or 'CISO'
+        owner = reg.get('owner') or _domain_default_owner.get(dcode, 'CISO')
         freq = reg.get('frequency') or 'شهري'
         if owner in ('—', '-', '—', '') or owner == freq:
-            owner = 'CISO' if normalize_domain_code(domain) == 'cyber' else 'CDO'
+            owner = reg.get('owner') or _domain_default_owner.get(dcode, 'CISO')
         kpi_rows.append(KpiRow(
             str(i), reg['label_ar'], reg.get('kpi_type', 'KPI'),
             reg['target'], reg['formula'], reg['source'],

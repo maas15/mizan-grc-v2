@@ -366,8 +366,14 @@ def _dedupe_row_key(row: Dict[str, str]) -> str:
     return _row_blob(row).strip()
 
 
-def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
+def check_roadmap_coverage(blob: str, domain: str = 'cyber') -> Dict[str, Any]:
     """Count visible roadmap rows and required families from exported text."""
+    from release_engine_v3.rel32_registries import (
+        resolve_roadmap_families,
+        resolve_roadmap_family_tokens,
+    )
+    required_families = resolve_roadmap_families(domain)
+    family_tokens = resolve_roadmap_family_tokens(domain)
     rows = _roadmap_rows_from_blob(blob or '')
     seen: Dict[str, int] = {}
     unique_rows: List[Dict[str, str]] = []
@@ -385,7 +391,7 @@ def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
     scan_blob = (blob or '') if 'خارطة الطريق' in (blob or '') else (section or '')
     if scan_blob:
         low = scan_blob.lower()
-        for fam, tokens in _FAMILY_TOKENS.items():
+        for fam, tokens in family_tokens.items():
             if present.get(fam):
                 continue
             if any(
@@ -398,17 +404,17 @@ def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
     # ARE rendered in the returned PDF are not falsely reported missing.
     # This only flips undetected families to present; it never masks a family
     # that is genuinely absent from the returned file's own text.
-    if not all(present.get(f) for f in ROADMAP_FAMILIES):
+    if not all(present.get(f) for f in required_families):
         try:
             from release_engine_v3.rel33_pdf_evidence_norm import (
                 detect_families_normalized,
             )
             fallback_blob = scan_blob or blob or ''
             present = detect_families_normalized(
-                fallback_blob, dict(_FAMILY_TOKENS), present=present)
+                fallback_blob, dict(family_tokens), present=present)
         except Exception:  # noqa: BLE001
             pass
-    missing_families = [f for f in ROADMAP_FAMILIES if not present.get(f)]
+    missing_families = [f for f in required_families if not present.get(f)]
     weak_outputs: List[str] = []
     weak_owners: List[str] = []
     for row in unique_rows:
@@ -419,7 +425,9 @@ def check_roadmap_coverage(blob: str) -> Dict[str, Any]:
         if owner in FORBIDDEN_OWNERS or len(owner) < 3:
             weak_owners.append(owner or 'empty_owner')
 
-    visible_count = max(len(unique_rows), sum(1 for f in ROADMAP_FAMILIES if present.get(f)))
+    visible_count = max(
+        len(unique_rows),
+        sum(1 for f in required_families if present.get(f)))
     defects: List[str] = []
     if visible_count < 10:
         defects.append(f'roadmap_row_count:{visible_count}')

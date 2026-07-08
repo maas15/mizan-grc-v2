@@ -1015,8 +1015,6 @@ def apply_pdf_final_table_fallback_cleanup(
             tbl['rows'] = rows_copy
             diag['kpi_rows_resequenced'] += n_fixed
             diag['action_taken'] = 'cleanup_applied'
-        if tbl.get('rows'):
-            diag['kpi_cards_forced'] = True
 
     gov = blocks.get('governance_ownership') or {}
     if gov.get('rows'):
@@ -1439,19 +1437,12 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
 
 def _rel33_force_canonical_kpi_table_in_pdf(
         model: Optional[Dict[str, Any]]) -> bool:
-    """REL3.3 — only compiler-first data/ai/dt need KPI table (not cards) in PDF.
-
-    Cyber legacy frozen strategy must keep existing card/table fallback
-    behaviour; forcing a dense 8-column table there can yield empty PDF bytes
-    on Render (regression: rel3_export_evidence_failed:pdf:empty_bytes).
-    """
-    domain = str((model or {}).get('domain') or '').strip().lower()
-    domain = domain.replace(' ', '_').replace('-', '_')
-    return domain in (
-        'data', 'data_management',
-        'ai', 'artificial_intelligence',
-        'dt', 'digital_transformation',
-    )
+    """REL3.3 — KPI main must remain a canonical table in PDF (never cards)."""
+    if not model:
+        return False
+    return (
+        _kpi_table_has_canonical_schema(model, 'kpi_main')
+        or _kpi_table_has_canonical_schema(model, 'kpi_formula'))
 
 
 def compute_pdf_export_layout_fallbacks(
@@ -2603,7 +2594,22 @@ def _phase_label(phase_num: int, lang: str = 'ar') -> str:
     return ar if lang == 'ar' else en
 
 
-def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
+def _synth_phase_row(
+        phase_num: int, lang: str = 'ar', domain: str = 'cyber') -> List[str]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
+    if dcode == 'data' and lang == 'ar':
+        data_synth = {
+            1: ('1-6 أشهر', 'تأسيس حوكمة البيانات المؤسسية', 'CDO',
+                'إطار حوكمة NDMO معتمد', 'NDMO'),
+            2: ('7-18 شهر', 'تفعيل برنامج الامتثال لنظام PDPL',
+                'مسؤول حماية البيانات',
+                'سجل معالجة وضوابط خصوصية', 'PDPL'),
+            3: ('19-24 شهر', 'توثيق سلسلة البيانات end-to-end',
+                'مهندس بيانات', 'Lineage حرج موثق', 'NDMO'),
+        }
+        period, init, owner, out, fw = data_synth.get(phase_num, data_synth[2])
+        return [_phase_label(phase_num, lang), period, init, owner, out, fw]
     synth = {
         1: ('1-6 أشهر', 'تأسيس حوكمة الأمن السيبراني وتعيين CISO',
             'CISO', 'إدارة ولجنة حوكمة فاعلة', 'NCA ECC'),
@@ -2619,9 +2625,12 @@ def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
 
 
 def build_roadmap_render_spec(
-        rows: List[List[str]], lang: str = 'ar') -> Tuple[
+        rows: List[List[str]], lang: str = 'ar',
+        domain: str = 'cyber') -> Tuple[
             List[List[str]], List[Dict[str, Any]]]:
     """PR-CY48/58 — build meaningful roadmap rows grouped by phase coverage."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
     buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]] = {
         1: [], 2: [], 3: []}
     seen_inits: set = set()
@@ -2663,7 +2672,7 @@ def build_roadmap_render_spec(
                 result_meta.append(meta)
         else:
             filled, meta = _fill_roadmap_row(
-                _synth_phase_row(phase_num, lang), lang)
+                _synth_phase_row(phase_num, lang, domain=dcode), lang)
             result.append(filled)
             result_meta.append(meta)
     _rel33_readd_dropped_roadmap_families(result, result_meta, buckets)
@@ -3602,7 +3611,8 @@ def normalize_strategic_objectives_table(
 
 
 def normalize_roadmap_table(
-        section_text: str, lang: str = 'ar') -> Optional[Dict[str, Any]]:
+        section_text: str, lang: str = 'ar',
+        domain: str = 'cyber') -> Optional[Dict[str, Any]]:
     """PR-CY47 — header-aware roadmap normalization.
 
     Maps roadmap columns by HEADER NAME (not position) into the canonical
@@ -3669,7 +3679,7 @@ def normalize_roadmap_table(
                     [ph, '—', body[:120], 'CISO', '—', '—'], len(schema)))
     if not rows_out:
         return None
-    rows_out, row_meta = build_roadmap_render_spec(rows_out, lang)
+    rows_out, row_meta = build_roadmap_render_spec(rows_out, lang, domain=domain)
     rows_out, _p78 = repair_roadmap_table_rows(
         rows_out, lang, None)
     if _p78.get('action_taken') == 'repair_applied':
@@ -5725,6 +5735,10 @@ def enrich_professional_blocks(
     model = deepcopy(model)
     blocks = dict(model.get('blocks') or {})
     lang_n = model.get('lang') or lang
+    domain_n = (
+        model.get('domain')
+        or (metadata or {}).get('domain')
+        or 'cyber')
 
     def _sec(key: str) -> str:
         blk = blocks.get(key) or {}
@@ -5803,13 +5817,13 @@ def enrich_professional_blocks(
 
     # Roadmap — mandatory structured table (header-aware + phase coverage).
     road = _sec('roadmap')
-    road_tbl = normalize_roadmap_table(road, lang_n)
+    road_tbl = normalize_roadmap_table(road, lang_n, domain=domain_n)
     _road_schema = list(SCHEMA_ROADMAP_AR if lang_n == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
         'Deliverable', 'Linked Framework'))
     if not road_tbl or not (road_tbl.get('rows')):
         _seed = (road_tbl or {}).get('rows') or []
-        _rows, _meta = build_roadmap_render_spec(_seed, lang_n)
+        _rows, _meta = build_roadmap_render_spec(_seed, lang_n, domain=domain_n)
         road_tbl = {
             'schema': 'roadmap',
             'header': _road_schema,

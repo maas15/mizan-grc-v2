@@ -395,6 +395,112 @@ DATA_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_DATA_KPI_ROWS)
 AI_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_AI_KPI_ROWS)
 DT_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_DT_KPI_ROWS)
 
+# ── Domain-specific roadmap families (REL3.3 data strategy) ─────────────────
+DATA_ROADMAP_FAMILIES: Tuple[str, ...] = (
+    'data_governance',
+    'data_quality',
+    'data_catalog_metadata',
+    'data_classification',
+    'data_lifecycle_retention',
+    'privacy_pdpl',
+    'consent_rights',
+    'data_breach_notification',
+    'data_lineage',
+    'master_data_management',
+)
+
+DATA_ROADMAP_CATALOG_AR: Dict[str, Tuple[str, ...]] = {
+    'data_governance': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تأسيس حوكمة البيانات المؤسسية', 'CDO',
+        'إطار حوكمة NDMO معتمد', 'NDMO'),
+    'data_quality': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تفعيل قواعد جودة البيانات', 'مدير جودة البيانات',
+        'معايير جودة معتمدة ومطبقة', 'NDMO'),
+    'data_catalog_metadata': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'إطلاق كتالوج البيانات والبيانات الوصفية', 'مسؤول الوصفية',
+        'كتالوج بيانات حرج مفهرس', 'NDMO'),
+    'data_classification': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تصنيف وجرد البيانات الحساسة', 'مسؤول حماية البيانات',
+        'سجل بيانات مصنفة معتمد', 'NDMO'),
+    'data_lifecycle_retention': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تطبيق سياسات دورة حياة البيانات والاحتفاظ', 'مدير حوكمة البيانات',
+        'سياسات احتفاظ معتمدة لكل فئة', 'NDMO'),
+    'privacy_pdpl': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تفعيل برنامج الامتثال لنظام PDPL', 'مسؤول حماية البيانات',
+        'سجل معالجة شخصية وضوابط خصوصية', 'PDPL'),
+    'consent_rights': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'أتمتة إدارة الموافقات وحقوق أصحاب البيانات', 'مسؤول حماية البيانات',
+        'منصة موافقات وDSR تشغيلية', 'PDPL'),
+    'data_breach_notification': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تأسيس إجراءات الإبلاغ عن خروقات البيانات', 'مدير أمن البيانات',
+        'خطة إبلاغ PDPL واختبار استجابة', 'PDPL'),
+    'data_lineage': (
+        'المرحلة 3: تحسين واستدامة', '19-24 شهر',
+        'توثيق سلسلة البيانات end-to-end', 'مهندس بيانات',
+        'Lineage حرج موثق ومحدث', 'NDMO'),
+    'master_data_management': (
+        'المرحلة 3: تحسين واستدامة', '19-24 شهر',
+        'تأسيس إدارة البيانات الرئيسية MDM', 'مدير البيانات الرئيسية',
+        'نطاقات MDM حرجة معتمدة', 'NDMO'),
+}
+
+DATA_ROADMAP_FAMILY_TOKENS: Dict[str, Tuple[str, ...]] = {
+    'data_governance': ('حوكمة البيانات', 'ndmo', 'data governance'),
+    'data_quality': ('جودة البيانات', 'data quality'),
+    'data_catalog_metadata': ('كتالوج', 'metadata', 'وصفية'),
+    'data_classification': ('تصنيف', 'classification', 'جرد'),
+    'data_lifecycle_retention': ('دورة حياة', 'احتفاظ', 'retention'),
+    'privacy_pdpl': ('pdpl', 'خصوصية', 'حماية البيانات الشخصية'),
+    'consent_rights': ('موافقة', 'consent', 'dsr', 'حقوق'),
+    'data_breach_notification': ('خروق', 'breach', 'إبلاغ'),
+    'data_lineage': ('lineage', 'سلسلة البيانات'),
+    'master_data_management': ('mdm', 'البيانات الرئيسية', 'master data'),
+}
+
+CYBER_ROADMAP_PRIMARY_MARKERS = (
+    'تأسيس حوكمة الأمن السيبراني',
+    'SOC/SIEM',
+    'NCA ECC',
+    'CISO',
+    'مدير SOC',
+    'CSIRT',
+    'IAM/PAM/MFA',
+)
+
+
+def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    if d == 'data':
+        return DATA_ROADMAP_FAMILIES
+    return ROADMAP_FAMILIES
+
+
+def resolve_roadmap_family_registry(
+        domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    if d == 'data':
+        return dict(DATA_ROADMAP_CATALOG_AR)
+    return dict(ROADMAP_FAMILY_REGISTRY)
+
+
+def resolve_roadmap_family_tokens(domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine.roadmap_model import _FAMILY_TOKENS
+    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    if d == 'data':
+        return dict(DATA_ROADMAP_FAMILY_TOKENS)
+    return dict(_FAMILY_TOKENS)
+
 
 def resolve_strategic_objective_registry(domain: str) -> Dict[str, Tuple[str, ...]]:
     from release_engine_v3.domain_codes import normalize_domain_code
