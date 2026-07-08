@@ -287,6 +287,61 @@ class TestRel33RoadmapRenderAwareness(unittest.TestCase):
         marker_rows = [r for r in out if 'family:awareness_training' in r[4]]
         self.assertTrue(marker_rows)
 
+    def test_backup_dr_maps_not_soc(self):
+        from professional_strategy_render import _fill_roadmap_row, _roadmap_row_families
+        row = [
+            'المرحلة 2: تمكين وتشغيل (7-18 شهر)', '7-18 شهر',
+            'اختبار النسخ الاحتياطي والتعافي', 'مدير استمرارية الأعمال',
+            'خطة DR واختبار استعادة ناجح', 'NCA ECC',
+        ]
+        filled, meta = _fill_roadmap_row(row, 'ar')
+        self.assertEqual(meta.get('capability_family'), 'backup_dr')
+        self.assertIn('backup_dr_resilience', _roadmap_row_families(filled))
+        self.assertNotIn('SOC', filled[2].upper())
+
+    def test_stamp_primary_marker_stays_within_density(self):
+        from professional_strategy_render import (
+            ROADMAP_CELL_MAX_LEN,
+            _compact_roadmap_row,
+            roadmap_cell_density_valid,
+        )
+        from release_engine_v3.rel33_pdf_evidence_norm import (
+            stamp_roadmap_family_markers,
+        )
+        stamp = stamp_roadmap_family_markers({
+            'initiative': 'برنامج التوعية الأمنية',
+            'output': 'خطة توعية سنوية وتقارير إكمال',
+            'owner': 'CISO',
+            'framework': 'NCA ECC',
+        })
+        self.assertEqual(stamp, 'family:awareness_training')
+        # Owner CISO must not divert the stamp to governance_ciso.
+        filled = _compact_roadmap_row([
+            'المرحلة 2', '7-18 شهر',
+            'برنامج التوعية الأمنية', 'CISO',
+            'خطة توعية سنوية وتقارير إكمال مفصلة مع تقارير إكمال دورية',
+            'NCA ECC',
+        ], 'ar')
+        self.assertIn('family:awareness_training', filled[4])
+        self.assertLessEqual(len(filled[4]), ROADMAP_CELL_MAX_LEN)
+        self.assertTrue(roadmap_cell_density_valid([filled]))
+
+    def test_cyber_roadmap_still_compacts_without_awareness_rewrite(self):
+        from professional_strategy_render import (
+            _compact_roadmap_row,
+            _fill_roadmap_row,
+        )
+        row = [
+            'المرحلة 2: تمكين وتشغيل (7-18 شهر)', '7-18 شهر',
+            'تشغيل SOC وSIEM', 'مدير SOC',
+            'مركز SOC تشغيلي مع تغطية SIEM', 'NCA ECC',
+        ]
+        filled, meta = _fill_roadmap_row(row, 'ar')
+        self.assertEqual(meta.get('capability_family'), 'soc')
+        compact = _compact_roadmap_row(filled[:6], 'ar')
+        self.assertIn('family:soc_siem', compact[4])
+        self.assertNotIn('awareness_training', compact[4])
+
 
 if __name__ == '__main__':
     unittest.main()

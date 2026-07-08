@@ -115,21 +115,47 @@ def detect_family_markers(text: str) -> List[str]:
 
 
 def stamp_roadmap_family_markers(row: Dict[str, str]) -> str:
-    """Build a compact ASCII marker suffix for a roadmap row's families."""
+    """Build a compact ASCII marker suffix for a roadmap row's families.
+
+    Prefer a single primary ``family:<id>`` marker so the output cell stays
+    within roadmap density limits. Multiple markers on one cell caused
+    truncation (``family:governance_c…``) and ``pdf_roadmap_cell_density_invalid``.
+    Evidence detection only needs one intact marker for that family's row.
+
+    Match on initiative + output (+ framework) first — never stamp
+    ``governance_ciso`` solely because the owner cell contains ``CISO``.
+    """
     try:
         from release_engine.roadmap_model import (
             ROADMAP_FAMILIES,
             _FAMILY_TOKENS,
             _families_for_row,
         )
-        fams = list(_families_for_row(row or {}))
+        # Capability columns only — owner tokens (CISO) must not dominate.
+        capability_row = {
+            'initiative': (row or {}).get('initiative') or '',
+            'output': (row or {}).get('output') or '',
+            'framework': (row or {}).get('framework') or '',
+            'phase': (row or {}).get('phase') or '',
+            'period': (row or {}).get('period') or '',
+        }
+        fams = list(_families_for_row(capability_row))
         if not fams:
-            blob = ' '.join(str(v) for v in (row or {}).values())
+            blob = ' '.join(str(v) for v in capability_row.values())
             present = detect_families_normalized(
                 blob, dict(_FAMILY_TOKENS))
             fams = [f for f in ROADMAP_FAMILIES if present.get(f)]
-        markers = [f'family:{f}' for f in fams if f in ROADMAP_FAMILIES]
-        return ' '.join(markers)
+        if not fams:
+            # Last resort: allow owner-assisted match (legacy rows).
+            fams = list(_families_for_row(row or {}))
+        # Prefer specific capability families over governance when both match.
+        ordered = [f for f in ROADMAP_FAMILIES if f in fams]
+        non_gov = [
+            f for f in ordered
+            if f not in ('governance_ciso', 'governance_committee')
+        ]
+        primary = (non_gov[0] if non_gov else (ordered[0] if ordered else ''))
+        return f'family:{primary}' if primary else ''
     except Exception:  # noqa: BLE001
         return ''
 

@@ -154,14 +154,20 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
-        'col_weights': [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20],
-        'font_size': 8, 'header_font_size': 9, 'padding': 8,
-        'max_cell_len': 72, 'render_mode': 'table',
+        # REL3.3 — denser safe table layout (never cards): smaller font/padding,
+        # wider formula/source wrap budget so forced table lock produces bytes.
+        'col_weights': [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17],
+        'font_size': 7, 'header_font_size': 8, 'padding': 4,
+        'max_cell_len': 96, 'render_mode': 'table',
+        'allow_page_break_inside': True,
+        'wrap_columns': (4, 5),  # formula, source
     },
     'kpi_formula': {
-        'col_weights': [0.08, 0.30, 0.32, 0.30],
-        'font_size': 9, 'header_font_size': 9, 'padding': 8,
-        'max_cell_len': 110, 'render_mode': 'table',
+        'col_weights': [0.06, 0.28, 0.36, 0.30],
+        'font_size': 8, 'header_font_size': 8, 'padding': 5,
+        'max_cell_len': 140, 'render_mode': 'table',
+        'allow_page_break_inside': True,
+        'wrap_columns': (2, 3),
     },
     'conf_factor': {
         'render_mode': 'cards', 'font_size': 9, 'padding': 6,
@@ -591,7 +597,17 @@ def _compact_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         }
         markers = stamp_roadmap_family_markers(row_dict)
         if markers and markers not in str(out[4]):
-            out[4] = f'{out[4].strip()} {markers}'.strip()
+            # Shrink body so final deliverable cell stays within density max;
+            # never truncate the intact ``family:<id>`` marker itself.
+            body = str(out[4] or '').strip()
+            reserve = len(markers) + 1  # leading space
+            max_body = max(8, ROADMAP_CELL_MAX_LEN - reserve)
+            if len(body) > max_body:
+                body = body[: max_body - 1].rstrip() + '…'
+            out[4] = f'{body} {markers}'.strip()
+            if len(out[4]) > ROADMAP_CELL_MAX_LEN:
+                # Last resort: markers alone (still intact family evidence).
+                out[4] = markers[:ROADMAP_CELL_MAX_LEN]
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -643,9 +659,9 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
     if schema == 'kpi_main' and ncols == 8:
-        return [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20]
+        return [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17]
     if schema == 'kpi_formula' and ncols == 4:
-        return [0.08, 0.30, 0.32, 0.30]
+        return [0.06, 0.28, 0.36, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
     if schema == 'pillar_initiatives' and ncols == 5:
@@ -1430,6 +1446,7 @@ def _rel33_force_canonical_kpi_table_in_pdf(
     on Render (regression: rel3_export_evidence_failed:pdf:empty_bytes).
     """
     domain = str((model or {}).get('domain') or '').strip().lower()
+    domain = domain.replace(' ', '_').replace('-', '_')
     return domain in (
         'data', 'data_management',
         'ai', 'artificial_intelligence',
@@ -6041,15 +6058,22 @@ def confidence_factor_labels_intact(
 
 def roadmap_cell_density_valid(
         road_rows: List[List[str]]) -> bool:
-    """PR-CY52 — roadmap cells must stay within safe length; no long DCC prose."""
+    """PR-CY52 — roadmap cells must stay within safe length; no long DCC prose.
+
+    REL3.3 ``family:<id>`` ASCII evidence markers are excluded from the length
+    budget so intact family markers never trip density after compaction.
+    """
     for r in road_rows or []:
         for c in r or []:
             s = str(c or '').strip()
-            if len(s) > ROADMAP_CELL_MAX_LEN:
+            visible = re.sub(
+                r'\s*family:[a-z][a-z0-9_]{1,48}\s*', ' ', s, flags=re.I)
+            visible = re.sub(r'\s{2,}', ' ', visible).strip()
+            if len(visible) > ROADMAP_CELL_MAX_LEN:
                 return False
             if re.search(
                     r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]{24,}',
-                    s, flags=re.IGNORECASE):
+                    visible, flags=re.IGNORECASE):
                 return False
     return True
 
