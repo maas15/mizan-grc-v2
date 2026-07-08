@@ -234,5 +234,59 @@ class Rel33RoadmapFamilyDetectionTests(unittest.TestCase):
         self.assertTrue(d.get('governance_ciso'))
 
 
+class TestRel33RoadmapRenderAwareness(unittest.TestCase):
+    """REL3.3 — awareness_training must survive roadmap render, not be replaced by SOC."""
+
+    def test_fill_roadmap_row_preserves_awareness_not_soc(self):
+        from professional_strategy_render import _fill_roadmap_row, _roadmap_row_families
+        row = [
+            'المرحلة 2: تمكين وتشغيل (7-18 شهر)', '7-18 شهر',
+            'برنامج التوعية الأمنية', 'مدير التوعية',
+            'خطة توعية سنوية وتقارير إكمال', 'NCA ECC',
+        ]
+        filled, meta = _fill_roadmap_row(row, 'ar')
+        self.assertIn('التوعية', filled[2])
+        self.assertNotIn('SOC', filled[2].upper())
+        self.assertEqual(meta.get('capability_family'), 'awareness')
+        self.assertIn('awareness_training', _roadmap_row_families(filled))
+
+    def test_build_roadmap_render_spec_readds_dropped_awareness_row(self):
+        from professional_strategy_render import build_roadmap_render_spec, _roadmap_row_families
+        rows = [
+            ['المرحلة 1: تأسيس', '1-6 أشهر',
+             'تأسيس إدارة الأمن السيبراني وتعيين CISO', 'CISO',
+             'هيكل CISO ولجنة حوكمة معتمدة', 'NCA ECC'],
+            ['المرحلة 1: تأسيس', '1-6 أشهر',
+             'تصنيف وجرد البيانات الحساسة', 'مدير حماية البيانات',
+             'سجل بيانات مصنفة', 'NCA DCC'],
+            ['المرحلة 1: تأسيس', '1-6 أشهر',
+             'تفعيل لجنة حوكمة الأمن', 'CISO',
+             'ميثاق لجنة حوكمة RACI', 'NCA ECC'],
+            ['المرحلة 2: تمكين', '7-18 شهر',
+             'تشغيل SOC وSIEM', 'مدير SOC', 'مركز SOC تشغيلي', 'NCA ECC'],
+            ['المرحلة 2: تمكين', '7-18 شهر',
+             'تطبيق IAM/PAM/MFA', 'مدير IAM/PAM', 'منصة IAM/PAM', 'NCA ECC'],
+            ['المرحلة 2: تمكين', '7-18 شهر',
+             'تأسيس CSIRT وخطط الاستجابة', 'قائد CSIRT', 'فريق CSIRT', 'NCA ECC'],
+            ['المرحلة 2: تمكين', '7-18 شهر',
+             'برنامج التوعية الأمنية', 'مدير التوعية',
+             'خطة توعية سنوية', 'NCA ECC'],
+            ['المرحلة 2: تمكين', '7-18 شهر',
+             'اختبار النسخ الاحتياطي والتعافي', 'مدير استمرارية الأعمال',
+             'خطة DR', 'NCA ECC'],
+            ['المرحلة 3: تحسين', '19-24 شهر',
+             'معالجة وحماية البيانات الحساسة', 'مدير حماية البيانات',
+             'إجراءات معالجة', 'NCA DCC'],
+        ]
+        out, _ = build_roadmap_render_spec(rows, 'ar')
+        covered = set()
+        for r in out:
+            covered.update(_roadmap_row_families(r))
+        self.assertIn('awareness_training', covered)
+        self.assertIn('backup_dr_resilience', covered)
+        marker_rows = [r for r in out if 'family:awareness_training' in r[4]]
+        self.assertTrue(marker_rows)
+
+
 if __name__ == '__main__':
     unittest.main()

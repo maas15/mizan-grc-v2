@@ -2078,6 +2078,14 @@ def _roadmap_spec_for_family(family: str, lang: str = 'ar') -> Dict[str, str]:
                 'init': 'Improve vulnerability management programme',
                 'output': 'Effective vulnerability SLA programme',
                 'owner': 'Vulnerability Manager', 'fw': 'NCA ECC'},
+            'awareness': {
+                'init': 'Security awareness & phishing programme',
+                'output': 'Annual awareness plan & completion reports',
+                'owner': 'Awareness Manager', 'fw': 'NCA ECC'},
+            'backup_dr': {
+                'init': 'Backup & disaster-recovery testing',
+                'output': 'DR plan & successful recovery test',
+                'owner': 'Business Continuity Manager', 'fw': 'NCA ECC'},
         }
         return en_specs.get(family, en_specs['governance'])
     ar_specs = {
@@ -2125,6 +2133,14 @@ def _roadmap_spec_for_family(family: str, lang: str = 'ar') -> Dict[str, str]:
             'init': 'تحسين برنامج إدارة الثغرات',
             'output': 'برنامج إدارة ثغرات وتشغيل SLA',
             'owner': 'مدير الثغرات', 'fw': 'NCA ECC'},
+        'awareness': {
+            'init': 'برنامج التوعية الأمنية',
+            'output': 'خطة توعية سنوية وتقارير إكمال',
+            'owner': 'مدير التوعية', 'fw': 'NCA ECC'},
+        'backup_dr': {
+            'init': 'اختبار النسخ الاحتياطي والتعافي',
+            'output': 'خطة DR واختبار استعادة ناجح',
+            'owner': 'مدير استمرارية الأعمال', 'fw': 'NCA ECC'},
     }
     return ar_specs.get(family, ar_specs['governance'])
 
@@ -2154,6 +2170,14 @@ def _infer_capability_family(
         return 'mfa', 'raw_text_keyword'
     if 'csirt' in blob or 'حادث' in ar_blob or 'incident' in blob:
         return 'csirt', 'raw_text_keyword'
+    if any(k in ar_blob for k in ('توعية', 'تدريب', 'تصيد')) or any(
+            _roadmap_blob_has_en_word(blob, w)
+            for w in ('awareness', 'phishing', 'training')):
+        return 'awareness', 'raw_text_keyword'
+    if any(k in ar_blob for k in ('نسخ', 'تعافي', 'استمرارية')) or any(
+            _roadmap_blob_has_en_word(blob, w)
+            for w in ('backup', 'resilience', 'dr')):
+        return 'backup_dr', 'raw_text_keyword'
     if 'vulnerability' in blob or 'vuln' in blob or 'ثغر' in ar_blob:
         return 'vulnerability', 'raw_text_keyword'
     if any(k in blob for k in ('governance', 'ciso')) or 'حوكمة' in ar_blob:
@@ -2625,7 +2649,61 @@ def build_roadmap_render_spec(
                 _synth_phase_row(phase_num, lang), lang)
             result.append(filled)
             result_meta.append(meta)
+    _rel33_readd_dropped_roadmap_families(result, result_meta, buckets)
     return result, result_meta
+
+
+def _roadmap_row_families(display_row: List[str]) -> List[str]:
+    """Return canonical roadmap families detected on a rendered roadmap row."""
+    try:
+        from release_engine.roadmap_model import _families_for_row
+    except Exception:  # noqa: BLE001
+        return []
+    cells = list(display_row) + [''] * (6 - len(display_row))
+    return list(_families_for_row({
+        'phase': cells[0], 'period': cells[1], 'initiative': cells[2],
+        'owner': cells[3], 'output': cells[4], 'framework': cells[5],
+    }))
+
+
+def _rel33_readd_dropped_roadmap_families(
+        result: List[List[str]],
+        result_meta: List[Dict[str, Any]],
+        buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]],
+        *, max_rows: int = 14) -> None:
+    """REL3.3 — re-append required roadmap families dropped by the 3-per-phase cap.
+
+    ``build_roadmap_render_spec`` keeps at most 3 rows per phase, which can drop a
+    capability family (e.g. ``awareness_training``) that IS present in the parsed
+    roadmap input. Returned-PDF family evidence then falsely fails because the
+    rendered roadmap cards genuinely lack that family's row. This restores only
+    rows that were already in the input and that uniquely cover a not-yet-covered
+    required family; it never fabricates a family absent from the source roadmap.
+    """
+    try:
+        from release_engine.roadmap_model import ROADMAP_FAMILIES
+    except Exception:  # noqa: BLE001
+        return
+    required = set(ROADMAP_FAMILIES)
+    covered: set = set()
+    for row in result:
+        covered.update(_roadmap_row_families(row))
+    if required.issubset(covered):
+        return
+    for phase_num in (1, 2, 3):
+        for filled, meta in buckets.get(phase_num, []):
+            if len(result) >= max_rows:
+                return
+            if filled in result:
+                continue
+            fams = set(_roadmap_row_families(filled))
+            if not (fams & required) or fams.issubset(covered):
+                continue
+            result.append(filled)
+            result_meta.append(meta)
+            covered.update(fams)
+            if required.issubset(covered):
+                return
 
 
 def _is_formula_echo(formula: str, metric_name: str) -> bool:
