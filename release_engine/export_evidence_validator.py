@@ -944,8 +944,15 @@ def repair_for_actual_export_defects(
         fws = (
             (merged.get('contract_meta') or {}).get('selected_frameworks')
             or merged.get('selected_frameworks') or [])
+        # REL3.3 P0 — the board-ready baseline is a Cyber roadmap catalog;
+        # never inject it into non-cyber (or blank-domain) artifacts.
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            _road_dcode = normalize_domain_code(str(domain or ''), default='')
+        except Exception:  # noqa: BLE001
+            _road_dcode = ''
         baseline = backend.get('baseline_roadmap')
-        if baseline:
+        if baseline and _road_dcode == 'cyber':
             sections, _ = baseline(sections, lang, fws)
             repairs.append('rel271:baseline_roadmap_for_export')
         try:
@@ -959,12 +966,13 @@ def repair_for_actual_export_defects(
             repairs.append('rel271:roadmap_owners_finalized')
         except Exception:  # noqa: BLE001
             pass
-        for bad in REL26_ROADMAP_BAD_INITIATIVES:
-            for key, val in list(sections.items()):
-                if isinstance(val, str) and bad in val:
-                    sections[key] = val.replace(
-                        bad, 'تأسيس CISO ولجنة حوكمة')
-            repairs.append('rel271:roadmap_bad_initiative_scrubbed')
+        if _road_dcode == 'cyber':
+            for bad in REL26_ROADMAP_BAD_INITIATIVES:
+                for key, val in list(sections.items()):
+                    if isinstance(val, str) and bad in val:
+                        sections[key] = val.replace(
+                            bad, 'تأسيس CISO ولجنة حوكمة')
+                repairs.append('rel271:roadmap_bad_initiative_scrubbed')
 
     if _export_defect_needs_kpi_schema_repair(export_diag):
         from release_engine.kpi_model import (

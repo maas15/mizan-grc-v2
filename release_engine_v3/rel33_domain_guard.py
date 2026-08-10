@@ -137,6 +137,109 @@ def _data_roadmap_has_cyber_primary_initiatives(sections: Dict[str, Any]) -> Lis
     return []
 
 
+def emit_rel33_export_domain_propagation(diag: Dict[str, Any]) -> None:
+    """[REL33-EXPORT-DOMAIN-PROPAGATION] — export/render domain trace."""
+    try:
+        print(
+            '[REL33-EXPORT-DOMAIN-PROPAGATION] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def resolve_rel33_export_domain(
+        *,
+        request_domain: str = '',
+        db_domain: str = '',
+        content_json_domain: str = '',
+        sections_json_domain: str = '',
+        contract_meta_domain: str = '',
+) -> Dict[str, Any]:
+    """Resolve the export domain with DB/artifact metadata fallback.
+
+    Never defaults a blank domain to Cyber. Returns a diag dict with
+    ``resolved_domain`` (canonical code, '' when unresolvable),
+    ``domain_missing`` and ``domain_source``.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    candidates = (
+        ('request', request_domain),
+        ('db', db_domain),
+        ('contract_meta', contract_meta_domain),
+        ('sections_json', sections_json_domain),
+        ('content_json', content_json_domain),
+    )
+    resolved = ''
+    source = ''
+    for name, raw in candidates:
+        code = normalize_domain_code(str(raw or ''), default='')
+        if code:
+            resolved = code
+            source = name
+            break
+    return {
+        'request_domain': str(request_domain or ''),
+        'db_domain': str(db_domain or ''),
+        'content_json_domain': str(content_json_domain or ''),
+        'sections_json_domain': str(sections_json_domain or ''),
+        'contract_meta_domain': str(contract_meta_domain or ''),
+        'resolved_domain': resolved,
+        'domain_source': source,
+        'domain_missing': not resolved,
+        'fallback_domain_used': False,
+    }
+
+
+def evaluate_pre_export_bytes_domain_guard(
+        sections_dict: Dict[str, Any],
+        *,
+        domain: str,
+        route: str,
+        artifact_id='',
+) -> List[str]:
+    """Final domain guard on the exact sections used for returned bytes.
+
+    REL3.3 P0 — runs inside the exporters, after all repair/contract
+    passes, so late-stage cyber injection cannot ship. Returns blocking
+    errors (empty list ⇒ allowed):
+      * blank domain          → ``rel33_export_domain_missing:<route>``
+      * data + cyber roadmap  → ``data_roadmap_cyber_contamination``
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    route_n = str(route or 'export').lower()
+    blockers: List[str] = []
+    if not dcode:
+        blockers.append(f'rel33_export_domain_missing:{route_n}')
+        emit_rel33_export_domain_propagation({
+            'route': route_n,
+            'export_route': route_n,
+            'artifact_id': str(artifact_id or ''),
+            'domain_guard_domain': '',
+            'domain_missing': True,
+            'fallback_domain_used': False,
+            'blocking_errors': list(blockers),
+        })
+        return blockers
+    if dcode == 'data':
+        hits = _data_roadmap_has_cyber_primary_initiatives(sections_dict or {})
+        if hits:
+            blockers.append('data_roadmap_cyber_contamination')
+            emit_rel33_export_domain_propagation({
+                'route': route_n,
+                'export_route': route_n,
+                'artifact_id': str(artifact_id or ''),
+                'domain_guard_domain': dcode,
+                'domain_missing': False,
+                'fallback_domain_used': False,
+                'contaminating_terms': hits[:6],
+                'blocking_errors': list(blockers),
+            })
+    return blockers
+
+
 def evaluate_export_domain_guard(
         sections_dict: Dict[str, Any],
         *,

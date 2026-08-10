@@ -834,7 +834,16 @@ def compile_canonical_strategy_document(
     """
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = normalize_domain_code(str(ctx.get('domain') or 'cyber'), default='cyber')
+    # REL3.3 P0 — never rebrand a blank domain as cyber. Resolve from ctx
+    # then backend metadata; blank fails closed via the domain-aware
+    # registries (rel33_export_domain_missing) instead of compiling a
+    # Cyber document for a non-cyber route.
+    domain = normalize_domain_code(
+        str(
+            ctx.get('domain')
+            or (ctx.get('backend') or {}).get('domain')
+            or ''),
+        default='')
     backend = dict(ctx.get('backend') or {})
     backend.setdefault('lang', lang)
     backend.setdefault('selected_frameworks', ctx.get('selected_frameworks') or [])

@@ -4703,6 +4703,108 @@ def resolve_export_domain(raw, artifact_type: str = "strategy") -> str:
     return _DOMAIN_DISPLAY_EN[code]
 
 
+def _rel33_export_domain_sources_from_db(artifact_type, artifact_id, user_id):
+    """REL3.3 P0 — load domain metadata for an export from the saved row.
+
+    Returns raw (un-normalized) domain candidates from the DB row, the
+    persisted ``sections_json`` ``_contract_meta`` and ``content_json``
+    ``_contract_meta``. Used to resolve the export domain when the request
+    payload omits it — never defaults to Cyber.
+    """
+    out = {
+        'db_domain': '',
+        'sections_json_domain': '',
+        'content_json_domain': '',
+        'contract_meta_domain': '',
+    }
+    if (artifact_type or 'strategy') != 'strategy' or not artifact_id:
+        return out
+    try:
+        _art_id = _resolve_numeric_strategy_id(artifact_id, user_id)
+        if not _art_id:
+            _art_id = int(artifact_id)
+    except (TypeError, ValueError):
+        return out
+    if not _art_id or _art_id <= 0:
+        return out
+    try:
+        with closing(get_db_direct()) as _conn:
+            _row = _conn.execute(
+                'SELECT domain, sections_json, content_json '
+                'FROM strategies WHERE id = ? AND user_id = ?',
+                (_art_id, user_id),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return out
+    if not _row:
+        return out
+    out['db_domain'] = str(_row['domain'] or '')
+    for _col, _key in (('sections_json', 'sections_json_domain'),
+                       ('content_json', 'content_json_domain')):
+        try:
+            _blob = json.loads(_row[_col] or '{}')
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(_blob, dict):
+            continue
+        _meta = _blob.get('_contract_meta')
+        _blob_meta = _blob.get('metadata')
+        if isinstance(_meta, dict) and _meta.get('domain'):
+            out[_key] = str(_meta.get('domain') or '')
+            if not out['contract_meta_domain']:
+                out['contract_meta_domain'] = out[_key]
+        elif isinstance(_blob_meta, dict) and _blob_meta.get('domain'):
+            out[_key] = str(_blob_meta.get('domain') or '')
+        elif _blob.get('domain'):
+            out[_key] = str(_blob.get('domain') or '')
+    return out
+
+
+def _rel33_resolve_export_domain_with_db_fallback(
+        data, artifact_type, artifact_id, user_id, *, route):
+    """REL3.3 P0 — resolve the export domain, falling back to DB metadata.
+
+    Order: request payload → DB row domain → persisted contract meta.
+    Emits [REL33-EXPORT-DOMAIN-PROPAGATION] and raises
+    ``DomainResolutionError('rel33_export_domain_missing')`` when nothing
+    resolves — never falls back to Cyber.
+    """
+    from release_engine_v3.rel33_domain_guard import (
+        emit_rel33_export_domain_propagation,
+        resolve_rel33_export_domain,
+    )
+    request_domain = str((data or {}).get('domain') or '').strip()
+    db_sources = _rel33_export_domain_sources_from_db(
+        artifact_type, artifact_id, user_id)
+    resolved = resolve_rel33_export_domain(
+        request_domain=request_domain,
+        db_domain=db_sources['db_domain'],
+        content_json_domain=db_sources['content_json_domain'],
+        sections_json_domain=db_sources['sections_json_domain'],
+        contract_meta_domain=db_sources['contract_meta_domain'],
+    )
+    diag = {
+        'route': route,
+        'export_route': route,
+        'artifact_id': str(artifact_id or ''),
+        'artifact_type': str(artifact_type or 'strategy'),
+        **resolved,
+        'resolved_domain_before_render': resolved['resolved_domain'],
+        'blocking_errors': (
+            [] if resolved['resolved_domain']
+            else ['rel33_export_domain_missing']),
+    }
+    emit_rel33_export_domain_propagation(diag)
+    code = resolved['resolved_domain']
+    if not code:
+        raise DomainResolutionError('rel33_export_domain_missing')
+    display = _DOMAIN_DISPLAY_EN.get(code)
+    if not display:
+        raise DomainResolutionError(
+            f'rel33_export_domain_missing:unsupported:{code}')
+    return display
+
+
 class DomainContaminationError(RuntimeError):
     """Raised when a strategy section contains terms that belong to a
     different domain than the one selected by the user, after AI repair has
@@ -51032,13 +51134,16 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             markdown, sections, lang, domain, selected_frameworks)
         if cache_key in model_cache:
             return model_cache[cache_key]
+        # REL3.3 P0 — never rebrand a blank domain as cyber; prefer the
+        # caller-provided domain, then the backend artifact domain.
         model = _build_professional_strategy_document_model(
             markdown,
             metadata=metadata,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
-            domain=domain or 'cyber',
+            domain=domain or backend.get('domain') or (
+                (metadata or {}).get('domain')),
         )
         model_cache[cache_key] = model
         return model
@@ -52460,7 +52565,13 @@ def _prcy80_invoke_final_strategy_artifact(
             'sections': dict(sections) if isinstance(sections, dict) else {},
             'blocking_errors': [],
             'sealed': False,
-            'domain': domain or (_meta.get('domain') or 'cyber'),
+            # REL3.3 P0 — resolve from request/metadata only; blank stays
+            # blank so downstream authority fails closed (never cyber).
+            'domain': (
+                domain
+                or _meta.get('domain')
+                or (_meta.get('saved_strategy_metadata') or {}).get('domain')
+                or ''),
             'contract_meta': _meta,
             'final_hash': _pre,
         }
@@ -75265,6 +75376,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                 if _persist_dtype and _persist_dtype != 'strategy' and isinstance(
                         sections, dict):
                     sections['_document_type'] = _persist_dtype
+                # REL3.3 P0 — persist the resolved domain inside sections_json
+                # (_contract_meta) so exports can recover it from the saved
+                # artifact even when the export request omits the domain.
+                if isinstance(sections, dict) and domain:
+                    _sec_cm = sections.get('_contract_meta')
+                    if not isinstance(_sec_cm, dict):
+                        _sec_cm = {}
+                    _sec_cm['domain'] = domain
+                    sections['_contract_meta'] = _sec_cm
                 _sections_json_str = _json_save.dumps(sections, ensure_ascii=False)
                 _content_json_obj  = _sections_to_json(
                     sections,
@@ -75299,6 +75419,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 'prcy83': True,
                                 'artifact_builder': 'PR-CY83',
                                 'sealed': True,
+                                # REL3.3 P0 — domain rides in contract meta
+                                # so exports never re-derive it as cyber.
+                                'domain': domain,
                                 'final_hash': (
                                     _cy80_meta.get('final_hash')
                                     or _cy40_meta_hash),
@@ -81227,13 +81350,24 @@ def api_generate_docx():
     sector   = data.get('sector', '').strip()
     doc_type = data.get('doc_type', 'Strategy Document')
     # Strict resolution — never silently default to Cyber Security on export.
+    # REL3.3 P0 — when the request payload omits the domain, resolve it from
+    # the saved DB/artifact metadata before failing closed.
     try:
         domain = resolve_export_domain(data.get('domain', ''),
                                        data.get('artifact_type', 'strategy'))
-    except DomainResolutionError as _de:
-        print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
-        return jsonify({'error': 'Missing or unsupported strategy domain '
-                                  'for DOCX export.'}), 400
+    except DomainResolutionError:
+        try:
+            domain = _rel33_resolve_export_domain_with_db_fallback(
+                data,
+                data.get('artifact_type', 'strategy'),
+                data.get('artifact_id'),
+                session.get('user_id', 0),
+                route='docx')
+        except DomainResolutionError as _de:
+            print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
+            return jsonify({'error': 'Missing or unsupported strategy domain '
+                                     'for DOCX export.',
+                            'reason': 'rel33_export_domain_missing'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _art_id   = data.get('artifact_id')
@@ -81990,14 +82124,25 @@ def api_generate_pdf():
     domain_pdf   = data.get('domain', '').strip()
     # Strict resolution for exports — never silently default to Cyber Security.
     # When the artifact is a strategy, missing/unknown domain is a hard error.
+    # REL3.3 P0 — when the request payload omits the domain, resolve it from
+    # the saved DB/artifact metadata before failing closed.
     if data.get('artifact_type', 'strategy') == 'strategy':
         try:
             _dcp = normalize_domain_strict(domain_pdf or None)
             domain_pdf = _DOMAIN_DISPLAY_EN[_dcp]
-        except DomainResolutionError as _de:
-            print(f"[DOMAIN] PDF export rejected: {_de}", flush=True)
-            return jsonify({'error': 'Missing or unsupported strategy domain '
-                                      'for PDF export.'}), 400
+        except DomainResolutionError:
+            try:
+                domain_pdf = _rel33_resolve_export_domain_with_db_fallback(
+                    data,
+                    data.get('artifact_type', 'strategy'),
+                    data.get('artifact_id'),
+                    session.get('user_id', 0),
+                    route='pdf')
+            except DomainResolutionError as _de:
+                print(f"[DOMAIN] PDF export rejected: {_de}", flush=True)
+                return jsonify({'error': 'Missing or unsupported strategy '
+                                         'domain for PDF export.',
+                                'reason': 'rel33_export_domain_missing'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _gen_mode_p = data.get('generation_mode', 'drafting')

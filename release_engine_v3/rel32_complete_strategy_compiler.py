@@ -254,7 +254,12 @@ def compile_complete_cyber_ar_technical_strategy(
     """Single save-authoritative compiler for Cyber Arabic Technical Strategy."""
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    # REL3.3 P0 — never default a blank request domain to cyber; resolve
+    # from ctx then backend metadata and let the compiler-first gate decide.
+    domain = str(
+        ctx.get('domain')
+        or (ctx.get('backend') or {}).get('domain')
+        or '').lower()
     flags = dict(ctx.get('flags') or (ctx.get('backend') or {}).get('flags') or {})
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         compiled = compile_canonical_strategy_document(
@@ -307,7 +312,11 @@ def restore_compiler_sections_before_hard_gate(
     """Re-apply compiler-owned sections immediately before PR-CY25 hard gate."""
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    # REL3.3 P0 — blank domain must not be treated as cyber here.
+    domain = str(
+        ctx.get('domain')
+        or (ctx.get('backend') or {}).get('domain')
+        or '').lower()
     flags = dict(ctx.get('flags') or {})
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return dict(sections or {})

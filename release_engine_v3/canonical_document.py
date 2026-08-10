@@ -121,10 +121,13 @@ def build_final_document_artifact(
         meta.get('selected_frameworks')
         or legacy_artifact.get('selected_frameworks')
         or [])
+    # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber. Blank
+    # stays blank; the canonical artifact then carries a blocking error so
+    # exports fail closed instead of rendering Cyber content.
     domain = (
         legacy_artifact.get('domain')
         or meta.get('domain')
-        or 'cyber')
+        or '')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
     document_type = str(
         meta.get('document_type')
@@ -144,6 +147,8 @@ def build_final_document_artifact(
     canon_hash = compute_canonical_hash(canon_map)
     legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
+    if not str(domain or '').strip() and document_type == 'strategy':
+        blockers.append('rel33_export_domain_missing:canonical_artifact')
     quality = validate_canonical_quality(
         canon_map,
         legacy_sections=legacy_sections,

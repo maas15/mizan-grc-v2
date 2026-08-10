@@ -476,9 +476,17 @@ CYBER_ROADMAP_PRIMARY_MARKERS = (
 )
 
 
-def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
+def _require_roadmap_domain(domain: str) -> str:
+    """REL3.3 P0 — blank domain must never resolve to Cyber roadmap families."""
     from release_engine_v3.domain_codes import normalize_domain_code
-    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    d = normalize_domain_code(str(domain or ''), default='')
+    if not d:
+        raise ValueError('rel33_export_domain_missing:roadmap_family_source')
+    return d
+
+
+def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
+    d = _require_roadmap_domain(domain)
     if d == 'data':
         return DATA_ROADMAP_FAMILIES
     return ROADMAP_FAMILIES
@@ -486,17 +494,15 @@ def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
 
 def resolve_roadmap_family_registry(
         domain: str) -> Dict[str, Tuple[str, ...]]:
-    from release_engine_v3.domain_codes import normalize_domain_code
-    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    d = _require_roadmap_domain(domain)
     if d == 'data':
         return dict(DATA_ROADMAP_CATALOG_AR)
     return dict(ROADMAP_FAMILY_REGISTRY)
 
 
 def resolve_roadmap_family_tokens(domain: str) -> Dict[str, Tuple[str, ...]]:
-    from release_engine_v3.domain_codes import normalize_domain_code
     from release_engine.roadmap_model import _FAMILY_TOKENS
-    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    d = _require_roadmap_domain(domain)
     if d == 'data':
         return dict(DATA_ROADMAP_FAMILY_TOKENS)
     return dict(_FAMILY_TOKENS)

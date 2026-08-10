@@ -59,6 +59,35 @@ def export_pdf(
     document_type = str(
         backend.get('document_type') or 'strategy').strip().lower()
     lock_flags = _rel33_kpi_table_lock_flags(domain)
+
+    # REL3.3 P0 — final domain guard on the exact sections used to build
+    # the returned bytes. Blank domain fails closed; data artifacts with
+    # cyber-primary roadmap rows are blocked before any bytes exist.
+    from release_engine_v3.rel33_domain_guard import (
+        evaluate_pre_export_bytes_domain_guard,
+    )
+    _guard_domain = str(backend.get('domain') or domain or '')
+    try:
+        _guard_sections = backend.get('split_sections', lambda x: {})(content)
+    except Exception:  # noqa: BLE001
+        _guard_sections = {}
+    if not _guard_sections:
+        _guard_sections = {'roadmap': content or ''}
+    _guard_blockers = evaluate_pre_export_bytes_domain_guard(
+        _guard_sections,
+        domain=_guard_domain,
+        route='pdf',
+        artifact_id=render_tree.artifact_id,
+    )
+    if _guard_blockers:
+        return ExportResult(
+            route_name='pdf',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=_guard_blockers,
+        )
+
     render_exception: Optional[str] = None
     pdf_bytes = b''
     try:

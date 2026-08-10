@@ -5735,10 +5735,41 @@ def enrich_professional_blocks(
     model = deepcopy(model)
     blocks = dict(model.get('blocks') or {})
     lang_n = model.get('lang') or lang
-    domain_n = (
+    _domain_signal = (
         model.get('domain')
         or (metadata or {}).get('domain')
-        or 'cyber')
+        or '')
+    domain_n = _domain_signal or 'cyber'
+    # REL3.3 P0 — stamp the resolved domain into the render model so every
+    # downstream consumer (roadmap/KPI table builders, exporters, guards)
+    # sees the same domain instead of re-deriving (and defaulting) it.
+    model['domain'] = domain_n
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        from release_engine_v3.rel33_domain_guard import (
+            emit_rel33_export_domain_propagation,
+        )
+        _dp_code = normalize_domain_code(str(domain_n or ''), default='')
+        emit_rel33_export_domain_propagation({
+            'route': 'render',
+            'export_route': 'render',
+            'artifact_id': str(
+                model.get('artifact_id')
+                or (metadata or {}).get('artifact_id') or ''),
+            'artifact_type': 'strategy',
+            'resolved_domain_in_renderer': str(domain_n),
+            'resolved_document_type': str(
+                (metadata or {}).get('document_type') or 'strategy'),
+            'selected_frameworks': list(
+                model.get('selected_frameworks')
+                or (metadata or {}).get('selected_frameworks') or []),
+            'roadmap_family_source': _dp_code or 'unresolved',
+            'domain_missing': not _domain_signal,
+            'fallback_domain_used': not _domain_signal,
+            'blocking_errors': [],
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
     def _sec(key: str) -> str:
         blk = blocks.get(key) or {}
@@ -5988,6 +6019,8 @@ def ensure_strategy_professional_model(
         raise ValueError('strategy_professional_model_missing_base')
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
+    if domain and not metadata.get('domain'):
+        metadata['domain'] = domain
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
     content_sections = _resolve_content_sections(
         content, sections, section_splitter=section_splitter)
@@ -6033,6 +6066,10 @@ def build_professional_strategy_document_model(
             selected_frameworks=selected_frameworks,
             lang=lang_n,
         )
+        # REL3.3 P0 — base builders may omit domain; propagate the resolved
+        # domain so enrichment never falls back to cyber for a known domain.
+        if isinstance(model, dict) and not model.get('domain'):
+            model['domain'] = domain_code
         parsed = sections if isinstance(sections, dict) else {}
         model['order'] = [
             'cover', 'doc_control', 'toc', 'executive_summary',

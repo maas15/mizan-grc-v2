@@ -223,8 +223,20 @@ def repair_kpi_canonical_families(
         lang: str = 'ar',
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Merge KPI main+formula rows by canonical family before REL3 freeze."""
-    _ = backend
+    """Merge KPI main+formula rows by canonical family before REL3 freeze.
+
+    REL3.3 P0 — the cyber ``KPI_CANONICAL_REGISTRY`` row substitution is
+    cyber-only. For non-cyber (or blank) domains, duplicate rows are still
+    merged but rows are never replaced with cyber canonical KPI rows
+    (MFA/SOC/SIEM owned by CISO).
+    """
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        _dcode = normalize_domain_code(
+            str((backend or {}).get('domain') or ''), default='')
+    except Exception:  # noqa: BLE001
+        _dcode = ''
+    cyber_registry_allowed = _dcode == 'cyber' or not backend
     text = sections.get('kpis', '') or ''
     main_blob, tail = _split_kpi_main_and_tail(text)
     lines, rows = _parse_kpi_rows(main_blob)
@@ -244,7 +256,11 @@ def repair_kpi_canonical_families(
             dropped.append(name)
             if fam not in merged_fams and not fam.startswith('__name__:'):
                 merged_fams.append(fam)
-            merged[fam] = _pick_stronger_kpi_row(merged[fam], row, fam)
+            if cyber_registry_allowed:
+                merged[fam] = _pick_stronger_kpi_row(merged[fam], row, fam)
+            else:
+                merged[fam] = _pick_stronger_kpi_row(
+                    merged[fam], row, f'__name__:{name}')
         else:
             merged[fam] = row
             order.append(fam)
@@ -252,7 +268,7 @@ def repair_kpi_canonical_families(
     canonical_rows: List[Dict[str, str]] = []
     for i, fam in enumerate(order, 1):
         row = dict(merged[fam])
-        if fam in KPI_CANONICAL_REGISTRY:
+        if fam in KPI_CANONICAL_REGISTRY and cyber_registry_allowed:
             row = _canonical_registry_row(fam, i, typed=typed)
         else:
             row['num'] = str(i)

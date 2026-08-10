@@ -89,6 +89,29 @@ def export_docx(
         sections = backend.get('split_sections')
         sec_map = sections(content) if sections else {}
 
+    # REL3.3 P0 — final domain guard on the exact sections used to build
+    # the returned bytes. Blank domain fails closed; data artifacts with
+    # cyber-primary roadmap rows are blocked before any bytes exist.
+    from release_engine_v3.rel33_domain_guard import (
+        evaluate_pre_export_bytes_domain_guard,
+    )
+    _guard_domain = str(backend.get('domain') or domain or '')
+    _guard_sections = sec_map if sec_map else {'roadmap': content}
+    _guard_blockers = evaluate_pre_export_bytes_domain_guard(
+        _guard_sections,
+        domain=_guard_domain,
+        route='docx',
+        artifact_id=render_tree.artifact_id,
+    )
+    if _guard_blockers:
+        return ExportResult(
+            route_name='docx',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=_guard_blockers,
+        )
+
     try:
         from release_engine_v3.rel31_authority import rel31_export_adapter_context
         frozen_loaded = bool(
