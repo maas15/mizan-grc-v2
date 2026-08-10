@@ -101,6 +101,11 @@ def _section_check(body: str, kind: str, domain: str = 'cyber') -> bool:
     if kind == 'gov_table':
         return _count_table_rows(body, 4) >= 7
     if kind == 'trace_table':
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+        if dcode and dcode != 'cyber':
+            # Non-cyber: require a populated matrix, not NCA markers.
+            return _count_table_rows(body, 3) >= 5
         return 'NCA' in body and _count_table_rows(body, 3) >= 5
     return bool(body.strip())
 

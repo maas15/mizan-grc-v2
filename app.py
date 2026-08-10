@@ -13164,12 +13164,19 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                   'Metric', 'Related Risk']
         dash = '—'
 
-    if (_PRCY28_VERSION_FLAGS.get('rel31')
-            and (domain_code or '').strip().lower() == 'cyber'):
+    # REL3.3 — domain-gated registry rebuild. Never call the substance
+    # builder without an explicit domain (blank fails closed; cyber
+    # default here is only when the caller already resolved cyber).
+    if _PRCY28_VERSION_FLAGS.get('rel31') and (domain_code or '').strip():
         from release_engine.traceability_substance_model import (
             build_traceability_matrix_rows_from_registry,
         )
-        return build_traceability_matrix_rows_from_registry(lang=lang)
+        from release_engine_v3.domain_codes import normalize_domain_code
+        _trace_dcode = normalize_domain_code(
+            str(domain_code or ''), default='')
+        if _trace_dcode:
+            return build_traceability_matrix_rows_from_registry(
+                lang=lang, domain=_trace_dcode)
 
     rows = []
     fws_with_caps = []
@@ -14536,6 +14543,14 @@ def compose_professional_strategy_narrative_ai(
         content = '\n\n'.join(
             v for v in sections.values() if isinstance(v, str)
         )
+    # REL3.3 — stamp resolved domain into metadata before the base
+    # document model builds traceability (never leave domain blank).
+    metadata['domain'] = (
+        metadata.get('domain')
+        or profile.get('display_en')
+        or domain_code
+        or domain
+        or '')
     base_model = _build_strategy_document_model(
         content=content,
         metadata=metadata,
@@ -14723,9 +14738,14 @@ def _build_professional_strategy_document_model(
             f'[PR-CY41] professional model fallback to base model: {_p41_e}',
             flush=True,
         )
+        # REL3.3 — fallback base model also requires a resolved domain so
+        # `_build_traceability_matrix` never sees a blank domain.
+        _fb_meta = dict(metadata or {})
+        if domain and not _fb_meta.get('domain'):
+            _fb_meta['domain'] = domain
         base = _build_strategy_document_model(
             content,
-            metadata=metadata,
+            metadata=_fb_meta,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
@@ -73672,6 +73692,48 @@ The confidence score is based on a comprehensive assessment of the organization'
                             f'{_compiler_pre_e}',
                             flush=True,
                         )
+                    # ── REL3.3 Domain Isolation Contract (pre-save) ──
+                    # Fail-closed: blank domain or Cyber-primary substance in
+                    # non-cyber sections blocks save before DB commit.
+                    try:
+                        from release_engine_v3.rel33_domain_guard import (
+                            evaluate_domain_isolation_contract,
+                        )
+                        _iso_diag = evaluate_domain_isolation_contract(
+                            sections,
+                            domain=_dcode,
+                            route='api_generate_strategy',
+                            document_type=str(
+                                locals().get('doc_type') or 'strategy'),
+                            phase='pre_save',
+                            repairer_name='save_gate',
+                            selected_registry=str(_dcode or ''),
+                            emit=True,
+                        )
+                        if not _iso_diag.get('contract_passed'):
+                            _iso_blockers = list(
+                                _iso_diag.get('blocking_errors') or [])
+                            print(
+                                '[STRATEGY-GATE] save_decision=BLOCKED '
+                                'reason=rel33_domain_isolation_contract '
+                                f'errors={_iso_blockers!r}',
+                                flush=True,
+                            )
+                            return jsonify({
+                                'success': False,
+                                'strategy_id': None,
+                                'error': (
+                                    _iso_blockers[0]
+                                    if _iso_blockers
+                                    else 'rel33_domain_isolation_contract'),
+                                'blocking_errors': _iso_blockers,
+                            }), 422
+                    except Exception as _iso_e:
+                        print(
+                            f'[STRATEGY-DIAG] domain_isolation_pre_save_failed: '
+                            f'{_iso_e}',
+                            flush=True,
+                        )
                     if _compiler_first_applied:
                         try:
                             from release_engine_v3.rel32_complete_strategy_compiler import (
@@ -73683,7 +73745,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 evaluate_rel32_final_strategy_completeness(
                                     sections,
                                     lang=lang,
-                                    domain=(domain or 'cyber'),
+                                    domain=str(_dcode or ''),
                                     generation_mode=_generation_mode,
                                     stale_issues_before=list(
                                         _quality_issues_post or []),
@@ -80362,7 +80424,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 except Exception:  # noqa: BLE001
                     _cy22_docx_sections = {}
             if (isinstance(sections, dict) and sections
-                    and not str(_cy22_docx_sections.get('traceability') or '').strip()):
+                    and not str(
+                        _cy22_docx_sections.get('traceability') or '').strip()):
                 raise ValueError(
                     'rel32_docx_renderer_missing_frozen_traceability')
             try:

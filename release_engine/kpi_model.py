@@ -236,7 +236,9 @@ def repair_kpi_canonical_families(
             str((backend or {}).get('domain') or ''), default='')
     except Exception:  # noqa: BLE001
         _dcode = ''
-    cyber_registry_allowed = _dcode == 'cyber' or not backend
+    # REL3.3 P0 — never allow Cyber KPI registry substitution when backend
+    # is missing or domain is blank/non-cyber. Fail-closed: no cyber fallback.
+    cyber_registry_allowed = _dcode == 'cyber'
     text = sections.get('kpis', '') or ''
     main_blob, tail = _split_kpi_main_and_tail(text)
     lines, rows = _parse_kpi_rows(main_blob)
@@ -277,6 +279,17 @@ def repair_kpi_canonical_families(
             row = _repair_kpi_row_dict(row)
         except Exception:  # noqa: BLE001
             pass
+        # REL3.3 — never stamp Cyber CISO as default owner on non-cyber KPIs.
+        if (
+                not cyber_registry_allowed
+                and (row.get('owner') or '').strip().upper() == 'CISO'):
+            row['owner'] = {
+                'data': 'CDO',
+                'ai': 'رئيس حوكمة الذكاء الاصطناعي',
+                'dt': 'رئيس التحول الرقمي',
+                'erm': 'رئيس إدارة المخاطر',
+                'global': 'مالك المؤشر',
+            }.get(_dcode, 'مالك المؤشر')
         canonical_rows.append(row)
 
     if not canonical_rows:

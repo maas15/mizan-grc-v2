@@ -397,21 +397,14 @@ def _slice_after_pillar_heading(blob: str) -> str:
     return pillar_body_after_heading(blob)
 
 
-def check_missing_pillars_after_heading_flat(blob: str) -> List[str]:
+def check_missing_pillars_after_heading_flat(
+        blob: str, *, domain: str = '') -> List[str]:
     """Pillars heading present but four canonical pillar names missing after it."""
-    if not any(m in (blob or '') for m in PILLAR_HEADING_MARKERS):
-        return []
-    section = _slice_after_pillar_heading(blob or '')
-    scan = section if section.strip() else ''
-    if not scan.strip():
-        return ['missing_pillars_after_heading']
-    missing = []
-    for variants in REQUIRED_PILLAR_NAME_VARIANTS:
-        if not any(v in scan for v in variants):
-            missing.append(variants[0])
-    if missing:
-        return ['missing_pillars_after_heading']
-    return []
+    # REL3.3 — delegate to domain-aware / Arabic-normalized detector.
+    from release_engine.rel28_route_evidence import (
+        check_pillars_after_strategic_heading,
+    )
+    return check_pillars_after_strategic_heading(blob or '', domain=domain)
 
 
 def check_placeholder_pillar_text_in_objectives(blob: str) -> List[str]:
@@ -703,30 +696,19 @@ def check_arabic_residue_rel31(blob: str) -> List[str]:
 def check_pdf_missing_pillars_structural(
         pdf_text: str,
         *,
-        pdf_bytes: bytes = b'') -> List[str]:
+        pdf_bytes: bytes = b'',
+        domain: str = '') -> List[str]:
     """Fail PDF when canonical pillar markers absent (incl. garbled extraction)."""
-    from release_engine.rel28_route_evidence import pillar_body_after_heading
+    from release_engine.rel28_route_evidence import (
+        check_pillars_after_strategic_heading,
+    )
     if not pdf_bytes and not pdf_text:
         return []
-    blob = pdf_text or ''
-    found = sum(
-        1 for variants in REQUIRED_PILLAR_NAME_VARIANTS
-        if any(v in blob for v in variants))
-    if found >= 4:
-        return []
-    # Prefer pillar-body slice when heading exists (card layouts may scatter names).
-    body = pillar_body_after_heading(blob)
-    if body.strip():
-        body_found = sum(
-            1 for variants in REQUIRED_PILLAR_NAME_VARIANTS
-            if any(v in body for v in variants))
-        if body_found >= 4:
-            return []
-    if pdf_bytes and len(pdf_bytes) > 10000:
-        return ['missing_pillars_after_heading']
-    if pdf_text and len(pdf_text.strip()) > 500:
-        return ['missing_pillars_after_heading']
-    return []
+    # REL3.3 — same domain-aware / Arabic-normalized detector as DOCX/preview.
+    # Do not fail closed merely because PDF bytes are large; that caused false
+    # positives when pillar titles were present but not exact-substring matches.
+    return check_pillars_after_strategic_heading(
+        pdf_text or '', domain=domain)
 
 
 def run_rel31_acceptance_checks(
@@ -734,7 +716,8 @@ def run_rel31_acceptance_checks(
         *,
         route: str = 'docx',
         pdf_bytes: bytes = b'',
-        document_type: str = 'strategy') -> List[str]:
+        document_type: str = 'strategy',
+        domain: str = '') -> List[str]:
     """Return standardized REL3.1 defect codes for one export channel."""
     if not (blob or '').strip() and not pdf_bytes:
         return []
@@ -744,24 +727,28 @@ def run_rel31_acceptance_checks(
     defects: List[str] = []
     route_n = (route or 'docx').lower()
 
-    common_fns = (
-        check_missing_pillars_after_heading_flat,
-        check_pillars_after_strategic_heading,
-        check_placeholder_pillar_text_in_objectives,
-        check_arabic_residue_rel31,
-    )
-    export_kpi_fns = (
-        check_kpi_dlp_incident_as_percentage,
-        check_generic_kpi_formula,
-        check_third_party_risk_kpi_100,
-    )
-    export_other_fns = (
-        check_empty_risk_treatment_flat,
-        check_traceability_dcc_classification_invalid,
-    )
+    defects.extend(
+        check_missing_pillars_after_heading_flat(blob or '', domain=domain))
+    defects.extend(
+        check_pillars_after_strategic_heading(blob or '', domain=domain))
+    defects.extend(check_placeholder_pillar_text_in_objectives(blob or ''))
+    defects.extend(check_arabic_residue_rel31(blob or ''))
 
-    for fn in common_fns:
-        defects.extend(fn(blob or ''))
+    # REL3.3 — Cyber-specific KPI/trace checks only apply to cyber domain.
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        _dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        _dcode = str(domain or '').strip().lower()
+    export_kpi_fns = [check_generic_kpi_formula]
+    if not _dcode or _dcode == 'cyber':
+        export_kpi_fns.extend((
+            check_kpi_dlp_incident_as_percentage,
+            check_third_party_risk_kpi_100,
+        ))
+    export_other_fns = [check_empty_risk_treatment_flat]
+    if not _dcode or _dcode == 'cyber':
+        export_other_fns.append(check_traceability_dcc_classification_invalid)
 
     if route_n in ('docx', 'pdf'):
         kpi_blob = flat_kpi_kri_section_blob(blob or '')
@@ -774,7 +761,7 @@ def run_rel31_acceptance_checks(
     if route_n == 'pdf':
         defects.extend(
             check_pdf_missing_pillars_structural(
-                blob or '', pdf_bytes=pdf_bytes))
+                blob or '', pdf_bytes=pdf_bytes, domain=domain))
 
     return list(dict.fromkeys(defects))
 
@@ -791,7 +778,7 @@ def repair_rel31_canonical_sections(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
-        domain: str = 'cyber',
+        domain: str = '',
         backend: Dict[str, Any] | None = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Canonical repairs before RenderTree — not exported-byte patches."""
@@ -799,10 +786,16 @@ def repair_rel31_canonical_sections(
     from release_engine.rendered_evidence_validator import (
         repair_sections_for_rendered_evidence,
     )
+    from release_engine_v3.domain_codes import normalize_domain_code
 
     backend = dict(backend or {})
     repairs: List[str] = []
     out = dict(sections or {})
+    dcode = normalize_domain_code(
+        str(domain or backend.get('domain') or ''), default='')
+    if dcode:
+        backend.setdefault('domain', dcode)
+        domain = dcode
 
     vision = out.get('vision', '') or ''
     if PLACEHOLDER_PILLAR_TEXT in vision:
@@ -812,9 +805,17 @@ def repair_rel31_canonical_sections(
         out['vision'] = '\n'.join(lines).strip()
         repairs.append('rel31:removed_placeholder_pillar_from_objectives')
 
-    out['pillars'] = _build_canonical_pillars(lang)
+    # REL3.3 — never force Cyber canonical pillars into non-cyber domains.
+    if dcode == 'cyber':
+        out['pillars'] = _build_canonical_pillars(lang)
+    try:
+        from release_engine.pillar_substance_model import finalize_pillar_substance
+        out, _ = finalize_pillar_substance(
+            out, lang=lang, domain=domain or dcode)
+    except Exception:  # noqa: BLE001
+        pass
     out, pil_diag = finalize_pillars(
-        out, lang=lang, domain=domain, backend=backend)
+        out, lang=lang, domain=domain or dcode, backend=backend)
     if pil_diag.get('action_taken'):
         repairs.append(f'rel31:{pil_diag.get("action_taken")}')
 
@@ -839,7 +840,8 @@ def repair_rel31_canonical_sections(
         out = obj.get('sections') or out
         if obj.get('valid'):
             repairs.append('rel31:objectives_validated')
-        elif backend.get('baseline_strategic_objectives'):
+        # REL3.3 — cyber board-ready SO baseline is Cyber-only.
+        elif dcode == 'cyber' and backend.get('baseline_strategic_objectives'):
             try:
                 fws = backend.get('selected_frameworks') or []
                 out, _so_diag = backend['baseline_strategic_objectives'](
@@ -851,7 +853,10 @@ def repair_rel31_canonical_sections(
         pass
 
     rows = len(re.findall(r'^\|\s*\d+\s*\|', out.get('vision', '') or '', re.M))
-    if rows < 6 and backend.get('baseline_strategic_objectives'):
+    if (
+            dcode == 'cyber'
+            and rows < 6
+            and backend.get('baseline_strategic_objectives')):
         try:
             fws = backend.get('selected_frameworks') or []
             out, _so_diag = backend['baseline_strategic_objectives'](
@@ -860,12 +865,17 @@ def repair_rel31_canonical_sections(
         except Exception:  # noqa: BLE001
             pass
 
-    try:
-        from release_engine_v3.rel31_authority import _rel31_inject_missing_so_families
-        out = _rel31_inject_missing_so_families(out, backend=backend)
-        repairs.append('rel31:so_family_injection')
-    except Exception:  # noqa: BLE001
-        pass
+    # REL3.3 — PRCY88 SO family injector is a Cyber catalog; never run it
+    # for non-cyber domains (it rewrites Data/AI vision into Cyber rows).
+    if dcode == 'cyber':
+        try:
+            from release_engine_v3.rel31_authority import (
+                _rel31_inject_missing_so_families,
+            )
+            out = _rel31_inject_missing_so_families(out, backend=backend)
+            repairs.append('rel31:so_family_injection')
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         from release_engine_v3.document_quality_spec import (
@@ -879,6 +889,9 @@ def repair_rel31_canonical_sections(
 
     try:
         from release_engine.kpi_model import repair_kpi_canonical_families
+        # Ensure KPI repair sees the resolved domain (never blank→cyber).
+        if dcode:
+            backend.setdefault('domain', dcode)
         out, kpi_diag = repair_kpi_canonical_families(
             out, lang=lang, backend=backend)
         if kpi_diag.get('action_taken') != 'no_changes':
@@ -891,7 +904,7 @@ def repair_rel31_canonical_sections(
             repair_traceability_canonical_families,
         )
         out, trace_diag = repair_traceability_canonical_families(
-            out, lang=lang, backend=backend)
+            out, lang=lang, domain=domain, backend=backend)
         if trace_diag.get('action_taken') != 'no_changes':
             repairs.append('rel31:traceability_canonical_families_repaired')
     except Exception:  # noqa: BLE001

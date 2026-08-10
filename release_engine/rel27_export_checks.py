@@ -29,6 +29,34 @@ REQUIRED_PILLAR_NAME_VARIANTS: Tuple[Tuple[str, ...], ...] = (
     ('المرونة واستمرارية الأعمال',),
 )
 
+
+def required_pillar_name_variants(
+        domain: str = '') -> Tuple[Tuple[str, ...], ...]:
+    """REL3.3 — pillar name evidence is domain-scoped (never cyber-default blank)."""
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if not dcode or dcode == 'cyber':
+        return REQUIRED_PILLAR_NAME_VARIANTS
+    try:
+        from release_engine_v3.rel33_domain_substance import DOMAIN_PILLAR_CATALOGS
+        catalog = DOMAIN_PILLAR_CATALOGS.get(dcode)
+    except Exception:  # noqa: BLE001
+        catalog = None
+    if not catalog:
+        return REQUIRED_PILLAR_NAME_VARIANTS
+    # Include known Arabic-glue false-split variants so acceptance remains
+    # stable if an older artifact still carries e.g. الشفا فية.
+    variants: List[Tuple[str, ...]] = []
+    for heading, _narr, _inits in catalog:
+        alts = [heading]
+        if 'الشفافية' in heading:
+            alts.append(heading.replace('الشفافية', 'الشفا فية'))
+        variants.append(tuple(dict.fromkeys(alts)))
+    return tuple(variants)
+
 REL27_GENERIC_FORMULAS = (
     '(القيمة المحققة / القيمة المستهدفة) × 100',
     '(القيمة المحققة/القيمة المستهدفة) × 100',
@@ -88,13 +116,35 @@ def _pillar_heading_present(blob: str) -> bool:
         'الركائز' in blob and 'استراتيج' in blob)
 
 
-def check_missing_pillars(blob: str) -> List[str]:
+def _pillar_variant_present(blob: str, variants: Tuple[str, ...]) -> bool:
+    """True when any variant appears (incl. PDF reversed Arabic)."""
+    if any(v in (blob or '') for v in variants):
+        return True
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import (
+            arabic_token_present,
+        )
+        for v in variants:
+            if arabic_token_present(blob or '', v):
+                return True
+            ar_only = ''.join(
+                ch if (ord(ch) > 127 or ch.isspace()) else ' '
+                for ch in (v or '')).strip()
+            ar_only = ' '.join(ar_only.split())
+            if ar_only and arabic_token_present(blob or '', ar_only):
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def check_missing_pillars(blob: str, *, domain: str = '') -> List[str]:
     """Block when pillars heading exists but pillar names are absent."""
     if not _pillar_heading_present(blob or ''):
         return []
     missing: List[str] = []
-    for variants in REQUIRED_PILLAR_NAME_VARIANTS:
-        if not any(v in (blob or '') for v in variants):
+    for variants in required_pillar_name_variants(domain):
+        if not _pillar_variant_present(blob or '', variants):
             missing.append(variants[0])
     if missing:
         return ['missing_pillars']
@@ -697,7 +747,7 @@ def emit_exported_arabic_residue_check(payload: Dict[str, Any]) -> None:
         pass
 
 
-def rel27_channel_checks(blob: str) -> Dict[str, Any]:
+def rel27_channel_checks(blob: str, *, domain: str = '') -> Dict[str, Any]:
     """Run all REL2.7 exported-text checks for one channel."""
     if not blob:
         return {
@@ -711,14 +761,31 @@ def rel27_channel_checks(blob: str) -> Dict[str, Any]:
             'roadmap_coverage': {},
             'arabic_check': {},
         }
-    missing = check_missing_pillars(blob)
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    missing = check_missing_pillars(blob, domain=dcode)
     has_kpi = bool(_kpi_section_blob(blob).strip()) or 'مؤشرات' in blob
     has_roadmap = 'خارطة الطريق' in blob or 'Implementation Roadmap' in blob
     has_risk = any(k in blob for k in ('تقييم الثقة', 'سجل المخاطر'))
     has_trace = 'مصفوفة التتبع' in blob or 'traceability' in blob.lower()
 
     kpi_canonical = check_kpi_canonical(blob) if has_kpi else {}
-    roadmap = check_roadmap_coverage(blob) if has_roadmap else {}
+    # REL3.3 — roadmap family evidence is domain-scoped.
+    # Blank domain must not silently fall back to Cyber families.
+    roadmap = {}
+    if has_roadmap:
+        if not dcode:
+            roadmap = {
+                'defects': ['rel33_export_domain_missing'],
+                'exported_roadmap_coverage_valid': False,
+                'missing_families': [],
+                'visible_row_count': 0,
+            }
+        else:
+            roadmap = check_roadmap_coverage(blob, domain=dcode)
     risk = check_risk_treatment_exported(blob) if has_risk else []
     trace = check_traceability_semantics(blob) if has_trace else []
     arabic = check_arabic_residues_exported(blob)

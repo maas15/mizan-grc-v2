@@ -259,6 +259,7 @@ def validate_returned_export_bytes(
                 gate = merge_kpi_main_schema_blockers(gate, kpi_diag)
             from release_engine_v3.rel32_kpi_owner_consistency_evidence import (
                 evaluate_kpi_owner_consistency_from_export_text,
+                evaluate_kpi_owner_consistency_from_pdf_bytes,
                 evaluate_kpi_owner_consistency_from_preview_html,
                 merge_kpi_owner_consistency_blockers,
             )
@@ -274,6 +275,10 @@ def validate_returned_export_bytes(
             elif route_n == 'docx' and docx_text.strip():
                 owner_diag = evaluate_kpi_owner_consistency_from_export_text(
                     docx_text, route_name='docx')
+            elif route_n == 'pdf' and pdf_bytes:
+                # REL3.3 — same structured-table path as KPI schema evidence.
+                owner_diag = evaluate_kpi_owner_consistency_from_pdf_bytes(
+                    pdf_bytes, route_name='pdf')
             elif route_n == 'pdf' and pdf_text.strip():
                 owner_diag = evaluate_kpi_owner_consistency_from_export_text(
                     pdf_text, route_name='pdf')
@@ -325,6 +330,7 @@ def validate_returned_export_bytes(
                     pdf_bytes=pdf_bytes if route_n == 'pdf' else b'',
                     docx_reference=docx_text if route_n == 'pdf' else '',
                     canonical_kpis=_canon_kpis,
+                    domain=str(getattr(artifact, 'domain', '') or ''),
                 ))
     except Exception:  # noqa: BLE001
         pass

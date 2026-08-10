@@ -369,6 +369,10 @@ def run_rel33_quality_case(
         'filename': f'{domain}_{document_type}.docx',
         'lang': lang,
         'domain': domain,
+        'document_type': document_type,
+        'doc_type': (
+            'Strategy Document' if document_type == 'strategy'
+            else document_type),
         'selected_frameworks': (
             ['NCA ECC', 'NCA DCC'] if domain == 'cyber' else []),
     }

@@ -188,12 +188,65 @@ def finalize_kpi_substance(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
+        domain: str = '',
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Domain-gated KPI substance. Never append Cyber KPI rows to non-cyber.
+
+    REL3.3 P0 — Cyber ``REQUIRED_KPI_FAMILIES`` inserts (SOC/SIEM/MFA/CISO)
+    apply only when domain resolves to cyber. Blank domain fails closed.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    backend = dict(backend or {})
+    dcode = normalize_domain_code(
+        str(domain or backend.get('domain') or ''), default='')
+    if not dcode:
+        raise ValueError('rel33_substance_domain_missing:kpi')
+    backend.setdefault('domain', dcode)
+
     sections, base_diag = finalize_kpi_semantics(
         sections, lang=lang, backend=backend)
     text = sections.get('kpis', '') or ''
     invalid_before = _detect_invalid(text)
+
+    if dcode != 'cyber':
+        # Non-cyber: repair semantics/dedupe only — never insert Cyber families.
+        text = _dedupe_kpi_metric_labels(text)
+        text = _sync_kpi_formula_appendix(text, lang=lang)
+        invalid_after = _detect_invalid(text)
+        if GENERIC_FORMULA in text or invalid_after:
+            _repaired, text = _apply_inline_kpi_repairs({'kpis': text})
+            text = _repaired.get('kpis', text)
+            if GENERIC_FORMULA in text:
+                text = text.replace(
+                    GENERIC_FORMULA,
+                    'القيمة المحققة ÷ القيمة المستهدفة × 100')
+            invalid_after = _detect_invalid(text)
+        generic_count = text.count(GENERIC_FORMULA)
+        out = dict(sections)
+        out['kpis'] = text
+        return out, {
+            'domain': dcode,
+            'selected_registry': dcode,
+            'invalid_metric_rows_before': invalid_before,
+            'invalid_metric_rows_after': invalid_after,
+            'generic_formula_count': generic_count,
+            'required_kpi_families_missing_before': [],
+            'required_kpi_families_missing_after': [],
+            'kpi_substance_passed': not invalid_after and generic_count == 0,
+            'kpi_semantics_valid': base_diag.get('kpi_semantics_valid', True),
+            'action_taken': (
+                'kpi_substance_repaired_non_cyber'
+                if invalid_before else 'validated'),
+            'blocking_error_if_any': (
+                f'rel2_substantive_quality_failed:kpi:{invalid_after[0]}'
+                if invalid_after else (
+                    'rel2_substantive_quality_failed:kpi:generic_formula'
+                    if generic_count else '')),
+            'cyber_registry_attempted': False,
+            'cyber_registry_blocked': True,
+        }
+
     present = _families_present(text)
     missing_before = [f for f in REQUIRED_KPI_FAMILIES if not present.get(f)]
 
@@ -237,6 +290,8 @@ def finalize_kpi_substance(
     out = dict(sections)
     out['kpis'] = text
     diag = {
+        'domain': dcode,
+        'selected_registry': 'cyber',
         'invalid_metric_rows_before': invalid_before,
         'invalid_metric_rows_after': invalid_after,
         'generic_formula_count': generic_count,
@@ -248,6 +303,8 @@ def finalize_kpi_substance(
             'kpi_substance_repaired'
             if invalid_before or missing_before else 'validated'),
         'blocking_error_if_any': blocking,
+        'cyber_registry_attempted': True,
+        'cyber_registry_blocked': False,
     }
     return out, diag
 

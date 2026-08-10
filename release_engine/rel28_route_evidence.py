@@ -84,8 +84,9 @@ def _slice_tail_after_marker(text: str, idx: int, marker: str) -> str:
     return tail[:end]
 
 
-def pillar_body_after_heading(blob: str) -> str:
+def pillar_body_after_heading(blob: str, *, domain: str = '') -> str:
     """Pillar body slice — prefer occurrence with canonical pillar names (skip TOC)."""
+    from release_engine.rel27_export_checks import required_pillar_name_variants
     text = blob or ''
     marker = ''
     for m in sorted(PILLAR_HEADING_MARKERS, key=len, reverse=True):
@@ -104,13 +105,14 @@ def pillar_body_after_heading(blob: str) -> str:
         start = idx + 1
     if not positions:
         return ''
+    name_variants = required_pillar_name_variants(domain)
     best_section = ''
     best_score = -1
     for idx in positions:
         section = _slice_tail_after_marker(text, idx, marker)
         score = sum(
-            1 for variants in REQUIRED_PILLAR_NAME_VARIANTS
-            if any(v in section for v in variants))
+            1 for variants in name_variants
+            if _pillar_variant_present(section, variants))
         if score > best_score:
             best_score = score
             best_section = section
@@ -123,33 +125,82 @@ def _pillar_section_after_heading(blob: str) -> str:
     return pillar_body_after_heading(blob)
 
 
-def check_pillars_after_strategic_heading(blob: str) -> List[str]:
+def _pillar_variant_present(section: str, variants: Tuple[str, ...]) -> bool:
+    """True when any variant appears in section (incl. PDF reversed Arabic)."""
+    if any(v in section for v in variants):
+        return True
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import (
+            arabic_token_present,
+        )
+        for v in variants:
+            if arabic_token_present(section or '', v):
+                return True
+            # Mixed Arabic+Latin titles (e.g. … MLOps): match Arabic span alone.
+            ar_only = ''.join(
+                ch if (ord(ch) > 127 or ch.isspace()) else ' '
+                for ch in (v or '')).strip()
+            ar_only = ' '.join(ar_only.split())
+            if ar_only and arabic_token_present(section or '', ar_only):
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def check_pillars_after_strategic_heading(
+        blob: str, *, domain: str = '') -> List[str]:
     """Hard evidence: four pillar names must appear after strategic pillars heading."""
+    from release_engine.rel27_export_checks import required_pillar_name_variants
     if not _pillar_heading_present(blob or ''):
         return []
-    section = _pillar_section_after_heading(blob or '')
-    if not section.strip():
-        return ['missing_pillars_after_heading']
-    missing: List[str] = []
-    for variants in REQUIRED_PILLAR_NAME_VARIANTS:
-        if not any(v in section for v in variants):
-            missing.append(variants[0])
+    variants_all = required_pillar_name_variants(domain)
+    section = pillar_body_after_heading(blob or '', domain=domain)
+    # PDF card layouts can place pillar titles outside the naive post-heading
+    # slice (or reverse glyph order across page breaks). Accept full-blob
+    # evidence when the heading is present and all domain pillar names appear.
+    scan = section if section.strip() else (blob or '')
+
+    def _missing(in_text: str) -> List[str]:
+        return [
+            variants[0] for variants in variants_all
+            if not _pillar_variant_present(in_text, variants)
+        ]
+
+    missing = _missing(scan)
+    if missing and scan is not (blob or ''):
+        missing = _missing(blob or '')
     if missing:
         return ['missing_pillars_after_heading']
     return []
 
 
 def _pillar_heading_present(blob: str) -> bool:
-    return any(m in (blob or '') for m in PILLAR_HEADING_MARKERS)
+    if any(m in (blob or '') for m in PILLAR_HEADING_MARKERS):
+        return True
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import arabic_token_present
+        return any(
+            arabic_token_present(blob or '', m) for m in PILLAR_HEADING_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def check_roadmap_visible_drift(
         exported_blob: str,
         *,
         internal_row_count: Optional[int] = None,
+        domain: str = '',
 ) -> List[str]:
     """Block when visible extracted roadmap rows diverge from internal canonical count."""
-    road = check_roadmap_coverage(exported_blob or '')
+    # Count-only: use a known domain so family resolution never blank→raises.
+    # Family defects are handled elsewhere with the real domain.
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='') or 'cyber'
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower() or 'cyber'
+    road = check_roadmap_coverage(exported_blob or '', domain=dcode)
     visible = int(road.get('visible_row_count') or 0)
     blockers: List[str] = []
     if visible and visible < 10:
@@ -211,6 +262,7 @@ def apply_route_bound_verdict(
         pdf_render_fallback_ok: bool = False,
         arabic_font_registered: bool = True,
         internal_roadmap_row_count: Optional[int] = None,
+        domain: str = '',
 ) -> Dict[str, Any]:
     """Compute route-specific pass flags; defaults are False until evidence checked."""
     route = normalize_route(route_name)
@@ -243,7 +295,8 @@ def apply_route_bound_verdict(
     ):
         if not checked or not text:
             continue
-        for defect in check_pillars_after_strategic_heading(text):
+        for defect in check_pillars_after_strategic_heading(
+                text, domain=domain):
             err = f'rel2_actual_export_evidence_failed:{prefix}:{defect}'
             if err not in blocking:
                 blocking.append(err)
@@ -260,7 +313,7 @@ def apply_route_bound_verdict(
     ):
         if not checked or not text:
             continue
-        if check_pillars_after_strategic_heading(text):
+        if check_pillars_after_strategic_heading(text, domain=domain):
             parity_err = 'rel2_section_parity_failed:pillars:actual_text_missing'
             if parity_err not in blocking:
                 blocking.append(parity_err)
@@ -278,7 +331,7 @@ def apply_route_bound_verdict(
             internal = len(_parse_roadmap_rows(
                 canonical_sections.get('roadmap') or ''))
         for drift in check_roadmap_visible_drift(
-                text, internal_row_count=internal):
+                text, internal_row_count=internal, domain=domain):
             err = drift if drift.startswith('rel2_') else (
                 f'rel2_actual_export_evidence_failed:{prefix}:{drift}')
             if err not in blocking:

@@ -187,13 +187,18 @@ def finalize_pillars(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
-        domain: str = 'cyber',
+        domain: str = '',
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """Build/repair pillar section; emit [REL2-PILLAR-FINAL-MODEL]."""
     backend = backend or {}
-    dcode = (domain or '').strip().lower()
-    if dcode not in ('cyber', 'cyber_security'):
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(
+            str(domain or backend.get('domain') or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = (domain or '').strip().lower()
+    if dcode != 'cyber':
         return sections, {
             'action_taken': 'skipped_non_cyber',
             'rendered_table_valid': True,
@@ -216,13 +221,16 @@ def finalize_pillars(
     if build_model and text_fixed.strip():
         try:
             from release_engine.section_parity import _pillars_export_present
+            # REL3.3 — nested professional-model probe must carry domain
+            # in both kwargs and metadata (document model reads metadata).
+            _probe_domain = dcode or domain
             probe = build_model(
                 '',
-                metadata={},
+                metadata={'domain': _probe_domain},
                 sections={**sections, 'pillars': text_fixed},
                 selected_frameworks=[],
                 lang=lang,
-                domain=domain,
+                domain=_probe_domain,
             )
             export_parseable = _pillars_export_present(
                 probe, {**sections, 'pillars': text_fixed})

@@ -271,9 +271,9 @@ _DATA_KPI_ROWS: Tuple[Tuple[str, ...], ...] = (
     ('privacy_pdpl', 'نسبة عمليات المعالجة الموثقة', 'KPI', '100%',
      'عمليات موثقة ÷ عمليات نشطة × 100',
      'سجل RoPA', 'مسؤول حماية البيانات', 'ربع سنوي'),
-    ('data_security', 'نسبة البيانات الحساسة المشفرة', 'KPI', '≥ 98%',
-     'سجلات مشفرة ÷ سجلات حساسة × 100',
-     'SIEM / DLP', 'مدير أمن البيانات', 'شهري'),
+    ('data_security', 'نسبة البيانات الحساسة المحمية', 'KPI', '≥ 98%',
+     'سجلات محمية ÷ سجلات حساسة × 100',
+     'منصة أمن البيانات', 'مدير أمن البيانات', 'شهري'),
     ('data_sharing', 'نسبة اتفاقيات المشاركة المعتمدة', 'KPI', '100%',
      'اتفاقيات معتمدة ÷ تدفقات مشاركة × 100',
      'سجل المشاركة', 'CDO', 'ربع سنوي'),
@@ -369,7 +369,7 @@ _DT_KPI_ROWS: Tuple[Tuple[str, ...], ...] = (
      'PMO', 'مدير PMO', 'شهري'),
     ('digital_security', 'نسبة خدمات رقمية باختبار أمني', 'KPI', '100%',
      'خدمات مختبرة ÷ خدمات جديدة × 100',
-     'DevSecOps', 'CISO', 'شهري'),
+     'DevSecOps', 'مدير أمن الخدمات الرقمية', 'شهري'),
 )
 
 
@@ -486,50 +486,169 @@ def _require_roadmap_domain(domain: str) -> str:
 
 
 def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_FAMILIES
     d = _require_roadmap_domain(domain)
     if d == 'data':
         return DATA_ROADMAP_FAMILIES
+    if d in DOMAIN_ROADMAP_FAMILIES:
+        return DOMAIN_ROADMAP_FAMILIES[d]
     return ROADMAP_FAMILIES
 
 
 def resolve_roadmap_family_registry(
         domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_CATALOGS
     d = _require_roadmap_domain(domain)
     if d == 'data':
         return dict(DATA_ROADMAP_CATALOG_AR)
+    if d in DOMAIN_ROADMAP_CATALOGS:
+        return dict(DOMAIN_ROADMAP_CATALOGS[d])
     return dict(ROADMAP_FAMILY_REGISTRY)
 
 
 def resolve_roadmap_family_tokens(domain: str) -> Dict[str, Tuple[str, ...]]:
     from release_engine.roadmap_model import _FAMILY_TOKENS
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_TOKENS
     d = _require_roadmap_domain(domain)
     if d == 'data':
         return dict(DATA_ROADMAP_FAMILY_TOKENS)
+    if d in DOMAIN_ROADMAP_TOKENS:
+        return dict(DOMAIN_ROADMAP_TOKENS[d])
     return dict(_FAMILY_TOKENS)
 
 
 def resolve_strategic_objective_registry(domain: str) -> Dict[str, Tuple[str, ...]]:
-    from release_engine_v3.domain_codes import normalize_domain_code
-    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    from release_engine_v3.rel33_domain_substance import (
+        ERM_STRATEGIC_OBJECTIVE_REGISTRY,
+        GLOBAL_STRATEGIC_OBJECTIVE_REGISTRY,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'strategic_objectives')
     if d == 'data':
         return DATA_STRATEGIC_OBJECTIVE_REGISTRY
     if d == 'ai':
         return AI_STRATEGIC_OBJECTIVE_REGISTRY
     if d == 'dt':
         return DT_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'erm':
+        return ERM_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'global':
+        return GLOBAL_STRATEGIC_OBJECTIVE_REGISTRY
     return STRATEGIC_OBJECTIVE_REGISTRY
 
 
 def resolve_kpi_canonical_registry(domain: str) -> Dict[str, Dict[str, str]]:
-    from release_engine_v3.domain_codes import normalize_domain_code
-    d = normalize_domain_code(domain or 'cyber', default='cyber')
+    from release_engine_v3.rel33_domain_substance import (
+        ERM_KPI_ROWS,
+        GLOBAL_KPI_ROWS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'kpi_registry')
     if d == 'data':
         return DATA_KPI_CANONICAL_REGISTRY
     if d == 'ai':
         return AI_KPI_CANONICAL_REGISTRY
     if d == 'dt':
         return DT_KPI_CANONICAL_REGISTRY
+    if d == 'erm':
+        return _rows_to_kpi_registry(ERM_KPI_ROWS)
+    if d == 'global':
+        return _rows_to_kpi_registry(GLOBAL_KPI_ROWS)
     return KPI_CANONICAL_REGISTRY_FULL
+
+
+def resolve_trace_registry(
+        domain: str) -> Tuple[Tuple[str, ...], Dict[str, Dict[str, str]]]:
+    """(family order, registry) of traceability substance for one domain."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_TRACE_ORDER,
+        DOMAIN_TRACE_REGISTRIES,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'traceability_registry')
+    if d == 'cyber':
+        return GAP_FAMILY_ORDER, {
+            fam: dict(spec) for fam, spec in TRACE_CANONICAL_REGISTRY.items()}
+    return DOMAIN_TRACE_ORDER[d], {
+        fam: dict(spec) for fam, spec in DOMAIN_TRACE_REGISTRIES[d].items()}
+
+
+def resolve_gap_family_registry(
+        domain: str) -> Tuple[Tuple[str, ...], Dict[str, Dict[str, str]]]:
+    """(family order, gap registry) derived from the domain trace registry."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_GAP_OWNERS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'gap_registry')
+    if d == 'cyber':
+        return GAP_FAMILY_ORDER, GAP_FAMILY_REGISTRY
+    order, trace = resolve_trace_registry(d)
+    owners = DOMAIN_GAP_OWNERS.get(d) or {}
+    registry: Dict[str, Dict[str, str]] = {}
+    for fam in order:
+        spec = trace[fam]
+        gap = spec['expected_gap']
+        registry[fam] = {
+            'gap_label': gap,
+            'description': spec['initiative'],
+            'priority': 'عالية' if 'غياب' in gap else 'متوسطة',
+            'status': 'مفتوحة',
+            'framework': spec['framework'],
+            'treatment': spec['initiative'],
+            'owner': owners.get(
+                spec['framework'],
+                next(iter(owners.values()), 'مدير الحوكمة')),
+        }
+    return order, registry
+
+
+def resolve_governance_role_registry(domain: str) -> Dict[str, Dict[str, str]]:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_GOVERNANCE_REGISTRIES,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'governance_registry')
+    if d == 'cyber':
+        return GOVERNANCE_ROLE_REGISTRY
+    return DOMAIN_GOVERNANCE_REGISTRIES[d]
+
+
+def resolve_pillar_catalog(
+        domain: str,
+) -> Tuple[Tuple[str, str, Tuple[Tuple[str, str, str, str], ...]], ...]:
+    """Non-cyber pillar catalogs; cyber keeps its legacy pillar builder."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_PILLAR_CATALOGS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'pillar_catalog')
+    if d == 'cyber':
+        raise ValueError('rel33_pillar_catalog_cyber_uses_legacy_builder')
+    return DOMAIN_PILLAR_CATALOGS[d]
+
+
+def resolve_environment_default(domain: str) -> str:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_ENVIRONMENT_DEFAULTS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'environment_default')
+    if d == 'cyber':
+        return ''
+    return DOMAIN_ENVIRONMENT_DEFAULTS[d]
+
+
+def resolve_confidence_risk_rows(
+        domain: str) -> Tuple[Tuple[str, str, str, str, str, str], ...]:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_CONFIDENCE_RISK_ROWS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'confidence_risk_rows')
+    if d == 'cyber':
+        return ()
+    return DOMAIN_CONFIDENCE_RISK_ROWS[d]
 
 # ── Governance role registry (cyber) ────────────────────────────────────────
 GOVERNANCE_ROLE_REGISTRY: Dict[str, Dict[str, str]] = {

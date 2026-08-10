@@ -87,20 +87,21 @@ def apply_rel24_cyber_substance_finalize(
         repair_actions.append('rel24:roadmap_substance_repaired')
 
     sections, kpi_diag = finalize_kpi_substance(
-        sections, lang=lang, backend=backend)
+        sections, lang=lang, domain=dcode, backend=backend)
     emit_kpi_substance_model(kpi_diag)
     diags['kpis'] = kpi_diag
     if kpi_diag.get('action_taken') == 'kpi_substance_repaired':
         repair_actions.append('rel24:kpi_substance_repaired')
 
-    sections, risk_diag = finalize_risk_treatment(sections, lang=lang)
+    sections, risk_diag = finalize_risk_treatment(
+        sections, lang=lang, domain=dcode)
     emit_risk_treatment_model(risk_diag)
     diags['risk'] = risk_diag
     if risk_diag.get('empty_treatment_plans_before'):
         repair_actions.append('rel24:risk_treatment_repaired')
 
     sections, trace_diag = finalize_traceability_substance(
-        sections, lang=lang)
+        sections, lang=lang, domain=dcode, backend=backend)
     emit_traceability_substance_model(trace_diag)
     diags['traceability'] = trace_diag
     if trace_diag.get('blank_gap_rows_before') or trace_diag.get(
@@ -118,7 +119,7 @@ def apply_rel24_cyber_substance_finalize(
             diags['so'] = so_diag
         if not diags.get('kpis', {}).get('kpi_substance_passed', True):
             sections, kpi_diag = finalize_kpi_substance(
-                sections, lang=lang, backend=backend)
+                sections, lang=lang, domain=dcode, backend=backend)
             diags['kpis'] = kpi_diag
         sections, ar_diag = apply_arabic_substance_gate(sections, lang=lang)
         diags['arabic'] = ar_diag

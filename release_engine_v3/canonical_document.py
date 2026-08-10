@@ -124,10 +124,19 @@ def build_final_document_artifact(
     # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber. Blank
     # stays blank; the canonical artifact then carries a blocking error so
     # exports fail closed instead of rendering Cyber content.
-    domain = (
-        legacy_artifact.get('domain')
-        or meta.get('domain')
-        or '')
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        domain = normalize_domain_code(
+            str(
+                legacy_artifact.get('domain')
+                or meta.get('domain')
+                or ''),
+            default='')
+    except Exception:  # noqa: BLE001
+        domain = str(
+            legacy_artifact.get('domain')
+            or meta.get('domain')
+            or '')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
     document_type = str(
         meta.get('document_type')
@@ -174,7 +183,7 @@ def build_final_document_artifact(
     artifact = FinalDocumentArtifact(
         artifact_id=aid,
         strategy_id=strategy_id or aid,
-        domain=str(domain).lower(),
+        domain=str(domain or ''),
         language='ar' if str(lang).lower().startswith('ar') else 'en',
         document_type=document_type,
         strategy_type=str(

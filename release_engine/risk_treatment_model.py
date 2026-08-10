@@ -184,11 +184,46 @@ def _repair_flat_confidence_register(
     return '\n'.join(out)
 
 
+def _non_cyber_treatment_for_blob(risk_blob: str, *, domain: str, lang: str = 'ar') -> str:
+    """Domain-registry treatment for empty/generic rows (never Cyber CISO/SOC)."""
+    try:
+        from release_engine_v3.rel33_domain_substance import (
+            DOMAIN_CONFIDENCE_RISK_ROWS,
+        )
+        rows = DOMAIN_CONFIDENCE_RISK_ROWS.get(domain) or ()
+    except Exception:  # noqa: BLE001
+        rows = ()
+    blob = (risk_blob or '').lower()
+    for name, _p, _i, _theme, owner, treatment in rows:
+        if any(tok and tok in blob for tok in str(name).lower().split() if len(tok) > 3):
+            return f'{treatment} — المالك: {owner}'
+    if rows:
+        _n, _p, _i, _t, owner, treatment = rows[0]
+        return f'{treatment} — المالك: {owner}'
+    if lang == 'ar':
+        return (
+            'تنفيذ ضوابط وإجراءات تشغيلية مخصصة للمخاطر المحددة '
+            'مع مراقبة دورية موثقة — المالك: مالك المخاطر')
+    return (
+        'Implement domain-specific controls and documented monitoring '
+        '— Owner: Risk Owner')
+
+
 def finalize_risk_treatment(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
+        domain: str = '',
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    # REL3.3 — Cyber treatment catalogs (CISO/SOC/CSIRT) are cyber-only.
+    # Blank domain: repair empty rows with neutral text, never inject Cyber themes.
+    cyber_treatments = dcode == 'cyber'
+
     keys = ('confidence', 'risk', 'risk_register', 'gaps')
     target_key = None
     text = ''
@@ -206,7 +241,7 @@ def finalize_risk_treatment(
         text = sections.get('confidence', '') or ''
         target_key = 'confidence'
 
-    if _GENERIC_TREATMENT in text and 'خطة المعالجة' in text:
+    if cyber_treatments and _GENERIC_TREATMENT in text and 'خطة المعالجة' in text:
         text = _repair_flat_risk_register(text, lang=lang)
 
     lines, hdr, rows = _parse_risk_rows(text)
@@ -215,7 +250,7 @@ def finalize_risk_treatment(
     if hdr >= 0:
         treat_idx = _treatment_col_idx(lines[hdr])
 
-    if hdr < 0 and _GENERIC_TREATMENT in text:
+    if cyber_treatments and hdr < 0 and _GENERIC_TREATMENT in text:
         text = _repair_flat_risk_register(text, lang=lang)
         lines, hdr, rows = _parse_risk_rows(text)
         if hdr >= 0:
@@ -230,17 +265,22 @@ def finalize_risk_treatment(
             if _is_empty_treatment(plan) or _is_generic_treatment(plan):
                 if _is_empty_treatment(plan):
                     empty_before.append(plan or 'empty')
-                repaired = specific_risk_treatment_for_blob(blob, lang=lang)
-                for theme, kws in _THEME_KEYWORDS.items():
-                    if any(k in blob for k in kws):
-                        repaired = _RISK_TREATMENTS_AR[theme]
-                        break
+                if cyber_treatments:
+                    repaired = specific_risk_treatment_for_blob(blob, lang=lang)
+                    for theme, kws in _THEME_KEYWORDS.items():
+                        if any(k in blob for k in kws):
+                            repaired = _RISK_TREATMENTS_AR[theme]
+                            break
+                else:
+                    repaired = _non_cyber_treatment_for_blob(
+                        blob, domain=dcode, lang=lang)
                 c[treat_idx] = repaired
         new_rows.append(c)
 
     themes = _themes_covered(new_rows, treat_idx)
     missing_themes = [t for t in _REQUIRED_RISK_THEMES if not themes.get(t)]
-    if missing_themes and hdr >= 0:
+    # REL3.3 — never append Cyber theme rows (SOC/CSIRT/CISO) into non-cyber.
+    if cyber_treatments and missing_themes and hdr >= 0:
         for theme in missing_themes:
             if len(new_rows) >= MAX_RISK_REGISTER_ROWS:
                 break
@@ -276,7 +316,11 @@ def finalize_risk_treatment(
             out_lines.append('| ' + ' | '.join(c) + ' |')
         text = '\n'.join(out_lines)
 
-    if hdr < 0 and 'خطة المعالجة' in text and 'المالك' in text:
+    if (
+            cyber_treatments
+            and hdr < 0
+            and 'خطة المعالجة' in text
+            and 'المالك' in text):
         text = _repair_flat_confidence_register(text, lang=lang)
 
     if hdr < 0 and _GENERIC_TREATMENT not in text:

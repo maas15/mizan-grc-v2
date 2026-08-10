@@ -54,7 +54,9 @@ def validate_canonical_quality(
         from release_engine_v3.section_models import build_strategy_document
         blob = strategy_document_to_markdown(
             build_strategy_document(legacy))
-    blockers.extend(check_pillars_after_strategic_heading(blob))
+    # REL3.3 — pillar name evidence is domain-scoped (never cyber-default).
+    blockers.extend(
+        check_pillars_after_strategic_heading(blob, domain=domain))
     kpi_chk = check_kpi_canonical(blob)
     if not kpi_chk.get('exported_kpi_canonical_valid'):
         blockers.extend(kpi_chk.get('defects') or [])
@@ -70,7 +72,8 @@ def validate_canonical_quality(
         'blocking_errors': list(dict.fromkeys(blockers)),
         'kpi_valid': kpi_chk.get('exported_kpi_canonical_valid'),
         'roadmap_row_count': road.get('visible_row_count'),
-        'pillar_check': not check_pillars_after_strategic_heading(blob),
+        'pillar_check': not check_pillars_after_strategic_heading(
+            blob, domain=domain),
         'document_type': dtype,
     }
 

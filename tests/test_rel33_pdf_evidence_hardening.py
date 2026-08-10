@@ -229,10 +229,24 @@ class Rel33RoadmapFamilyDetectionTests(unittest.TestCase):
     def test_family_evidence_diag_shape(self):
         blob = 'خارطة الطريق برنامج التوعية الأمنية ورفع الوعي الأمني'
         diag = evaluate_pdf_roadmap_family_evidence(
-            blob, domain='data', document_type='strategy', route_name='pdf')
+            blob, domain='cyber', document_type='strategy', route_name='pdf')
         self.assertEqual(diag['route_name'], 'pdf')
-        self.assertEqual(diag['domain'], 'data')
+        self.assertEqual(diag['domain'], 'cyber')
         self.assertIn('awareness_training', diag['detected_families'])
+        self.assertTrue(diag['normalized_text_used'])
+
+    def test_family_evidence_diag_shape_data_scoped(self):
+        blob = (
+            'خارطة الطريق حوكمة البيانات وجودة البيانات وPDPL '
+            'وإدارة البيانات الرئيسية ونسب البيانات')
+        diag = evaluate_pdf_roadmap_family_evidence(
+            blob, domain='data', document_type='strategy', route_name='pdf')
+        self.assertEqual(diag['domain'], 'data')
+        self.assertNotIn('awareness_training', diag['expected_families'])
+        self.assertTrue(
+            any(f.startswith('data_') or f in (
+                'privacy_pdpl', 'master_data_management', 'data_lineage')
+                for f in diag['expected_families']))
         self.assertTrue(diag['normalized_text_used'])
 
     def test_family_marker_detected_in_export_text(self):

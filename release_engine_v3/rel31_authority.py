@@ -693,15 +693,17 @@ def validate_rel3_objectives(
                 6 <= rows <= 8 and target_like == 0 and not dup_gov),
         }
     if not diag.get('gate_passed'):
-        secs = _rel31_inject_missing_so_families(secs, backend=backend)
-        sections.update(secs)
-        if backend.get('baseline_strategic_objectives'):
-            try:
-                secs, diag = backend['baseline_strategic_objectives'](
-                    secs, lang, fws)
-                sections.update(secs)
-            except Exception as exc:  # noqa: BLE001
-                diag = {'gate_passed': False, 'error': repr(exc)[:120]}
+        # REL3.3 — PRCY88 SO family injector is Cyber-only.
+        if _dcode_strict == 'cyber':
+            secs = _rel31_inject_missing_so_families(secs, backend=backend)
+            sections.update(secs)
+            if backend.get('baseline_strategic_objectives'):
+                try:
+                    secs, diag = backend['baseline_strategic_objectives'](
+                        secs, lang, fws)
+                    sections.update(secs)
+                except Exception as exc:  # noqa: BLE001
+                    diag = {'gate_passed': False, 'error': repr(exc)[:120]}
     valid = bool(diag.get('gate_passed'))
     return {
         'valid': valid,
@@ -967,14 +969,40 @@ def repair_canonical_before_freeze(
     if domain:
         backend['domain'] = domain
     flags = backend.get('flags') or {}
+    document_type = (
+        str(
+            art.get('document_type')
+            or art.get('doc_type')
+            or (art.get('contract_meta') or {}).get('document_type')
+            or backend.get('document_type')
+            or 'strategy')
+        .strip().lower())
+    backend['document_type'] = document_type
+    # REL3.3 P0 — non-strategy artifacts must never receive strategy
+    # section injectors (cyber KPIs/pillars/traceability). Arabic cleanup
+    # only; leave risk/gap/audit section sets intact.
+    if document_type not in ('strategy', ''):
+        try:
+            from release_engine.arabic_language_gate import apply_arabic_final_gate
+            from release_engine.rendered_evidence_validator import (
+                _repair_arabic_blob,
+            )
+            sections = {
+                k: _repair_arabic_blob(v) if isinstance(v, str) else v
+                for k, v in sections.items()}
+            sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
+            action = (ar_diag.get('action_taken') or '').strip()
+            if action and action not in ('validated', 'no_changes'):
+                repairs.append(f'rel31:{action}')
+        except Exception:  # noqa: BLE001
+            pass
+        art['sections'] = sections
+        return art, repairs
     try:
         from release_engine_v3.rel32_compiler import is_rel32_compiler_first
         from release_engine_v3.rel32_complete_strategy_compiler import (
             compile_complete_cyber_ar_technical_strategy,
         )
-        document_type = (
-            str(art.get('document_type') or art.get('doc_type') or 'strategy')
-            .strip().lower())
         if is_rel32_compiler_first(
                 domain=domain, lang=lang, flags=flags,
                 document_type=document_type):
@@ -1050,7 +1078,7 @@ def repair_canonical_before_freeze(
                 repair_traceability_canonical_families,
             )
             sections, trace_diag = repair_traceability_canonical_families(
-                sections, lang=lang, backend=backend)
+                sections, lang=lang, domain=domain, backend=backend)
             if trace_diag.get('action_taken') != 'no_changes':
                 repairs.append('rel31:traceability_canonical_families_repaired')
         except Exception:  # noqa: BLE001
@@ -1058,7 +1086,8 @@ def repair_canonical_before_freeze(
         try:
             from release_engine.kpi_substance_model import finalize_kpi_substance
             sections, _ = finalize_kpi_substance(
-                sections, lang=backend.get('lang', 'ar'), backend=backend)
+                sections, lang=backend.get('lang', 'ar'),
+                domain=domain, backend=backend)
         except Exception:  # noqa: BLE001
             try:
                 from release_engine.kpi_model import finalize_kpi_semantics
@@ -2031,13 +2060,23 @@ def apply_rel31_authoritative_contract(
         or art.get('selected_frameworks') or [])
 
     art, repairs = repair_canonical_before_freeze(art, backend=backend)
-    obj = validate_rel3_objectives(
-        art.get('sections') or {}, backend=backend)
-    road = validate_rel3_roadmap_output_quality(
-        art.get('sections') or {}, backend=backend)
-    art['sections'] = obj.get('sections') or art.get('sections') or {}
-    if road.get('sections'):
-        art['sections'].update(road['sections'])
+    _contract_doc_type_early = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type')
+        or backend.get('document_type')
+        or 'strategy').strip().lower()
+    obj: Dict[str, Any] = {'valid': True, 'sections': art.get('sections') or {}}
+    road: Dict[str, Any] = {'valid': True, 'sections': art.get('sections') or {}}
+    # REL3.3 P0 — strategy objectives/roadmap validators inject Cyber
+    # catalogs; never run them on risk/gap/audit artifacts.
+    if _contract_doc_type_early in ('strategy', ''):
+        obj = validate_rel3_objectives(
+            art.get('sections') or {}, backend=backend)
+        road = validate_rel3_roadmap_output_quality(
+            art.get('sections') or {}, backend=backend)
+        art['sections'] = obj.get('sections') or art.get('sections') or {}
+        if road.get('sections'):
+            art['sections'].update(road['sections'])
 
     blockers: List[str] = []
     require_strategy = _requires_strategy_contract_sections(art, domain=domain)

@@ -33,6 +33,7 @@ def export_docx(
         org_name: str = '',
         sector: str = '',
         doc_type: str = 'Strategy Document',
+        document_type: str = '',
         domain: str = 'cyber',
         selected_frameworks=None,
         cyber_sealed_artifact: bool = False,
@@ -49,6 +50,22 @@ def export_docx(
             canonical_hash=render_tree.canonical_hash,
             blocking_errors=['rel3_export_failed:docx:build_docx_bytes_missing'],
         )
+
+    # REL3.3 — do not force Strategy Document on risk/gap/audit artifacts.
+    _art_dtype = str(
+        document_type
+        or (artifact_dict or {}).get('document_type')
+        or (artifact_dict or {}).get('doc_type')
+        or getattr(frozen_artifact, 'document_type', None)
+        or getattr(frozen_artifact, 'artifact_type', None)
+        or backend.get('document_type')
+        or '').strip().lower()
+    if (
+            _art_dtype
+            and _art_dtype not in ('strategy', '')
+            and str(doc_type or '').strip() in (
+                '', 'strategy', 'Strategy Document')):
+        doc_type = _art_dtype
 
     content = render_tree.markdown_view or ''
     sec_map: Dict[str, str] = {}

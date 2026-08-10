@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Optional, Set
 
-COMPILER_FIRST_DOMAIN_CODES = frozenset({'data', 'ai', 'dt'})
+COMPILER_FIRST_DOMAIN_CODES = frozenset({'data', 'ai', 'dt', 'erm', 'global'})
 
 REFERENCE_CONTEXT_SECTIONS = frozenset({
     'environment', 'gaps', 'roadmap', 'kpis', 'confidence',
@@ -137,6 +137,160 @@ def _data_roadmap_has_cyber_primary_initiatives(sections: Dict[str, Any]) -> Lis
     return []
 
 
+# ── REL3.3 Domain Isolation Contract ─────────────────────────────────────────
+# Cyber-primary substance markers. A non-cyber strategy document must never
+# contain these as rows/owners/frameworks/initiatives. Neutral single passing
+# references in narrative sections are tolerated (2-hit rule below).
+CYBER_PRIMARY_SUBSTANCE_MARKERS_ASCII = (
+    'nca ecc', 'nca dcc', 'ciso', 'csirt', 'siem', 'soc',
+    'iam/pam', 'mfa', 'dlp',
+)
+
+CYBER_PRIMARY_SUBSTANCE_MARKERS_AR = (
+    'مركز العمليات الأمنية',
+    'فريق الاستجابة للحوادث',
+    'حوكمة الأمن السيبراني',
+    'إدارة الثغرات',
+    'الحماية والكشف والاستجابة',
+    'التوعية الأمنية',
+    'الهوية وحماية البيانات',
+    'المرونة واستمرارية الأعمال',
+)
+
+# Narrative sections tolerate one passing reference; table/substance
+# sections block on the first cyber-primary marker.
+ISOLATION_NARRATIVE_SECTIONS = frozenset({'vision', 'environment', 'appendices'})
+
+ISOLATION_GUARDED_SECTIONS = (
+    'vision', 'pillars', 'environment', 'gaps', 'roadmap',
+    'kpis', 'confidence', 'governance', 'traceability', 'appendices',
+)
+
+
+def find_cyber_primary_markers(text: str) -> List[str]:
+    """Distinct cyber-primary substance markers found in a text blob."""
+    blob = str(text or '')
+    if not blob.strip():
+        return []
+    low = blob.lower()
+    hits: List[str] = []
+    for m in CYBER_PRIMARY_SUBSTANCE_MARKERS_ASCII:
+        if re.search(r'(?<![a-z0-9])' + re.escape(m) + r'(?![a-z0-9])', low):
+            hits.append(m)
+    for m in CYBER_PRIMARY_SUBSTANCE_MARKERS_AR:
+        if m in blob:
+            hits.append(m)
+    return hits
+
+
+def emit_rel33_domain_isolation_contract(diag: Dict[str, Any]) -> None:
+    """[REL33-DOMAIN-ISOLATION-CONTRACT] — substance/domain isolation trace."""
+    try:
+        print(
+            '[REL33-DOMAIN-ISOLATION-CONTRACT] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def resolve_rel33_domain_or_fail(context: Dict[str, Any]) -> str:
+    """Central REL3.3 domain resolver — never defaults blank to cyber.
+
+    Resolution order: explicit ``domain`` → ``request_domain`` →
+    ``db_domain`` → ``contract_meta_domain`` → ``sections_json_domain`` →
+    ``content_json_domain`` → ``backend['domain']`` → route ``slug`` prefix.
+    Raises ``ValueError('rel33_export_domain_missing:<where>')`` when the
+    domain cannot be resolved.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    ctx = dict(context or {})
+    backend = ctx.get('backend') if isinstance(ctx.get('backend'), dict) else {}
+    slug = str(ctx.get('slug') or ctx.get('route') or '')
+    slug_domain = slug.split(':', 1)[0] if ':' in slug else ''
+    candidates = (
+        ('explicit', ctx.get('domain')),
+        ('request', ctx.get('request_domain')),
+        ('db', ctx.get('db_domain')),
+        ('contract_meta', ctx.get('contract_meta_domain')),
+        ('sections_json', ctx.get('sections_json_domain')),
+        ('content_json', ctx.get('content_json_domain')),
+        ('backend', (backend or {}).get('domain')),
+        ('slug', slug_domain),
+    )
+    for _source, raw in candidates:
+        code = normalize_domain_code(str(raw or ''), default='')
+        if code:
+            return code
+    where = str(ctx.get('where') or ctx.get('phase') or 'resolver')
+    raise ValueError(f'rel33_export_domain_missing:{where}')
+
+
+def evaluate_domain_isolation_contract(
+        sections: Dict[str, Any],
+        *,
+        domain: str,
+        route: str = '',
+        document_type: str = 'strategy',
+        phase: str = 'pre_save',
+        repairer_name: str = '',
+        selected_registry: str = '',
+        emit: bool = True,
+) -> Dict[str, Any]:
+    """REL3.3 Domain Isolation Contract — section-wide cyber-primary scan.
+
+    For non-cyber domains, blocks cyber-primary substance (rows, owners,
+    frameworks, initiatives) in every guarded section with
+    ``rel33_domain_contamination:<section>:cyber_primary``. Blank domains
+    fail closed with ``rel33_substance_domain_missing``. Cyber documents
+    always pass this contract (cyber substance is expected there).
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    blockers: List[str] = []
+    contaminated: List[str] = []
+    blocked_terms: List[str] = []
+    if not dcode:
+        blockers.append('rel33_substance_domain_missing')
+    elif dcode != 'cyber':
+        for sec in ISOLATION_GUARDED_SECTIONS:
+            body = str((sections or {}).get(sec) or '')
+            if not body.strip():
+                continue
+            hits = find_cyber_primary_markers(body)
+            min_hits = 2 if sec in ISOLATION_NARRATIVE_SECTIONS else 1
+            if len(hits) >= min_hits:
+                contaminated.append(sec)
+                blocked_terms.extend(hits)
+                blockers.append(
+                    f'rel33_domain_contamination:{sec}:cyber_primary')
+    diag = {
+        'route': str(route or ''),
+        'domain': dcode,
+        'document_type': str(document_type or 'strategy'),
+        'phase': str(phase or ''),
+        'section': ','.join(contaminated) if contaminated else '',
+        'repairer_name': str(repairer_name or ''),
+        'resolved_domain': dcode,
+        'domain_source': 'caller',
+        'selected_registry': str(selected_registry or dcode),
+        'cyber_registry_attempted': bool(contaminated),
+        'cyber_registry_blocked': bool(contaminated),
+        'injected_families': [],
+        'blocked_terms': sorted(set(blocked_terms)),
+        'contaminated_sections': contaminated,
+        'pre_save_guard_passed': (phase != 'pre_save') or not blockers,
+        'pre_export_guard_passed': (
+            not phase.startswith('pre_export')) or not blockers,
+        'contract_passed': not blockers,
+        'blocking_errors': list(dict.fromkeys(blockers)),
+    }
+    if emit:
+        emit_rel33_domain_isolation_contract(diag)
+    return diag
+
+
 def emit_rel33_export_domain_propagation(diag: Dict[str, Any]) -> None:
     """[REL33-EXPORT-DOMAIN-PROPAGATION] — export/render domain trace."""
     try:
@@ -204,8 +358,10 @@ def evaluate_pre_export_bytes_domain_guard(
     REL3.3 P0 — runs inside the exporters, after all repair/contract
     passes, so late-stage cyber injection cannot ship. Returns blocking
     errors (empty list ⇒ allowed):
-      * blank domain          → ``rel33_export_domain_missing:<route>``
-      * data + cyber roadmap  → ``data_roadmap_cyber_contamination``
+      * blank domain → ``rel33_export_domain_missing:<route>``
+      * non-cyber cyber-primary substance →
+        ``rel33_domain_contamination:<section>:cyber_primary``
+      * data + cyber roadmap rows → ``data_roadmap_cyber_contamination``
     """
     from release_engine_v3.domain_codes import normalize_domain_code
     dcode = normalize_domain_code(str(domain or ''), default='')
@@ -223,6 +379,18 @@ def evaluate_pre_export_bytes_domain_guard(
             'blocking_errors': list(blockers),
         })
         return blockers
+
+    isolation = evaluate_domain_isolation_contract(
+        sections_dict or {},
+        domain=dcode,
+        route=route_n,
+        phase=f'pre_export:{route_n}',
+        repairer_name='evaluate_pre_export_bytes_domain_guard',
+        selected_registry=dcode,
+        emit=True,
+    )
+    blockers.extend(isolation.get('blocking_errors') or [])
+
     if dcode == 'data':
         hits = _data_roadmap_has_cyber_primary_initiatives(sections_dict or {})
         if hits:
@@ -235,9 +403,9 @@ def evaluate_pre_export_bytes_domain_guard(
                 'domain_missing': False,
                 'fallback_domain_used': False,
                 'contaminating_terms': hits[:6],
-                'blocking_errors': list(blockers),
+                'blocking_errors': list(dict.fromkeys(blockers)),
             })
-    return blockers
+    return list(dict.fromkeys(blockers))
 
 
 def evaluate_export_domain_guard(

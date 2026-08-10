@@ -159,6 +159,35 @@ def evaluate_kpi_owner_consistency_from_export_text(
     return diag
 
 
+def evaluate_kpi_owner_consistency_from_pdf_bytes(
+        raw: bytes,
+        *,
+        route_name: str = 'pdf',
+        lang: str = 'ar',
+) -> Dict[str, Any]:
+    """Owner consistency from structured PDF table extraction (not naive text)."""
+    from release_engine_v3.rel32_kpi_main_schema_evidence import (
+        _kpi_rows_from_pdf_tables,
+    )
+    rows = _kpi_rows_from_pdf_tables(raw or b'')
+    if rows:
+        br = _bound_rows_from_cells(
+            REL32_KPI_MAIN_EXPECTED_SCHEMA_AR, rows, lang=lang, repair=False)
+        diag = evaluate_kpi_owner_consistency(
+            route_name=route_name, bound_rows=br)
+        emit_rel32_kpi_owner_consistency_diag(diag)
+        return diag
+    # Fall back to visible-text path only when structured tables are absent.
+    from release_engine_v3.evidence.pdf_text_extractor import (
+        extract_pdf_visible_text,
+    )
+    return evaluate_kpi_owner_consistency_from_export_text(
+        extract_pdf_visible_text(raw or b'') or '',
+        route_name=route_name,
+        lang=lang,
+    )
+
+
 def merge_kpi_owner_consistency_blockers(
         gate: Dict[str, Any],
         diag: Dict[str, Any],

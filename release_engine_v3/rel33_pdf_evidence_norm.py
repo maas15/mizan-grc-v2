@@ -217,9 +217,26 @@ def evaluate_pdf_roadmap_family_evidence(
 ) -> Dict[str, Any]:
     """Family evidence diagnostic for the returned PDF text (emits diag)."""
     from release_engine.roadmap_model import ROADMAP_FAMILIES, _FAMILY_TOKENS
-    present = detect_families_normalized(text or '', dict(_FAMILY_TOKENS))
-    detected = [f for f in ROADMAP_FAMILIES if present.get(f)]
-    missing = [f for f in ROADMAP_FAMILIES if not present.get(f)]
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel32_registries import (
+        resolve_roadmap_families,
+        resolve_roadmap_family_tokens,
+    )
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    # REL3.3 — family evidence is domain-scoped (never cyber-default blank).
+    if dcode and dcode != 'cyber':
+        try:
+            required = list(resolve_roadmap_families(dcode))
+            tokens = dict(resolve_roadmap_family_tokens(dcode))
+        except Exception:  # noqa: BLE001
+            required = list(ROADMAP_FAMILIES)
+            tokens = dict(_FAMILY_TOKENS)
+    else:
+        required = list(ROADMAP_FAMILIES)
+        tokens = dict(_FAMILY_TOKENS)
+    present = detect_families_normalized(text or '', tokens)
+    detected = [f for f in required if present.get(f)]
+    missing = [f for f in required if not present.get(f)]
     reversed_used = bool(
         text and normalize_arabic_loose(text)
         and any(
@@ -228,9 +245,9 @@ def evaluate_pdf_roadmap_family_evidence(
             for a in ROADMAP_FAMILY_ALIASES.get('awareness_training', ())))
     diag = {
         'route_name': route_name,
-        'domain': domain,
+        'domain': dcode or domain,
         'document_type': document_type,
-        'expected_families': list(ROADMAP_FAMILIES),
+        'expected_families': required,
         'detected_families': detected,
         'missing_families': missing,
         'detection_source': detection_source,

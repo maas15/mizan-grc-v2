@@ -42,6 +42,7 @@ def export_pdf(
         org_name: str = '',
         sector: str = '',
         doc_type: str = 'Strategy Document',
+        document_type: str = '',
         domain: str = 'cyber',
         selected_frameworks=None,
         cyber_sealed_artifact: bool = False,
@@ -57,7 +58,15 @@ def export_pdf(
         )
     content = render_tree.markdown_view
     document_type = str(
-        backend.get('document_type') or 'strategy').strip().lower()
+        document_type
+        or backend.get('document_type')
+        or 'strategy').strip().lower()
+    if (
+            document_type
+            and document_type not in ('strategy', '')
+            and str(doc_type or '').strip() in (
+                '', 'strategy', 'Strategy Document')):
+        doc_type = document_type
     lock_flags = _rel33_kpi_table_lock_flags(domain)
 
     # REL3.3 P0 — final domain guard on the exact sections used to build
