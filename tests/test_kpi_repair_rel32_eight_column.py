@@ -42,7 +42,7 @@ def _ctx():
 class KpiRepairEightColumnTests(unittest.TestCase):
 
     def test_repair_preserves_owner_column_in_main_table(self):
-        doc = compile_canonical_strategy_document(_ctx())
+        doc = compile_canonical_strategy_document({}, request_context=_ctx())
         kpis = doc.legacy_sections.get('kpis') or ''
         tables = parse_markdown_tables(kpis)
         self.assertGreaterEqual(len(tables), 1)
@@ -54,14 +54,14 @@ class KpiRepairEightColumnTests(unittest.TestCase):
         self.assertIn('CISO', main_row[-1])
 
     def test_formula_appendix_rel32_four_column_schema(self):
-        doc = compile_canonical_strategy_document(_ctx())
+        doc = compile_canonical_strategy_document({}, request_context=_ctx())
         kpis = doc.legacy_sections.get('kpis') or ''
         self.assertIn('| # | المؤشر | صيغة الاحتساب | مصدر البيانات |', kpis)
         self.assertIn('| 1 | متوسط زمن اكتشاف', kpis)
         self.assertIn('SIEM / SOC', kpis)
 
     def test_assessment_guide_table_is_not_four_column_formula(self):
-        doc = compile_canonical_strategy_document(_ctx())
+        doc = compile_canonical_strategy_document({}, request_context=_ctx())
         kpis = doc.legacy_sections.get('kpis') or ''
         tables = parse_markdown_tables(kpis)
         guide = next(
@@ -71,7 +71,7 @@ class KpiRepairEightColumnTests(unittest.TestCase):
         self.assertNotEqual(len(guide[0]), 4)
 
     def test_canonical_compiler_row1_passes_dom_gate(self):
-        doc = compile_canonical_strategy_document(_ctx())
+        doc = compile_canonical_strategy_document({}, request_context=_ctx())
         kpis = doc.legacy_sections.get('kpis') or ''
         tables = parse_markdown_tables(kpis)
         hdr, row = tables[0][0], tables[0][1]

@@ -184,7 +184,8 @@ class Rel32CompilerFirstTests(unittest.TestCase):
         r = _compile({'traceability': bad_trace})
         self.assertTrue(r.passed, r.blocking_errors)
         trace = r.legacy_sections.get('traceability', '')
-        canon = build_canonical_traceability_from_registry(lang='ar')
+        canon = build_canonical_traceability_from_registry(
+            lang='ar', domain='cyber')
         for fam in ('data_classification', 'dlp', 'encryption'):
             self.assertIn(
                 TRACE_CANONICAL_REGISTRY[fam]['expected_gap'], trace)
