@@ -1,0 +1,11 @@
+{
+  "name": "Mizan GRC",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "web",
+      "command": "ADMIN_PASSWORD=\"${ADMIN_PASSWORD:-mizan-dev-admin}\" SECRET_KEY=\"${SECRET_KEY:-mizan-dev-secret-key}\" FLASK_ENV=\"${FLASK_ENV:-development}\" python3 app.py"
+    }
+  ],
+  "ports": [5000]
+}
