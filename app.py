@@ -57574,14 +57574,26 @@ def _ensure_arabic_pdf_font(required=False):
         '/usr/share/fonts/TTF/DejaVuSans.ttf',
         '/usr/local/share/fonts/Amiri-Regular.ttf',
     ]
-    # Also search via glob
+    # Also search via glob as a fallback AFTER the explicit preference list
+    # above (do NOT prepend — glob iteration order is filesystem-dependent and
+    # was non-deterministically selecting different faces across machines).
+    # Two hardening steps keep exported Arabic text extractable/searchable:
+    #   * sorted(...) makes selection deterministic across environments;
+    #   * NotoKufiArabic is excluded because its ReportLab-embedded subset has
+    #     no usable ToUnicode map, so extracted PDF text is null-corrupted even
+    #     though the glyphs render (breaks copy/paste, search, and export
+    #     evidence checks). Noto Naskh/Sans Arabic and Amiri are all safe.
     try:
-        font_paths = (
+        _globbed = sorted(
             _glob_fr.glob('/usr/share/fonts/**/[Nn]oto*[Aa]rabic*.ttf', recursive=True)
             + _glob_fr.glob('/usr/share/fonts/**/[Aa]miri*.ttf', recursive=True)
             + _glob_fr.glob('/usr/share/fonts/**/[Aa]rabic*.ttf', recursive=True)
-            + font_paths
         )
+        _globbed = [
+            _p for _p in _globbed
+            if 'kufi' not in _os_fr.path.basename(_p).lower()
+        ]
+        font_paths = font_paths + _globbed
     except Exception:
         pass
 
