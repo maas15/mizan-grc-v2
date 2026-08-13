@@ -113,12 +113,14 @@ def export_docx(
         evaluate_pre_export_bytes_domain_guard,
     )
     _guard_domain = str(backend.get('domain') or domain or '')
+    _guard_dtype = str(backend.get('document_type') or '').strip().lower()
     _guard_sections = sec_map if sec_map else {'roadmap': content}
     _guard_blockers = evaluate_pre_export_bytes_domain_guard(
         _guard_sections,
         domain=_guard_domain,
         route='docx',
         artifact_id=render_tree.artifact_id,
+        document_type=_guard_dtype,
     )
     if _guard_blockers:
         return ExportResult(

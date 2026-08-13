@@ -291,6 +291,208 @@ def evaluate_domain_isolation_contract(
     return diag
 
 
+# ── REL3.3 ERM Risk Domain Isolation ─────────────────────────────────────────
+# A risk (document_type=risk/risk_assessment) document must never carry
+# Cyber-*primary* substance (the cyber document's identity: its owner role,
+# primary framework, or primary governance/ops initiatives). Generic security
+# terms that are legitimate risk *controls* (MFA, IAM/PAM, DLP inside a
+# treatment/register table) are allowed per the ERM substance contract, and a
+# single incidental prose mention of SOC/CISO is tolerated. Only cyber-primary
+# substance in an identity position (heading / table row / list item / labeled
+# owner-role-framework) is blocked. NON_STRATEGY_DOMAIN_GUARD_TYPES risk types
+# route here instead of through the strategy isolation contract, which is tuned
+# for strategy section shapes and over-blocks incidental terms in a risk intro
+# that the shared strategy splitter mislabels as ``vision``.
+
+RISK_DOCUMENT_TYPES = frozenset({'risk', 'risk_assessment'})
+
+# ERM-allowed risk substance (informational — never blocked).
+ERM_ALLOWED_SUBSTANCE_MARKERS = (
+    'risk appetite', 'risk register', 'inherent risk', 'residual risk',
+    'controls', 'kri', 'treatment plan', 'risk owner', 'risk committee',
+    'likelihood', 'impact', 'risk response',
+    'شهية المخاطر', 'سجل المخاطر', 'المخاطر المتأصلة', 'المخاطر المتبقية',
+    'الضوابط', 'مؤشرات المخاطر', 'خطة المعالجة', 'مالك المخاطر',
+    'لجنة المخاطر', 'الاحتمالية', 'التأثير', 'الاستجابة للمخاطر',
+)
+
+# Cyber-primary substance that is *never* legitimate in an ERM risk document —
+# blocked wherever it appears (these are cyber-strategy identity/ops concepts,
+# not generic risk controls).
+CYBER_RISK_STRONG_MARKERS_AR = (
+    'حوكمة الأمن السيبراني',
+    'مركز العمليات الأمنية',
+    'الاستجابة للحوادث السيبرانية',
+    'إدارة الثغرات السيبرانية',
+)
+CYBER_RISK_STRONG_MARKERS_ASCII = (
+    'csirt', 'nca ecc', 'nca dcc', 'security operations center',
+)
+
+# Cyber-primary substance blocked only in an *identity* position (heading,
+# table row, list item, or labeled owner/role/framework). In plain prose a
+# single mention is treated as an incidental reference and tolerated (#6).
+CYBER_RISK_CONTEXTUAL_MARKERS_ASCII = (
+    'ciso', 'soc', 'siem', 'iam/pam', 'mfa',
+)
+
+# Risk sections whose whole purpose is to enumerate controls/treatments; the
+# contextual markers above are legitimate *controls* here (ERM substance #4)
+# and must not be flagged. Strong markers are still blocked everywhere.
+RISK_CONTROL_SECTIONS = frozenset({
+    'register', 'risk_register', 'treatments', 'treatment', 'risk_treatment',
+    'heatmap', 'appetite', 'controls', 'kri', 'kris',
+})
+
+_PRIMARY_LINE_LABELS_ASCII = ('owner:', 'role:', 'framework:', 'primary')
+_PRIMARY_LINE_LABELS_AR = ('المالك', 'الدور', 'الإطار', 'الجهة المالكة',
+                           'الإطار الأساسي')
+
+
+def _risk_line_is_identity_position(line: str) -> bool:
+    """True when a line is an identity/substance position (not plain prose)."""
+    s = str(line or '').strip()
+    if not s:
+        return False
+    if s.startswith('#'):
+        return True
+    if s.startswith('|'):
+        return True
+    if re.match(r'^([-*•]|\d+[.)])\s', s):
+        return True
+    low = s.lower()
+    if any(lbl in low for lbl in _PRIMARY_LINE_LABELS_ASCII):
+        return True
+    if any(lbl in s for lbl in _PRIMARY_LINE_LABELS_AR):
+        return True
+    return False
+
+
+def _ascii_word_hit(marker: str, low_text: str) -> bool:
+    return bool(re.search(
+        r'(?<![a-z0-9])' + re.escape(marker) + r'(?![a-z0-9])', low_text))
+
+
+def find_cyber_primary_risk_markers(
+        text: str, *, section_key: str = '') -> List[str]:
+    """Cyber-*primary* substance markers illegitimate in an ERM risk section.
+
+    Strong markers block anywhere. Contextual markers block only in identity
+    positions (heading/table/list/labeled) and never inside control/treatment
+    sections (where they are legitimate risk controls).
+    """
+    blob = str(text or '')
+    if not blob.strip():
+        return []
+    low = blob.lower()
+    hits: List[str] = []
+    for m in CYBER_RISK_STRONG_MARKERS_AR:
+        if m in blob:
+            hits.append(m)
+    for m in CYBER_RISK_STRONG_MARKERS_ASCII:
+        if _ascii_word_hit(m, low):
+            hits.append(m)
+    sec = str(section_key or '').strip().lower()
+    if sec not in RISK_CONTROL_SECTIONS:
+        for line in blob.splitlines():
+            if not _risk_line_is_identity_position(line):
+                continue
+            ll = line.lower()
+            for m in CYBER_RISK_CONTEXTUAL_MARKERS_ASCII:
+                if _ascii_word_hit(m, ll):
+                    hits.append(m)
+    return sorted(set(hits))
+
+
+def emit_rel33_risk_domain_isolation(diag: Dict[str, Any]) -> None:
+    """[REL33-RISK-DOMAIN-ISOLATION] — ERM risk domain/document_type trace."""
+    try:
+        print(
+            '[REL33-RISK-DOMAIN-ISOLATION] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def evaluate_rel33_risk_domain_isolation(
+        sections: Dict[str, Any],
+        *,
+        domain: str,
+        document_type: str,
+        route: str = '',
+        phase: str = 'pre_export',
+        artifact_type: str = 'risk',
+        section_classifier: str = '',
+        selected_registry: str = '',
+        strategy_repairer_invoked: bool = False,
+        emit: bool = True,
+) -> Dict[str, Any]:
+    """REL3.3 ERM risk domain isolation — document_type-aware, fail-closed.
+
+    Applies to non-cyber risk documents. Blocks cyber-*primary* substance in
+    any section (treating a strategy-splitter-mislabeled ``vision`` intro as a
+    risk section, domain=erm/document_type=risk — requirement #3). Blank
+    domain or document_type fails closed. Cyber risk documents pass (cyber
+    substance is expected there).
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    dtype = str(document_type or '').strip().lower()
+    blockers: List[str] = []
+    contaminated: List[str] = []
+    blocked_terms: List[str] = []
+    cyber_terms: List[str] = []
+
+    if not dtype:
+        blockers.append('rel33_risk_document_type_missing')
+    if not dcode:
+        blockers.append('rel33_risk_domain_missing')
+
+    if dcode and dtype and dcode != 'cyber':
+        for sec, body in (sections or {}).items():
+            if str(sec).startswith('_'):
+                continue
+            text = str(body or '')
+            if not text.strip():
+                continue
+            hits = find_cyber_primary_risk_markers(text, section_key=str(sec))
+            if hits:
+                contaminated.append(str(sec))
+                cyber_terms.extend(hits)
+                blocked_terms.extend(hits)
+                blockers.append(
+                    f'rel33_domain_contamination:{sec}:cyber_primary')
+
+    resolved_registry = str(selected_registry or dcode or '')
+    passed = not blockers
+    diag = {
+        'route': str(route or ''),
+        'domain': dcode or str(domain or ''),
+        'document_type': dtype,
+        'artifact_type': str(artifact_type or 'risk'),
+        'phase': str(phase or ''),
+        'section': ','.join(sorted(set(contaminated))) if contaminated else '',
+        'section_classifier': str(section_classifier or ''),
+        'resolved_domain': dcode,
+        'resolved_document_type': dtype,
+        'selected_registry': resolved_registry,
+        'strategy_repairer_invoked': bool(strategy_repairer_invoked),
+        'cyber_substance_detected': bool(cyber_terms),
+        'cyber_primary_terms': sorted(set(cyber_terms)),
+        'blocked_terms': sorted(set(blocked_terms)),
+        'pre_save_guard_passed': (phase != 'pre_save') or passed,
+        'pre_export_guard_passed': (
+            not str(phase or '').startswith('pre_export')) or passed,
+        'contract_passed': passed,
+        'blocking_errors': list(dict.fromkeys(blockers)),
+    }
+    if emit:
+        emit_rel33_risk_domain_isolation(diag)
+    return diag
+
+
 def emit_rel33_export_domain_propagation(diag: Dict[str, Any]) -> None:
     """[REL33-EXPORT-DOMAIN-PROPAGATION] — export/render domain trace."""
     try:
@@ -352,6 +554,7 @@ def evaluate_pre_export_bytes_domain_guard(
         domain: str,
         route: str,
         artifact_id='',
+        document_type: str = '',
 ) -> List[str]:
     """Final domain guard on the exact sections used for returned bytes.
 
@@ -362,10 +565,21 @@ def evaluate_pre_export_bytes_domain_guard(
       * non-cyber cyber-primary substance →
         ``rel33_domain_contamination:<section>:cyber_primary``
       * data + cyber roadmap rows → ``data_roadmap_cyber_contamination``
+
+    ``document_type`` routes risk/risk_assessment artifacts through the ERM
+    risk isolation (document_type-aware) instead of the strategy isolation
+    contract, so a risk intro the shared strategy splitter mislabels as
+    ``vision`` is still evaluated as domain=erm/document_type=risk (#3) and
+    incidental generic security terms are not misread as cyber contamination
+    (#6). Risk substance (cyber-primary) is still blocked before any bytes.
     """
     from release_engine_v3.domain_codes import normalize_domain_code
     dcode = normalize_domain_code(str(domain or ''), default='')
     route_n = str(route or 'export').lower()
+    dtype = str(
+        document_type
+        or (sections_dict or {}).get('_document_type')
+        or '').strip().lower()
     blockers: List[str] = []
     if not dcode:
         blockers.append(f'rel33_export_domain_missing:{route_n}')
@@ -379,6 +593,21 @@ def evaluate_pre_export_bytes_domain_guard(
             'blocking_errors': list(blockers),
         })
         return blockers
+
+    if dtype in RISK_DOCUMENT_TYPES:
+        risk_iso = evaluate_rel33_risk_domain_isolation(
+            sections_dict or {},
+            domain=dcode,
+            document_type=dtype,
+            route=route_n,
+            phase=f'pre_export:{route_n}',
+            artifact_type='risk',
+            section_classifier='pre_export_bytes',
+            selected_registry=dcode,
+            emit=True,
+        )
+        blockers.extend(risk_iso.get('blocking_errors') or [])
+        return list(dict.fromkeys(blockers))
 
     isolation = evaluate_domain_isolation_contract(
         sections_dict or {},

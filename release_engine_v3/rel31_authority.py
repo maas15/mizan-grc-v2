@@ -1271,6 +1271,10 @@ def rel3_export_authoritative(
     document_type = str(
         (art.get('contract_meta') or {}).get('document_type')
         or art.get('document_type') or 'strategy').strip().lower()
+    # REL3.3 — propagate document_type to the export backend so the
+    # pre-export bytes domain guard is document_type-aware (risk artifacts
+    # route through the ERM risk isolation, not the strategy contract).
+    backend['document_type'] = document_type
     if lock_meta.get('blocking_errors') and rel33_compiler_first_sections_authority(
             art, domain=domain, lang=lang, flags=flags,
             document_type=document_type):

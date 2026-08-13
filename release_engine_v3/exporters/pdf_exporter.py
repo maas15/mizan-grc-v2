@@ -87,6 +87,7 @@ def export_pdf(
         domain=_guard_domain,
         route='pdf',
         artifact_id=render_tree.artifact_id,
+        document_type=document_type,
     )
     if _guard_blockers:
         return ExportResult(

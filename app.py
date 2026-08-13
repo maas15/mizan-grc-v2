@@ -68233,7 +68233,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # _count_risk_rows_with_mitigation ≥ _RICHNESS_MIN_RISK_ROWS
                     # so `so_rows_insufficient` and `risk_rows_insufficient`
                     # never survive to the gate.
-                    if doc_subtype != 'board':
+                    # REL3.3 #2 — strategy-only vision/objective + confidence
+                    # repairers must never run for non-strategy documents
+                    # (risk/gap/etc). They inject strategy substance (vision
+                    # lede, NCA ECC default framework) that contaminates an
+                    # ERM risk document and trips the export domain guard.
+                    _strategy_repairers_allowed = (
+                        str(_document_type or 'strategy').strip().lower()
+                        == 'strategy')
+                    if doc_subtype != 'board' and _strategy_repairers_allowed:
                         try:
                             _vis_repair = repair_vision_objectives_if_insufficient(
                                 sections, lang,
@@ -73706,22 +73714,40 @@ The confidence score is based on a comprehensive assessment of the organization'
                         )
                     # ── REL3.3 Domain Isolation Contract (pre-save) ──
                     # Fail-closed: blank domain or Cyber-primary substance in
-                    # non-cyber sections blocks save before DB commit.
+                    # non-cyber sections blocks save before DB commit. Uses the
+                    # resolved _document_type (not the raw doc_type label) so
+                    # risk/gap artifacts are evaluated with the correct
+                    # document_type-aware guard.
+                    _presave_dtype = str(
+                        _document_type or 'strategy').strip().lower()
                     try:
                         from release_engine_v3.rel33_domain_guard import (
                             evaluate_domain_isolation_contract,
+                            evaluate_rel33_risk_domain_isolation,
                         )
-                        _iso_diag = evaluate_domain_isolation_contract(
-                            sections,
-                            domain=_dcode,
-                            route='api_generate_strategy',
-                            document_type=str(
-                                locals().get('doc_type') or 'strategy'),
-                            phase='pre_save',
-                            repairer_name='save_gate',
-                            selected_registry=str(_dcode or ''),
-                            emit=True,
-                        )
+                        if _presave_dtype in ('risk', 'risk_assessment'):
+                            _iso_diag = evaluate_rel33_risk_domain_isolation(
+                                sections,
+                                domain=_dcode,
+                                document_type=_presave_dtype,
+                                route='api_generate_strategy',
+                                phase='pre_save',
+                                artifact_type='risk',
+                                section_classifier='save_gate',
+                                selected_registry=str(_dcode or ''),
+                                emit=True,
+                            )
+                        else:
+                            _iso_diag = evaluate_domain_isolation_contract(
+                                sections,
+                                domain=_dcode,
+                                route='api_generate_strategy',
+                                document_type=_presave_dtype,
+                                phase='pre_save',
+                                repairer_name='save_gate',
+                                selected_registry=str(_dcode or ''),
+                                emit=True,
+                            )
                         if not _iso_diag.get('contract_passed'):
                             _iso_blockers = list(
                                 _iso_diag.get('blocking_errors') or [])
@@ -79327,9 +79353,21 @@ def api_generate_docx_async():
                     _async_sections = dict(
                         _export_db_bundle.get('sections') or {})
                 if not _async_sections:
-                    _async_sections = (
-                        _split_strategy_sections_by_h2(_async_content or '')
-                        or {})
+                    # REL3.3 — a risk artifact must never be sectionized by the
+                    # strategy splitter (it mints a bogus ``vision`` key from
+                    # risk prose and lets the strategy isolation contract
+                    # over-block). Use the risk-aware splitter instead.
+                    if _art_type_a in ('risk', 'risk_assessment'):
+                        from release_engine_v3.rel33_risk_artifact import (
+                            normalize_risk_export_sections as _norm_risk_secs,
+                            _split_risk_markdown as _split_risk_md,
+                        )
+                        _async_sections = _norm_risk_secs(
+                            _split_risk_md(_async_content or '')) or {}
+                    else:
+                        _async_sections = (
+                            _split_strategy_sections_by_h2(_async_content or '')
+                            or {})
                 _async_hash = ''
                 try:
                     _ach = _rel2_backend_callables().get('content_hash')
@@ -81666,9 +81704,23 @@ def api_generate_docx():
         _resolved_docx_sid = (
             _resolve_numeric_strategy_id(_art_id, session.get('user_id', 0))
             or _art_id or data.get('strategy_id') or '')
-        _export_sections = _split_strategy_sections_by_h2(content or '') or {}
-        if _rel33_risk_sections_d:
-            _export_sections = dict(_rel33_risk_sections_d)
+        if _art_type in ('risk', 'risk_assessment'):
+            # REL3.3 — never sectionize a risk artifact with the strategy
+            # splitter (mints a bogus ``vision`` key). Prefer resolved risk
+            # sections; fall back to the risk-aware markdown splitter.
+            if _rel33_risk_sections_d:
+                _export_sections = dict(_rel33_risk_sections_d)
+            else:
+                from release_engine_v3.rel33_risk_artifact import (
+                    normalize_risk_export_sections as _norm_risk_secs_d,
+                    _split_risk_markdown as _split_risk_md_d,
+                )
+                _export_sections = _norm_risk_secs_d(
+                    _split_risk_md_d(content or '')) or {}
+        else:
+            _export_sections = _split_strategy_sections_by_h2(content or '') or {}
+            if _rel33_risk_sections_d:
+                _export_sections = dict(_rel33_risk_sections_d)
         _export_hash = ''
         try:
             _ch = _rel2_export_be.get('content_hash')
@@ -92273,6 +92325,50 @@ def _run_risk_generation_task(task_id, user_id, data):
             pass
         content, val = _repair_and_revalidate(content, 'risk', lang)
 
+        # ── REL3.3 ERM risk domain isolation (pre-save, fail-closed) ──
+        # A non-cyber risk document must never persist Cyber-*primary*
+        # substance. Emits [REL33-RISK-DOMAIN-ISOLATION]; blocks the save
+        # (fail-closed) when cyber-primary substance is detected. The risk
+        # async path runs no strategy repairer, so strategy_repairer_invoked
+        # is always False here.
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            from release_engine_v3.rel33_risk_artifact import (
+                normalize_risk_export_sections as _norm_risk_secs_g,
+                _split_risk_markdown as _split_risk_md_g,
+            )
+            from release_engine_v3.rel33_domain_guard import (
+                evaluate_rel33_risk_domain_isolation,
+            )
+            _risk_dcode = normalize_domain_code(str(domain or ''), default='')
+            _risk_secs_g = _norm_risk_secs_g(_split_risk_md_g(content or ''))
+            _risk_iso_g = evaluate_rel33_risk_domain_isolation(
+                _risk_secs_g,
+                domain=_risk_dcode,
+                document_type='risk',
+                route='generate-risk-async',
+                phase='pre_save',
+                artifact_type='risk',
+                section_classifier='risk_markdown',
+                selected_registry=_risk_dcode,
+                strategy_repairer_invoked=False,
+                emit=True,
+            )
+            if _risk_dcode and not _risk_iso_g.get('contract_passed'):
+                _risk_iso_blockers = list(
+                    _risk_iso_g.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_domain_isolation '
+                      f'errors={_risk_iso_blockers!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_risk_iso_blockers[0] if _risk_iso_blockers
+                     else 'rel33_risk_domain_contamination'))
+                return
+        except Exception as _risk_iso_e:  # noqa: BLE001
+            print(f'[RISK-ASYNC] risk domain isolation (non-fatal): '
+                  f'{_risk_iso_e}', flush=True)
+
         risk_id = None
         try:
             conn = get_db_direct()
@@ -92360,7 +92456,13 @@ def _classify_risk_level(data):
 
 
 def _build_risk_prompt(data):
-    """Build risk analysis prompt (thread-safe, no Flask context needed)."""
+    """Build risk analysis prompt (thread-safe, no Flask context needed).
+
+    REL3.3 #1 — the prompt is domain-scoped: a non-cyber domain (e.g. ERM)
+    must yield risk substance framed for that domain and must NOT default to
+    cyber-security governance (CISO/SOC/SIEM/CSIRT/NCA ECC). Cyber-specific
+    substance is only appropriate when the domain itself is Cyber Security.
+    """
     lang     = data.get('language', 'en')
     domain   = data.get('domain', 'Cyber Security')
     asset    = data.get('asset', 'Information System')
@@ -92369,12 +92471,37 @@ def _build_risk_prompt(data):
     context  = data.get('context', '')
     controls = data.get('existing_controls', '')
     risk_lvl = data.get('_risk_level', 'HIGH')
+    _fws = data.get('selected_frameworks') or data.get('frameworks') or []
+    _fw_txt = ', '.join(str(f) for f in _fws if str(f).strip())
+
+    _dom_l = str(domain or '').strip().lower()
+    _is_cyber = ('cyber' in _dom_l) or (_dom_l == 'الأمن السيبراني') or (
+        'سيبران' in _dom_l)
 
     if lang == 'ar':
+        if _is_cyber:
+            _domain_clause = (
+                f'المجال: {domain}\n'
+                + (f'الأطر المرجعية: {_fw_txt}\n' if _fw_txt else ''))
+            _scope_rule = ''
+        else:
+            _domain_clause = (
+                f'المجال: {domain}\n'
+                + (f'الأطر المرجعية: {_fw_txt}\n' if _fw_txt else ''))
+            _scope_rule = (
+                f'\nقيد أساسي: أبقِ التحليل ضمن مجال «{domain}» وأطره المرجعية. '
+                'استخدم مصطلحات إدارة المخاطر المؤسسية (شهية المخاطر، السجل، '
+                'المخاطر المتأصلة والمتبقية، الضوابط، مؤشرات المخاطر KRI، خطة '
+                'المعالجة، مالك المخاطر، لجنة المخاطر). لا تُدخل حوكمة الأمن '
+                'السيبراني أو مركز العمليات الأمنية (SOC/SIEM) أو فريق الاستجابة '
+                'للحوادث (CSIRT) أو رئيس أمن المعلومات (CISO) أو ضوابط NCA ECC/DCC '
+                'كعناصر أساسية، إلا إذا كانت ضابطًا عامًا مذكورًا عرضًا.\n')
         prompt = (
             f'أنت محلل مخاطر GRC متخصص. أجرِ تحليل مخاطر شاملاً.\n\n'
+            f'{_domain_clause}'
             f'الأصل: {asset}\nالتهديد: {threat}\nالفئة: {category}\n'
-            f'مستوى الخطر الأولي: {risk_lvl}\n\n'
+            f'مستوى الخطر الأولي: {risk_lvl}\n'
+            f'{_scope_rule}\n'
             f'أنشئ تقرير تحليل مخاطر بتنسيق Markdown يتضمن:\n'
             f'1. وصف السيناريو\n'
             f'2. جدول تقييم المخاطر (الاحتمالية | التأثير | الدرجة | الخطورة)\n'
@@ -92387,10 +92514,20 @@ def _build_risk_prompt(data):
     else:
         context_clause = f'\nAdditional Context: {context}\n' if context else ''
         controls_clause = f'\nExisting Controls: {controls}\n' if controls else ''
+        fw_clause = f'Reference Frameworks: {_fw_txt}\n' if _fw_txt else ''
+        scope_rule = '' if _is_cyber else (
+            f'\nHard constraint: keep the analysis within the "{domain}" domain '
+            'and its reference frameworks. Use enterprise risk terminology '
+            '(risk appetite, register, inherent/residual risk, controls, KRIs, '
+            'treatment plan, risk owner, risk committee). Do NOT introduce '
+            'cybersecurity governance, a SOC/SIEM, CSIRT, a CISO as the primary '
+            'owner, or NCA ECC/DCC as the primary framework unless they appear '
+            'only as an incidental generic control.\n')
         prompt = (
             f'You are a Big4-grade GRC risk analyst. Conduct a comprehensive risk analysis.\n\n'
             f'Asset: {asset}\nThreat: {threat}\nCategory: {category}\n'
-            f'Domain: {domain}\nInitial Risk Level: {risk_lvl}\n'
+            f'Domain: {domain}\n{fw_clause}Initial Risk Level: {risk_lvl}\n'
+            f'{scope_rule}'
             f'{context_clause}{controls_clause}\n'
             f'Produce a formal risk analysis report in Markdown with:\n'
             f'1. Threat Scenario Description\n'
