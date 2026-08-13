@@ -263,9 +263,17 @@ def apply_route_bound_verdict(
         arabic_font_registered: bool = True,
         internal_roadmap_row_count: Optional[int] = None,
         domain: str = '',
+        document_type: str = 'strategy',
 ) -> Dict[str, Any]:
     """Compute route-specific pass flags; defaults are False until evidence checked."""
     route = normalize_route(route_name)
+    # REL3.3 — the pillar-after-heading evidence is a strategy-only
+    # completeness check. A risk artifact has no strategic-pillars section
+    # (it is compiled risk-native, not as a strategy), so applying it would
+    # falsely block risk exports. Scoped to risk types to preserve the exact
+    # strategy and gap_assessment behavior.
+    _dtype = str(document_type or 'strategy').strip().lower()
+    _strategy_section_checks = _dtype not in ('risk', 'risk_assessment')
     channels = ROUTE_CHANNELS.get(route, ROUTE_CHANNELS['preview'])
 
     preview_export_evidence_passed = _channel_passed(
@@ -288,35 +296,37 @@ def apply_route_bound_verdict(
     else:
         pdf_export_evidence_passed = False
 
-    # Hard pillar-after-heading checks on actual export text
-    for prefix, text, checked in (
-            ('docx', docx_text, docx_bytes_checked),
-            ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
-    ):
-        if not checked or not text:
-            continue
-        for defect in check_pillars_after_strategic_heading(
-                text, domain=domain):
-            err = f'rel2_actual_export_evidence_failed:{prefix}:{defect}'
-            if err not in blocking:
-                blocking.append(err)
-            if prefix == 'docx':
-                docx_export_evidence_passed = False
-            if prefix == 'pdf':
-                pdf_export_evidence_passed = False
-                pdf_pass_from_actual_bytes = False
+    # Hard pillar-after-heading checks on actual export text (strategy only)
+    if _strategy_section_checks:
+        for prefix, text, checked in (
+                ('docx', docx_text, docx_bytes_checked),
+                ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
+        ):
+            if not checked or not text:
+                continue
+            for defect in check_pillars_after_strategic_heading(
+                    text, domain=domain):
+                err = f'rel2_actual_export_evidence_failed:{prefix}:{defect}'
+                if err not in blocking:
+                    blocking.append(err)
+                if prefix == 'docx':
+                    docx_export_evidence_passed = False
+                if prefix == 'pdf':
+                    pdf_export_evidence_passed = False
+                    pdf_pass_from_actual_bytes = False
 
     # Section parity against actual exported text (not internal hashes only)
-    for prefix, text, checked in (
-            ('docx', docx_text, docx_bytes_checked),
-            ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
-    ):
-        if not checked or not text:
-            continue
-        if check_pillars_after_strategic_heading(text, domain=domain):
-            parity_err = 'rel2_section_parity_failed:pillars:actual_text_missing'
-            if parity_err not in blocking:
-                blocking.append(parity_err)
+    if _strategy_section_checks:
+        for prefix, text, checked in (
+                ('docx', docx_text, docx_bytes_checked),
+                ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
+        ):
+            if not checked or not text:
+                continue
+            if check_pillars_after_strategic_heading(text, domain=domain):
+                parity_err = 'rel2_section_parity_failed:pillars:actual_text_missing'
+                if parity_err not in blocking:
+                    blocking.append(parity_err)
 
     # Roadmap visible drift on exported channels
     for prefix, text, checked in (

@@ -594,6 +594,7 @@ def validate_actual_export_evidence(
 
     route_verdict = apply_route_bound_verdict(
         domain=domain,
+        document_type=document_type,
         route_name=route_name,
         preview_text=preview_text,
         docx_text=docx_text,

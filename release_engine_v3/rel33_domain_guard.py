@@ -493,6 +493,42 @@ def evaluate_rel33_risk_domain_isolation(
     return diag
 
 
+# ── REL3.3 Document-Type Compiler Authority ──────────────────────────────────
+# The REL32 strategy compiler synthesizes strategy sections (vision, pillars,
+# environment, roadmap, kpis) and must ONLY run for document_type=strategy.
+# Risk/gap artifacts must be compiled/frozen/rendered from their native section
+# taxonomy — never synthesized into a strategy. This resolver selects the
+# compiler by document_type and fails closed if the strategy compiler is
+# attempted for a non-strategy artifact.
+
+STRATEGY_COMPILER_DOCUMENT_TYPES = frozenset({'strategy', ''})
+RISK_COMPILER_DOCUMENT_TYPES = frozenset({'risk', 'risk_assessment'})
+
+
+def select_rel33_compiler(document_type: str) -> str:
+    """Return the compiler authority for a document type."""
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype in RISK_COMPILER_DOCUMENT_TYPES:
+        return 'risk_native'
+    if dtype == 'gap_assessment':
+        return 'gap_native'
+    if dtype in STRATEGY_COMPILER_DOCUMENT_TYPES:
+        return 'strategy'
+    return 'native'
+
+
+def emit_rel33_document_type_compiler_authority(diag: Dict[str, Any]) -> None:
+    """[REL33-DOCUMENT-TYPE-COMPILER-AUTHORITY] — compiler-selection trace."""
+    try:
+        print(
+            '[REL33-DOCUMENT-TYPE-COMPILER-AUTHORITY] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def emit_rel33_export_domain_propagation(diag: Dict[str, Any]) -> None:
     """[REL33-EXPORT-DOMAIN-PROPAGATION] — export/render domain trace."""
     try:

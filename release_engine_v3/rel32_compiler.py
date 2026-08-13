@@ -945,6 +945,47 @@ def compile_canonical_strategy_document(
     are always compiler-owned. Returns fail-closed CompileResult on schema/DQS block.
     """
     ctx = dict(request_context or {})
+    # REL3.3 P0 fail-closed — the strategy compiler must never run for a risk
+    # artifact (that synthesizes strategy sections and contaminates the risk
+    # document). The canonical builder routes risk to the risk-native path;
+    # this is a defensive guard for any other caller that reaches here with a
+    # risk document_type. Do not silently fall back to strategy compilation.
+    _ctx_dtype = str(
+        ctx.get('document_type')
+        or (ctx.get('backend') or {}).get('document_type')
+        or 'strategy').strip().lower()
+    if _ctx_dtype in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_domain_guard import (
+            emit_rel33_document_type_compiler_authority,
+        )
+        _risk_sections, _ = _normalize_raw_input(raw_ai_output)
+        emit_rel33_document_type_compiler_authority({
+            'route': str(ctx.get('route') or ''),
+            'domain': str(ctx.get('domain') or ''),
+            'artifact_type': _ctx_dtype,
+            'document_type': _ctx_dtype,
+            'phase': 'compile_canonical_strategy_document',
+            'compiler_selected': 'risk_native',
+            'compiler_requested': 'strategy',
+            'compiler_allowed': False,
+            'freeze_authority': 'risk_native',
+            'strategy_compiler_attempted': True,
+            'strategy_compiler_blocked': True,
+            'native_sections_present': sorted(
+                str(k) for k in _risk_sections if not str(k).startswith('_')),
+            'synthetic_strategy_sections_created': False,
+            'blocking_errors': [
+                f'rel33_wrong_compiler_for_document_type:{_ctx_dtype}'],
+        })
+        return CompileResult(
+            document=None,
+            legacy_sections=dict(_risk_sections),
+            repairs=[],
+            blocking_errors=[
+                f'rel33_wrong_compiler_for_document_type:{_ctx_dtype}'],
+            passed=False,
+            diagnostics={'compiler': 'rel32', 'blocked_document_type': _ctx_dtype},
+        )
     lang = str(ctx.get('lang') or 'ar')
     # REL3.3 P0 — never rebrand a blank domain as cyber. Resolve from ctx
     # then backend metadata; blank fails closed via the domain-aware

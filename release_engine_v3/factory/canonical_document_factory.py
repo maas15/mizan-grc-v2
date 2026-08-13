@@ -96,10 +96,12 @@ class CanonicalDocumentFactory:
                 'sections': sections,
                 'domain': dcode,
                 'language': lang,
+                'document_type': dtype,
                 'strategy_id': ctx.strategy_id or ctx.artifact_id,
                 'contract_meta': {
                     'lang': lang,
                     'domain': dcode,
+                    'document_type': dtype,
                     'selected_frameworks': ctx.frameworks,
                 },
                 '_rel32_backend': ctx.backend,

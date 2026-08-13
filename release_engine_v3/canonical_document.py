@@ -45,27 +45,80 @@ def _legacy_to_canonical_sections(
         lang: str = 'ar',
         domain: str = 'cyber',
         backend: Optional[Dict[str, Any]] = None,
-) -> Tuple[Dict[str, CanonicalSection], Dict[str, str]]:
+        document_type: str = 'strategy',
+        route: str = '',
+        phase: str = 'freeze',
+) -> Tuple[Dict[str, CanonicalSection], Dict[str, str], List[str]]:
+    """Build canonical sections. REL3.3 document-type compiler authority:
+
+    the REL32 strategy compiler (which synthesizes vision/pillars/environment/
+    roadmap/kpis) runs ONLY for document_type=strategy. Risk/gap artifacts are
+    compiled from their native sections and never synthesized into a strategy.
+    If the strategy compiler is somehow attempted for a non-strategy artifact
+    it fails closed with ``rel33_wrong_compiler_for_document_type:<dtype>``.
+    """
+    from release_engine_v3.rel33_domain_guard import (
+        emit_rel33_document_type_compiler_authority,
+        select_rel33_compiler,
+    )
     sections_src = dict(legacy_sections)
+    dtype = str(document_type or 'strategy').strip().lower()
+    is_risk = dtype in ('risk', 'risk_assessment')
+    compiler_selected = select_rel33_compiler(dtype)
+    authority_blockers: List[str] = []
+    strategy_compiler_attempted = False
+    strategy_compiler_blocked = False
+    synthetic_sections_created = False
+    native_present = sorted(
+        str(k) for k, v in sections_src.items()
+        if not str(k).startswith('_') and str(v or '').strip())
     try:
         from release_engine_v3.rel32_compiler import (
             compile_canonical_strategy_document,
             is_rel32_compiler_first,
         )
         flags = (backend or {}).get('flags') or {}
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
-            compiled = compile_canonical_strategy_document(
-                sections_src,
-                request_context={
-                    'lang': lang,
-                    'domain': domain,
-                    'backend': backend or {},
-                },
-            )
-            if compiled.legacy_sections:
-                sections_src = dict(compiled.legacy_sections)
+        if is_risk:
+            # REL3.3 P0 — a risk artifact must NEVER be compiled as a strategy
+            # (that synthesizes vision/pillars/environment/roadmap/kpis and
+            # contaminates the risk document). Select the risk-native authority
+            # and never invoke the strategy compiler. compile_canonical_strategy_document
+            # itself fails closed if it is ever reached with a risk document_type.
+            compiler_selected = 'risk_native'
+        else:
+            # Preserve existing strategy/gap behavior exactly: the compiler
+            # authority is decided as before (strategy-shaped) for non-risk.
+            if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+                strategy_compiler_attempted = True
+                compiled = compile_canonical_strategy_document(
+                    sections_src,
+                    request_context={
+                        'lang': lang,
+                        'domain': domain,
+                        'backend': backend or {},
+                    },
+                )
+                if compiled.legacy_sections:
+                    sections_src = dict(compiled.legacy_sections)
+                    synthetic_sections_created = True
     except Exception:  # noqa: BLE001
         pass
+    emit_rel33_document_type_compiler_authority({
+        'route': str(route or ''),
+        'domain': str(domain or ''),
+        'artifact_type': dtype,
+        'document_type': dtype,
+        'phase': str(phase or ''),
+        'compiler_selected': compiler_selected,
+        'compiler_requested': 'strategy' if strategy_compiler_attempted else compiler_selected,
+        'compiler_allowed': not strategy_compiler_blocked,
+        'freeze_authority': compiler_selected,
+        'strategy_compiler_attempted': strategy_compiler_attempted,
+        'strategy_compiler_blocked': strategy_compiler_blocked,
+        'native_sections_present': native_present,
+        'synthetic_strategy_sections_created': synthetic_sections_created,
+        'blocking_errors': list(authority_blockers),
+    })
     doc = build_strategy_document(sections_src)
     sections = doc.as_dict()
     raw_kpi = (
@@ -82,7 +135,7 @@ def _legacy_to_canonical_sections(
     if raw_trace:
         sections['traceability'] = enrich_traceability_section(
             sections['traceability'], raw_trace)
-    return sections, sections_src
+    return sections, sections_src, authority_blockers
 
 
 def _scrub_legacy_sections_arabic(
@@ -151,11 +204,13 @@ def build_final_document_artifact(
     })
     backend.setdefault('selected_frameworks', fws)
     backend.setdefault('lang', lang)
-    canon_map, legacy_sections = _legacy_to_canonical_sections(
-        legacy_sections, lang=lang, domain=domain, backend=backend)
+    canon_map, legacy_sections, _authority_blockers = _legacy_to_canonical_sections(
+        legacy_sections, lang=lang, domain=domain, backend=backend,
+        document_type=document_type, phase='build_final_document_artifact')
     canon_hash = compute_canonical_hash(canon_map)
     legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
+    blockers.extend(_authority_blockers)
     if not str(domain or '').strip() and document_type == 'strategy':
         blockers.append('rel33_export_domain_missing:canonical_artifact')
     quality = validate_canonical_quality(
