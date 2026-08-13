@@ -82482,8 +82482,23 @@ def api_generate_pdf():
     ):
         _selected_fws_pdf = (
             data.get('selected_frameworks') or data.get('frameworks') or [])
-        _pdf_sections_early = (
-            _split_strategy_sections_by_h2(content or '') or {})
+        # REL3.3 — a risk artifact must carry document_type/artifact_type and
+        # risk-native sections into the authoritative export (mirrors the DOCX
+        # path). Without document_type the frozen-lock defaults to 'strategy'
+        # and blocks the risk PDF with rel32_incomplete_frozen_artifact.
+        if _art_type_p in ('risk', 'risk_assessment'):
+            if _rel33_risk_sections_p:
+                _pdf_sections_early = dict(_rel33_risk_sections_p)
+            else:
+                from release_engine_v3.rel33_risk_artifact import (
+                    normalize_risk_export_sections as _norm_risk_secs_pe,
+                    _split_risk_markdown as _split_risk_md_pe,
+                )
+                _pdf_sections_early = _norm_risk_secs_pe(
+                    _split_risk_md_pe(content or '')) or {}
+        else:
+            _pdf_sections_early = (
+                _split_strategy_sections_by_h2(content or '') or {})
         _pdf_hash_early = ''
         try:
             _pch = _rel2_backend_callables().get('content_hash')
@@ -82513,12 +82528,18 @@ def api_generate_pdf():
                     'sealed': bool(_cyber_sealed_pdf),
                     'strategy_id': str(_resolved_pdf_sid or ''),
                     'artifact_id': str(_art_id_p or _resolved_pdf_sid or ''),
+                    'artifact_type': _art_type_p,
+                    'document_type': _rel33_export_document_type(_art_type_p),
+                    'risk_id': (data.get('risk_id')
+                                if _art_type_p in ('risk', 'risk_assessment')
+                                else None),
                     '_numeric_strategy_id': str(
                         _resolve_numeric_strategy_id(_art_id_p, _pdf_uid) or ''),
                     'final_hash': _pdf_hash_early,
                     'contract_meta': {
                         'lang': lang,
                         'domain': domain_pdf,
+                        'document_type': _rel33_export_document_type(_art_type_p),
                         'selected_frameworks': _selected_fws_pdf,
                     },
                 },

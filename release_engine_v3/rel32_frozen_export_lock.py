@@ -298,6 +298,65 @@ def resolve_frozen_artifact_for_export(
         'blocking_errors': [],
         **_default_rel32_load_meta(),
     }
+    # REL3.3 — risk artifacts use a RISK-NATIVE frozen-completeness profile,
+    # never the strategy REL3.2 frozen-artifact lock (which requires
+    # vision/pillars/roadmap/kpi/traceability and would block a valid risk PDF
+    # with rel32_incomplete_frozen_artifact). Fail closed with a risk-specific
+    # error when the risk-native minimums (risk register + treatment plan) are
+    # missing. DOCX and PDF share this same profile (parity).
+    if document_type in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_frozen_completeness import (
+            RISK_REQUIRED,
+            emit_rel33_frozen_completeness_by_document_type,
+            evaluate_risk_sections_complete,
+        )
+        _risk_secs = dict(artifact_dict.get('sections') or {})
+        _risk_final_hash = str(
+            artifact_dict.get('final_hash')
+            or (artifact_dict.get('contract_meta') or {}).get('final_hash')
+            or '')
+        _r_complete, _r_present, _r_missing = evaluate_risk_sections_complete(
+            _risk_secs, final_hash=_risk_final_hash)
+        # Hard minimums that fail closed for a risk artifact; other components
+        # (owner/severity evidence, hashes) are advisory and never block a
+        # valid risk export.
+        _risk_hard_missing = [
+            m for m in _r_missing
+            if m in ('risk_register_rows', 'treatment_rows')]
+        _risk_blockers: list = []
+        if _risk_hard_missing:
+            _risk_blockers.append('rel33_incomplete_risk_frozen_artifact')
+        _risk_atype = str(artifact_dict.get('artifact_type') or 'risk')
+        _risk_id = str(
+            artifact_dict.get('risk_id') or aid or sid or '')
+        emit_rel33_frozen_completeness_by_document_type({
+            'tag': '[REL33-FROZEN-COMPLETENESS-BY-DOCUMENT-TYPE]',
+            'route': route_n,
+            'domain': domain,
+            'document_type': document_type,
+            'artifact_type': _risk_atype,
+            'output_type': route_n,
+            'artifact_id': aid or sid,
+            'risk_id': _risk_id,
+            'completeness_profile': 'risk_native',
+            'strategy_completeness_required': False,
+            'risk_completeness_required': True,
+            'required_components': list(RISK_REQUIRED),
+            'present_components': _r_present,
+            'missing_components': _r_missing,
+            'rel32_legacy_frozen_required': False,
+            'rel33_risk_frozen_required': True,
+            'complete_for_document_type': not _risk_hard_missing,
+            'blocking_errors': list(_risk_blockers),
+        })
+        meta['completeness_profile'] = 'risk_native'
+        meta['frozen_artifact_complete'] = not _risk_hard_missing
+        meta['missing_frozen_components'] = _r_missing
+        if _risk_blockers:
+            meta['incomplete_frozen_artifact'] = True
+            meta['blocking_errors'].extend(_risk_blockers)
+        return None, meta
+
     if not is_rel32_compiler_first(
             domain=domain, lang=lang, flags=flags,
             document_type=document_type):
