@@ -329,24 +329,92 @@ CYBER_RISK_STRONG_MARKERS_ASCII = (
     'csirt', 'nca ecc', 'nca dcc', 'security operations center',
 )
 
-# Cyber-primary substance blocked only in an *identity* position (heading,
-# table row, list item, or labeled owner/role/framework). In plain prose a
-# single mention is treated as an incidental reference and tolerated (#6).
+# Contextual cyber markers. In a NARRATIVE section (vision/governance/intro)
+# these are cyber-primary when they appear in an identity position. In a
+# control/KRI/treatment section, generic controls (MFA, IAM/PAM, DLP) are
+# legitimate ERM substance and are never flagged; only cyber operating-model
+# identity (CISO owner, SOC/SIEM as a built operating model) is blocked, and
+# only when clearly primary.
 CYBER_RISK_CONTEXTUAL_MARKERS_ASCII = (
     'ciso', 'soc', 'siem', 'iam/pam', 'mfa',
 )
+# Contextual markers that can still be cyber-primary *inside* a control/KRI
+# section, but only when in a primary operating-model/owner position (never as
+# an incidental monitoring metric or control row).
+CYBER_RISK_CONTROL_SECTION_PRIMARY_ASCII = ('ciso', 'soc', 'siem')
 
-# Risk sections whose whole purpose is to enumerate controls/treatments; the
-# contextual markers above are legitimate *controls* here (ERM substance #4)
-# and must not be flagged. Strong markers are still blocked everywhere.
+# Section-key markers used to classify a risk section semantically even when the
+# Arabic heading has been slugified (e.g. ``5_مقاييس_kri_للمراقبة``).
+RISK_KRI_SECTION_KEY_MARKERS = (
+    'kri', 'kris', 'مؤشرات', 'مقاييس', 'مراقبة', 'للمراقبة', 'monitoring',
+)
+RISK_CONTROL_SECTION_KEY_MARKERS = (
+    'controls', 'control', 'ضوابط', 'treatment', 'treatments', 'mitigation',
+    'معالجة', 'تخفيف', 'risk_register', 'سجل_المخاطر', 'سجل', 'register',
+    'heatmap', 'appetite', 'شهية',
+)
+
+# Legacy exact-key set kept for reference/back-compat (superseded by the
+# semantic classifier below).
 RISK_CONTROL_SECTIONS = frozenset({
     'register', 'risk_register', 'treatments', 'treatment', 'risk_treatment',
     'heatmap', 'appetite', 'controls', 'kri', 'kris',
 })
 
+# Verbs that indicate building a Cyber *operating model* (primary initiative),
+# as opposed to activating/adopting a generic control (which is legitimate ERM
+# substance, e.g. "تفعيل MFA" / "adopt MFA").
+_CYBER_INITIATIVE_VERBS_EN = (
+    'establish', 'build', 'deploy', 'stand up', 'operating model',
+    'operationalize', 'set up', 'roll out')
+_CYBER_INITIATIVE_VERBS_AR = (
+    'تأسيس', 'بناء', 'إنشاء', 'تشغيل مركز', 'نموذج تشغيل', 'اعتماد نموذج')
+
 _PRIMARY_LINE_LABELS_ASCII = ('owner:', 'role:', 'framework:', 'primary')
 _PRIMARY_LINE_LABELS_AR = ('المالك', 'الدور', 'الإطار', 'الجهة المالكة',
                            'الإطار الأساسي')
+_OWNER_LABELS_ASCII = ('owner', 'role', 'accountable')
+_OWNER_LABELS_AR = ('المالك', 'الدور', 'الجهة المالكة', 'المسؤول')
+
+
+def _normalize_risk_section_key(section_key: str) -> str:
+    """Lowercase, normalize Arabic letters, strip numbering, unify separators."""
+    s = str(section_key or '').lower()
+    for a, b in (
+            ('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ى', 'ي'),
+            ('ة', 'ه'), ('ؤ', 'و'), ('ئ', 'ي')):
+        s = s.replace(a, b)
+    s = re.sub(r'[\s\-\.:/\\،_]+', '_', s)
+    s = re.sub(r'^(\d+_?)+', '', s)
+    return s.strip('_')
+
+
+def classify_risk_section(section_key: str) -> Dict[str, Any]:
+    """Semantic, document-type-aware classification of a risk section key.
+
+    Recognizes KRI/monitoring, control/treatment/register sections even when
+    Arabic headings are slugified, so legitimate risk-control substance is not
+    treated like a governance/identity/strategy section.
+    """
+    raw = str(section_key or '')
+    norm = _normalize_risk_section_key(raw)
+    hay = norm + '|' + raw.lower()
+    is_kri = any(m in hay for m in RISK_KRI_SECTION_KEY_MARKERS)
+    is_control = is_kri or any(
+        m in hay for m in RISK_CONTROL_SECTION_KEY_MARKERS)
+    if is_kri:
+        semantic = 'risk_kri_monitoring'
+    elif is_control:
+        semantic = 'risk_control'
+    else:
+        semantic = 'risk_narrative'
+    return {
+        'raw_section_key': raw,
+        'normalized_section_key': norm,
+        'section_semantic_class': semantic,
+        'risk_control_section_detected': bool(is_control),
+        'kri_section_detected': bool(is_kri),
+    }
 
 
 def _risk_line_is_identity_position(line: str) -> bool:
@@ -368,18 +436,50 @@ def _risk_line_is_identity_position(line: str) -> bool:
     return False
 
 
+def _cyber_marker_primary_in_control_line(line: str, marker: str) -> bool:
+    """True when a contextual cyber marker is *primary* in a control/KRI line.
+
+    Primary = a heading, a CISO owner/role assignment, or a "build a SOC/SIEM
+    operating model" style initiative — NOT an incidental monitoring metric or
+    control row (e.g. "SOC coverage %", "MFA adoption rate").
+    """
+    s = str(line or '').strip()
+    if not s:
+        return False
+    low = s.lower()
+    if s.startswith('#'):
+        return True
+    if marker == 'ciso':
+        # A CISO appearing as a structured value (owner/role cell, list item,
+        # labeled field, heading) is a cyber-role identity — not an incidental
+        # control. A bare prose mention is tolerated.
+        return _risk_line_is_identity_position(s)
+    # soc/siem: primary only when built as an operating model (heading or an
+    # establish/build initiative), never as an incidental monitoring metric or
+    # data source in a KRI/control row.
+    if any(v in low for v in _CYBER_INITIATIVE_VERBS_EN):
+        return True
+    if any(v in s for v in _CYBER_INITIATIVE_VERBS_AR):
+        return True
+    return False
+
+
 def _ascii_word_hit(marker: str, low_text: str) -> bool:
     return bool(re.search(
         r'(?<![a-z0-9])' + re.escape(marker) + r'(?![a-z0-9])', low_text))
 
 
 def find_cyber_primary_risk_markers(
-        text: str, *, section_key: str = '') -> List[str]:
+        text: str, *, section_key: str = '',
+        section_class: str = '') -> List[str]:
     """Cyber-*primary* substance markers illegitimate in an ERM risk section.
 
-    Strong markers block anywhere. Contextual markers block only in identity
-    positions (heading/table/list/labeled) and never inside control/treatment
-    sections (where they are legitimate risk controls).
+    Strong markers block anywhere. Contextual markers:
+      * NARRATIVE sections — block in an identity position (heading/table/list/
+        labeled owner-framework);
+      * CONTROL/KRI/monitoring sections — generic controls (MFA/IAM/PAM/DLP)
+        are legitimate and never flagged; CISO/SOC/SIEM block only when they
+        are a primary operating-model/owner substance (not incidental metrics).
     """
     blob = str(text or '')
     if not blob.strip():
@@ -392,12 +492,19 @@ def find_cyber_primary_risk_markers(
     for m in CYBER_RISK_STRONG_MARKERS_ASCII:
         if _ascii_word_hit(m, low):
             hits.append(m)
-    sec = str(section_key or '').strip().lower()
-    if sec not in RISK_CONTROL_SECTIONS:
-        for line in blob.splitlines():
+    semantic = section_class or classify_risk_section(
+        section_key)['section_semantic_class']
+    is_control = semantic in ('risk_kri_monitoring', 'risk_control')
+    for line in blob.splitlines():
+        ll = line.lower()
+        if is_control:
+            for m in CYBER_RISK_CONTROL_SECTION_PRIMARY_ASCII:
+                if _ascii_word_hit(m, ll) and _cyber_marker_primary_in_control_line(
+                        line, m):
+                    hits.append(m)
+        else:
             if not _risk_line_is_identity_position(line):
                 continue
-            ll = line.lower()
             for m in CYBER_RISK_CONTEXTUAL_MARKERS_ASCII:
                 if _ascii_word_hit(m, ll):
                     hits.append(m)
@@ -450,6 +557,12 @@ def evaluate_rel33_risk_domain_isolation(
     if not dcode:
         blockers.append('rel33_risk_domain_missing')
 
+    sections_classified: List[Dict[str, Any]] = []
+    risk_control_section_detected = False
+    kri_section_detected = False
+    identity_position_detected = False
+    cyber_marker_allowed_as_incidental_control = False
+    cyber_marker_blocked_as_primary = False
     if dcode and dtype and dcode != 'cyber':
         for sec, body in (sections or {}).items():
             if str(sec).startswith('_'):
@@ -457,8 +570,33 @@ def evaluate_rel33_risk_domain_isolation(
             text = str(body or '')
             if not text.strip():
                 continue
-            hits = find_cyber_primary_risk_markers(text, section_key=str(sec))
+            cls = classify_risk_section(str(sec))
+            semantic = cls['section_semantic_class']
+            is_control = cls['risk_control_section_detected']
+            if is_control:
+                risk_control_section_detected = True
+            if cls['kri_section_detected']:
+                kri_section_detected = True
+            hits = find_cyber_primary_risk_markers(
+                text, section_key=str(sec), section_class=semantic)
+            # Track whether contextual markers were present but allowed as
+            # incidental controls (control/KRI section, not primary).
+            _low = text.lower()
+            _contextual_present = any(
+                _ascii_word_hit(m, _low)
+                for m in CYBER_RISK_CONTEXTUAL_MARKERS_ASCII)
+            if is_control and _contextual_present and not hits:
+                cyber_marker_allowed_as_incidental_control = True
+            if not is_control and any(
+                    _risk_line_is_identity_position(ln)
+                    for ln in text.splitlines()):
+                identity_position_detected = True
+            cls_row = dict(cls)
+            cls_row['blocked_terms'] = hits
+            sections_classified.append(cls_row)
             if hits:
+                if is_control:
+                    cyber_marker_blocked_as_primary = True
                 contaminated.append(str(sec))
                 cyber_terms.extend(hits)
                 blocked_terms.extend(hits)
@@ -468,6 +606,13 @@ def evaluate_rel33_risk_domain_isolation(
     resolved_registry = str(selected_registry or dcode or '')
     passed = not blockers
     diag = {
+        'sections': sections_classified,
+        'risk_control_section_detected': risk_control_section_detected,
+        'kri_section_detected': kri_section_detected,
+        'identity_position_detected': identity_position_detected,
+        'cyber_marker_allowed_as_incidental_control': (
+            cyber_marker_allowed_as_incidental_control),
+        'cyber_marker_blocked_as_primary': cyber_marker_blocked_as_primary,
         'route': str(route or ''),
         'domain': dcode or str(domain or ''),
         'document_type': dtype,

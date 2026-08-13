@@ -92732,7 +92732,13 @@ def _build_risk_prompt(data):
                 'المعالجة، مالك المخاطر، لجنة المخاطر). لا تُدخل حوكمة الأمن '
                 'السيبراني أو مركز العمليات الأمنية (SOC/SIEM) أو فريق الاستجابة '
                 'للحوادث (CSIRT) أو رئيس أمن المعلومات (CISO) أو ضوابط NCA ECC/DCC '
-                'كعناصر أساسية، إلا إذا كانت ضابطًا عامًا مذكورًا عرضًا.\n')
+                'كعناصر أساسية، إلا إذا كانت ضابطًا عامًا مذكورًا عرضًا. '
+                'وبالأخص: يجب أن يستخدم قسم مؤشرات المخاطر (KRI) لغة إدارة '
+                'المخاطر المؤسسية (شهية المخاطر، المخاطر المتبقية والمتأصلة، '
+                'الضوابط، مؤشرات المخاطر KRI، فعالية المعالجة، مالك المخاطر، '
+                'لجنة المخاطر)، ولا يُنشئ صفوف نموذج تشغيل سيبراني مثل تأسيس '
+                'SOC/SIEM أو CISO أو CSIRT أو مبادرات IAM/PAM/MFA كعناصر أساسية '
+                'ما لم يختر المستخدم سياق مخاطر سيبرانية صراحةً.\n')
         prompt = (
             f'أنت محلل مخاطر GRC متخصص. أجرِ تحليل مخاطر شاملاً.\n\n'
             f'{_domain_clause}'
@@ -92759,7 +92765,13 @@ def _build_risk_prompt(data):
             'treatment plan, risk owner, risk committee). Do NOT introduce '
             'cybersecurity governance, a SOC/SIEM, CSIRT, a CISO as the primary '
             'owner, or NCA ECC/DCC as the primary framework unless they appear '
-            'only as an incidental generic control.\n')
+            'only as an incidental generic control. In particular, the KRI '
+            'section MUST use ERM risk language (risk appetite, inherent/'
+            'residual risk, controls, KRIs, treatment effectiveness, risk '
+            'owners, risk committee); do NOT generate cyber operating-model '
+            'rows such as establishing a SOC/SIEM, a CISO, CSIRT, or IAM/PAM/MFA '
+            'roadmap initiatives unless the user explicitly selected a Cyber '
+            'risk context.\n')
         prompt = (
             f'You are a Big4-grade GRC risk analyst. Conduct a comprehensive risk analysis.\n\n'
             f'Asset: {asset}\nThreat: {threat}\nCategory: {category}\n'
