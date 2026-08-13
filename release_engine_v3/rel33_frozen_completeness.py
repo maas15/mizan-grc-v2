@@ -168,6 +168,23 @@ def evaluate_gap_assessment_sections_complete(
     return (not missing, present, missing)
 
 
+def _semantic_risk_row_counts(
+        sections: Dict[str, Any]) -> Tuple[int, int]:
+    """Count (register_rows, treatment_rows) across semantically-classified
+    risk sections, so control/mitigation sections with slugified Arabic keys
+    still contribute treatment rows.
+
+    Delegates to the single shared counter in rel33_risk_treatment_evidence so
+    frozen completeness and the export evidence gate stay consistent (REL3.3).
+    """
+    from release_engine_v3.rel33_risk_treatment_evidence import (
+        semantic_risk_treatment_counts,
+    )
+    counts = semantic_risk_treatment_counts(sections or {})
+    return int(counts.get('register_rows') or 0), int(
+        counts.get('treatment_rows') or 0)
+
+
 def evaluate_risk_sections_complete(
         sections: Dict[str, Any],
         *,
@@ -182,11 +199,17 @@ def evaluate_risk_sections_complete(
         or secs.get('confidence')
         or '')
     risk_n, treat_n = count_treatment_rows_from_sections(secs)
-    if register.strip() or risk_n > 0:
+    # REL3.3 — aggregate treatment/control and register rows semantically so
+    # slugified Arabic control/mitigation sections are recognized (fail-closed
+    # only when there are genuinely no treatment/control rows anywhere).
+    sem_reg, sem_treat = _semantic_risk_row_counts(secs)
+    register_rows_total = int(risk_n) + int(sem_reg)
+    treatment_rows_total = int(treat_n) + int(sem_treat)
+    if register.strip() or register_rows_total > 0:
         present.append('risk_register_rows')
     else:
         missing.append('risk_register_rows')
-    if treat_n > 0:
+    if treatment_rows_total > 0:
         present.append('treatment_rows')
     else:
         missing.append('treatment_rows')

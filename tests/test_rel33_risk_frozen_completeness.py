@@ -91,6 +91,22 @@ class RiskNativeFrozenCompletenessTests(unittest.TestCase):
         self.assertIn('treatment_rows', present)
         self.assertIn('risk_register_rows', present)
 
+    def test_semantic_control_section_counts_as_treatment(self):
+        # Slugified Arabic control/mitigation section (الضوابط / التخفيف) must be
+        # recognized as treatment rows even though it is not keyed 'treatments'.
+        secs = {
+            'register': _RISK_REGISTER,
+            '4_1_الضوابط_الأولية_التخفيف_الفوري': (
+                '## 4.1 الضوابط الأولية — التخفيف الفوري\n'
+                '| الضابط | المالك |\n|---|---|\n'
+                '| مراجعة الصلاحيات | مدير المخاطر |\n'
+                '| فصل المهام | لجنة المخاطر |\n'),
+        }
+        complete, present, missing = evaluate_risk_sections_complete(
+            secs, final_hash='h')
+        self.assertIn('treatment_rows', present, f'missing={missing}')
+        self.assertTrue(complete, f'missing={missing}')
+
 
 class RiskFailClosedTests(unittest.TestCase):
     """#4 — incomplete risk fails with the risk-specific code, not strategy."""
