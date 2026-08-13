@@ -78946,6 +78946,10 @@ def api_generate_pdf_async():
         _art_id_a if _art_type_a == 'risk' else None)
     _export_numeric_sid_pdf = _resolve_numeric_strategy_id(
         _export_strategy_id_pdf, _export_uid_pdf)
+    # REL3.3 staging-only diagnostic echo (gated). When requested + allowed,
+    # capture the detailed evidence blocker into the export-status JSON.
+    _debug_evidence_pdf = _rel33_debug_export_allowed(data)
+    _pdf_debug_holder: dict = {}
 
     def _build_pdf():
         import tempfile
@@ -78979,7 +78983,10 @@ def api_generate_pdf_async():
                       # PR-5B.8S — forward selected frameworks so the
                       # composer's scope/methodology/traceability blocks
                       # are populated correctly.
-                      'selected_frameworks': _selected_fws_inner},
+                      'selected_frameworks': _selected_fws_inner,
+                      # REL3.3 — forward the staging-only diagnostic flag so
+                      # the sync route emits detailed evidence diagnostics.
+                      'rel33_debug_export_evidence': _debug_evidence_pdf},
                 headers={'Content-Type': 'application/json'}
             ):
                 # Manually patch session for auth
@@ -79003,6 +79010,18 @@ def api_generate_pdf_async():
                     f"task={_task_id[:8]} raw_body={err_body[:1000]}",
                     flush=True,
                 )
+                if _debug_evidence_pdf:
+                    try:
+                        import json as _json_dbg
+                        _parsed = _json_dbg.loads(err_body)
+                        _pdf_debug_holder['diag'] = {
+                            'reason': _parsed.get('reason'),
+                            'blocking_errors': _parsed.get('blocking_errors'),
+                            'gate': _parsed.get('gate'),
+                            'rel33_debug': _parsed.get('rel33_debug'),
+                        }
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise ValueError(
                     _prcy46_safe_export_error(err_body, _status_code))
 
@@ -79049,7 +79068,10 @@ def api_generate_pdf_async():
         except Exception as exc:
             import traceback
             print(f"ASYNC PDF ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _export_store[_task_id] = {'status': 'error', 'error': str(exc)}
+            _err_entry = {'status': 'error', 'error': str(exc)}
+            if _debug_evidence_pdf and _pdf_debug_holder.get('diag'):
+                _err_entry['diag'] = _pdf_debug_holder['diag']
+            _export_store[_task_id] = _err_entry
 
     threading.Thread(target=_build_pdf, daemon=True).start()
     return jsonify({'task_id': task_id})
@@ -79491,7 +79513,17 @@ def api_export_status(task_id):
     if status == 'done':
         return jsonify({'status': 'done', 'task_id': task_id})
     elif status == 'error':
-        return jsonify({'status': 'error', 'error': entry.get('error', 'Unknown error')}), 500
+        _resp = {'status': 'error', 'error': entry.get('error', 'Unknown error')}
+        # REL3.3 staging-only diagnostic echo (double-gated: stashed only when
+        # the export was started with the debug flag + allowed, and returned
+        # only when this status request also asks for it and is allowed).
+        if entry.get('diag') and _rel33_debug_export_allowed({
+                'rel33_debug_export_evidence': (
+                    request.args.get('rel33_debug_export_evidence')
+                    or (request.get_json(silent=True) or {}).get(
+                        'rel33_debug_export_evidence'))}):
+            _resp['rel33_debug_export_evidence'] = entry.get('diag')
+        return jsonify(_resp), 500
     return jsonify({'status': 'pending'})
 
 
@@ -82526,14 +82558,41 @@ def api_generate_pdf():
             _rel31_export, _rel31_evidence = _rel31_pdf
             if not _rel31_evidence.export_return_allowed:
                 _blk = list(_rel31_evidence.blocking_errors or [])[:12]
-                return jsonify({
+                _pdf_err_body = {
                     'error': (
                         'Export blocked — actual PDF evidence '
                         'validation failed'),
                     'reason': 'rel3_export_evidence_failed',
                     'blocking_errors': _blk,
                     'gate': _rel31_evidence.gate or {},
-                }), 422
+                }
+                # REL3.3 staging-only diagnostic echo (gated). Never alters the
+                # 422 outcome; only adds visibility fields for staging probes.
+                if _rel33_debug_export_allowed(data):
+                    try:
+                        _pdf_err_body['rel33_debug'] = (
+                            build_rel33_erm_pdf_evidence_diag(
+                                pdf_bytes=(
+                                    getattr(_rel31_export, 'pdf_bytes', b'')
+                                    or getattr(_rel31_export, 'bytes_data', b'')
+                                    or b''),
+                                domain=domain_pdf,
+                                document_type=_art_type_p,
+                                artifact_type=_art_type_p,
+                                risk_id=(data.get('risk_id')
+                                         or data.get('artifact_id') or ''),
+                                route='pdf',
+                                sections=_rel33_risk_sections_p,
+                                blocking_errors=list(
+                                    _rel31_evidence.blocking_errors or []),
+                                evidence_gate=_rel31_evidence.gate or {},
+                            ))
+                        _pdf_err_body['blocking_errors'] = list(
+                            _rel31_evidence.blocking_errors or [])
+                    except Exception as _diag_e:  # noqa: BLE001
+                        _pdf_err_body['rel33_debug'] = {
+                            'diag_error': str(_diag_e)}
+                return jsonify(_pdf_err_body), 422
             from flask import send_file
             _pdf_out = _rel31_export.pdf_bytes or _rel31_export.bytes_data or b''
             return send_file(
@@ -89789,6 +89848,163 @@ def _rel33_export_document_type(artifact_type: str) -> str:
     if at in ('risk_assessment',):
         return 'risk'
     return 'strategy'
+
+
+def _rel33_debug_export_allowed(data: dict) -> bool:
+    """REL3.3 — gate for the staging-only export evidence diagnostic echo.
+
+    Returns True only when ALL hold:
+      * the request explicitly asks for it (``rel33_debug_export_evidence``);
+      * the runtime is staging/development (host contains 'staging' or is
+        localhost) OR an explicit debug/testing flag is set
+        (``REL33_STAGING_EXPORT_DIAG=1`` or a non-production ``FLASK_ENV``);
+    Never enabled in production. The diagnostic is returned only in the
+    export-status JSON, never embedded in generated document bytes, and never
+    contains secrets.
+    """
+    try:
+        if not (data or {}).get('rel33_debug_export_evidence'):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        host = str((request.host if request else '') or '').lower()
+    except Exception:  # noqa: BLE001
+        host = ''
+    if 'staging' in host or 'localhost' in host or '127.0.0.1' in host:
+        return True
+    env = str(os.getenv('FLASK_ENV', '') or '').strip().lower()
+    if env in ('staging', 'development', 'dev', 'test', 'testing'):
+        return True
+    if str(os.getenv('REL33_STAGING_EXPORT_DIAG', '') or '') == '1':
+        return True
+    return False
+
+
+def build_rel33_erm_pdf_evidence_diag(
+        *,
+        pdf_bytes: bytes,
+        domain: str,
+        document_type: str,
+        artifact_type: str,
+        risk_id,
+        route: str = 'pdf',
+        sections=None,
+        blocking_errors=None,
+        evidence_gate=None,
+) -> dict:
+    """Build [REL33-ERM-PDF-EVIDENCE-DIAG] for a failing ERM risk PDF export.
+
+    Diagnostic-only: computes visibility fields from the actual PDF bytes and
+    the risk-native sections. Never alters the pass/fail result and never
+    bypasses the evidence gate. Safe to call only behind the debug gate.
+    """
+    diag = {
+        'tag': '[REL33-ERM-PDF-EVIDENCE-DIAG]',
+        'route': str(route or 'pdf'),
+        'domain': str(domain or ''),
+        'document_type': str(document_type or ''),
+        'artifact_type': str(artifact_type or ''),
+        'risk_id': str(risk_id or ''),
+        'output_type': 'pdf',
+        'pdf_bytes_len': len(pdf_bytes or b''),
+        'pdf_text_len': 0,
+        'pdf_text_extract_source': '',
+        'pdf_text_has_null_bytes': False,
+        'arabic_font_registered': False,
+        'arabic_font_is_kufi': False,
+        'evidence_gate_name': 'rel3_authoritative_export_evidence',
+        'blocking_errors': list(blocking_errors or []),
+        'treatment_section_present': False,
+        'treatment_rows_expected': 0,
+        'treatment_rows_extracted': 0,
+        'treatment_headers_detected': [],
+        'treatment_keywords_detected': [],
+        'risk_register_rows_expected': 0,
+        'risk_register_rows_extracted': 0,
+        'risk_owner_rows_extracted': 0,
+        'kri_rows_extracted': 0,
+        'extraction_method': '',
+        'structured_table_count': 0,
+        'fallback_text_scan_used': False,
+        'normalized_arabic_scan_used': False,
+        'passed': not bool(blocking_errors),
+    }
+    _sections = dict(sections or {})
+    # PDF text extraction (pymupdf), never fatal.
+    text = ''
+    try:
+        import pymupdf as _pymupdf
+        _doc = _pymupdf.open(stream=pdf_bytes or b'', filetype='pdf')
+        text = '\n'.join(p.get_text() for p in _doc)
+        diag['pdf_text_extract_source'] = 'pymupdf'
+        try:
+            _tables = 0
+            for _p in _doc:
+                _found = _p.find_tables()
+                _tables += len(getattr(_found, 'tables', []) or [])
+            diag['structured_table_count'] = _tables
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as _pe:  # noqa: BLE001
+        diag['pdf_text_extract_source'] = f'error:{_pe!s:.60}'
+    diag['pdf_text_len'] = len(text)
+    diag['pdf_text_has_null_bytes'] = '\x00' in text
+    # Arabic font info.
+    try:
+        _fn, _fb = _ensure_arabic_pdf_font(required=False)
+        _fp = str(_ARABIC_PDF_FONT_PATH or '')
+        diag['arabic_font_registered'] = bool(_fp)
+        diag['arabic_font_is_kufi'] = 'kufi' in _fp.lower()
+    except Exception:  # noqa: BLE001
+        pass
+    # Risk treatment / register evidence (expected vs extracted from PDF text).
+    try:
+        from release_engine_v3.rel33_risk_treatment_evidence import (
+            count_treatment_rows_from_sections,
+            evaluate_erm_risk_treatment_evidence,
+        )
+        _risk_n, _treat_n = count_treatment_rows_from_sections(_sections)
+        diag['treatment_rows_expected'] = int(_treat_n)
+        diag['risk_register_rows_expected'] = int(_risk_n)
+        _tre = evaluate_erm_risk_treatment_evidence(
+            text, route='pdf', canonical_sections=_sections, pdf_blob=text)
+        diag['treatment_rows_extracted'] = int(
+            _tre.get('pdf_treatment_rows_extracted') or 0)
+        diag['extraction_method'] = str(_tre.get('evidence_source') or '')
+    except Exception:  # noqa: BLE001
+        pass
+    # Keyword / header visibility scan (best-effort, text-based).
+    try:
+        _low = text.lower()
+        _treat_headers = ['المعالج', 'خطة المعالجة', 'treatment', 'الضابط',
+                          'controls']
+        _treat_kw = ['المعالجة', 'المالك', 'الأولوية', 'mitigation', 'owner']
+        _kri_kw = ['kri', 'مؤشرات المخاطر', 'مؤشر مخاطر']
+        _owner_kw = ['المالك', 'مالك المخاطر', 'owner', 'risk owner']
+        diag['treatment_section_present'] = any(
+            (h in text) or (h in _low) for h in _treat_headers)
+        diag['treatment_headers_detected'] = [
+            h for h in _treat_headers if (h in text) or (h in _low)]
+        diag['treatment_keywords_detected'] = [
+            k for k in _treat_kw if (k in text) or (k in _low)]
+        diag['kri_rows_extracted'] = sum(
+            1 for k in _kri_kw if (k in text) or (k in _low))
+        diag['risk_owner_rows_extracted'] = sum(
+            1 for k in _owner_kw if (k in text) or (k in _low))
+        diag['fallback_text_scan_used'] = bool(text) and (
+            diag['structured_table_count'] == 0)
+        diag['normalized_arabic_scan_used'] = True
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(evidence_gate, dict) and evidence_gate:
+        # Surface only non-sensitive gate summary fields.
+        for _k in ('route_evidence_blocker', 'pdf_text_extraction_unreliable',
+                   'pdf_pass_from_actual_bytes', 'pdf_pass_from_render_fallback',
+                   'route_evidence_passed'):
+            if _k in evidence_gate:
+                diag[f'gate_{_k}'] = evidence_gate.get(_k)
+    return diag
 
 
 def _rel33_normalize_export_artifact_type(data: dict) -> str:

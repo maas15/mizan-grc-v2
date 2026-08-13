@@ -770,6 +770,41 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1
 
+    # REL3.3 deploy-readiness hardening — static_version/commit_match flips as
+    # soon as the new static assets are live, which can PRECEDE the Python
+    # worker restart. Probing immediately can hit stale/mid-recycle workers
+    # (observed: ERM risk domain contamination that disappeared after a full
+    # worker restart). After a real deploy, wait a settle window for workers
+    # to recycle before probing, then re-verify. Configure with
+    # STAGING_DEPLOY_SETTLE_SECONDS (default 480s / 8 min; 0 disables).
+    if deploy.get('triggered'):
+        try:
+            _settle = int(
+                os.environ.get('STAGING_DEPLOY_SETTLE_SECONDS', '480') or '480')
+        except (TypeError, ValueError):
+            _settle = 480
+        _settle = max(_settle, 0)
+        report['deploy_settle_seconds'] = _settle
+        if _settle:
+            print(
+                f'[deploy-settle] waiting {_settle}s for Python worker '
+                'restart/settle before probing (static_version/commit_match '
+                'is NOT sufficient runtime readiness)', flush=True)
+            time.sleep(_settle)
+            report['deploy_verify_post_settle'] = _verify_deployed()
+            print('[deploy-verify-post-settle]',
+                  report['deploy_verify_post_settle'], flush=True)
+            if not report['deploy_verify_post_settle'].get('ready'):
+                report['blocker'] = (
+                    'staging not ready after worker settle window')
+                out = OUT / 'rel33_all_domain_staging_acceptance.json'
+                out.write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    encoding='utf-8')
+                print('[REL33-ALL-DOMAIN-STAGING-ACCEPTANCE]')
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 1
+
     if not os.environ.get('STAGING_PASSWORD', '').strip():
         report['blocker'] = 'STAGING_PASSWORD unset — cannot run live P1 smoke'
         out = OUT / 'rel33_all_domain_staging_acceptance.json'
