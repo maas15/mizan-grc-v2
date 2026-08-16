@@ -79033,6 +79033,8 @@ def api_generate_pdf_async():
                             'rel33_debug': _parsed.get('rel33_debug'),
                             'rel33_export_gate_routing_diag': _parsed.get(
                                 'rel33_export_gate_routing_diag'),
+                            'rel33_risk_export_prep_contract': _parsed.get(
+                                'rel33_risk_export_prep_contract'),
                         }
                     except Exception:  # noqa: BLE001
                         pass
@@ -79541,6 +79543,17 @@ def api_generate_docx_async():
                                 passed=False,
                             )),
                     }
+                    # Surface the export-prep contract decision on the async
+                    # failing path (observability for a contract that
+                    # passed-without-repair or repaired-then-failed).
+                    try:
+                        _pp = (_rel33_export_prep_da or {}).get(
+                            'export_prep_diag')
+                        if _pp:
+                            _err_entry_docx['diag'][
+                                'rel33_risk_export_prep_contract'] = _pp
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception:  # noqa: BLE001
                     pass
             _export_store[_task_id] = _err_entry_docx
@@ -92851,6 +92864,7 @@ def _run_risk_generation_task(task_id, user_id, data):
         # carries cyber-primary substance. Emits [REL33-RISK-GENERATION-CONTRACT].
         # This does not weaken the risk-domain guard; cyber-primary detection is
         # delegated to the shared risk isolation guard below.
+        _gc_diag_echo = None
         try:
             from release_engine_v3.rel33_risk_generation_contract import (
                 evaluate_risk_generation_contract,
@@ -92868,6 +92882,14 @@ def _run_risk_generation_task(task_id, user_id, data):
                     'cyber' in _dom_l_gc or 'سيبران' in _dom_l_gc),
                 emit=True,
             )
+            # Keep a gated, content-free copy of the generation contract diag so
+            # it can be surfaced via /api/risk-status when the debug flag is set.
+            try:
+                if data.get('rel33_debug_export_evidence'):
+                    _gc_diag_echo = {
+                        k: v for k, v in _gc.items() if k != 'content'}
+            except Exception:  # noqa: BLE001
+                _gc_diag_echo = None
             if _gc.get('contract_passed'):
                 _repaired = _gc.get('content') or content
                 if _repaired != content:
@@ -92991,7 +93013,7 @@ def _run_risk_generation_task(task_id, user_id, data):
                    {'domain': domain, 'asset': asset, 'threat': threat,
                     'risk_level': risk_level, 'async': True})
 
-        result = _json_async.dumps({
+        _risk_result_payload = {
             'success': True,
             'risk_id': risk_id,
             'analysis': content,
@@ -93000,7 +93022,13 @@ def _run_risk_generation_task(task_id, user_id, data):
             'artifact_status': 'reviewed' if val['valid'] else 'draft',
             'publishability_score': val['score'],
             'validation_issues': val['issues'],
-        }, ensure_ascii=False)
+        }
+        # Gated observability: surface [REL33-RISK-GENERATION-CONTRACT] via the
+        # risk-status result only when the request asked for it (debug flag).
+        if _gc_diag_echo:
+            _risk_result_payload['rel33_risk_generation_contract'] = (
+                _gc_diag_echo)
+        result = _json_async.dumps(_risk_result_payload, ensure_ascii=False)
         complete_background_task(task_id, result)
         print(f'[RISK-ASYNC] task {task_id[:8]} done — risk_id={risk_id}', flush=True)
 

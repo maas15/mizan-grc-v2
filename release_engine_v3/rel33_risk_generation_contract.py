@@ -142,17 +142,37 @@ def _heading_is_forbidden(heading_text: str) -> str:
     return ''
 
 
+def _is_risk_heading_line(line: str) -> bool:
+    """Heading test aligned EXACTLY with ``_split_risk_markdown``.
+
+    The risk splitter delimits sections on any line whose stripped form starts
+    with ``##`` (``line.strip().startswith('##')`` — any leading whitespace, any
+    hash count >= 2, with or without a following space). The contract's
+    detection/repair MUST use the identical rule, otherwise a heading the
+    splitter turns into a section (e.g. one with >3 leading spaces, 5+ hashes,
+    or no space after the hashes) could escape the contract while still reaching
+    the domain guard as a ``vision``-style section key.
+    """
+    return str(line or '').strip().startswith('##')
+
+
+def _risk_heading_text(line: str) -> str:
+    """Heading text with the same normalization the splitter would see."""
+    return str(line or '').strip().lstrip('#').strip()
+
+
 def detect_forbidden_strategy_sections(content: str) -> List[str]:
     """Return the list of forbidden strategy heading texts found in ``content``.
 
-    Detection is heading-scoped (## / ### / #### only). Risk-native headings and
-    body prose are never flagged.
+    Detection is heading-scoped and aligned with ``_split_risk_markdown`` (any
+    ``##``+ heading after stripping). Risk-native headings and body prose are
+    never flagged.
     """
     hits: List[str] = []
     for line in str(content or '').splitlines():
-        if re.match(r'^\s{0,3}#{2,4}\s+\S', line):
-            heading = re.sub(r'^\s{0,3}#{2,4}\s+', '', line).strip()
-            if _heading_is_forbidden(heading):
+        if _is_risk_heading_line(line):
+            heading = _risk_heading_text(line)
+            if heading and _heading_is_forbidden(heading):
                 hits.append(heading)
     # de-dupe, preserve order
     seen = set()
@@ -168,9 +188,9 @@ def detect_risk_native_sections(content: str) -> List[str]:
     """Return risk-native heading texts found (informational for the diag)."""
     out: List[str] = []
     for line in str(content or '').splitlines():
-        if re.match(r'^\s{0,3}#{2,4}\s+\S', line):
-            heading = re.sub(r'^\s{0,3}#{2,4}\s+', '', line).strip()
-            if _heading_is_forbidden(heading):
+        if _is_risk_heading_line(line):
+            heading = _risk_heading_text(line)
+            if not heading or _heading_is_forbidden(heading):
                 continue
             norm = _normalize_heading(heading)
             if any(_normalize_heading(m) in norm for m in RISK_NATIVE_SECTION_MARKERS):
@@ -181,10 +201,14 @@ def detect_risk_native_sections(content: str) -> List[str]:
 def risk_native_repair(content: str) -> str:
     """Remove forbidden strategy section blocks; preserve risk-native content.
 
-    Deterministic single pass: a heading (## / ### / ####) matching a forbidden
-    strategy marker is dropped together with its body, up to the next heading of
-    the same or shallower depth. Risk-native sections and all non-heading prose
-    outside forbidden blocks are preserved verbatim.
+    Deterministic single pass aligned with ``_split_risk_markdown``: a heading
+    line (``line.strip().startswith('##')``) whose text matches a forbidden
+    strategy marker is dropped together with its body, up to (but not including)
+    the next ``##``+ heading line. Risk-native sections and all non-heading
+    prose outside forbidden blocks are preserved verbatim. Using the flat
+    splitter rule (rather than markdown depth) guarantees the contract removes
+    exactly the sections the splitter — and therefore the domain guard — would
+    otherwise see.
     """
     lines = str(content or '').splitlines()
     out: List[str] = []
@@ -192,19 +216,13 @@ def risk_native_repair(content: str) -> str:
     n = len(lines)
     while i < n:
         line = lines[i]
-        m = re.match(r'^\s{0,3}(#{2,4})\s+(\S.*)$', line)
-        if m:
-            depth = len(m.group(1))
-            heading = m.group(2).strip()
-            if _heading_is_forbidden(heading):
-                # Skip this block until the next heading with depth <= this one.
+        if _is_risk_heading_line(line) and _heading_is_forbidden(
+                _risk_heading_text(line)):
+            # Skip this section block until the next ``##``+ heading line.
+            i += 1
+            while i < n and not _is_risk_heading_line(lines[i]):
                 i += 1
-                while i < n:
-                    mm = re.match(r'^\s{0,3}(#{1,4})\s+\S', lines[i])
-                    if mm and len(mm.group(1)) <= depth:
-                        break
-                    i += 1
-                continue
+            continue
         out.append(line)
         i += 1
     # collapse excessive blank lines introduced by removals
