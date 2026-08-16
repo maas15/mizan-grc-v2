@@ -92739,6 +92739,52 @@ def _run_risk_generation_task(task_id, user_id, data):
             pass
         content, val = _repair_and_revalidate(content, 'risk', lang)
 
+        # ── REL3.3 ERM risk-native generation contract (pre-save) ──
+        # A risk artifact must never be saved carrying strategy-shaped sections
+        # (vision/objectives/pillars/roadmap/strategy KPI table/governance
+        # model/traceability). Detect → run ONE deterministic risk-native
+        # repair → fail closed if the content is still strategy-shaped or still
+        # carries cyber-primary substance. Emits [REL33-RISK-GENERATION-CONTRACT].
+        # This does not weaken the risk-domain guard; cyber-primary detection is
+        # delegated to the shared risk isolation guard below.
+        try:
+            from release_engine_v3.rel33_risk_generation_contract import (
+                evaluate_risk_generation_contract,
+            )
+            _dom_l_gc = str(domain or '').lower()
+            _gc = evaluate_risk_generation_contract(
+                content,
+                domain=domain,
+                route='generate-risk-async',
+                generation_stage='pre_save',
+                selected_frameworks=(
+                    data.get('selected_frameworks')
+                    or data.get('frameworks') or []),
+                allow_cyber_context=(
+                    'cyber' in _dom_l_gc or 'سيبران' in _dom_l_gc),
+                emit=True,
+            )
+            if _gc.get('contract_passed'):
+                _repaired = _gc.get('content') or content
+                if _repaired != content:
+                    # Re-validate the repaired risk-native content so the saved
+                    # artifact_status/score reflect the persisted document.
+                    content, val = _repair_and_revalidate(
+                        _repaired, 'risk', lang)
+            else:
+                _gc_blk = list(_gc.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_generation_contract '
+                      f'errors={_gc_blk!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_gc_blk[0] if _gc_blk
+                     else 'rel33_risk_generation_strategy_shape_detected'))
+                return
+        except Exception as _gc_e:  # noqa: BLE001
+            print(f'[RISK-ASYNC] risk generation contract (non-fatal): '
+                  f'{_gc_e}', flush=True)
+
         # ── REL3.3 ERM risk domain isolation (pre-save, fail-closed) ──
         # A non-cyber risk document must never persist Cyber-*primary*
         # substance. Emits [REL33-RISK-DOMAIN-ISOLATION]; blocks the save
@@ -92892,6 +92938,28 @@ def _build_risk_prompt(data):
     _is_cyber = ('cyber' in _dom_l) or (_dom_l == 'الأمن السيبراني') or (
         'سيبران' in _dom_l)
 
+    # REL3.3 — a risk artifact is an ERM risk-assessment document, never a
+    # strategy. Forbid strategy-shaped sections in ANY risk document (all
+    # domains), so the risk-native generation contract never has to reject it.
+    _risk_structure_rule_ar = (
+        '\nهيكل إلزامي: هذه وثيقة تقييم مخاطر مؤسسية (ERM) وليست استراتيجية. '
+        'لا تُنشئ أقسامًا استراتيجية مثل «الرؤية» أو «الأهداف الاستراتيجية» أو '
+        '«الركائز الاستراتيجية» أو «خارطة الطريق» أو «مؤشرات الأداء الرئيسية» '
+        '(كجدول مؤشرات استراتيجية) أو «نموذج الحوكمة» أو «مصفوفة تتبع الأطر '
+        'المرجعية» أو «المبادرات/المواءمة الاستراتيجية». اقتصر على أقسام '
+        'المخاطر: وصف السيناريو، سياق المخاطر، جدول تقييم المخاطر/سجل المخاطر، '
+        'الضوابط، استراتيجية/خطة المعالجة، مقاييس KRI للمراقبة، المالكون '
+        'والمسؤوليات، ملخص المخاطر.\n')
+    _risk_structure_rule_en = (
+        '\nMandatory structure: this is an ERM risk-assessment document, NOT a '
+        'strategy. Do NOT produce strategy sections such as Vision, Strategic '
+        'Objectives, Strategic Pillars, Roadmap, a strategy KPI table (Key '
+        'Performance Indicators as strategy KPIs), a Governance Model section, '
+        'a Traceability Matrix, or Strategic Initiatives/Alignment. Restrict '
+        'the document to risk sections only: scenario, risk context, risk '
+        'assessment/register table, controls, treatment strategy/plan, KRI '
+        'monitoring metrics, risk owners/responsibilities, risk summary.\n')
+
     if lang == 'ar':
         if _is_cyber:
             _domain_clause = (
@@ -92921,13 +92989,15 @@ def _build_risk_prompt(data):
             f'{_domain_clause}'
             f'الأصل: {asset}\nالتهديد: {threat}\nالفئة: {category}\n'
             f'مستوى الخطر الأولي: {risk_lvl}\n'
-            f'{_scope_rule}\n'
+            f'{_scope_rule}'
+            f'{_risk_structure_rule_ar}\n'
             f'أنشئ تقرير تحليل مخاطر بتنسيق Markdown يتضمن:\n'
             f'1. وصف السيناريو\n'
             f'2. جدول تقييم المخاطر (الاحتمالية | التأثير | الدرجة | الخطورة)\n'
             f'3. التأثير التجاري والتنظيمي\n'
             f'4. جدول استراتيجية المعالجة (الضابط | النوع | الأولوية | الجدول الزمني | المالك)\n'
-            f'5. مقاييس KPI للمراقبة\n'
+            f'5. مقاييس KRI للمراقبة (مؤشرات المخاطر: شهية المخاطر، المخاطر '
+            f'المتبقية، فعالية المعالجة، مالك المخاطر)\n'
             f'6. توصيات التنفيذ الفوري\n'
             f'جميع الجداول يجب أن تحتوي على بيانات حقيقية. الحد الأدنى 1200 كلمة.'
         )
@@ -92954,6 +93024,7 @@ def _build_risk_prompt(data):
             f'Asset: {asset}\nThreat: {threat}\nCategory: {category}\n'
             f'Domain: {domain}\n{fw_clause}Initial Risk Level: {risk_lvl}\n'
             f'{scope_rule}'
+            f'{_risk_structure_rule_en}'
             f'{context_clause}{controls_clause}\n'
             f'Produce a formal risk analysis report in Markdown with:\n'
             f'1. Threat Scenario Description\n'
@@ -92961,7 +93032,8 @@ def _build_risk_prompt(data):
             f'3. Business & Regulatory Impact Analysis\n'
             f'4. Treatment Strategy (table: Control | Type | Priority | Timeline | Owner)\n'
             f'5. Residual Risk after Controls\n'
-            f'6. KPI / Monitoring Metrics (table)\n'
+            f'6. KRI / Monitoring Metrics (table: risk appetite, residual risk, '
+            f'treatment effectiveness, risk owner)\n'
             f'7. Immediate Action Recommendations\n'
             f'All tables must have real populated rows. Minimum 1200 words.'
         )
