@@ -328,28 +328,36 @@ def apply_route_bound_verdict(
                 if parity_err not in blocking:
                     blocking.append(parity_err)
 
-    # Roadmap visible drift on exported channels
-    for prefix, text, checked in (
-            ('docx', docx_text, docx_bytes_checked),
-            ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
-    ):
-        if not checked or not text:
-            continue
-        internal = internal_roadmap_row_count
-        if internal is None and canonical_sections:
-            from release_engine.roadmap_model import _parse_roadmap_rows
-            internal = len(_parse_roadmap_rows(
-                canonical_sections.get('roadmap') or ''))
-        for drift in check_roadmap_visible_drift(
-                text, internal_row_count=internal, domain=domain):
-            err = drift if drift.startswith('rel2_') else (
-                f'rel2_actual_export_evidence_failed:{prefix}:{drift}')
-            if err not in blocking:
-                blocking.append(err)
-            if prefix == 'docx':
-                docx_export_evidence_passed = False
-            if prefix == 'pdf':
-                pdf_export_evidence_passed = False
+    # Roadmap visible drift on exported channels.
+    # REL3.3 — the roadmap model-drift / visible-row-count gate is a
+    # strategy-only export check (a risk artifact has no strategy roadmap
+    # section; its treatment/priority tables are legitimately counted as
+    # "visible rows" and would falsely trip rel2_export_model_drift:
+    # roadmap_visible_row_count). Scope to strategy-like document types
+    # (strategy + gap_assessment) and skip for risk/risk_assessment. This
+    # does NOT suppress the blocker globally — strategy exports still run it.
+    if _strategy_section_checks:
+        for prefix, text, checked in (
+                ('docx', docx_text, docx_bytes_checked),
+                ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),
+        ):
+            if not checked or not text:
+                continue
+            internal = internal_roadmap_row_count
+            if internal is None and canonical_sections:
+                from release_engine.roadmap_model import _parse_roadmap_rows
+                internal = len(_parse_roadmap_rows(
+                    canonical_sections.get('roadmap') or ''))
+            for drift in check_roadmap_visible_drift(
+                    text, internal_row_count=internal, domain=domain):
+                err = drift if drift.startswith('rel2_') else (
+                    f'rel2_actual_export_evidence_failed:{prefix}:{drift}')
+                if err not in blocking:
+                    blocking.append(err)
+                if prefix == 'docx':
+                    docx_export_evidence_passed = False
+                if prefix == 'pdf':
+                    pdf_export_evidence_passed = False
 
     # KPI / risk / traceability visible invalid aggregate blockers
     for prefix, defects, checked, passed_flag in (

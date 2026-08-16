@@ -76,12 +76,25 @@ def export_pdf(
         evaluate_pre_export_bytes_domain_guard,
     )
     _guard_domain = str(backend.get('domain') or domain or '')
-    try:
-        _guard_sections = backend.get('split_sections', lambda x: {})(content)
-    except Exception:  # noqa: BLE001
-        _guard_sections = {}
-    if not _guard_sections:
-        _guard_sections = {'roadmap': content or ''}
+    # REL3.3 — risk documents must build the pre-export guard section view with
+    # the risk-native splitter (never the strategy splitter that mints a
+    # ``vision`` key), so the guard routes through risk-native isolation and
+    # cannot emit rel33_domain_contamination:vision:cyber_primary. Genuine
+    # cyber-primary risk substance is still blocked via risk-native keys.
+    if document_type in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_risk_artifact import (
+            _split_risk_markdown as _split_risk_md,
+            normalize_risk_export_sections as _norm_risk_secs,
+        )
+        _guard_sections = _norm_risk_secs(
+            _split_risk_md(content or '')) or {'register': content or ''}
+    else:
+        try:
+            _guard_sections = backend.get('split_sections', lambda x: {})(content)
+        except Exception:  # noqa: BLE001
+            _guard_sections = {}
+        if not _guard_sections:
+            _guard_sections = {'roadmap': content or ''}
     _guard_blockers = evaluate_pre_export_bytes_domain_guard(
         _guard_sections,
         domain=_guard_domain,

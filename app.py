@@ -79019,6 +79019,8 @@ def api_generate_pdf_async():
                             'blocking_errors': _parsed.get('blocking_errors'),
                             'gate': _parsed.get('gate'),
                             'rel33_debug': _parsed.get('rel33_debug'),
+                            'rel33_export_gate_routing_diag': _parsed.get(
+                                'rel33_export_gate_routing_diag'),
                         }
                     except Exception:  # noqa: BLE001
                         pass
@@ -79327,6 +79329,10 @@ def api_generate_docx_async():
     _export_db_bundle = (
         _load_sealed_strategy_export_bundle(_export_numeric_sid, _export_uid)
         if _export_numeric_sid and _art_type_a == 'strategy' else {})
+    # REL3.3 staging-only diagnostic gate — captured in the request context so
+    # the background thread (which has no request) can still emit the routing
+    # diagnostic on failure. Never enabled in production.
+    _debug_evidence_docx = _rel33_debug_export_allowed(data)
 
     def _build():
         import tempfile
@@ -79490,7 +79496,30 @@ def api_generate_docx_async():
         except Exception as exc:
             import traceback
             print(f"ASYNC DOCX ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _export_store[_task_id] = {'status': 'error', 'error': str(exc)}
+            _err_entry_docx = {'status': 'error', 'error': str(exc)}
+            if _debug_evidence_docx:
+                try:
+                    _err_entry_docx['diag'] = {
+                        'reason': 'rel3_export_evidence_failed',
+                        'blocking_errors': [str(exc)],
+                        'rel33_export_gate_routing_diag': (
+                            build_rel33_export_gate_routing_diag(
+                                output_type='docx',
+                                route='docx',
+                                domain=_domain,
+                                document_type=_rel33_export_document_type(
+                                    _art_type_a),
+                                artifact_type=_art_type_a,
+                                artifact_id=str(_art_id_a or ''),
+                                risk_id=str(_export_risk_id or ''),
+                                export_handler='api_generate_docx_async',
+                                blocking_errors=[str(exc)],
+                                passed=False,
+                            )),
+                    }
+                except Exception:  # noqa: BLE001
+                    pass
+            _export_store[_task_id] = _err_entry_docx
 
     threading.Thread(target=_build, daemon=True).start()
     return jsonify({'task_id': task_id})
@@ -81947,7 +81976,7 @@ def api_generate_docx():
                 f'errors={_rel26_errs[:8]}',
                 flush=True,
             )
-            return jsonify({
+            _docx_err_body = {
                 'error': (
                     'Export blocked — actual DOCX evidence '
                     'validation failed'),
@@ -81966,7 +81995,29 @@ def api_generate_docx():
                         'docx_missing_sections'),
                     'action_taken': _rel26_gate.get('action_taken'),
                 },
-            }), 422
+            }
+            # REL3.3 staging-only routing diagnostic (gated). Never alters the
+            # 422 outcome; adds visibility for DOCX failures (parity with PDF).
+            if _rel33_debug_export_allowed(data):
+                try:
+                    _docx_err_body['rel33_export_gate_routing_diag'] = (
+                        build_rel33_export_gate_routing_diag(
+                            output_type='docx',
+                            route='docx',
+                            domain=domain,
+                            document_type=_rel33_export_document_type(
+                                _art_type),
+                            artifact_type=_art_type,
+                            artifact_id=(data.get('artifact_id')
+                                         or _art_id or ''),
+                            risk_id=(data.get('risk_id') or ''),
+                            export_handler='api_generate_docx',
+                            blocking_errors=list(_rel26_errs or []),
+                            passed=False,
+                        ))
+                except Exception:  # noqa: BLE001
+                    pass
+            return jsonify(_docx_err_body), 422
 
         from flask import Response, stream_with_context
 
@@ -82613,6 +82664,25 @@ def api_generate_pdf():
                     except Exception as _diag_e:  # noqa: BLE001
                         _pdf_err_body['rel33_debug'] = {
                             'diag_error': str(_diag_e)}
+                    try:
+                        _pdf_err_body['rel33_export_gate_routing_diag'] = (
+                            build_rel33_export_gate_routing_diag(
+                                output_type='pdf',
+                                route='pdf',
+                                domain=domain_pdf,
+                                document_type=_rel33_export_document_type(
+                                    _art_type_p),
+                                artifact_type=_art_type_p,
+                                artifact_id=data.get('artifact_id') or '',
+                                risk_id=(data.get('risk_id')
+                                         or data.get('artifact_id') or ''),
+                                export_handler='api_generate_pdf',
+                                blocking_errors=list(
+                                    _rel31_evidence.blocking_errors or []),
+                                passed=False,
+                            ))
+                    except Exception:  # noqa: BLE001
+                        pass
                 return jsonify(_pdf_err_body), 422
             from flask import send_file
             _pdf_out = _rel31_export.pdf_bytes or _rel31_export.bytes_data or b''
@@ -90026,6 +90096,113 @@ def build_rel33_erm_pdf_evidence_diag(
             if _k in evidence_gate:
                 diag[f'gate_{_k}'] = evidence_gate.get(_k)
     return diag
+
+
+# REL3.3 — strategy-only export gates that are guarded off (by document_type)
+# for risk/risk_assessment artifacts. These are reported in the routing
+# diagnostic so a staging probe can confirm each was skipped for a risk export.
+_REL33_STRATEGY_ONLY_EXPORT_GATES = (
+    'roadmap_visible_row_count',
+    'strategy_section_parity_model_drift',
+    'strategy_kpi_main_schema',
+    'strategy_kpi_visible_drift',
+    'strategy_traceability_drift',
+    'strategy_pillars_completeness',
+    'strategy_vision_objectives_completeness',
+)
+# Risk-native gates that still run for a risk export (never skipped).
+_REL33_RISK_NATIVE_EXPORT_GATES = (
+    'risk_compiler_authority',
+    'risk_domain_isolation',
+    'risk_frozen_completeness',
+    'risk_treatment_evidence',
+    'actual_returned_file_evidence',
+    'non_empty_bytes',
+)
+
+
+def build_rel33_export_gate_routing_diag(
+        *,
+        output_type: str,
+        route: str = '',
+        domain: str = '',
+        document_type: str = '',
+        artifact_type: str = '',
+        artifact_id='',
+        risk_id='',
+        export_handler: str = '',
+        blocking_errors=None,
+        passed: bool = False,
+) -> dict:
+    """Build [REL33-EXPORT-GATE-ROUTING-DIAG] for a DOCX or PDF export.
+
+    Diagnostic-only, document_type-aware reflection of which export gates were
+    routed/applied/skipped. It NEVER alters the pass/fail outcome and never
+    bypasses a gate — it only reports the deterministic routing decision so a
+    staging probe (behind the rel33_debug_export_evidence flag) can confirm a
+    risk export used risk-native gates and skipped strategy-only gates.
+    """
+    _dtype = str(document_type or artifact_type or 'strategy').strip().lower()
+    _atype = str(artifact_type or document_type or 'strategy').strip().lower()
+    _is_risk = _dtype in ('risk', 'risk_assessment') or _atype in (
+        'risk', 'risk_assessment')
+    _blk = list(blocking_errors or [])
+    if _is_risk:
+        section_splitter = 'risk_native'
+        domain_guard = 'risk_native'
+        compiler_authority = 'risk_native'
+        model_drift_applied = False
+        model_drift_skip_reason = 'document_type_risk'
+        strategy_skipped = list(_REL33_STRATEGY_ONLY_EXPORT_GATES)
+        risk_applied = list(_REL33_RISK_NATIVE_EXPORT_GATES)
+        gates_applied = list(_REL33_RISK_NATIVE_EXPORT_GATES)
+        gates_skipped = list(_REL33_STRATEGY_ONLY_EXPORT_GATES)
+    else:
+        section_splitter = 'strategy_h2'
+        domain_guard = 'strategy_contract'
+        compiler_authority = (
+            'gap_native' if _dtype == 'gap_assessment' else 'strategy')
+        model_drift_applied = True
+        model_drift_skip_reason = ''
+        strategy_skipped = []
+        risk_applied = []
+        gates_applied = list(_REL33_STRATEGY_ONLY_EXPORT_GATES) + [
+            'actual_returned_file_evidence', 'non_empty_bytes']
+        gates_skipped = []
+    gates_considered = list(_REL33_STRATEGY_ONLY_EXPORT_GATES) + list(
+        _REL33_RISK_NATIVE_EXPORT_GATES)
+    return {
+        'tag': '[REL33-EXPORT-GATE-ROUTING-DIAG]',
+        'route': str(route or output_type or ''),
+        'output_type': str(output_type or ''),
+        'domain': str(domain or ''),
+        'document_type': _dtype,
+        'artifact_type': _atype,
+        'artifact_id': str(artifact_id or ''),
+        'risk_id': str(risk_id or ''),
+        'export_handler': str(export_handler or ''),
+        'exporter_selected': (
+            'risk_native_exporter' if _is_risk
+            else 'strategy_exporter'),
+        'section_splitter_selected': section_splitter,
+        'compiler_authority_selected': compiler_authority,
+        'gates_considered': gates_considered,
+        'gates_applied': gates_applied,
+        'gates_skipped': gates_skipped,
+        'strategy_gates_skipped_for_risk': strategy_skipped,
+        'risk_gates_applied': risk_applied,
+        'model_drift_gate_applied': model_drift_applied,
+        'model_drift_gate_skipped_reason': model_drift_skip_reason,
+        'domain_guard_selected': domain_guard,
+        'domain_guard_section_keys': sorted([
+            k for k in (
+                ('scenario', 'register', 'treatments', 'kri')
+                if _is_risk
+                else ('vision', 'pillars', 'roadmap', 'kpis', 'traceability'))
+        ]),
+        'blocking_errors': _blk,
+        'passed': bool(passed and not _blk),
+    }
 
 
 def _rel33_normalize_export_artifact_type(data: dict) -> str:

@@ -113,8 +113,25 @@ def export_docx(
         evaluate_pre_export_bytes_domain_guard,
     )
     _guard_domain = str(backend.get('domain') or domain or '')
-    _guard_dtype = str(backend.get('document_type') or '').strip().lower()
-    _guard_sections = sec_map if sec_map else {'roadmap': content}
+    _guard_dtype = str(
+        backend.get('document_type') or _art_dtype or '').strip().lower()
+    # REL3.3 — for risk documents the strategy section splitter mints a
+    # ``vision`` key from the risk intro, so the pre-export domain guard would
+    # evaluate risk prose under strategy contract keys and emit
+    # rel33_domain_contamination:vision:cyber_primary. Build the guard's
+    # section view with the risk-native splitter so it only sees risk-native
+    # keys (scenario/register/treatments/kri) and routes through the
+    # risk-native isolation guard. Genuine cyber-primary substance in risk
+    # content is still blocked — as a risk-native section key, not "vision".
+    if _guard_dtype in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_risk_artifact import (
+            _split_risk_markdown as _split_risk_md,
+            normalize_risk_export_sections as _norm_risk_secs,
+        )
+        _guard_sections = _norm_risk_secs(
+            _split_risk_md(content or '')) or {'register': content or ''}
+    else:
+        _guard_sections = sec_map if sec_map else {'roadmap': content}
     _guard_blockers = evaluate_pre_export_bytes_domain_guard(
         _guard_sections,
         domain=_guard_domain,

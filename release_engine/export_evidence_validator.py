@@ -397,25 +397,41 @@ def _channel_defects(
                 domain=domain)
     except Exception:  # noqa: BLE001
         substance_defects = []
-    kpi_defects = list(dict.fromkeys(
-        _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
-    rel27_road_defects = list(rel27.get('roadmap_defects') or [])
-    if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
-        rel27_road_defects = [
-            d for d in rel27_road_defects
-            if not str(d).startswith('roadmap_row_count')]
-    roadmap_defects = list(dict.fromkeys(
-        _roadmap_defects_in(
-            blob,
-            internal_row_count=internal_roadmap_row_count,
-            domain=domain)
-        + rel27_road_defects))
-    if (route == 'preview'
-            and internal_roadmap_row_count is not None
-            and internal_roadmap_row_count >= 10):
-        roadmap_defects = [
-            d for d in roadmap_defects
-            if str(d).startswith('roadmap_bad_initiative')]
+    # REL3.3 — strategy-only visible drift families (KPI-main, roadmap
+    # visible-row-count, traceability) must not run for risk documents. A
+    # risk artifact has no strategy KPI-main table / roadmap / traceability
+    # matrix; its KRI + treatment tables would otherwise be misread as those
+    # strategy sections and falsely block the export. These are guarded by
+    # document_type (not suppressed globally) — strategy and gap_assessment
+    # still run them; risk/risk_assessment route through risk-native gates
+    # (risk_defects / treatment evidence + risk-native domain guard).
+    _is_risk = dtype in ('risk', 'risk_assessment')
+    if _is_risk:
+        kpi_defects = []
+        roadmap_defects = []
+        traceability_defects = []
+    else:
+        kpi_defects = list(dict.fromkeys(
+            _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
+        rel27_road_defects = list(rel27.get('roadmap_defects') or [])
+        if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
+            rel27_road_defects = [
+                d for d in rel27_road_defects
+                if not str(d).startswith('roadmap_row_count')]
+        roadmap_defects = list(dict.fromkeys(
+            _roadmap_defects_in(
+                blob,
+                internal_row_count=internal_roadmap_row_count,
+                domain=domain)
+            + rel27_road_defects))
+        if (route == 'preview'
+                and internal_roadmap_row_count is not None
+                and internal_roadmap_row_count >= 10):
+            roadmap_defects = [
+                d for d in roadmap_defects
+                if str(d).startswith('roadmap_bad_initiative')]
+        traceability_defects = list(dict.fromkeys(
+            _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
     risk_defects = list(dict.fromkeys(
         _risk_defects_in(blob) + (rel27.get('risk_defects') or [])))
     if dtype == 'risk':
@@ -423,7 +439,7 @@ def _channel_defects(
             from release_engine_v3.rel33_risk_treatment_evidence import (
                 risk_treatment_defects_for_channel,
             )
-            risk_defects =             risk_treatment_defects_for_channel(
+            risk_defects = risk_treatment_defects_for_channel(
                 blob,
                 route=route,
                 document_type=dtype,
@@ -433,21 +449,28 @@ def _channel_defects(
             )
         except Exception:  # noqa: BLE001
             risk_defects = list(dict.fromkeys(risk_defects))
-    traceability_defects = list(dict.fromkeys(
-        _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
     arabic_residues = list(dict.fromkeys(
         _arabic_defects_in(blob) + (rel27.get('arabic_residues') or [])))
-    forbidden = list(dict.fromkeys(
-        _forbidden_in(
-            blob, internal_roadmap_row_count=internal_roadmap_row_count)
-        + (rel27.get('missing_sections') or [])
-        + kpi_defects
-        + risk_defects
-        + traceability_defects
-        + arabic_residues
-        + rel31_defects
-        + substance_defects
-        + roadmap_defects))
+    if _is_risk:
+        # Risk-native forbidden set: keep arabic + risk treatment + rel31
+        # acceptance (already document_type-aware); drop strategy KPI/roadmap/
+        # traceability/missing-pillars families entirely.
+        forbidden = list(dict.fromkeys(
+            risk_defects
+            + arabic_residues
+            + rel31_defects))
+    else:
+        forbidden = list(dict.fromkeys(
+            _forbidden_in(
+                blob, internal_roadmap_row_count=internal_roadmap_row_count)
+            + (rel27.get('missing_sections') or [])
+            + kpi_defects
+            + risk_defects
+            + traceability_defects
+            + arabic_residues
+            + rel31_defects
+            + substance_defects
+            + roadmap_defects))
     return {
         'forbidden_patterns': forbidden,
         'missing_sections': rel27.get('missing_sections') or [],
@@ -571,7 +594,14 @@ def validate_actual_export_evidence(
                 'rel2_actual_export_evidence_failed:pdf', pdf_def))
 
     drift: List[str] = []
-    if canonical_sections and route_name not in ('finalize', ''):
+    # REL3.3 — strategy section-parity model-drift (vision/pillars/roadmap/
+    # kpis/traceability hash equivalence) is strategy-only. A risk artifact
+    # is compiled risk-native (no such sections), so running it would emit
+    # spurious rel2_export_model_drift:<strategy_section> blockers. Guard by
+    # document_type; strategy + gap_assessment still run it.
+    _dtype_norm = str(document_type or 'strategy').strip().lower()
+    if (canonical_sections and route_name not in ('finalize', '')
+            and _dtype_norm not in ('risk', 'risk_assessment')):
         drift = check_export_model_drift(
             canonical_sections, preview_text, docx_text, pdf_text,
             hash_fn=hash_fn)
