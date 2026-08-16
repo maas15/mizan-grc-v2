@@ -152,6 +152,50 @@ def resolve_rel33_risk_export_artifact(
     if not content.strip() and sections:
         content = assemble_sections(sections)
 
+    # ── REL3.3 export-prep risk-native contract (second hard boundary) ──
+    # A strategy-shaped saved risk artifact must never reach the exporters.
+    # Detect strategy-shaped sections → one deterministic risk_native_repair →
+    # re-validate (structure + cyber-primary). Use the repaired content for
+    # export when the contract passes; fail closed otherwise (never emit a
+    # strategy vision/roadmap blocker). Risk export-prep uses only the
+    # risk-native splitter/normalizer here — no strategy compiler/synthesizer.
+    try:
+        from release_engine_v3.rel33_risk_generation_contract import (
+            evaluate_risk_export_prep_contract,
+        )
+        _dl = str(domain or '').lower()
+        _prep = evaluate_risk_export_prep_contract(
+            content,
+            domain=domain,
+            route=route or 'export-prep',
+            risk_id=str(row.get('id') or risk_id or artifact_id or ''),
+            source_stage='resolve_rel33_risk_export_artifact',
+            allow_cyber_context=('cyber' in _dl or 'سيبران' in _dl),
+            emit=True,
+        )
+        diag['export_prep_contract_passed'] = bool(_prep.get('contract_passed'))
+        diag['export_prep_forbidden_sections'] = list(
+            _prep.get('forbidden_strategy_section_keys') or [])
+        if not _prep.get('contract_passed'):
+            diag['blocking_errors'] = list(dict.fromkeys(
+                (diag.get('blocking_errors') or [])
+                + list(_prep.get('blocking_errors') or [])))
+            emit_rel33_risk_artifact_load(diag)
+            # Fail closed before building the export artifact — return no
+            # content so the exporter cannot ship strategy-shaped bytes.
+            out.update({'content': '', 'sections': {},
+                        'skip_client_authority': False})
+            return out
+        _repaired = _prep.get('content') or content
+        if _repaired != content:
+            content = _repaired
+            sections = normalize_risk_export_sections(
+                _split_risk_markdown(content))
+    except Exception as _prep_e:  # noqa: BLE001
+        # Non-fatal: fall through with the loaded content (the exporter's
+        # pre-export bytes domain guard remains the final risk-native gate).
+        diag['export_prep_contract_error'] = str(_prep_e)
+
     risk_n, treat_n = count_treatment_rows_from_sections(sections)
     diag['loaded_sections_keys'] = sorted(
         k for k in sections if not str(k).startswith('_'))

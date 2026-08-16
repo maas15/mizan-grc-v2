@@ -62,6 +62,10 @@ FORBIDDEN_STRATEGY_SECTION_MARKERS: Tuple[str, ...] = (
     'key performance indicators',
     'vision and objectives',
     'vision & objectives',
+    'strategic vision',
+    'implementation roadmap',
+    'strategy roadmap',
+    'kpi dashboard',
 )
 
 # Bare English 'vision' is only treated as a strategy heading when it is the
@@ -93,13 +97,23 @@ def emit_rel33_risk_generation_contract(diag: Dict[str, Any]) -> None:
 
 
 def _normalize_heading(text: str) -> str:
-    """Lowercase + normalize Arabic letter variants for robust marker match."""
+    """Lowercase + normalize Arabic/markdown variants for robust marker match.
+
+    Tolerant to: markdown bold/italic markers, tatweel (ـ), Arabic diacritics,
+    hamza/alef/ya/ta-marbuta variants, punctuation and separators, and leading
+    section numbering. This makes heading detection resilient to LLM styling
+    variants (e.g. ``**الرؤية والأهداف الاستراتيجية**`` or ``الــرؤية``).
+    """
     s = str(text or '').strip().lower()
+    s = s.replace('*', ' ').replace('_', ' ').replace('#', ' ')
+    s = s.replace('\u0640', '')  # strip tatweel/kashida
     for a, b in (
             ('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ى', 'ي'),
-            ('ة', 'ه'), ('ؤ', 'و'), ('ئ', 'ي')):
+            ('ة', 'ه'), ('ؤ', 'و'), ('ئ', 'ي'), ('ﻻ', 'لا')):
         s = s.replace(a, b)
     s = re.sub(r'[\u064b-\u0652]', '', s)  # strip Arabic diacritics
+    # unify punctuation/separators to single spaces
+    s = re.sub(r'[\u060c\u061b\.:،؛\-–—/\\|()\[\]"\'`]+', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
@@ -323,3 +337,107 @@ def evaluate_risk_generation_contract(
         _emit = {k: v for k, v in diag.items() if k != 'content'}
         emit_rel33_risk_generation_contract(_emit)
     return diag
+
+
+def emit_rel33_risk_export_prep_contract(diag: Dict[str, Any]) -> None:
+    try:
+        print(
+            '[REL33-RISK-EXPORT-PREP-CONTRACT] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _sha256_short(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(str(text or '').encode('utf-8')).hexdigest()[:16]
+
+
+def evaluate_risk_export_prep_contract(
+        content: str,
+        *,
+        domain: str = '',
+        route: str = '',
+        risk_id: Any = '',
+        source_stage: str = 'export_prep',
+        allow_cyber_context: bool = False,
+        emit: bool = True,
+) -> Dict[str, Any]:
+    """Second hard boundary — risk-native structure contract at export-prep.
+
+    Runs the same detection + one deterministic repair as the generation
+    contract, but from the export-prep boundary so a strategy-shaped SAVED
+    artifact can never reach the exporters. Emits
+    ``[REL33-RISK-EXPORT-PREP-CONTRACT]``.
+
+    On failure returns fail-closed blockers using export-prep-specific codes
+    (never strategy vision/roadmap blockers):
+      * ``rel33_risk_export_prep_strategy_shape_detected`` — repaired content is
+        still strategy-shaped;
+      * ``rel33_risk_export_prep_not_risk_native`` — cyber-primary substance
+        remains in kept risk-native sections after repair.
+
+    Returns a dict with ``content`` (repaired content to use for export when the
+    contract passes; original when it fails), ``contract_passed``, and
+    ``blocking_errors``.
+    """
+    saved = str(content or '')
+    inner = evaluate_risk_generation_contract(
+        saved,
+        domain=domain,
+        route=route or 'export-prep',
+        generation_stage=source_stage,
+        allow_cyber_context=allow_cyber_context,
+        emit=False,
+    )
+    export_content = inner.get('content') if inner.get('contract_passed') else saved
+    # Map generation-contract blockers to export-prep-specific codes.
+    prep_blockers: List[str] = []
+    for b in (inner.get('blocking_errors') or []):
+        if b == 'rel33_risk_generation_strategy_shape_detected':
+            prep_blockers.append('rel33_risk_export_prep_strategy_shape_detected')
+        elif b == 'rel33_risk_generation_not_risk_native':
+            prep_blockers.append('rel33_risk_export_prep_not_risk_native')
+        else:
+            prep_blockers.append(b)
+    contract_passed = not prep_blockers
+
+    saved_hash = _sha256_short(saved)
+    export_hash = _sha256_short(export_content)
+    diag: Dict[str, Any] = {
+        'tag': '[REL33-RISK-EXPORT-PREP-CONTRACT]',
+        'route': str(route or ''),
+        'domain': inner.get('domain'),
+        'document_type': 'risk',
+        'artifact_type': 'risk',
+        'risk_id': str(risk_id or ''),
+        'source_stage': str(source_stage or ''),
+        'forbidden_strategy_sections_detected': bool(
+            inner.get('forbidden_strategy_sections_detected')),
+        'forbidden_strategy_section_keys': list(
+            inner.get('forbidden_strategy_section_keys') or []),
+        'risk_export_prep_repair_attempted': bool(
+            inner.get('risk_repair_attempted')),
+        'risk_export_prep_repair_passed': bool(
+            inner.get('risk_repair_attempted')
+            and inner.get('risk_repair_passed')
+            and contract_passed),
+        'cyber_primary_terms_detected_after_repair': list(
+            inner.get('cyber_primary_terms_detected') or []),
+        'risk_native_sections_detected': list(
+            inner.get('risk_native_sections_detected') or []),
+        'content_used_for_export_hash': export_hash,
+        'saved_content_hash': saved_hash,
+        'export_content_differs_from_saved': bool(export_hash != saved_hash),
+        'strategy_compiler_attempted': False,
+        'risk_compiler_attempted': True,
+        'blocking_errors': list(dict.fromkeys(prep_blockers)),
+        'contract_passed': bool(contract_passed),
+    }
+    if emit:
+        emit_rel33_risk_export_prep_contract(diag)
+    out = dict(diag)
+    out['content'] = export_content
+    return out
