@@ -173,28 +173,56 @@ def resolve_rel33_risk_export_artifact(
             allow_cyber_context=('cyber' in _dl or 'سيبران' in _dl),
             emit=True,
         )
+        # Expose the full export-prep diagnostic to callers (for the gated
+        # export-status debug echo). Strip the heavy content field.
+        out['export_prep_diag'] = {
+            k: v for k, v in _prep.items() if k != 'content'}
         diag['export_prep_contract_passed'] = bool(_prep.get('contract_passed'))
         diag['export_prep_forbidden_sections'] = list(
             _prep.get('forbidden_strategy_section_keys') or [])
         if not _prep.get('contract_passed'):
+            _prep_blk = list(_prep.get('blocking_errors') or [])
             diag['blocking_errors'] = list(dict.fromkeys(
-                (diag.get('blocking_errors') or [])
-                + list(_prep.get('blocking_errors') or [])))
+                (diag.get('blocking_errors') or []) + _prep_blk))
             emit_rel33_risk_artifact_load(diag)
             # Fail closed before building the export artifact — return no
-            # content so the exporter cannot ship strategy-shaped bytes.
+            # content so the exporter cannot ship strategy-shaped bytes, and
+            # surface the export-prep blockers so the caller hard-blocks
+            # instead of reverting to client/original content.
             out.update({'content': '', 'sections': {},
-                        'skip_client_authority': False})
+                        'skip_client_authority': False,
+                        'export_prep_contract_passed': False,
+                        'blocking_errors': _prep_blk or [
+                            'rel33_risk_export_prep_not_risk_native']})
             return out
         _repaired = _prep.get('content') or content
         if _repaired != content:
             content = _repaired
             sections = normalize_risk_export_sections(
                 _split_risk_markdown(content))
+        out['export_prep_contract_passed'] = True
     except Exception as _prep_e:  # noqa: BLE001
-        # Non-fatal: fall through with the loaded content (the exporter's
-        # pre-export bytes domain guard remains the final risk-native gate).
+        # REL3.3 — fail CLOSED on an unexpected export-prep contract exception.
+        # Never continue with unrepaired content (it could ship strategy-shaped
+        # or cyber-primary bytes). Surface a prep-specific exception blocker.
         diag['export_prep_contract_error'] = str(_prep_e)
+        diag['blocking_errors'] = list(dict.fromkeys(
+            (diag.get('blocking_errors') or [])
+            + ['rel33_risk_export_prep_contract_exception']))
+        out['export_prep_diag'] = {
+            'tag': '[REL33-RISK-EXPORT-PREP-CONTRACT]',
+            'contract_passed': False,
+            'exception_type': type(_prep_e).__name__,
+            'exception_message_safe': str(_prep_e)[:200],
+            'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+        }
+        emit_rel33_risk_artifact_load(diag)
+        out.update({'content': '', 'sections': {},
+                    'skip_client_authority': False,
+                    'export_prep_contract_passed': False,
+                    'blocking_errors': [
+                        'rel33_risk_export_prep_contract_exception']})
+        return out
 
     risk_n, treat_n = count_treatment_rows_from_sections(sections)
     diag['loaded_sections_keys'] = sorted(

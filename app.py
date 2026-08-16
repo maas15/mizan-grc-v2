@@ -78862,13 +78862,25 @@ def api_generate_pdf_async():
                 _art_id_a, _risk_id_pa, _rel33_uid_pa,
                 domain=domain, route='pdf-async',
                 client_content=content)
-            _rel33_export_prep_pa = dict(_rel33_prep_risk_pa)
-            if (_rel33_prep_risk_pa.get('content') or '').strip():
-                content = _rel33_prep_risk_pa['content']
-                _db_canonical = content
         except Exception as _rel33_risk_pa_e:  # noqa: BLE001
             print(f'[REL33-EXPORT] pdf-async risk prepare failed: '
                   f'{_rel33_risk_pa_e}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        # Honor export-prep fail-closed synchronously (before spawning the
+        # async task): hard-block, never fall back to client content.
+        _blk_resp_pa = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_pa, data, route='pdf', domain=domain,
+            art_type=_art_type_a, art_id=_art_id_a, risk_id=_risk_id_pa)
+        if _blk_resp_pa is not None:
+            return _blk_resp_pa
+        _rel33_export_prep_pa = dict(_rel33_prep_risk_pa)
+        if (_rel33_prep_risk_pa.get('content') or '').strip():
+            content = _rel33_prep_risk_pa['content']
+            _db_canonical = content
     elif _art_type_a == 'gap_assessment':
         try:
             _rel33_uid_pa = session.get('user_id', 0)
@@ -79227,15 +79239,27 @@ def api_generate_docx_async():
                 _art_id_a, _risk_id_da, _rel33_uid_da,
                 domain=domain, route='docx-async',
                 client_content=content)
-            _rel33_export_prep_da = dict(_rel33_prep_risk_da)
-            _rel33_risk_sections_da = dict(
-                _rel33_prep_risk_da.get('sections') or {})
-            if (_rel33_prep_risk_da.get('content') or '').strip():
-                content = _rel33_prep_risk_da['content']
-                _db_canonical = content
         except Exception as _rel33_risk_da_e:  # noqa: BLE001
             print(f'[REL33-EXPORT] docx-async risk prepare failed: '
                   f'{_rel33_risk_da_e}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        # Honor export-prep fail-closed synchronously (before spawning the
+        # async task): hard-block, never fall back to client content.
+        _blk_resp_da = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_da, data, route='docx', domain=domain,
+            art_type=_art_type_a, art_id=_art_id_a, risk_id=_risk_id_da)
+        if _blk_resp_da is not None:
+            return _blk_resp_da
+        _rel33_export_prep_da = dict(_rel33_prep_risk_da)
+        _rel33_risk_sections_da = dict(
+            _rel33_prep_risk_da.get('sections') or {})
+        if (_rel33_prep_risk_da.get('content') or '').strip():
+            content = _rel33_prep_risk_da['content']
+            _db_canonical = content
     elif _art_type_a == 'gap_assessment':
         try:
             _rel33_uid_da = session.get('user_id', 0)
@@ -81658,14 +81682,27 @@ def api_generate_docx():
             _rel33_prep_risk_d = _rel33_prepare_risk_export_content(
                 _art_id, _risk_id_d, _rel33_uid_d,
                 domain=domain, route='docx', client_content=content)
-            _rel33_risk_sections_d = dict(
-                _rel33_prep_risk_d.get('sections') or {})
-            if (_rel33_prep_risk_d.get('content') or '').strip():
-                content = _rel33_prep_risk_d['content']
-                _db_canonical_d = content
         except Exception as _rel33_risk_d_e:  # noqa: BLE001
+            # Fail CLOSED on an unexpected prep exception — never continue with
+            # unrepaired client content.
             print(f'[REL33-EXPORT] docx risk prepare failed: {_rel33_risk_d_e}',
                   flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        # Honor export-prep fail-closed: hard-block, no client fallback.
+        _blk_resp_d = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_d, data, route='docx', domain=domain,
+            art_type=_art_type, art_id=_art_id, risk_id=_risk_id_d)
+        if _blk_resp_d is not None:
+            return _blk_resp_d
+        _rel33_risk_sections_d = dict(
+            _rel33_prep_risk_d.get('sections') or {})
+        if (_rel33_prep_risk_d.get('content') or '').strip():
+            content = _rel33_prep_risk_d['content']
+            _db_canonical_d = content
 
     # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
     # source won (DB canonical OR client payload). See PDF route for the
@@ -82467,14 +82504,24 @@ def api_generate_pdf():
             _rel33_prep_risk_p = _rel33_prepare_risk_export_content(
                 _art_id_p, _risk_id_p, _rel33_uid_p,
                 domain=domain_pdf, route='pdf', client_content=content)
-            _rel33_risk_sections_p = dict(
-                _rel33_prep_risk_p.get('sections') or {})
-            if (_rel33_prep_risk_p.get('content') or '').strip():
-                content = _rel33_prep_risk_p['content']
-                _db_canonical_p = content
         except Exception as _rel33_risk_p_e:  # noqa: BLE001
             print(f'[REL33-EXPORT] pdf risk prepare failed: {_rel33_risk_p_e}',
                   flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        _blk_resp_p = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_p, data, route='pdf', domain=domain_pdf,
+            art_type=_art_type_p, art_id=_art_id_p, risk_id=_risk_id_p)
+        if _blk_resp_p is not None:
+            return _blk_resp_p
+        _rel33_risk_sections_p = dict(
+            _rel33_prep_risk_p.get('sections') or {})
+        if (_rel33_prep_risk_p.get('content') or '').strip():
+            content = _rel33_prep_risk_p['content']
+            _db_canonical_p = content
 
     # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
     # source won (DB canonical OR client payload). The previous code only
@@ -82681,6 +82728,17 @@ def api_generate_pdf():
                                     _rel31_evidence.blocking_errors or []),
                                 passed=False,
                             ))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Surface the export-prep contract decision (it passed to
+                    # reach here) for full visibility of the risk export path.
+                    try:
+                        if _art_type_p in ('risk', 'risk_assessment') and (
+                                '_rel33_prep_risk_p' in dir()):
+                            _pp = locals().get('_rel33_prep_risk_p') or {}
+                            if _pp.get('export_prep_diag'):
+                                _pdf_err_body['rel33_risk_export_prep_contract'] = (
+                                    _pp.get('export_prep_diag'))
                     except Exception:  # noqa: BLE001
                         pass
                 return jsonify(_pdf_err_body), 422
@@ -90205,6 +90263,52 @@ def build_rel33_export_gate_routing_diag(
     }
 
 
+def _rel33_risk_prep_hard_block_response(
+        prep: dict, data: dict, *, route: str, domain: str,
+        art_type: str, art_id, risk_id):
+    """Return a hard-block (422) response when the risk export-prep contract
+    failed, else None.
+
+    REL3.3 fail-closed wiring: when resolve_rel33_risk_export_artifact fails
+    closed for a risk artifact (strategy-shaped after repair, cyber-primary in
+    kept risk sections, or a contract exception), the export route MUST NOT fall
+    back to client/original content. It hard-blocks with the export-prep-specific
+    blocker and (behind the debug gate) surfaces the export-prep + routing
+    diagnostics.
+    """
+    if str(art_type or '').strip().lower() not in ('risk', 'risk_assessment'):
+        return None
+    prep = prep or {}
+    blk = list(prep.get('blocking_errors') or [])
+    prep_failed = (prep.get('export_prep_contract_passed') is False) or any(
+        str(b).startswith('rel33_risk_export_prep') for b in blk)
+    if not prep_failed:
+        return None
+    if not blk:
+        blk = ['rel33_risk_export_prep_not_risk_native']
+    body = {
+        'error': (
+            'Export blocked — risk export-prep contract failed '
+            '(not risk-native)'),
+        'reason': 'rel3_export_evidence_failed',
+        'blocking_errors': blk,
+    }
+    if _rel33_debug_export_allowed(data):
+        if prep.get('export_prep_diag'):
+            body['rel33_risk_export_prep_contract'] = prep.get('export_prep_diag')
+        try:
+            body['rel33_export_gate_routing_diag'] = (
+                build_rel33_export_gate_routing_diag(
+                    output_type=route, route=route, domain=domain,
+                    document_type='risk', artifact_type='risk',
+                    artifact_id=str(art_id or ''), risk_id=str(risk_id or ''),
+                    export_handler=f'api_generate_{route}',
+                    blocking_errors=blk, passed=False))
+        except Exception:  # noqa: BLE001
+            pass
+    return jsonify(body), 422
+
+
 def _rel33_normalize_export_artifact_type(data: dict) -> str:
     """Map request document_type to export artifact_type for strategy routes."""
     atype = str((data or {}).get('artifact_type') or 'strategy').strip().lower()
@@ -92782,8 +92886,16 @@ def _run_risk_generation_task(task_id, user_id, data):
                      else 'rel33_risk_generation_strategy_shape_detected'))
                 return
         except Exception as _gc_e:  # noqa: BLE001
-            print(f'[RISK-ASYNC] risk generation contract (non-fatal): '
-                  f'{_gc_e}', flush=True)
+            # REL3.3 — fail CLOSED on an unexpected generation-contract
+            # exception. Never save the original (possibly strategy-shaped or
+            # cyber-primary) content when the contract could not run.
+            import traceback as _tb_gc
+            print('[RISK-ASYNC] save_decision=BLOCKED '
+                  'reason=rel33_risk_generation_contract_exception '
+                  f'error={_gc_e!r}\n{_tb_gc.format_exc()}', flush=True)
+            fail_background_task(
+                task_id, 'rel33_risk_generation_contract_exception')
+            return
 
         # ── REL3.3 ERM risk domain isolation (pre-save, fail-closed) ──
         # A non-cyber risk document must never persist Cyber-*primary*
