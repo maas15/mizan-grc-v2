@@ -235,10 +235,13 @@ def _poll_endpoint_for(document_type: str) -> str:
     return '/api/strategy-status'
 
 
-def _poll_export(session: requests.Session, task_id: str) -> Dict[str, Any]:
+def _poll_export(
+        session: requests.Session, task_id: str,
+        *, debug: bool = False) -> Dict[str, Any]:
     deadline = time.time() + 600
+    q = '?rel33_debug_export_evidence=true' if debug else ''
     while time.time() < deadline:
-        r = session.get(f'{BASE}/api/export-status/{task_id}', timeout=90)
+        r = session.get(f'{BASE}/api/export-status/{task_id}{q}', timeout=90)
         data = r.json()
         if data.get('status') in ('done', 'error'):
             return data
@@ -291,6 +294,11 @@ def _base_payload(case: Dict[str, str]) -> Dict[str, Any]:
     }
     if case.get('doc_subtype'):
         payload['doc_subtype'] = case['doc_subtype']
+    # REL3.3 — for the (failing) ERM risk route only, request gated diagnostics
+    # so the acceptance JSON captures the generation/compiler decisions. This
+    # never alters the 5 green strategy/gap routes.
+    if case.get('document_type') in ('risk', 'risk_assessment'):
+        payload['rel33_debug_export_evidence'] = True
     return payload
 
 
@@ -341,6 +349,10 @@ def _export_live(
         'generation_mode': os.environ.get('STAGING_GENERATION_MODE', 'drafting'),
     }
     dtype = case['document_type']
+    _risk_debug = dtype in ('risk', 'risk_assessment')
+    if _risk_debug:
+        # REL3.3 — request gated export diagnostics for the failing ERM route.
+        payload['rel33_debug_export_evidence'] = True
     if dtype == 'risk':
         payload['risk_id'] = artifact_id
         payload['artifact_id'] = artifact_id
@@ -356,18 +368,32 @@ def _export_live(
         err = (
             body.get('error') or body.get('reason')
             or f'http_{r.status_code}')
-        return {
+        out = {
             'export_return_allowed': False,
             'blocking_errors': [err],
             'http_status': r.status_code,
             'response_body': body,
         }
+        # Capture synchronously-returned export-prep/routing diagnostics (the
+        # hard-block 422 path) for the failing ERM route.
+        if _risk_debug:
+            for _dk in ('rel33_risk_export_prep_contract',
+                        'rel33_export_gate_routing_diag'):
+                if isinstance(body, dict) and body.get(_dk):
+                    out[_dk] = body.get(_dk)
+        return out
     tid = r.json().get('task_id')
-    done = _poll_export(session, tid)
+    done = _poll_export(
+        session, tid, debug=_risk_debug)
     meta: Dict[str, Any] = {'task_id': tid, 'export_status': done}
     if done.get('status') == 'error':
         meta['export_return_allowed'] = False
         meta['blocking_errors'] = [done.get('error')]
+        # Capture async export-status debug echo (routing + export-prep diags).
+        if _risk_debug:
+            _dbg = done.get('rel33_debug_export_evidence') or {}
+            if _dbg:
+                meta['rel33_debug_export_evidence'] = _dbg
         return meta
     dr = session.get(f'{BASE}/api/export-download/{tid}', timeout=180)
     raw = dr.content
@@ -618,6 +644,24 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         result.get('success', True) and artifact_id)
     row['preview_rendered'] = bool(str(content).strip() or sections)
 
+    # ── REL3.3 deterministic acceptance readiness: capture generation +
+    # compiler diagnostics and content lineage for the (failing) ERM risk
+    # route only. Green strategy/gap routes are unaffected. ──
+    if case['document_type'] in ('risk', 'risk_assessment'):
+        import hashlib as _hl
+        _saved_hash = _hl.sha256(
+            str(content or '').encode('utf-8')).hexdigest()[:16]
+        row['rel33_diagnostics'] = {
+            'rel33_risk_generation_contract': result.get(
+                'rel33_risk_generation_contract'),
+            'rel33_risk_native_compiler': result.get(
+                'rel33_risk_native_compiler'),
+            'saved_content_hash': _saved_hash,
+            'saved_content_headings': [
+                ln.strip() for ln in str(content or '').splitlines()
+                if ln.strip().startswith('##')],
+        }
+
     lock = _local_hash_lock(sections, str(content), str(artifact_id or key), case)
     if not row['generation_save_allowed'] and lock.get('generation_save_allowed'):
         script_blockers.append('local_replay_save_mismatch_live_saved')
@@ -660,6 +704,31 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
     if not row['pdf_export_return_allowed']:
         app_blockers.extend(pdf.get('blocking_errors') or [
             'pdf_export_return_allowed=false'])
+
+    # ── REL3.3 acceptance readiness: capture export-prep + routing diagnostics
+    # for the failing ERM route (from the gated debug echo / hard-block body). ──
+    if case['document_type'] in ('risk', 'risk_assessment'):
+        _diag = dict(row.get('rel33_diagnostics') or {})
+
+        def _pull(meta, key):
+            if not isinstance(meta, dict):
+                return None
+            if meta.get(key):
+                return meta.get(key)
+            dbg = meta.get('rel33_debug_export_evidence') or {}
+            return dbg.get(key) if isinstance(dbg, dict) else None
+
+        _diag['docx_export_prep_contract'] = _pull(
+            docx, 'rel33_risk_export_prep_contract')
+        _diag['docx_export_routing_diag'] = _pull(
+            docx, 'rel33_export_gate_routing_diag')
+        _diag['pdf_export_prep_contract'] = _pull(
+            pdf, 'rel33_risk_export_prep_contract')
+        _diag['pdf_export_routing_diag'] = _pull(
+            pdf, 'rel33_export_gate_routing_diag')
+        _diag['docx_blocking_errors'] = list(docx.get('blocking_errors') or [])
+        _diag['pdf_blocking_errors'] = list(pdf.get('blocking_errors') or [])
+        row['rel33_diagnostics'] = _diag
 
     live_kpi_pass = {'docx': None, 'pdf': None}
     if case['document_type'] == 'strategy':

@@ -92856,14 +92856,62 @@ def _run_risk_generation_task(task_id, user_id, data):
             pass
         content, val = _repair_and_revalidate(content, 'risk', lang)
 
-        # ── REL3.3 ERM risk-native generation contract (pre-save) ──
-        # A risk artifact must never be saved carrying strategy-shaped sections
-        # (vision/objectives/pillars/roadmap/strategy KPI table/governance
-        # model/traceability). Detect → run ONE deterministic risk-native
-        # repair → fail closed if the content is still strategy-shaped or still
-        # carries cyber-primary substance. Emits [REL33-RISK-GENERATION-CONTRACT].
-        # This does not weaken the risk-domain guard; cyber-primary detection is
-        # delegated to the shared risk isolation guard below.
+        # ── REL3.3 deterministic ERM risk-native compiler (save compiled only) ──
+        # The LLM output above is treated as MATERIAL ONLY. The compiler
+        # deterministically builds a schema-locked risk-native artifact: it
+        # extracts usable non-cyber risk/treatment/KRI rows, strips forbidden
+        # strategy sections and cyber-primary operating-model substance, and
+        # fills ERM fallback rows to meet minimums. Only compiled content is
+        # ever saved as an accepted ERM risk artifact. Fail CLOSED with
+        # rel33_risk_native_compiler_failed if the compiler cannot produce a
+        # valid risk-native artifact. Emits [REL33-RISK-NATIVE-COMPILER].
+        _rc_diag_echo = None
+        try:
+            from release_engine_v3.rel33_risk_native_compiler import (
+                compile_risk_native_artifact,
+            )
+            _rc = compile_risk_native_artifact(
+                content,
+                domain=domain,
+                document_type='risk',
+                lang=lang,
+                context={
+                    'asset': asset, 'threat': threat, 'category': category,
+                    'risk_level': risk_level,
+                    'org_name': data.get('org_name', ''),
+                    'sector': data.get('sector', ''),
+                },
+                route='generate-risk-async',
+                emit=True,
+            )
+            if data.get('rel33_debug_export_evidence'):
+                _rc_diag_echo = _rc.get('diag')
+            if not _rc.get('compiler_passed'):
+                _rc_blk = list(_rc.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_native_compiler '
+                      f'errors={_rc_blk!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_rc_blk[0] if _rc_blk
+                     else 'rel33_risk_native_compiler_failed'))
+                return
+            # Save COMPILED content only — never raw LLM structure. Re-validate
+            # so artifact_status/score reflect the persisted compiled document.
+            content = _rc.get('content') or content
+            content, val = _repair_and_revalidate(content, 'risk', lang)
+        except Exception as _rc_e:  # noqa: BLE001
+            import traceback as _tb_rc
+            print('[RISK-ASYNC] save_decision=BLOCKED '
+                  'reason=rel33_risk_native_compiler_failed '
+                  f'error={_rc_e!r}\n{_tb_rc.format_exc()}', flush=True)
+            fail_background_task(task_id, 'rel33_risk_native_compiler_failed')
+            return
+
+        # ── REL3.3 ERM risk-native generation contract (pre-save, defense-in-depth) ──
+        # The compiler above already guarantees risk-native structure. This
+        # contract is retained as a secondary boundary; it should now always
+        # pass on compiled content. Emits [REL33-RISK-GENERATION-CONTRACT].
         _gc_diag_echo = None
         try:
             from release_engine_v3.rel33_risk_generation_contract import (
@@ -93023,11 +93071,14 @@ def _run_risk_generation_task(task_id, user_id, data):
             'publishability_score': val['score'],
             'validation_issues': val['issues'],
         }
-        # Gated observability: surface [REL33-RISK-GENERATION-CONTRACT] via the
-        # risk-status result only when the request asked for it (debug flag).
+        # Gated observability: surface [REL33-RISK-GENERATION-CONTRACT] and
+        # [REL33-RISK-NATIVE-COMPILER] via the risk-status result only when the
+        # request asked for it (debug flag).
         if _gc_diag_echo:
             _risk_result_payload['rel33_risk_generation_contract'] = (
                 _gc_diag_echo)
+        if _rc_diag_echo:
+            _risk_result_payload['rel33_risk_native_compiler'] = _rc_diag_echo
         result = _json_async.dumps(_risk_result_payload, ensure_ascii=False)
         complete_background_task(task_id, result)
         print(f'[RISK-ASYNC] task {task_id[:8]} done — risk_id={risk_id}', flush=True)
