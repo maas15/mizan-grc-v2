@@ -154,14 +154,20 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
         'max_cell_len': ROADMAP_CELL_MAX_LEN, 'render_mode': 'table',
     },
     'kpi_main': {
-        'col_weights': [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20],
-        'font_size': 8, 'header_font_size': 9, 'padding': 8,
-        'max_cell_len': 72, 'render_mode': 'table',
+        # REL3.3 — denser safe table layout (never cards): smaller font/padding,
+        # wider formula/source wrap budget so forced table lock produces bytes.
+        'col_weights': [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17],
+        'font_size': 7, 'header_font_size': 8, 'padding': 4,
+        'max_cell_len': 96, 'render_mode': 'table',
+        'allow_page_break_inside': True,
+        'wrap_columns': (4, 5),  # formula, source
     },
     'kpi_formula': {
-        'col_weights': [0.08, 0.30, 0.32, 0.30],
-        'font_size': 9, 'header_font_size': 9, 'padding': 8,
-        'max_cell_len': 110, 'render_mode': 'table',
+        'col_weights': [0.06, 0.28, 0.36, 0.30],
+        'font_size': 8, 'header_font_size': 8, 'padding': 5,
+        'max_cell_len': 140, 'render_mode': 'table',
+        'allow_page_break_inside': True,
+        'wrap_columns': (2, 3),
     },
     'conf_factor': {
         'render_mode': 'cards', 'font_size': 9, 'padding': 6,
@@ -242,10 +248,15 @@ SCHEMA_ROADMAP_AR = (
     'المرحلة', 'الفترة', 'المبادرة', 'المسؤول',
     'المخرج المتوقع', 'الإطار المرتبط',
 )
-SCHEMA_KPI_MAIN_AR = (
-    '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
-    'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
-)
+try:
+    from release_engine_v3.rel32_table_schema_binding import (
+        REL32_KPI_MAIN_EXPECTED_SCHEMA_AR as SCHEMA_KPI_MAIN_AR,
+    )
+except Exception:  # noqa: BLE001
+    SCHEMA_KPI_MAIN_AR = (
+        '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
+        'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
+    )
 SCHEMA_KPI_FORMULA_AR = (
     '#', 'المؤشر', 'صيغة الاحتساب', 'مصدر البيانات',
 )
@@ -576,6 +587,29 @@ def _compact_roadmap_row(row: List[str], lang: str = 'ar') -> List[str]:
         out[5] = 'NCA DCC' if 'DCC' in fw.upper() else 'NCA ECC'
     elif len(fw) > 24:
         out[5] = _compact_roadmap_cell(fw, lang, max_len=24)
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import (
+            stamp_roadmap_family_markers,
+        )
+        row_dict = {
+            'phase': out[0], 'period': out[1], 'initiative': out[2],
+            'owner': out[3], 'output': out[4], 'framework': out[5],
+        }
+        markers = stamp_roadmap_family_markers(row_dict)
+        if markers and markers not in str(out[4]):
+            # Shrink body so final deliverable cell stays within density max;
+            # never truncate the intact ``family:<id>`` marker itself.
+            body = str(out[4] or '').strip()
+            reserve = len(markers) + 1  # leading space
+            max_body = max(8, ROADMAP_CELL_MAX_LEN - reserve)
+            if len(body) > max_body:
+                body = body[: max_body - 1].rstrip() + '…'
+            out[4] = f'{body} {markers}'.strip()
+            if len(out[4]) > ROADMAP_CELL_MAX_LEN:
+                # Last resort: markers alone (still intact family evidence).
+                out[4] = markers[:ROADMAP_CELL_MAX_LEN]
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -625,11 +659,9 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
     if schema == 'kpi_main' and ncols == 8:
-        return [0.04, 0.20, 0.08, 0.12, 0.14, 0.12, 0.10, 0.20]
-    if schema == 'kpi_main' and ncols == 7:
-        return [0.05, 0.24, 0.10, 0.14, 0.12, 0.14, 0.21]
+        return [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17]
     if schema == 'kpi_formula' and ncols == 4:
-        return [0.08, 0.30, 0.32, 0.30]
+        return [0.06, 0.28, 0.36, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
     if schema == 'pillar_initiatives' and ncols == 5:
@@ -676,10 +708,6 @@ SCHEMA_STACK_FALLBACK: Dict[str, str] = {
     'gap_action': 'gap_action_cards',
     'gap_table': 'gap_action_cards',
     'roadmap': 'roadmap_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
 }
 
 # PR-CY77 — Arabic PDF fallback modes for warning-driven resolution.
@@ -687,10 +715,6 @@ PRCY77_AR_PDF_FALLBACK_MODES: Dict[str, str] = dict(SCHEMA_STACK_FALLBACK)
 
 # PR-CY72 — Arabic PDF schemas that must use card fallbacks before gate.
 PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
     'governance': 'governance_cards',
     'trace_fw_gap': 'trace_cards',
     'trace_fw_init': 'trace_cards',
@@ -703,10 +727,6 @@ PRCY72_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
 PRCY77_MANDATORY_AR_PDF_FALLBACKS: Dict[str, str] = {
     'strategic_objectives': 'objective_cards',
     'roadmap': 'roadmap_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
-    'kpi_summary': 'kpi_cards',
-    'kpi_details': 'kpi_cards',
     'governance': 'governance_cards',
     'trace_fw_gap': 'trace_cards',
     'trace_fw_init': 'trace_cards',
@@ -995,8 +1015,6 @@ def apply_pdf_final_table_fallback_cleanup(
             tbl['rows'] = rows_copy
             diag['kpi_rows_resequenced'] += n_fixed
             diag['action_taken'] = 'cleanup_applied'
-        if tbl.get('rows'):
-            diag['kpi_cards_forced'] = True
 
     gov = blocks.get('governance_ownership') or {}
     if gov.get('rows'):
@@ -1336,8 +1354,6 @@ PRCY62_PROACTIVE_PDF_POLISH: Dict[str, str] = {
     'trace_fw_init': 'trace_cards',
     'traceability': 'trace_cards',
     'gap_action': 'gap_action_cards',
-    'kpi_main': 'kpi_cards',
-    'kpi_formula': 'kpi_cards',
 }
 
 
@@ -1382,10 +1398,6 @@ def compute_pdf_proactive_polish_fallbacks(
     for tbl in (blocks.get('gap_analysis') or {}).get('tables') or []:
         if tbl.get('schema') == 'gap_action' and tbl.get('rows'):
             fallbacks['gap_action'] = 'gap_action_cards'
-    for tbl in (blocks.get('kpi_kri_framework') or {}).get('tables') or []:
-        schema = tbl.get('schema', '')
-        if schema in ('kpi_main', 'kpi_formula') and tbl.get('rows'):
-            fallbacks[schema] = 'kpi_cards'
     if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
         fallbacks['roadmap'] = 'roadmap_cards'
     conf = blocks.get('confidence_risk_register') or {}
@@ -1407,13 +1419,7 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
     blocks = (model or {}).get('blocks') or {}
     out = dict(fallbacks or {})
     for schema, mode in PRCY72_MANDATORY_AR_PDF_FALLBACKS.items():
-        if schema in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
-            if _model_has_table_rows(
-                    blocks, 'kpi_kri_framework',
-                    _canonical_stack_schema(schema)):
-                out[schema] = mode
-                out[_canonical_stack_schema(schema)] = mode
-        elif schema == 'governance':
+        if schema == 'governance':
             if _model_has_table_rows(blocks, 'governance_ownership'):
                 out['governance'] = mode
         elif schema in ('gap_action', 'gap_table'):
@@ -1427,6 +1433,16 @@ def _apply_prcy72_mandatory_ar_pdf_fallbacks(
                 if st_schema == schema and st.get('rows'):
                     out[schema] = mode
     return out
+
+
+def _rel33_force_canonical_kpi_table_in_pdf(
+        model: Optional[Dict[str, Any]]) -> bool:
+    """REL3.3 — KPI main must remain a canonical table in PDF (never cards)."""
+    if not model:
+        return False
+    return (
+        _kpi_table_has_canonical_schema(model, 'kpi_main')
+        or _kpi_table_has_canonical_schema(model, 'kpi_formula'))
 
 
 def compute_pdf_export_layout_fallbacks(
@@ -1443,14 +1459,19 @@ def compute_pdf_export_layout_fallbacks(
     merged = _apply_prcy86_mandatory_ar_pdf_fallbacks(model, lang, merged)
     merged = _apply_prcy87_executive_ar_pdf_layout(model, lang, merged)
     merged = _apply_prcy77_warning_driven_ar_pdf_fallbacks(model, lang, merged)
+    # REL3.3 — compiler-first data/ai/dt only: keep canonical KPI main as a
+    # real 8-column PDF table for returned-file structured extraction.
+    if _rel33_force_canonical_kpi_table_in_pdf(model):
+        for _ks in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _kpi_table_has_canonical_schema(model, _ks):
+                merged.pop(_ks, None)
+                canon = _canonical_stack_schema(_ks)
+                if canon:
+                    merged.pop(canon, None)
     if lang == 'ar' and (model or {}).get('_prcy86'):
         blocks = (model or {}).get('blocks') or {}
         if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
             merged['roadmap'] = 'roadmap_cards'
-        for _ks in ('kpi_main', 'kpi_formula'):
-            if _model_has_table_rows(
-                    blocks, 'kpi_kri_framework', _ks):
-                merged[_ks] = 'kpi_cards'
     return merged
 
 
@@ -1473,8 +1494,40 @@ def collect_remaining_arabic_spacing_issues(
 PRCY62_POLISH_SCHEMAS = frozenset({
     'strategic_objectives', 'pillar_initiatives', 'governance',
     'trace_fw_gap', 'trace_fw_init', 'traceability', 'gap_action',
-    'kpi_main', 'kpi_formula', 'roadmap', 'conf_factor', 'risk_register',
+    'roadmap', 'conf_factor', 'risk_register',
 })
+
+
+def _kpi_table_has_canonical_schema(
+        model: Optional[Dict[str, Any]], schema: str = 'kpi_main') -> bool:
+    """True when KPI table uses the REL32 canonical schema (never card fallback)."""
+    blocks = (model or {}).get('blocks') or {}
+    kpi_blk = blocks.get('kpi_kri_framework') or {}
+    expected_main = list(SCHEMA_KPI_MAIN_AR)
+    expected_formula = list(SCHEMA_KPI_FORMULA_AR)
+    sid = schema
+    if sid in ('kpi_summary',):
+        sid = 'kpi_main'
+    if sid in ('kpi_details',):
+        sid = 'kpi_formula'
+    for tbl in kpi_blk.get('tables') or []:
+        ts = tbl.get('schema', '')
+        if ts != sid and ts not in (schema,):
+            continue
+        hdr = list(tbl.get('header') or [])
+        if sid == 'kpi_main':
+            return hdr == expected_main and len(hdr) == 8
+        if sid == 'kpi_formula':
+            return hdr == expected_formula and len(hdr) == 4
+    return False
+
+
+def kpi_canonical_table_layout_applied(
+        model: Optional[Dict[str, Any]], lang: str = 'ar') -> bool:
+    """REL32 — KPI main uses canonical 8-column table in PDF export."""
+    if lang != 'ar':
+        return True
+    return _kpi_table_has_canonical_schema(model, 'kpi_main')
 
 
 def _count_dense_table_schemas(
@@ -1591,8 +1644,7 @@ def build_pdf_final_polish_diag(
             fallbacks.get('roadmap') == 'roadmap_cards'
             if lang == 'ar' else True),
         'kpi_layout_readable': (
-            fallbacks.get('kpi_main') == 'kpi_cards'
-            or fallbacks.get('kpi_formula') == 'kpi_cards'
+            kpi_canonical_table_layout_applied(model, lang)
             if lang == 'ar' else True),
         'no_excessive_orphan_objective_pages': True,
         'pdf_layout_fallbacks': fallbacks,
@@ -1658,9 +1710,9 @@ def _apply_prcy87_executive_ar_pdf_layout(
         out['strategic_objectives'] = 'objective_cards'
     if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
         out['roadmap'] = 'roadmap_cards'
-    for _ks in ('kpi_main', 'kpi_formula', 'conf_factor', 'risk_register'):
+    for _ks in ('conf_factor', 'risk_register'):
         if _model_has_table_rows(blocks, 'kpi_kri_framework', _ks):
-            out[_ks] = 'kpi_cards'
+            out[_ks] = 'cards'
         elif _ks in ('conf_factor', 'risk_register'):
             conf = blocks.get('confidence_risk_register') or {}
             for tbl in conf.get('tables') or []:
@@ -1685,6 +1737,11 @@ def evaluate_vertical_stack_gate(
         fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     for w in all_warnings:
         schema = w.get('schema', '')
+        if schema in (
+                'kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _kpi_table_has_canonical_schema(model, schema):
+                w['action_taken'] = 'canonical_8col_table'
+                continue
         fb = _stack_fallback_for_schema(schema, fallbacks or {})
         if fb:
             w['action_taken'] = f'fallback:{fb}'
@@ -2029,6 +2086,14 @@ def _roadmap_spec_for_family(family: str, lang: str = 'ar') -> Dict[str, str]:
                 'init': 'Improve vulnerability management programme',
                 'output': 'Effective vulnerability SLA programme',
                 'owner': 'Vulnerability Manager', 'fw': 'NCA ECC'},
+            'awareness': {
+                'init': 'Security awareness & phishing programme',
+                'output': 'Annual awareness plan & completion reports',
+                'owner': 'Awareness Manager', 'fw': 'NCA ECC'},
+            'backup_dr': {
+                'init': 'Backup & disaster-recovery testing',
+                'output': 'DR plan & successful recovery test',
+                'owner': 'Business Continuity Manager', 'fw': 'NCA ECC'},
         }
         return en_specs.get(family, en_specs['governance'])
     ar_specs = {
@@ -2076,6 +2141,14 @@ def _roadmap_spec_for_family(family: str, lang: str = 'ar') -> Dict[str, str]:
             'init': 'تحسين برنامج إدارة الثغرات',
             'output': 'برنامج إدارة ثغرات وتشغيل SLA',
             'owner': 'مدير الثغرات', 'fw': 'NCA ECC'},
+        'awareness': {
+            'init': 'برنامج التوعية الأمنية',
+            'output': 'خطة توعية سنوية وتقارير إكمال',
+            'owner': 'مدير التوعية', 'fw': 'NCA ECC'},
+        'backup_dr': {
+            'init': 'اختبار النسخ الاحتياطي والتعافي',
+            'output': 'خطة DR واختبار استعادة ناجح',
+            'owner': 'مدير استمرارية الأعمال', 'fw': 'NCA ECC'},
     }
     return ar_specs.get(family, ar_specs['governance'])
 
@@ -2105,6 +2178,14 @@ def _infer_capability_family(
         return 'mfa', 'raw_text_keyword'
     if 'csirt' in blob or 'حادث' in ar_blob or 'incident' in blob:
         return 'csirt', 'raw_text_keyword'
+    if any(k in ar_blob for k in ('توعية', 'تدريب', 'تصيد')) or any(
+            _roadmap_blob_has_en_word(blob, w)
+            for w in ('awareness', 'phishing', 'training')):
+        return 'awareness', 'raw_text_keyword'
+    if any(k in ar_blob for k in ('نسخ', 'تعافي', 'استمرارية')) or any(
+            _roadmap_blob_has_en_word(blob, w)
+            for w in ('backup', 'resilience', 'dr')):
+        return 'backup_dr', 'raw_text_keyword'
     if 'vulnerability' in blob or 'vuln' in blob or 'ثغر' in ar_blob:
         return 'vulnerability', 'raw_text_keyword'
     if any(k in blob for k in ('governance', 'ciso')) or 'حوكمة' in ar_blob:
@@ -2513,7 +2594,22 @@ def _phase_label(phase_num: int, lang: str = 'ar') -> str:
     return ar if lang == 'ar' else en
 
 
-def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
+def _synth_phase_row(
+        phase_num: int, lang: str = 'ar', domain: str = 'cyber') -> List[str]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
+    if dcode == 'data' and lang == 'ar':
+        data_synth = {
+            1: ('1-6 أشهر', 'تأسيس حوكمة البيانات المؤسسية', 'CDO',
+                'إطار حوكمة NDMO معتمد', 'NDMO'),
+            2: ('7-18 شهر', 'تفعيل برنامج الامتثال لنظام PDPL',
+                'مسؤول حماية البيانات',
+                'سجل معالجة وضوابط خصوصية', 'PDPL'),
+            3: ('19-24 شهر', 'توثيق سلسلة البيانات end-to-end',
+                'مهندس بيانات', 'Lineage حرج موثق', 'NDMO'),
+        }
+        period, init, owner, out, fw = data_synth.get(phase_num, data_synth[2])
+        return [_phase_label(phase_num, lang), period, init, owner, out, fw]
     synth = {
         1: ('1-6 أشهر', 'تأسيس حوكمة الأمن السيبراني وتعيين CISO',
             'CISO', 'إدارة ولجنة حوكمة فاعلة', 'NCA ECC'),
@@ -2529,9 +2625,12 @@ def _synth_phase_row(phase_num: int, lang: str = 'ar') -> List[str]:
 
 
 def build_roadmap_render_spec(
-        rows: List[List[str]], lang: str = 'ar') -> Tuple[
+        rows: List[List[str]], lang: str = 'ar',
+        domain: str = 'cyber') -> Tuple[
             List[List[str]], List[Dict[str, Any]]]:
     """PR-CY48/58 — build meaningful roadmap rows grouped by phase coverage."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
     buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]] = {
         1: [], 2: [], 3: []}
     seen_inits: set = set()
@@ -2573,10 +2672,64 @@ def build_roadmap_render_spec(
                 result_meta.append(meta)
         else:
             filled, meta = _fill_roadmap_row(
-                _synth_phase_row(phase_num, lang), lang)
+                _synth_phase_row(phase_num, lang, domain=dcode), lang)
             result.append(filled)
             result_meta.append(meta)
+    _rel33_readd_dropped_roadmap_families(result, result_meta, buckets)
     return result, result_meta
+
+
+def _roadmap_row_families(display_row: List[str]) -> List[str]:
+    """Return canonical roadmap families detected on a rendered roadmap row."""
+    try:
+        from release_engine.roadmap_model import _families_for_row
+    except Exception:  # noqa: BLE001
+        return []
+    cells = list(display_row) + [''] * (6 - len(display_row))
+    return list(_families_for_row({
+        'phase': cells[0], 'period': cells[1], 'initiative': cells[2],
+        'owner': cells[3], 'output': cells[4], 'framework': cells[5],
+    }))
+
+
+def _rel33_readd_dropped_roadmap_families(
+        result: List[List[str]],
+        result_meta: List[Dict[str, Any]],
+        buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]],
+        *, max_rows: int = 14) -> None:
+    """REL3.3 — re-append required roadmap families dropped by the 3-per-phase cap.
+
+    ``build_roadmap_render_spec`` keeps at most 3 rows per phase, which can drop a
+    capability family (e.g. ``awareness_training``) that IS present in the parsed
+    roadmap input. Returned-PDF family evidence then falsely fails because the
+    rendered roadmap cards genuinely lack that family's row. This restores only
+    rows that were already in the input and that uniquely cover a not-yet-covered
+    required family; it never fabricates a family absent from the source roadmap.
+    """
+    try:
+        from release_engine.roadmap_model import ROADMAP_FAMILIES
+    except Exception:  # noqa: BLE001
+        return
+    required = set(ROADMAP_FAMILIES)
+    covered: set = set()
+    for row in result:
+        covered.update(_roadmap_row_families(row))
+    if required.issubset(covered):
+        return
+    for phase_num in (1, 2, 3):
+        for filled, meta in buckets.get(phase_num, []):
+            if len(result) >= max_rows:
+                return
+            if filled in result:
+                continue
+            fams = set(_roadmap_row_families(filled))
+            if not (fams & required) or fams.issubset(covered):
+                continue
+            result.append(filled)
+            result_meta.append(meta)
+            covered.update(fams)
+            if required.issubset(covered):
+                return
 
 
 def _is_formula_echo(formula: str, metric_name: str) -> bool:
@@ -3458,7 +3611,8 @@ def normalize_strategic_objectives_table(
 
 
 def normalize_roadmap_table(
-        section_text: str, lang: str = 'ar') -> Optional[Dict[str, Any]]:
+        section_text: str, lang: str = 'ar',
+        domain: str = 'cyber') -> Optional[Dict[str, Any]]:
     """PR-CY47 — header-aware roadmap normalization.
 
     Maps roadmap columns by HEADER NAME (not position) into the canonical
@@ -3525,7 +3679,7 @@ def normalize_roadmap_table(
                     [ph, '—', body[:120], 'CISO', '—', '—'], len(schema)))
     if not rows_out:
         return None
-    rows_out, row_meta = build_roadmap_render_spec(rows_out, lang)
+    rows_out, row_meta = build_roadmap_render_spec(rows_out, lang, domain=domain)
     rows_out, _p78 = repair_roadmap_table_rows(
         rows_out, lang, None)
     if _p78.get('action_taken') == 'repair_applied':
@@ -4426,11 +4580,10 @@ def split_kpi_tables(
         'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
         '#', 'Indicator', 'Formula', 'Data Source'))
-    _canonical_main_hdr_ar = [
-        '#', 'وصف المؤشر', 'القيمة المستهدفة', 'صيغة الاحتساب',
-        'مصدر البيانات/الأداة', 'تواتر القياس']
+    _canonical_main_hdr_ar = list(SCHEMA_KPI_MAIN_AR)
     _canonical_main_hdr_en = [
-        '#', 'Metric', 'Target', 'Formula', 'Data source', 'Frequency']
+        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
+        'Frequency', 'Owner']
     for tbl in tables:
         if len(tbl) < 1:
             continue
@@ -5582,6 +5735,41 @@ def enrich_professional_blocks(
     model = deepcopy(model)
     blocks = dict(model.get('blocks') or {})
     lang_n = model.get('lang') or lang
+    _domain_signal = (
+        model.get('domain')
+        or (metadata or {}).get('domain')
+        or '')
+    domain_n = _domain_signal or 'cyber'
+    # REL3.3 P0 — stamp the resolved domain into the render model so every
+    # downstream consumer (roadmap/KPI table builders, exporters, guards)
+    # sees the same domain instead of re-deriving (and defaulting) it.
+    model['domain'] = domain_n
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        from release_engine_v3.rel33_domain_guard import (
+            emit_rel33_export_domain_propagation,
+        )
+        _dp_code = normalize_domain_code(str(domain_n or ''), default='')
+        emit_rel33_export_domain_propagation({
+            'route': 'render',
+            'export_route': 'render',
+            'artifact_id': str(
+                model.get('artifact_id')
+                or (metadata or {}).get('artifact_id') or ''),
+            'artifact_type': 'strategy',
+            'resolved_domain_in_renderer': str(domain_n),
+            'resolved_document_type': str(
+                (metadata or {}).get('document_type') or 'strategy'),
+            'selected_frameworks': list(
+                model.get('selected_frameworks')
+                or (metadata or {}).get('selected_frameworks') or []),
+            'roadmap_family_source': _dp_code or 'unresolved',
+            'domain_missing': not _domain_signal,
+            'fallback_domain_used': not _domain_signal,
+            'blocking_errors': [],
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
     def _sec(key: str) -> str:
         blk = blocks.get(key) or {}
@@ -5660,13 +5848,13 @@ def enrich_professional_blocks(
 
     # Roadmap — mandatory structured table (header-aware + phase coverage).
     road = _sec('roadmap')
-    road_tbl = normalize_roadmap_table(road, lang_n)
+    road_tbl = normalize_roadmap_table(road, lang_n, domain=domain_n)
     _road_schema = list(SCHEMA_ROADMAP_AR if lang_n == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
         'Deliverable', 'Linked Framework'))
     if not road_tbl or not (road_tbl.get('rows')):
         _seed = (road_tbl or {}).get('rows') or []
-        _rows, _meta = build_roadmap_render_spec(_seed, lang_n)
+        _rows, _meta = build_roadmap_render_spec(_seed, lang_n, domain=domain_n)
         road_tbl = {
             'schema': 'roadmap',
             'header': _road_schema,
@@ -5825,13 +6013,14 @@ def ensure_strategy_professional_model(
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
-        blocks = _normalize_kpi_tables_semantics(blocks, lang_n)
-        blocks = apply_final_arabic_cleanup_to_blocks(blocks, lang_n)
+        blocks = _finalize_professional_blocks(blocks, lang_n)
         return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
+    if domain and not metadata.get('domain'):
+        metadata['domain'] = domain
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
     content_sections = _resolve_content_sections(
         content, sections, section_splitter=section_splitter)
@@ -5877,6 +6066,10 @@ def build_professional_strategy_document_model(
             selected_frameworks=selected_frameworks,
             lang=lang_n,
         )
+        # REL3.3 P0 — base builders may omit domain; propagate the resolved
+        # domain so enrichment never falls back to cyber for a known domain.
+        if isinstance(model, dict) and not model.get('domain'):
+            model['domain'] = domain_code
         parsed = sections if isinstance(sections, dict) else {}
         model['order'] = [
             'cover', 'doc_control', 'toc', 'executive_summary',
@@ -5916,15 +6109,22 @@ def confidence_factor_labels_intact(
 
 def roadmap_cell_density_valid(
         road_rows: List[List[str]]) -> bool:
-    """PR-CY52 — roadmap cells must stay within safe length; no long DCC prose."""
+    """PR-CY52 — roadmap cells must stay within safe length; no long DCC prose.
+
+    REL3.3 ``family:<id>`` ASCII evidence markers are excluded from the length
+    budget so intact family markers never trip density after compaction.
+    """
     for r in road_rows or []:
         for c in r or []:
             s = str(c or '').strip()
-            if len(s) > ROADMAP_CELL_MAX_LEN:
+            visible = re.sub(
+                r'\s*family:[a-z][a-z0-9_]{1,48}\s*', ' ', s, flags=re.I)
+            visible = re.sub(r'\s{2,}', ' ', visible).strip()
+            if len(visible) > ROADMAP_CELL_MAX_LEN:
                 return False
             if re.search(
                     r'(?:حماية|تصنيف)\s+البيانات[^،\.|;]{24,}',
-                    s, flags=re.IGNORECASE):
+                    visible, flags=re.IGNORECASE):
                 return False
     return True
 

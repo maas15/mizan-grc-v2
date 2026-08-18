@@ -490,14 +490,14 @@ def is_rel31_export_authority_output(
 
 
 def _normalize_rel31_domain_code(domain: str) -> str:
-    """Map display/slug domain names to canonical codes for authority checks."""
-    d = str(domain or '').strip().lower().replace('-', '_')
-    compact = d.replace(' ', '_')
-    if compact in ('cyber', 'cyber_security', 'cybersecurity'):
-        return 'cyber'
-    if 'cyber' in compact or 'سيبر' in d:
-        return 'cyber'
-    return compact
+    """Map display/slug domain names to canonical codes for authority checks.
+
+    REL3.3 P0 — blank domains normalize to '' (never 'cyber'): a missing
+    domain must not silently enroll an artifact into the Cyber authority
+    pipeline. Callers fail closed on ''.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    return normalize_domain_code(str(domain or ''), default='')
 
 
 def is_rel3_authoritative(
@@ -505,12 +505,9 @@ def is_rel3_authoritative(
         domain: str = 'cyber',
         lang: str = 'ar',
         flags: Optional[Dict[str, Any]] = None) -> bool:
-    flags = flags or {}
-    if not flags.get('rel31') or not flags.get('rel3'):
-        return False
-    return (
-        _normalize_rel31_domain_code(domain) == 'cyber'
-        and str(lang or '').lower().startswith('ar'))
+    from release_engine_v3.rel33_authority import is_rel33_domain_authoritative
+    return is_rel33_domain_authoritative(
+        domain=domain, lang=lang, flags=flags or {})
 
 
 def rel31_fingerprint_extension(flags: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -643,6 +640,36 @@ def validate_rel3_objectives(
     lang = backend.get('lang', 'ar')
     fws = backend.get('selected_frameworks') or []
     secs = dict(sections or {})
+    domain = backend.get('domain') or 'cyber'
+    # REL3.3 P0 — the SO baseline below is a Cyber catalog; never run it
+    # for a non-cyber (or blank) domain.
+    from release_engine_v3.domain_codes import normalize_domain_code
+    _dcode_strict = normalize_domain_code(
+        str(backend.get('domain') or ''), default='')
+    if _dcode_strict and _dcode_strict != 'cyber':
+        backend = dict(backend)
+        backend.pop('baseline_strategic_objectives', None)
+    try:
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        dcode = normalize_domain_code(domain, default='cyber')
+        flags = (backend.get('flags') or {})
+        document_type = str(backend.get('document_type') or 'strategy')
+        if is_rel32_compiler_first(
+                domain=dcode, lang=lang, flags=flags,
+                document_type=document_type):
+            vision = secs.get('vision', '') or ''
+            rows = len(re.findall(r'^\|\s*\d+\s*\|', vision, re.M))
+            valid = rows >= 8
+            return {
+                'valid': valid,
+                'rel3_objectives_valid': valid,
+                'sections': secs,
+                'diag': {'rows_after': rows, 'gate_passed': valid,
+                         'compiler_first_bypass': True},
+                'blocker': '' if valid else 'rel3_generation_contract_failed:objectives',
+            }
+    except Exception:  # noqa: BLE001
+        pass
     diag: Dict[str, Any] = {}
     if backend.get('baseline_strategic_objectives'):
         try:
@@ -666,15 +693,17 @@ def validate_rel3_objectives(
                 6 <= rows <= 8 and target_like == 0 and not dup_gov),
         }
     if not diag.get('gate_passed'):
-        secs = _rel31_inject_missing_so_families(secs, backend=backend)
-        sections.update(secs)
-        if backend.get('baseline_strategic_objectives'):
-            try:
-                secs, diag = backend['baseline_strategic_objectives'](
-                    secs, lang, fws)
-                sections.update(secs)
-            except Exception as exc:  # noqa: BLE001
-                diag = {'gate_passed': False, 'error': repr(exc)[:120]}
+        # REL3.3 — PRCY88 SO family injector is Cyber-only.
+        if _dcode_strict == 'cyber':
+            secs = _rel31_inject_missing_so_families(secs, backend=backend)
+            sections.update(secs)
+            if backend.get('baseline_strategic_objectives'):
+                try:
+                    secs, diag = backend['baseline_strategic_objectives'](
+                        secs, lang, fws)
+                    sections.update(secs)
+                except Exception as exc:  # noqa: BLE001
+                    diag = {'gate_passed': False, 'error': repr(exc)[:120]}
     valid = bool(diag.get('gate_passed'))
     return {
         'valid': valid,
@@ -803,36 +832,66 @@ def validate_rel3_roadmap_output_quality(
         sections: Dict[str, str],
         *,
         backend: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """REL3 roadmap output quality (replaces roadmap_weak_output authority)."""
+    """REL3 roadmap output quality (replaces roadmap_weak_output authority).
+
+    REL3.3 P0 — domain-aware. The cyber roadmap finalizer/baseline
+    (``finalize_roadmap`` + ``cyber_board_ready_prcy88.baseline_roadmap``)
+    must NEVER run for non-cyber artifacts: it injects the full cyber
+    board-ready roadmap (SOC/SIEM, IAM/PAM/MFA, governance CISO rows)
+    into data/ai/dt strategies. Blank domain fails closed — no cyber
+    fallback.
+    """
     backend = backend or {}
+    from release_engine_v3.domain_codes import normalize_domain_code
     lang = backend.get('lang', 'ar')
     fws = backend.get('selected_frameworks') or []
+    dcode = normalize_domain_code(
+        str(backend.get('domain') or ''), default='')
     secs = dict(sections or {})
-    diag: Dict[str, Any] = {'gate_passed': True}
-    try:
-        from release_engine.roadmap_model import finalize_roadmap
-        secs, diag = finalize_roadmap(
-            secs,
-            lang=lang,
-            domain='cyber',
-            selected_frameworks=fws,
-            backend=backend)
-        sections.update(secs)
-    except Exception as exc:  # noqa: BLE001
-        if backend.get('baseline_roadmap'):
-            try:
-                secs, diag = backend['baseline_roadmap'](secs, lang, fws)
-                sections.update(secs)
-            except Exception as exc2:  # noqa: BLE001
-                diag = {'gate_passed': False, 'error': repr(exc2)[:120]}
-        else:
-            diag = {'gate_passed': False, 'error': repr(exc)[:120]}
+    diag: Dict[str, Any] = {'gate_passed': True, 'domain': dcode}
+    if not dcode:
+        # Fail closed: never treat a blank domain as cyber (REL3.3 P0).
+        diag = {
+            'gate_passed': False,
+            'domain': '',
+            'domain_missing': True,
+            'fallback_domain_used': False,
+            'error': 'rel33_export_domain_missing',
+        }
+        return {
+            'valid': False,
+            'rel3_roadmap_output_quality_valid': False,
+            'sections': secs,
+            'roadmap_coverage': {},
+            'diag': diag,
+            'blocker': 'rel33_export_domain_missing:roadmap_quality',
+            'defects': ['rel33_export_domain_missing'],
+        }
+    if dcode == 'cyber':
+        try:
+            from release_engine.roadmap_model import finalize_roadmap
+            secs, diag = finalize_roadmap(
+                secs,
+                lang=lang,
+                domain='cyber',
+                selected_frameworks=fws,
+                backend=backend)
+            sections.update(secs)
+        except Exception as exc:  # noqa: BLE001
+            if backend.get('baseline_roadmap'):
+                try:
+                    secs, diag = backend['baseline_roadmap'](secs, lang, fws)
+                    sections.update(secs)
+                except Exception as exc2:  # noqa: BLE001
+                    diag = {'gate_passed': False, 'error': repr(exc2)[:120]}
+            else:
+                diag = {'gate_passed': False, 'error': repr(exc)[:120]}
     secs = _repair_rel3_weak_roadmap_outputs(secs, backend=backend)
     secs = _rel31_dedupe_roadmap_rows(secs, backend=backend)
     sections.update(secs)
     blob = '\n\n'.join(
         str(v) for v in secs.values() if isinstance(v, str))
-    road = check_roadmap_coverage(blob)
+    road = check_roadmap_coverage(blob, domain=dcode)
     weak = list(road.get('weak_outputs') or [])
     defects = list(road.get('defects') or [])
     for w in weak:
@@ -896,68 +955,82 @@ def repair_canonical_before_freeze(
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
     lang = backend.get('lang', 'ar')
-    domain = art.get('domain') or 'cyber'
+    # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber; resolve
+    # from artifact, contract_meta, then backend, else keep '' so the
+    # downstream roadmap validator fails closed (rel33_export_domain_missing).
+    from release_engine_v3.domain_codes import normalize_domain_code
+    domain = normalize_domain_code(
+        str(
+            art.get('domain')
+            or (art.get('contract_meta') or {}).get('domain')
+            or backend.get('domain')
+            or ''),
+        default='')
+    if domain:
+        backend['domain'] = domain
     flags = backend.get('flags') or {}
+    document_type = (
+        str(
+            art.get('document_type')
+            or art.get('doc_type')
+            or (art.get('contract_meta') or {}).get('document_type')
+            or backend.get('document_type')
+            or 'strategy')
+        .strip().lower())
+    backend['document_type'] = document_type
+    # REL3.3 P0 — non-strategy artifacts must never receive strategy
+    # section injectors (cyber KPIs/pillars/traceability). Arabic cleanup
+    # only; leave risk/gap/audit section sets intact.
+    if document_type not in ('strategy', ''):
+        try:
+            from release_engine.arabic_language_gate import apply_arabic_final_gate
+            from release_engine.rendered_evidence_validator import (
+                _repair_arabic_blob,
+            )
+            sections = {
+                k: _repair_arabic_blob(v) if isinstance(v, str) else v
+                for k, v in sections.items()}
+            sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
+            action = (ar_diag.get('action_taken') or '').strip()
+            if action and action not in ('validated', 'no_changes'):
+                repairs.append(f'rel31:{action}')
+        except Exception:  # noqa: BLE001
+            pass
+        art['sections'] = sections
+        return art, repairs
     try:
-        from release_engine_v3.rel32_compiler import (
-            compile_canonical_strategy_document,
-            is_rel32_compiler_first,
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        from release_engine_v3.rel32_complete_strategy_compiler import (
+            compile_complete_cyber_ar_technical_strategy,
         )
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
-            document_type = (
-                str(art.get('document_type') or art.get('doc_type') or 'strategy')
-                .strip().lower())
-            compiled = None
-            try:
-                from release_engine_v3.factory.canonical_document_factory import (
-                    CanonicalDocumentFactory,
-                )
-                from release_engine_v3.factory.request_context import (
-                    DocumentRequestContext,
-                )
-
-                ctx = DocumentRequestContext(
-                    domain=domain,
-                    document_type=document_type,
-                    lang=lang,
-                    flags=flags,
-                    backend=backend,
-                    frameworks=(
+        if is_rel32_compiler_first(
+                domain=domain, lang=lang, flags=flags,
+                document_type=document_type):
+            compiled = compile_complete_cyber_ar_technical_strategy(
+                sections,
+                request_context={
+                    'lang': lang,
+                    'domain': domain,
+                    'document_type': document_type,
+                    'flags': flags,
+                    'backend': backend,
+                    'generation_mode': backend.get('generation_mode') or 'drafting',
+                    'selected_frameworks': (
                         (art.get('contract_meta') or {}).get('selected_frameworks')
                         or art.get('selected_frameworks') or []),
-                    strategy_id=str(art.get('strategy_id') or ''),
-                    artifact_id=str(art.get('artifact_id') or ''),
-                )
-                compiled = CanonicalDocumentFactory().compile(
-                    sections,
-                    domain=domain,
-                    document_type=document_type,
-                    lang=lang,
-                    request_context=ctx,
-                )
-                art['_final_doc_factory'] = True
-                if compiled.export_evidence:
-                    art['_final_doc_factory_evidence'] = compiled.export_evidence
-            except Exception:  # noqa: BLE001
-                compiled = None
-            if compiled is None:
-                compiled = compile_canonical_strategy_document(
-                    sections,
-                    request_context={
-                        'lang': lang,
-                        'domain': domain,
-                        'selected_frameworks': (
-                            (art.get('contract_meta') or {}).get('selected_frameworks')
-                            or art.get('selected_frameworks') or []),
-                        'backend': backend,
-                    },
-                )
-            elif compiled.legacy_sections:
-                repairs.append('final_doc_factory:compile')
+                    'maturity_level': (
+                        backend.get('maturity_level')
+                        or backend.get('maturity')
+                        or 'developing'),
+                    'roadmap_horizon_months': 18,
+                },
+            )
             if compiled.legacy_sections:
                 sections = dict(compiled.legacy_sections)
-                if 'final_doc_factory:compile' not in repairs:
-                    repairs.extend(compiled.repairs or [])
+                repairs.extend(compiled.repairs or ['rel32:complete_strategy_compiler'])
+                cache = (compiled.diagnostics or {}).get('compiled_sections_cache')
+                if isinstance(cache, dict) and cache:
+                    sections['_rel32_compiled_sections'] = dict(cache)
             art['_rel32_compiled'] = True
             art['_rel32_compiler_passed'] = getattr(compiled, 'passed', True)
             if compiled.blocking_errors:
@@ -1005,7 +1078,7 @@ def repair_canonical_before_freeze(
                 repair_traceability_canonical_families,
             )
             sections, trace_diag = repair_traceability_canonical_families(
-                sections, lang=lang, backend=backend)
+                sections, lang=lang, domain=domain, backend=backend)
             if trace_diag.get('action_taken') != 'no_changes':
                 repairs.append('rel31:traceability_canonical_families_repaired')
         except Exception:  # noqa: BLE001
@@ -1013,7 +1086,8 @@ def repair_canonical_before_freeze(
         try:
             from release_engine.kpi_substance_model import finalize_kpi_substance
             sections, _ = finalize_kpi_substance(
-                sections, lang=backend.get('lang', 'ar'), backend=backend)
+                sections, lang=backend.get('lang', 'ar'),
+                domain=domain, backend=backend)
         except Exception:  # noqa: BLE001
             try:
                 from release_engine.kpi_model import finalize_kpi_semantics
@@ -1160,9 +1234,20 @@ def rel3_export_authoritative(
     from release_engine_v3.orchestrator import rel3_freeze_artifact
 
     flags = dict(flags or {'rel3': True, 'rel31': True})
-    domain = str(artifact_dict.get('domain') or 'cyber')
+    # REL3.3 P0 — resolve domain from the artifact (top-level, then
+    # contract_meta). A blank domain must fail closed, never fall back to
+    # Cyber (a Cyber fallback re-labels non-cyber artifacts and lets the
+    # cyber roadmap/KPI repairers contaminate them).
+    from release_engine_v3.domain_codes import normalize_domain_code
+    _raw_domain = str(
+        artifact_dict.get('domain')
+        or (artifact_dict.get('contract_meta') or {}).get('domain')
+        or '')
+    domain = normalize_domain_code(_raw_domain, default='')
     lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
     route_n = (route or 'preview').lower()
+    if not domain:
+        raise ValueError(f'rel33_export_domain_missing:{route_n}')
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
 
@@ -1174,12 +1259,30 @@ def rel3_export_authoritative(
     )
 
     art = dict(artifact_dict or {})
-    art['domain'] = _normalize_rel31_domain_code(
-        art.get('domain') or domain)
+    art['domain'] = domain
     backend.setdefault('flags', flags)
+    backend['domain'] = domain
 
     frozen_pre, lock_meta = resolve_frozen_artifact_for_export(
         art, backend=backend, route=route_n, flags=flags)
+    from release_engine_v3.rel33_frozen_completeness import (
+        rel33_compiler_first_sections_authority,
+    )
+    document_type = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type') or 'strategy').strip().lower()
+    # REL3.3 — propagate document_type to the export backend so the
+    # pre-export bytes domain guard is document_type-aware (risk artifacts
+    # route through the ERM risk isolation, not the strategy contract).
+    backend['document_type'] = document_type
+    if lock_meta.get('blocking_errors') and rel33_compiler_first_sections_authority(
+            art, domain=domain, lang=lang, flags=flags,
+            document_type=document_type):
+        lock_meta = dict(lock_meta)
+        lock_meta['blocking_errors'] = []
+        lock_meta['incomplete_frozen_artifact'] = False
+        lock_meta['frozen_artifact_complete'] = True
+        lock_meta['artifact_loaded_from'] = 'rel33_compiler_first_sections'
     if lock_meta.get('blocking_errors'):
         blockers = list(lock_meta['blocking_errors'])
         sid = str(art.get('strategy_id') or '')
@@ -1214,11 +1317,18 @@ def rel3_export_authoritative(
 
     if frozen_pre is None:
         from release_engine_v3.rel32_compiler import is_rel32_compiler_first
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+        if is_rel32_compiler_first(
+                domain=domain, lang=lang, flags=flags,
+                document_type=document_type):
             if route_n in ('docx', 'pdf'):
                 blockers = list(lock_meta.get('blocking_errors') or [])
                 if lock_meta.get('incomplete_frozen_artifact'):
-                    blockers.append('rel32_incomplete_frozen_artifact')
+                    if rel33_compiler_first_sections_authority(
+                            art, domain=domain, lang=lang, flags=flags,
+                            document_type=document_type):
+                        blockers = []
+                    else:
+                        blockers.append('rel32_incomplete_frozen_artifact')
                 elif lock_meta.get('docx_rebuilt_from_markdown') and (
                         route_n == 'docx'):
                     blockers.append('rel32_docx_rebuilt_from_markdown')
@@ -1916,13 +2026,28 @@ def apply_rel31_authoritative_contract(
     """Make REL3 the only authoritative contract for save/export."""
     flags = flags or {}
     art = dict(legacy_artifact)
-    domain = art.get('domain') or 'cyber'
+    # REL3.3 P0 — resolve domain from artifact then contract_meta; a blank
+    # domain fails closed (blocking error) instead of rebranding as Cyber.
+    from release_engine_v3.domain_codes import normalize_domain_code
+    domain = normalize_domain_code(
+        str(
+            art.get('domain')
+            or (art.get('contract_meta') or {}).get('domain')
+            or ''),
+        default='')
     lang = (
         (art.get('contract_meta') or {}).get('lang')
         or art.get('language') or 'ar')
+    if not domain:
+        art.setdefault('blocking_errors', [])
+        if 'rel33_export_domain_missing:contract' not in art['blocking_errors']:
+            art['blocking_errors'].append('rel33_export_domain_missing:contract')
+        return art
+    art['domain'] = domain
     meta = dict(art.get('contract_meta') or {})
     if legacy_artifact.get('document_type') and not meta.get('document_type'):
         meta['document_type'] = legacy_artifact.get('document_type')
+    meta['domain'] = domain
     art['contract_meta'] = meta
     if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
         return art
@@ -1932,18 +2057,30 @@ def apply_rel31_authoritative_contract(
     backend = dict(backend)
     backend['flags'] = dict(flags)
     backend['lang'] = lang
+    backend['domain'] = domain
+    backend['document_type'] = meta.get('document_type') or art.get('document_type') or 'strategy'
     backend['selected_frameworks'] = (
         (art.get('contract_meta') or {}).get('selected_frameworks')
         or art.get('selected_frameworks') or [])
 
     art, repairs = repair_canonical_before_freeze(art, backend=backend)
-    obj = validate_rel3_objectives(
-        art.get('sections') or {}, backend=backend)
-    road = validate_rel3_roadmap_output_quality(
-        art.get('sections') or {}, backend=backend)
-    art['sections'] = obj.get('sections') or art.get('sections') or {}
-    if road.get('sections'):
-        art['sections'].update(road['sections'])
+    _contract_doc_type_early = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type')
+        or backend.get('document_type')
+        or 'strategy').strip().lower()
+    obj: Dict[str, Any] = {'valid': True, 'sections': art.get('sections') or {}}
+    road: Dict[str, Any] = {'valid': True, 'sections': art.get('sections') or {}}
+    # REL3.3 P0 — strategy objectives/roadmap validators inject Cyber
+    # catalogs; never run them on risk/gap/audit artifacts.
+    if _contract_doc_type_early in ('strategy', ''):
+        obj = validate_rel3_objectives(
+            art.get('sections') or {}, backend=backend)
+        road = validate_rel3_roadmap_output_quality(
+            art.get('sections') or {}, backend=backend)
+        art['sections'] = obj.get('sections') or art.get('sections') or {}
+        if road.get('sections'):
+            art['sections'].update(road['sections'])
 
     blockers: List[str] = []
     require_strategy = _requires_strategy_contract_sections(art, domain=domain)
@@ -1957,11 +2094,15 @@ def apply_rel31_authoritative_contract(
     art['blocking_errors'] = []
     built = _rel31_rebuild_frozen_artifact(
         art, lang=lang, strategy_id=str(art.get('strategy_id') or ''))
+    _contract_doc_type = str(
+        (art.get('contract_meta') or {}).get('document_type')
+        or art.get('document_type') or 'strategy').strip().lower()
     quality = validate_canonical_quality(
         built.canonical_sections,
         legacy_sections=art.get('sections') or {},
         domain=domain,
         lang=lang,
+        document_type=_contract_doc_type,
     )
     for err in quality.get('blocking_errors') or []:
         if not err.startswith('rel3_'):
@@ -2109,7 +2250,8 @@ def apply_rel31_authoritative_contract(
                     'preview', built, backend=backend)
                 docx_export, docx_ev = rel3_export_with_evidence(
                     'docx', built, backend=backend,
-                    export_kwargs={'filename': 'rel31_quality.docx', 'lang': lang})
+                    export_kwargs={'filename': 'rel31_quality.docx',
+                                   'lang': lang, 'domain': domain})
                 pdf_export, pdf_ev = rel3_export_with_evidence(
                     'pdf', built, backend=backend,
                     export_kwargs={'lang': lang, 'domain': domain})
@@ -2130,6 +2272,7 @@ def apply_rel31_authoritative_contract(
                     extracted_docx_text=docx_text,
                     extracted_pdf_text=pdf_text,
                     pdf_bytes=pdf_bytes,
+                    domain=domain,
                 )
                 art['rel31_document_quality'] = dq
                 dq_ok = bool(dq.get('passed'))
@@ -2254,8 +2397,10 @@ def apply_rel31_authoritative_contract(
         artifact=built,
         render_tree_hash=tree.render_tree_hash,
         task_id=task_id,
-        objectives_valid=bool(obj.get('valid')),
-        roadmap_valid=bool(road.get('valid')),
+        objectives_valid=(
+            bool(obj.get('valid')) if require_strategy else True),
+        roadmap_valid=(
+            bool(road.get('valid')) if require_strategy else True),
         pillars_valid=pillars_valid,
         kpi_valid=kpi_valid,
         risk_valid=risk_valid,

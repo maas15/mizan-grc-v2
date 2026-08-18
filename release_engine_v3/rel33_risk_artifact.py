@@ -1,0 +1,242 @@
+"""REL3.3 — load ERM risk artifacts for export (not strategy rows)."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Callable, Dict, List, Optional
+
+from release_engine_v3.rel33_risk_treatment_evidence import (
+    count_treatment_rows_from_sections,
+)
+
+
+def emit_rel33_risk_artifact_load(diag: Dict[str, Any]) -> None:
+    try:
+        print(
+            '[REL33-RISK-ARTIFACT-LOAD] '
+            + json.dumps(diag, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def normalize_risk_export_sections(sections: Dict[str, str]) -> Dict[str, str]:
+    """Map strategy-shaped ERM keys to canonical risk register/treatment."""
+    out = dict(sections or {})
+    if not out.get('register'):
+        out['register'] = (
+            out.get('risk_register')
+            or out.get('confidence')
+            or '')
+    if not out.get('treatments'):
+        out['treatments'] = (
+            out.get('treatment')
+            or out.get('risk_treatment')
+            or '')
+    return out
+
+
+def _split_risk_markdown(content: str) -> Dict[str, str]:
+    sections: Dict[str, str] = {}
+    current = '_body'
+    buf: List[str] = []
+    for ln in (content or '').splitlines():
+        if ln.strip().startswith('##'):
+            if buf:
+                sections[current] = '\n'.join(buf).strip()
+            head = ln.strip().lstrip('#').strip().lower()
+            if any(m in head for m in ('register', 'سجل', 'مخاطر', 'risk')):
+                current = 'register'
+            elif any(m in head for m in ('treatment', 'معالج', 'معالجة')):
+                current = 'treatments'
+            else:
+                current = re.sub(r'\W+', '_', head)[:40] or '_body'
+            buf = [ln]
+        else:
+            buf.append(ln)
+    if buf:
+        sections[current] = '\n'.join(buf).strip()
+    return sections
+
+
+def resolve_rel33_risk_export_artifact(
+        *,
+        artifact_id,
+        risk_id,
+        user_id: int,
+        domain: str = '',
+        route: str = '',
+        client_content: str = '',
+        load_risk_row: Callable[..., Optional[Dict[str, Any]]],
+        load_strategy_risk_row: Callable[..., Optional[Dict[str, Any]]],
+        assemble_sections: Callable[[Dict[str, Any]], str],
+        normalize_domain_fn: Callable[[str], str],
+) -> Dict[str, Any]:
+    """Load authoritative risk export content; detect strategy id collision."""
+    diag: Dict[str, Any] = {
+        'route': route,
+        'domain': domain,
+        'artifact_type': 'risk',
+        'artifact_id': str(artifact_id or risk_id or ''),
+        'source_table_or_store': 'none',
+        'loaded_sections_keys': [],
+        'risk_rows_count': 0,
+        'treatment_rows_count': 0,
+        'loaded_from_strategy_id': '',
+        'loaded_from_risk_id': '',
+        'artifact_id_collision_detected': False,
+        'blocking_errors': [],
+    }
+    out: Dict[str, Any] = {
+        'content': '',
+        'sections': {},
+        'diag': diag,
+        'skip_client_authority': False,
+    }
+
+    req_domain = ''
+    try:
+        req_domain = normalize_domain_fn(domain or '')
+    except Exception:  # noqa: BLE001
+        req_domain = str(domain or '').strip().lower()
+
+    row = None
+    rid = risk_id or artifact_id
+    if rid:
+        row = load_risk_row(rid, user_id)
+        if row:
+            diag['source_table_or_store'] = 'risks'
+            diag['loaded_from_risk_id'] = str(row.get('id') or rid)
+
+    if not row and (artifact_id or risk_id):
+        row = load_strategy_risk_row(artifact_id or risk_id, user_id, domain=domain)
+        if row:
+            diag['source_table_or_store'] = 'strategies'
+            diag['loaded_from_strategy_id'] = str(row.get('id') or artifact_id or '')
+            row_domain = str(row.get('domain') or '')
+            try:
+                row_code = normalize_domain_fn(row_domain)
+            except Exception:  # noqa: BLE001
+                row_code = row_domain.strip().lower()
+            if req_domain and row_code and row_code not in ('erm', req_domain):
+                if row_code == 'cyber' and req_domain == 'erm':
+                    diag['artifact_id_collision_detected'] = True
+                    diag['blocking_errors'] = [
+                        'artifact_id_collision:cyber_strategy_on_erm_risk_export']
+                    emit_rel33_risk_artifact_load(diag)
+                    return out
+            dtype = str(
+                row.get('document_type')
+                or (row.get('sections') or {}).get('_document_type')
+                or '').strip().lower()
+            if dtype and dtype not in ('risk', 'risk_assessment'):
+                diag['artifact_id_collision_detected'] = True
+                diag['blocking_errors'] = [
+                    f'artifact_type_mismatch:{dtype}']
+                emit_rel33_risk_artifact_load(diag)
+                return out
+
+    if not row:
+        if (client_content or '').strip():
+            diag['blocking_errors'] = ['risk_artifact_not_found']
+        emit_rel33_risk_artifact_load(diag)
+        return out
+
+    sections = dict(row.get('sections') or {})
+    content = str(row.get('content') or row.get('analysis') or '')
+    if not sections and content.strip():
+        sections = _split_risk_markdown(content)
+    sections = normalize_risk_export_sections(sections)
+    if not content.strip() and sections:
+        content = assemble_sections(sections)
+
+    # ── REL3.3 export-prep risk-native contract (second hard boundary) ──
+    # A strategy-shaped saved risk artifact must never reach the exporters.
+    # Detect strategy-shaped sections → one deterministic risk_native_repair →
+    # re-validate (structure + cyber-primary). Use the repaired content for
+    # export when the contract passes; fail closed otherwise (never emit a
+    # strategy vision/roadmap blocker). Risk export-prep uses only the
+    # risk-native splitter/normalizer here — no strategy compiler/synthesizer.
+    try:
+        from release_engine_v3.rel33_risk_generation_contract import (
+            evaluate_risk_export_prep_contract,
+        )
+        _dl = str(domain or '').lower()
+        _prep = evaluate_risk_export_prep_contract(
+            content,
+            domain=domain,
+            route=route or 'export-prep',
+            risk_id=str(row.get('id') or risk_id or artifact_id or ''),
+            source_stage='resolve_rel33_risk_export_artifact',
+            allow_cyber_context=('cyber' in _dl or 'سيبران' in _dl),
+            emit=True,
+        )
+        # Expose the full export-prep diagnostic to callers (for the gated
+        # export-status debug echo). Strip the heavy content field.
+        out['export_prep_diag'] = {
+            k: v for k, v in _prep.items() if k != 'content'}
+        diag['export_prep_contract_passed'] = bool(_prep.get('contract_passed'))
+        diag['export_prep_forbidden_sections'] = list(
+            _prep.get('forbidden_strategy_section_keys') or [])
+        if not _prep.get('contract_passed'):
+            _prep_blk = list(_prep.get('blocking_errors') or [])
+            diag['blocking_errors'] = list(dict.fromkeys(
+                (diag.get('blocking_errors') or []) + _prep_blk))
+            emit_rel33_risk_artifact_load(diag)
+            # Fail closed before building the export artifact — return no
+            # content so the exporter cannot ship strategy-shaped bytes, and
+            # surface the export-prep blockers so the caller hard-blocks
+            # instead of reverting to client/original content.
+            out.update({'content': '', 'sections': {},
+                        'skip_client_authority': False,
+                        'export_prep_contract_passed': False,
+                        'blocking_errors': _prep_blk or [
+                            'rel33_risk_export_prep_not_risk_native']})
+            return out
+        _repaired = _prep.get('content') or content
+        if _repaired != content:
+            content = _repaired
+            sections = normalize_risk_export_sections(
+                _split_risk_markdown(content))
+        out['export_prep_contract_passed'] = True
+    except Exception as _prep_e:  # noqa: BLE001
+        # REL3.3 — fail CLOSED on an unexpected export-prep contract exception.
+        # Never continue with unrepaired content (it could ship strategy-shaped
+        # or cyber-primary bytes). Surface a prep-specific exception blocker.
+        diag['export_prep_contract_error'] = str(_prep_e)
+        diag['blocking_errors'] = list(dict.fromkeys(
+            (diag.get('blocking_errors') or [])
+            + ['rel33_risk_export_prep_contract_exception']))
+        out['export_prep_diag'] = {
+            'tag': '[REL33-RISK-EXPORT-PREP-CONTRACT]',
+            'contract_passed': False,
+            'exception_type': type(_prep_e).__name__,
+            'exception_message_safe': str(_prep_e)[:200],
+            'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+        }
+        emit_rel33_risk_artifact_load(diag)
+        out.update({'content': '', 'sections': {},
+                    'skip_client_authority': False,
+                    'export_prep_contract_passed': False,
+                    'blocking_errors': [
+                        'rel33_risk_export_prep_contract_exception']})
+        return out
+
+    risk_n, treat_n = count_treatment_rows_from_sections(sections)
+    diag['loaded_sections_keys'] = sorted(
+        k for k in sections if not str(k).startswith('_'))
+    diag['risk_rows_count'] = risk_n
+    diag['treatment_rows_count'] = treat_n
+
+    if treat_n <= 0:
+        diag['blocking_errors'] = ['empty_risk_treatment_in_artifact']
+
+    out.update({
+        'content': content,
+        'sections': sections,
+        'skip_client_authority': bool(content.strip()),
+    })
+    emit_rel33_risk_artifact_load(diag)
+    return out

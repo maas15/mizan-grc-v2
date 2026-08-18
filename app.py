@@ -4703,6 +4703,108 @@ def resolve_export_domain(raw, artifact_type: str = "strategy") -> str:
     return _DOMAIN_DISPLAY_EN[code]
 
 
+def _rel33_export_domain_sources_from_db(artifact_type, artifact_id, user_id):
+    """REL3.3 P0 — load domain metadata for an export from the saved row.
+
+    Returns raw (un-normalized) domain candidates from the DB row, the
+    persisted ``sections_json`` ``_contract_meta`` and ``content_json``
+    ``_contract_meta``. Used to resolve the export domain when the request
+    payload omits it — never defaults to Cyber.
+    """
+    out = {
+        'db_domain': '',
+        'sections_json_domain': '',
+        'content_json_domain': '',
+        'contract_meta_domain': '',
+    }
+    if (artifact_type or 'strategy') != 'strategy' or not artifact_id:
+        return out
+    try:
+        _art_id = _resolve_numeric_strategy_id(artifact_id, user_id)
+        if not _art_id:
+            _art_id = int(artifact_id)
+    except (TypeError, ValueError):
+        return out
+    if not _art_id or _art_id <= 0:
+        return out
+    try:
+        with closing(get_db_direct()) as _conn:
+            _row = _conn.execute(
+                'SELECT domain, sections_json, content_json '
+                'FROM strategies WHERE id = ? AND user_id = ?',
+                (_art_id, user_id),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return out
+    if not _row:
+        return out
+    out['db_domain'] = str(_row['domain'] or '')
+    for _col, _key in (('sections_json', 'sections_json_domain'),
+                       ('content_json', 'content_json_domain')):
+        try:
+            _blob = json.loads(_row[_col] or '{}')
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(_blob, dict):
+            continue
+        _meta = _blob.get('_contract_meta')
+        _blob_meta = _blob.get('metadata')
+        if isinstance(_meta, dict) and _meta.get('domain'):
+            out[_key] = str(_meta.get('domain') or '')
+            if not out['contract_meta_domain']:
+                out['contract_meta_domain'] = out[_key]
+        elif isinstance(_blob_meta, dict) and _blob_meta.get('domain'):
+            out[_key] = str(_blob_meta.get('domain') or '')
+        elif _blob.get('domain'):
+            out[_key] = str(_blob.get('domain') or '')
+    return out
+
+
+def _rel33_resolve_export_domain_with_db_fallback(
+        data, artifact_type, artifact_id, user_id, *, route):
+    """REL3.3 P0 — resolve the export domain, falling back to DB metadata.
+
+    Order: request payload → DB row domain → persisted contract meta.
+    Emits [REL33-EXPORT-DOMAIN-PROPAGATION] and raises
+    ``DomainResolutionError('rel33_export_domain_missing')`` when nothing
+    resolves — never falls back to Cyber.
+    """
+    from release_engine_v3.rel33_domain_guard import (
+        emit_rel33_export_domain_propagation,
+        resolve_rel33_export_domain,
+    )
+    request_domain = str((data or {}).get('domain') or '').strip()
+    db_sources = _rel33_export_domain_sources_from_db(
+        artifact_type, artifact_id, user_id)
+    resolved = resolve_rel33_export_domain(
+        request_domain=request_domain,
+        db_domain=db_sources['db_domain'],
+        content_json_domain=db_sources['content_json_domain'],
+        sections_json_domain=db_sources['sections_json_domain'],
+        contract_meta_domain=db_sources['contract_meta_domain'],
+    )
+    diag = {
+        'route': route,
+        'export_route': route,
+        'artifact_id': str(artifact_id or ''),
+        'artifact_type': str(artifact_type or 'strategy'),
+        **resolved,
+        'resolved_domain_before_render': resolved['resolved_domain'],
+        'blocking_errors': (
+            [] if resolved['resolved_domain']
+            else ['rel33_export_domain_missing']),
+    }
+    emit_rel33_export_domain_propagation(diag)
+    code = resolved['resolved_domain']
+    if not code:
+        raise DomainResolutionError('rel33_export_domain_missing')
+    display = _DOMAIN_DISPLAY_EN.get(code)
+    if not display:
+        raise DomainResolutionError(
+            f'rel33_export_domain_missing:unsupported:{code}')
+    return display
+
+
 class DomainContaminationError(RuntimeError):
     """Raised when a strategy section contains terms that belong to a
     different domain than the one selected by the user, after AI repair has
@@ -13062,12 +13164,19 @@ def _build_traceability_matrix(content_sections, selected_fws_keys, lang,
                   'Metric', 'Related Risk']
         dash = '—'
 
-    if (_PRCY28_VERSION_FLAGS.get('rel31')
-            and (domain_code or '').strip().lower() == 'cyber'):
+    # REL3.3 — domain-gated registry rebuild. Never call the substance
+    # builder without an explicit domain (blank fails closed; cyber
+    # default here is only when the caller already resolved cyber).
+    if _PRCY28_VERSION_FLAGS.get('rel31') and (domain_code or '').strip():
         from release_engine.traceability_substance_model import (
             build_traceability_matrix_rows_from_registry,
         )
-        return build_traceability_matrix_rows_from_registry(lang=lang)
+        from release_engine_v3.domain_codes import normalize_domain_code
+        _trace_dcode = normalize_domain_code(
+            str(domain_code or ''), default='')
+        if _trace_dcode:
+            return build_traceability_matrix_rows_from_registry(
+                lang=lang, domain=_trace_dcode)
 
     rows = []
     fws_with_caps = []
@@ -14434,6 +14543,14 @@ def compose_professional_strategy_narrative_ai(
         content = '\n\n'.join(
             v for v in sections.values() if isinstance(v, str)
         )
+    # REL3.3 — stamp resolved domain into metadata before the base
+    # document model builds traceability (never leave domain blank).
+    metadata['domain'] = (
+        metadata.get('domain')
+        or profile.get('display_en')
+        or domain_code
+        or domain
+        or '')
     base_model = _build_strategy_document_model(
         content=content,
         metadata=metadata,
@@ -14621,9 +14738,14 @@ def _build_professional_strategy_document_model(
             f'[PR-CY41] professional model fallback to base model: {_p41_e}',
             flush=True,
         )
+        # REL3.3 — fallback base model also requires a resolved domain so
+        # `_build_traceability_matrix` never sees a blank domain.
+        _fb_meta = dict(metadata or {})
+        if domain and not _fb_meta.get('domain'):
+            _fb_meta['domain'] = domain
         base = _build_strategy_document_model(
             content,
-            metadata=metadata,
+            metadata=_fb_meta,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
@@ -19681,8 +19803,30 @@ def api_strategy_latest():
         _row_domain        = row['domain']        if 'domain'        in _row_keys else None
         _row_language      = row['language']      if 'language'      in _row_keys else None
         _row_id            = row['id']            if 'id'            in _row_keys else None
+        _row_document_type = (
+            row['document_type'] if 'document_type' in _row_keys else None)
         _cj = _json_sl.loads(_content_json_raw) if _content_json_raw else None
         _sj = _json_sl.loads(_sections_json_raw) if _sections_json_raw else None
+        if not _row_document_type and isinstance(_sj, dict):
+            _row_document_type = _sj.get('_document_type')
+        if not _row_document_type and isinstance(_cj, dict):
+            _row_document_type = _cj.get('document_type')
+            # REL3.3 — the persisted document type also rides inside the
+            # content_json contract meta (mirrors the export bundle resolver),
+            # so consult it before defaulting to 'strategy'. Without this a
+            # gap_assessment row falls through to the strategy-only domain guard
+            # and /api/strategy/latest returns a false 422 domain_contamination.
+            if not _row_document_type:
+                _cj_cm = _cj.get('_contract_meta')
+                if isinstance(_cj_cm, dict):
+                    _row_document_type = _cj_cm.get('document_type')
+        _row_document_type = str(
+            _row_document_type or 'strategy').strip().lower()
+        _latest_frameworks = []
+        if isinstance(_cj, dict):
+            _latest_frameworks = (
+                _cj.get('selected_frameworks')
+                or _cj.get('frameworks') or [])
         # PR-5B.7B.4: canonical content + parity hash + export-domain guard.
         # Mirrors _canonical_content_from_db so preview ↔ DB ↔ export
         # produce the same canonical payload and same canonical_hash.
@@ -19799,23 +19943,33 @@ def api_strategy_latest():
             if _canonical_source:
                 pass
             elif isinstance(_sj, dict) and _sj:
-                _enforce_export_domain_isolation(
-                    _sj,
-                    domain=_row_domain,
-                    language=_row_language,
-                    artifact_type='strategy',
-                    artifact_id=_row_id,
-                )
+                if _row_document_type != 'gap_assessment':
+                    _enforce_export_domain_isolation(
+                        _sj,
+                        domain=_row_domain,
+                        language=_row_language,
+                        frameworks=_latest_frameworks,
+                        artifact_type='strategy',
+                        artifact_id=_row_id,
+                        route='/api/strategy/latest',
+                        row_domain=_row_domain,
+                        document_type=_row_document_type,
+                    )
                 _canonical_content = _assemble_canonical_from_sections(_sj)
                 _canonical_source  = 'sections_json'
             elif _row_content and isinstance(_row_content, str) and _row_content.strip():
-                _enforce_export_domain_isolation_from_text(
-                    _row_content,
-                    domain=_row_domain,
-                    language=_row_language,
-                    artifact_type='strategy',
-                    artifact_id=_row_id,
-                )
+                if _row_document_type != 'gap_assessment':
+                    _enforce_export_domain_isolation_from_text(
+                        _row_content,
+                        domain=_row_domain,
+                        language=_row_language,
+                        frameworks=_latest_frameworks,
+                        artifact_type='strategy',
+                        artifact_id=_row_id,
+                        route='/api/strategy/latest',
+                        row_domain=_row_domain,
+                        document_type=_row_document_type,
+                    )
                 try:
                     _canonical_content = ensure_markdown_formatting(_row_content)
                 except Exception as _fmt_e:
@@ -29577,7 +29731,8 @@ def _validate_vision_contract(
         org_structure_is_none,
         generation_mode,
         lang,
-        original_valid_rows=0):
+        original_valid_rows=0,
+        document_type='strategy'):
     """Validate a candidate Vision section against the full PR-5B.9G
     contract.
 
@@ -29671,11 +29826,18 @@ def _validate_vision_contract(
             f'vision_so_rows={rows} (need >= {required_min})'
         )
 
-    # 9. Selected-framework compliance objective.
+    # 9. Selected-framework compliance objective (strategy documents only).
     staged = {'vision': text}
     fws_for_check = selected_frameworks or []
     has_compliance = True
-    if fws_for_check:
+    _dtype = str(document_type or 'strategy').strip().lower()
+    _requires_fw_objective = _dtype == 'strategy'
+    try:
+        from professional_strategy_render import is_strategy_export_doc_type
+        _requires_fw_objective = is_strategy_export_doc_type(_dtype, domain or '')
+    except Exception:  # noqa: BLE001
+        pass
+    if fws_for_check and _requires_fw_objective:
         missing_compliance = (
             _compute_missing_compliance_objective(
                 staged, fws_for_check, domain=domain, lang=lang)
@@ -29781,6 +29943,8 @@ def _assign_vision_if_valid_or_restore(
         generation_mode=generation_mode,
         lang=lang,
         original_valid_rows=original_valid_rows,
+        document_type=str(
+            (sections or {}).get('_document_type') or 'strategy'),
     )
     assign_allowed = bool(
         report['ok']
@@ -29827,7 +29991,8 @@ def _assign_vision_if_valid_or_restore(
 def _final_strategy_audit(sections, lang, doc_subtype=None,
                           synth_status=None,
                           selected_frameworks=None, domain=None,
-                          org_structure_is_none=False):
+                          org_structure_is_none=False,
+                          document_type=None):
     """Audit sections against the SAME thresholds the save gates use.
     Returns a list of (section_key, defect_tag, count_observed,
     threshold) tuples. Empty list = sections meet all thresholds.
@@ -29844,6 +30009,42 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     defects = []
     if doc_subtype == 'board':
         return defects
+    _dtype = str(
+        document_type
+        or (sections.get('_document_type') if isinstance(sections, dict) else None)
+        or 'strategy').strip().lower()
+    try:
+        from release_engine_v3.rel33_document_gates import (
+            audit_gap_assessment_sections,
+            audit_risk_document_sections,
+            build_gate_routing_diag,
+            emit_rel33_document_type_gate_routing,
+            strategy_gates_enabled,
+        )
+        emit_rel33_document_type_gate_routing(build_gate_routing_diag(
+            domain=str(domain or ''),
+            document_type=_dtype,
+            route='_final_strategy_audit',
+            document_type_source=(
+                'sections._document_type'
+                if isinstance(sections, dict) and sections.get('_document_type')
+                else 'parameter'),
+        ))
+        if not strategy_gates_enabled(_dtype):
+            if _dtype == 'gap_assessment':
+                return audit_gap_assessment_sections(
+                    sections,
+                    selected_frameworks=selected_frameworks,
+                    lang=lang,
+                    domain=domain or '',
+                    count_gap_rows=count_substantive_gaps,
+                )
+            if _dtype == 'risk':
+                return audit_risk_document_sections(
+                    sections, lang=lang, domain=domain or '')
+            return defects
+    except Exception:  # noqa: BLE001
+        pass
     # PR-CY16 — normalize Arabic CISO-office variants in the Cyber
     # Vision section BEFORE the audit inspects it. Strictly scoped to
     # ``domain == 'cyber'`` (no-op for every other domain); only mutates
@@ -34122,6 +34323,29 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
     # call-site contract).
     _audit_selected_fws = ctx.get('frameworks', []) or []
     _audit_org_struct_none = bool(ctx.get('org_structure_is_none', False))
+    _audit_document_type = str(
+        ctx.get('document_type')
+        or (sections.get('_document_type') if isinstance(sections, dict) else None)
+        or 'strategy').strip().lower()
+
+    if _audit_document_type == 'gap_assessment' and isinstance(sections, dict):
+        try:
+            from release_engine_v3.rel33_gap_assessment_completeness import (
+                repair_and_audit_gap_assessment,
+            )
+            sections, _gap_defects = repair_and_audit_gap_assessment(
+                sections,
+                selected_frameworks=_audit_selected_fws,
+                domain=domain or '',
+                lang=lang,
+                phase='converge_entry',
+            )
+            sections['_document_type'] = 'gap_assessment'
+        except Exception as _gap_repair_e:  # noqa: BLE001
+            print(
+                f'[REL33-GAP-ASSESSMENT] repair failed: {_gap_repair_e}',
+                flush=True,
+            )
 
     def _audit():
         return _final_strategy_audit(
@@ -34130,6 +34354,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             selected_frameworks=_audit_selected_fws,
             domain=domain,
             org_structure_is_none=_audit_org_struct_none,
+            document_type=_audit_document_type,
         )
 
     # PR-CY18 — Capture an already-accepted Cyber specialized-objective
@@ -38303,6 +38528,8 @@ def _load_sealed_strategy_export_bundle(artifact_id, user_id):
         'domain': _row_domain or '',
         'language': _row_language or '',
         'content_json': _cj_parsed,
+        'content': _content or '',
+        'stored_content': _content or '',
     })
     return out
 
@@ -38334,12 +38561,43 @@ def _rel3_load_artifact_from_db_for_export(key, *, user_id=0):
             _cm.get('domain') or _bundle.get('domain') or 'cyber')
         _lang = (
             _cm.get('lang') or _bundle.get('language') or 'ar')
+        _document_type = str(
+            _bundle.get('document_type')
+            or _cm.get('document_type')
+            or (_secs or {}).get('_document_type')
+            or 'strategy').strip().lower()
         _cm.setdefault('lang', _lang)
         _cm.setdefault('domain', _domain)
+        _cm.setdefault('document_type', _document_type)
         _persisted = extract_persisted_frozen_blob(
             _bundle.get('content_json') or {})
-        _diag = assess_db_bundle_for_export(_secs, _persisted)
+        _diag = assess_db_bundle_for_export(
+            _secs, _persisted, document_type=_document_type,
+            domain=_domain, lang=_lang)
         record_db_load_diag(_diag)
+        if _document_type == 'gap_assessment':
+            from release_engine_v3.rel33_export_artifact import (
+                _assemble_gap_assessment_from_sections,
+            )
+            _gap_md = str(_bundle.get('content') or '')
+            if not _gap_md.strip():
+                _gap_md = _assemble_gap_assessment_from_sections(_secs)
+            if _gap_md.strip():
+                _gap_complete = bool(_diag.get('frozen_artifact_complete'))
+                _rehyd = {
+                    'sections': _secs,
+                    'final_markdown': _gap_md,
+                    'domain': _domain,
+                    'document_type': _document_type,
+                    'contract_meta': _cm,
+                    'strategy_id': str(_num or _lookup),
+                    'artifact_id': str(_num or _lookup),
+                    'sealed': _gap_complete,
+                    'frozen_artifact_complete': _gap_complete,
+                }
+                _rehyd['db_sections_loaded'] = _diag.get('db_sections_loaded') or []
+                _rehyd['final_hash'] = _bundle.get('final_hash') or ''
+                return _rehyd
         if _persisted and frozen_artifact_complete(_persisted):
             _rehyd = rehydrate_artifact_dict_from_persisted(
                 _persisted,
@@ -38352,8 +38610,28 @@ def _rel3_load_artifact_from_db_for_export(key, *, user_id=0):
             _rehyd['final_hash'] = _bundle.get('final_hash') or ''
             return _rehyd
         if _secs:
-            _legacy_diag = assess_db_bundle_for_export(_secs, _persisted)
+            _legacy_diag = assess_db_bundle_for_export(
+                _secs, _persisted, document_type=_document_type,
+                domain=_domain, lang=_lang)
             record_db_load_diag(_legacy_diag)
+            if _legacy_diag.get('frozen_artifact_complete'):
+                _md = _assemble_canonical_from_sections(_secs)
+                return {
+                    'sections': _secs,
+                    'final_markdown': _md,
+                    'domain': _domain,
+                    'document_type': _document_type,
+                    'contract_meta': _cm,
+                    'strategy_id': str(_num or _lookup),
+                    'artifact_id': str(_num or _lookup),
+                    'sealed': True,
+                    'frozen_artifact_complete': True,
+                    'db_sections_loaded': _legacy_diag.get(
+                        'db_sections_loaded') or [],
+                    'final_hash': _bundle.get('final_hash') or '',
+                    '_rel32_artifact_loaded_from': _legacy_diag.get(
+                        'artifact_loaded_from') or 'sections_json',
+                }
             raise KeyError(
                 'rel32_incomplete_frozen_artifact:'
                 + ','.join(_legacy_diag.get('db_sections_loaded') or []))
@@ -50876,13 +51154,16 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             markdown, sections, lang, domain, selected_frameworks)
         if cache_key in model_cache:
             return model_cache[cache_key]
+        # REL3.3 P0 — never rebrand a blank domain as cyber; prefer the
+        # caller-provided domain, then the backend artifact domain.
         model = _build_professional_strategy_document_model(
             markdown,
             metadata=metadata,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
-            domain=domain or 'cyber',
+            domain=domain or backend.get('domain') or (
+                (metadata or {}).get('domain')),
         )
         model_cache[cache_key] = model
         return model
@@ -50924,11 +51205,13 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             content, filename, lang, org_name='', sector='',
             doc_type='Strategy Document', domain='',
             selected_frameworks=None, sections=None):
+        from release_engine_v3.rel31_authority import rel31_in_export_adapter
         return _build_docx_bytes(
             content, filename, lang,
             org_name=org_name, sector=sector, doc_type=doc_type,
             domain=domain, selected_frameworks=selected_frameworks,
-            rel2_export_validation=True, sections=sections)
+            rel2_export_validation=rel31_in_export_adapter(),
+            sections=sections)
 
     backend['build_docx_bytes'] = _rel2_build_docx_bytes
     backend['split_sections'] = _split_strategy_sections_by_h2
@@ -51004,11 +51287,30 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             meta = dict(metadata) if isinstance(metadata, dict) else {}
             fws = selected_frameworks or meta.get('selected_frameworks') or []
             fw_labels = [_rel2_framework_display(f) for f in fws if f]
+            _dtype = str(meta.get('document_type') or 'strategy').strip().lower()
+            _doc_type_labels = {
+                'strategy': 'Strategy Document',
+                'risk': 'Risk Assessment',
+                'gap_assessment': 'Gap Assessment',
+            }
+            _doc_type_label = _doc_type_labels.get(_dtype, 'Strategy Document')
             try:
                 dcode = normalize_domain_strict(domain or 'cyber')
                 domain_display = _DOMAIN_DISPLAY_EN[dcode]
             except Exception:  # noqa: BLE001
+                dcode = 'cyber'
                 domain_display = 'Cyber Security'
+            try:
+                from release_engine_v3.rel33_authority import (
+                    is_rel33_domain_authoritative,
+                )
+                _rel33_frozen = is_rel33_domain_authoritative(
+                    domain=dcode,
+                    lang=lang,
+                    flags={'rel3': True, 'rel31': True},
+                )
+            except Exception:  # noqa: BLE001
+                _rel33_frozen = False
             with app.test_client() as client:
                 with client.session_transaction() as sess:
                     sess['user_id'] = uid
@@ -51020,9 +51322,10 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                     'language': lang,
                     'org_name': meta.get('org_name', 'منظمة'),
                     'sector': meta.get('sector', 'حكومي'),
-                    'doc_type': 'Strategy Document',
-                    'domain': domain_display,
-                    'artifact_type': 'strategy',
+                    'doc_type': _doc_type_label,
+                    'domain': dcode,
+                    'artifact_type': _dtype,
+                    'document_type': _dtype,
                     'generation_mode': 'drafting',
                     'selected_frameworks': (
                         fw_labels or ['NCA ECC', 'NCA DCC']),
@@ -51030,6 +51333,7 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                     '_rel2_evidence_collect': True,
                     '_rel26_internal': True,
                     '_rel31_evidence_internal': True,
+                    '_rel33_compiler_frozen_authority': _rel33_frozen,
                     'skip_rel26_gate': True,
                 })
                 if resp.status_code == 200 and resp.data:
@@ -51037,17 +51341,35 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                 if resp.status_code == 422:
                     try:
                         import json as _json_pdf
-                        _body = _json_pdf.loads(resp.get_data(as_text=True) or '{}')
+                        _body = _json_pdf.loads(
+                            resp.get_data(as_text=True) or '{}')
                         _errs = _body.get('blocking_errors') or []
+                        if not _errs and _body.get('error'):
+                            _errs = [str(_body.get('error'))]
                         if _errs:
                             raise ValueError(str(_errs[0]))
+                        raise ValueError(
+                            'rel3_export_evidence_failed:pdf:quality_gate_422')
                     except ValueError:
                         raise
-                    except Exception:  # noqa: BLE001
-                        pass
-        except Exception:  # noqa: BLE001
-            pass
-        return b''
+                    except Exception as _pdf422_exc:  # noqa: BLE001
+                        raise ValueError(
+                            f'rel3_export_evidence_failed:pdf:quality_gate_422:'
+                            f'{_pdf422_exc}') from _pdf422_exc
+                if resp.status_code >= 400:
+                    raise ValueError(
+                        f'rel3_export_evidence_failed:pdf:http_'
+                        f'{resp.status_code}')
+        except ValueError:
+            # Propagate PDF quality / render failures to the exporter so
+            # callers see the explicit render_exception, not empty_bytes.
+            raise
+        except Exception as _pdf_build_exc:  # noqa: BLE001
+            raise ValueError(
+                f'rel3_export_evidence_failed:pdf:render_exception:'
+                f'{type(_pdf_build_exc).__name__}:{_pdf_build_exc}'
+            ) from _pdf_build_exc
+        raise ValueError('rel3_export_evidence_failed:pdf:empty_bytes')
 
     backend['build_pdf_bytes'] = _rel2_build_pdf_bytes
 
@@ -51147,23 +51469,32 @@ def _rel26_should_gate_export(domain, lang):
 
 
 def _rel3_should_use_unified_engine(domain, lang):
-    """PR-REL3 — cyber Arabic technical uses unified export engine."""
+    """PR-REL3 — REL3.3 unified export engine for authoritative Arabic routes."""
     if not _PRCY28_VERSION_FLAGS.get('rel3'):
         return False
+    from release_engine_v3.rel33_authority import is_rel33_domain_authoritative
+    flags = {
+        'rel3': True,
+        'rel31': bool(_PRCY28_VERSION_FLAGS.get('rel31')),
+    }
     if os.environ.get('REL2_SKIP_EXPORT_EVIDENCE'):
-        try:
-            dcode = normalize_domain_strict(domain or None)
-        except DomainResolutionError:
-            return False
-        return dcode == 'cyber' and str(lang or '').lower().startswith('ar')
+        return is_rel33_domain_authoritative(
+            domain=domain, lang=lang, flags=flags)
+    if is_rel33_domain_authoritative(domain=domain, lang=lang, flags=flags):
+        return True
     return _rel26_should_gate_export(domain, lang)
 
 
 def _rel31_is_authoritative(domain, lang):
-    """PR-REL3.1 — REL3 is sole save/export authority for cyber AR."""
+    """PR-REL3.1 — REL3 is sole save/export authority for REL3.3 Arabic routes."""
     if not _PRCY28_VERSION_FLAGS.get('rel31'):
         return False
-    return _rel3_should_use_unified_engine(domain, lang)
+    from release_engine_v3.rel33_authority import is_rel33_domain_authoritative
+    return is_rel33_domain_authoritative(
+        domain=domain,
+        lang=lang,
+        flags={'rel3': True, 'rel31': True},
+    )
 
 
 def _rel31_backend_callables():
@@ -52254,7 +52585,13 @@ def _prcy80_invoke_final_strategy_artifact(
             'sections': dict(sections) if isinstance(sections, dict) else {},
             'blocking_errors': [],
             'sealed': False,
-            'domain': domain or (_meta.get('domain') or 'cyber'),
+            # REL3.3 P0 — resolve from request/metadata only; blank stays
+            # blank so downstream authority fails closed (never cyber).
+            'domain': (
+                domain
+                or _meta.get('domain')
+                or (_meta.get('saved_strategy_metadata') or {}).get('domain')
+                or ''),
             'contract_meta': _meta,
             'final_hash': _pre,
         }
@@ -61280,6 +61617,36 @@ def api_generate_strategy():
         lang = data.get('language', 'en')
         print(f"DEBUG: Language = {lang}", flush=True)
 
+        _document_type = str(
+            data.get('document_type') or data.get('doc_type') or 'strategy'
+        ).strip().lower()
+        _doc_type_aliases = {
+            'strategy document': 'strategy',
+            'risk assessment': 'risk',
+            'gap assessment': 'gap_assessment',
+            'executive summary': 'executive_summary',
+        }
+        _document_type = _doc_type_aliases.get(_document_type, _document_type)
+        print(f"DEBUG: document_type = {_document_type!r}", flush=True)
+
+        # REL3.3 — resolve missing org/framework context for gap_assessment
+        # only, before prompt/diagnostic-model build, so generation never
+        # receives "Not specified" / "غير محدد" as org or framework labels.
+        if _document_type == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    resolve_gap_assessment_context as _rel33_gap_ctx,
+                )
+                _rel33_gap_ctx(
+                    data, lang=lang, domain=domain,
+                    document_type=_document_type, emit=True)
+            except Exception as _gap_ctx_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'context_resolver_skipped: {_gap_ctx_err}',
+                    flush=True,
+                )
+
         # ── PR-5B.6D.1: request-scoped fail-closed status dict.
         # Initialized early so every Tier-3/Tier-4 ``_force_inject_mandatory_section``
         # call site (and any AI-first synthesizer that raises ``RepairError``)
@@ -61488,6 +61855,47 @@ def api_generate_strategy():
                           if tech_list != 'None specified'
                           else ', '.join(_model_additional_tech))
         frameworks_list = ', '.join(_model_frameworks) if _model_frameworks else 'Not specified'
+        if _document_type == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    sanitize_gap_prompt_text as _gap_ph_san,
+                    FRAMEWORK_PROFILE_AR as _gap_fw_ar,
+                    FRAMEWORK_PROFILE_EN as _gap_fw_en,
+                    ORG_PROFILE_AR as _gap_org_ar,
+                    CHALLENGES_AR as _gap_ch_ar,
+                    CHALLENGES_EN as _gap_ch_en,
+                )
+                _gap_fw_sel = []
+                if isinstance(data, dict):
+                    _raw_fw = data.get('frameworks') or []
+                    if isinstance(_raw_fw, str):
+                        _raw_fw = [p.strip() for p in _raw_fw.split(',')
+                                   if p.strip()]
+                    _gap_fw_sel = [str(x).strip() for x in _raw_fw if x]
+                if not _model_frameworks or frameworks_list in (
+                        'Not specified', 'غير محدد', 'N/A'):
+                    frameworks_list = (
+                        ', '.join(_gap_fw_sel) if _gap_fw_sel else (
+                            _gap_fw_ar if lang == 'ar' else _gap_fw_en))
+                if not org_structure or org_structure in (
+                        'Not specified', 'غير محدد', 'N/A', 'لا يوجد'):
+                    org_structure = (
+                        _gap_org_ar if lang == 'ar' else
+                        'the organization under assessment')
+                if not _model_challenges or str(_model_challenges).strip() in (
+                        'Not specified', 'غير محدد', 'N/A'):
+                    _model_challenges = (
+                        _gap_ch_ar if lang == 'ar' else _gap_ch_en)
+                else:
+                    _model_challenges = _gap_ph_san(
+                        _model_challenges, lang=lang,
+                        frameworks=_gap_fw_sel)
+            except Exception as _gap_san_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'prompt_sanitize_skipped: {_gap_san_err}',
+                    flush=True,
+                )
         
         if lang == 'ar':
             # Map domain to Arabic specialized context
@@ -61651,7 +62059,17 @@ def api_generate_strategy():
 (ب) الفجوة المحددة التي تُعالجها (مثال: "إنشاء إدارة الأمن السيبراني بقيادة CISO وسلطة الحوكمة" وليس "إطار الحوكمة")
 (ج) التقنية الموجودة فعلاً حيثما كانت معروفة
 كل اسم مبادرة يجب أن يكون محدداً بما يكفي لتمييزه عن أي وثيقة أخرى لمنظمة مختلفة."""
-            
+            if _document_type == 'gap_assessment':
+                try:
+                    from release_engine_v3.rel33_gap_placeholder_completion import (
+                        sanitize_gap_prompt_text as _gap_ctx_san,
+                    )
+                    org_context_block_ar = _gap_ctx_san(
+                        org_context_block_ar, lang='ar',
+                        frameworks=_model_frameworks)
+                except Exception:  # noqa: BLE001
+                    pass
+
             # Pre-compute Arabic domain-specific text
             _domain_isolation_ar = {
                 'Cyber Security': 'أمن سيبراني. لا تذكر لجان حوكمة بيانات أو أخلاقيات AI أو مكاتب تحول رقمي',
@@ -63244,6 +63662,7 @@ RAW STRATEGY TO ENHANCE:
             'roadmap':      '',
             'kpis':         '',
             'confidence':   '',
+            '_document_type': _document_type,
         }
         
         def inject_implementation_guidelines(gaps_content, lang_code):
@@ -65905,9 +66324,20 @@ The confidence score is based on a comprehensive assessment of the organization'
 
         # ── Technical Strategy save-gate: block malformed-SO output ────────────
         # PR-CY80 — Cyber defers SO gate to unified artifact blocking_errors.
+        # REL3.3 compiler-first domains defer to compile_complete_strategy.
         _remaining_so = _prcy63_critical_so_issue_tags(_quality_issues_post)
-        if (doc_subtype != 'board' and _remaining_so
-                and _dcode != 'cyber'):
+        _skip_so_gate = _document_type in (
+            'gap_assessment', 'risk', 'audit', 'policy', 'procedure')
+        try:
+            from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+            if is_rel32_compiler_first(
+                    domain=_dcode, lang=lang,
+                    flags=_PRCY28_VERSION_FLAGS,
+                    document_type=_document_type):
+                _skip_so_gate = True
+        except Exception:  # noqa: BLE001
+            pass
+        if (doc_subtype != 'board' and _remaining_so and not _skip_so_gate):
             print(f"[STRATEGY] Refusing save — Strategic Objectives still malformed "
                   f"after repair: {sorted(_remaining_so)}", flush=True)
             print(f"[STRATEGY-GATE] save_decision=BLOCKED "
@@ -65969,6 +66399,59 @@ The confidence score is based on a comprehensive assessment of the organization'
                 ),
                 'missing_core_sections': sorted(_remaining_core),
             }), 422
+
+        # REL3.3 — deterministic gap_assessment placeholder completion
+        # AFTER generation/repair and BEFORE the placeholder-text gate.
+        # Does not run for strategy or risk.  The gate below still runs
+        # and still fail-closes if any leftover tokens remain.
+        if str(_document_type or '').strip().lower() == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    run_gap_placeholder_completion as _rel33_gap_ph,
+                )
+                from release_engine_v3.domain_codes import (
+                    normalize_domain_code as _gap_ph_ndc)
+                _gap_ph = _rel33_gap_ph(
+                    sections,
+                    data=data if isinstance(data, dict) else {},
+                    domain=domain,
+                    document_type=_document_type,
+                    lang=lang,
+                    route=(
+                        f"{_gap_ph_ndc(domain, default='global')}"
+                        f':gap_assessment:{lang}'),
+                    emit=True,
+                )
+                if _gap_ph.get('fail_closed'):
+                    print(
+                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                        'reason=rel33_gap_placeholder_completion_failed',
+                        flush=True,
+                    )
+                    return jsonify({
+                        'success': False,
+                        'strategy_id': None,
+                        'error': (
+                            'Unresolved placeholder text ("Not specified" / '
+                            '"غير محدد") remains after gap completion. '
+                            'Please complete framework / org profile '
+                            'selection and regenerate.'
+                            if lang == 'en' else
+                            'توجد نصوص نائبة غير محلولة ("Not specified" / '
+                            '"غير محدد") بعد محاولة الإكمال الحتمي لتقييم '
+                            'الفجوات. يُرجى استكمال اختيار الإطار التنظيمي '
+                            '/ ملف المنظمة وإعادة التوليد.'
+                        ),
+                        'blocking_errors': [
+                            'rel33_gap_placeholder_completion_failed'],
+                        'placeholder_sections': ['gaps'],
+                    }), 422
+            except Exception as _gap_ph_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'completion_skipped: {_gap_ph_err}',
+                    flush=True,
+                )
 
         # ── Placeholder-text gate (NEW) ───────────────────────────────────────
         # Strings like "Not specified" leak into saved strategies when the
@@ -67017,42 +67500,116 @@ The confidence score is based on a comprehensive assessment of the organization'
                             ),
                             'board_defects': [list(d) for d in _board_defects],
                         }), 422
-                if doc_subtype != 'board':
+                    if doc_subtype != 'board':
+                        # PR-REL3.3 v2: surgical strategy top-up BEFORE the
+                        # 4-row completeness gate so missing objectives can
+                        # be completed without rebuilding the whole document.
+                        if str(_document_type or '').strip().lower() == 'strategy':
+                            try:
+                                from release_engine_v3.\
+                                    rel33_strategy_completeness_topup import (
+                                        run_strategy_topup_v2)
+                                from release_engine_v3.domain_codes import (
+                                    normalize_domain_code as _stc_ndc_early)
+                                _stc_early = run_strategy_topup_v2(
+                                    sections,
+                                    content=content,
+                                    domain=domain,
+                                    document_type=_document_type,
+                                    lang=lang,
+                                    synth_status=_synth_status,
+                                    generation_stage='pre_completeness_gate',
+                                    route=(
+                                        f'{_stc_ndc_early(domain) or domain}'
+                                        f':strategy:{lang}'),
+                                    emit=True,
+                                )
+                                content = _stc_early.get('content', content)
+                                if _stc_early.get('fail_closed'):
+                                    print(
+                                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                                        'reason=rel33_strategy_topup_kpi_'
+                                        'preservation_failed',
+                                        flush=True,
+                                    )
+                                    return jsonify({
+                                        'success': False,
+                                        'strategy_id': None,
+                                        'error': (
+                                            'Strategy top-up failed closed: '
+                                            'KPI section/header must be '
+                                            'preserved.'
+                                            if lang == 'en' else
+                                            'فشل إكمال الاستراتيجية مع الحفاظ '
+                                            'على قسم مؤشرات الأداء.'
+                                        ),
+                                        'blocking_errors': [
+                                            'rel33_strategy_topup_kpi_'
+                                            'preservation_failed'],
+                                    }), 422
+                            except Exception as _stc_early_err:  # noqa: BLE001
+                                print(
+                                    '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                                    f'topup_early_skipped_error: '
+                                    f'{_stc_early_err}',
+                                    flush=True,
+                                )
+                        _stc_secs_before_cpl = {
+                            k: v for k, v in sections.items()
+                            if isinstance(v, str)
+                        }
+                        try:
+                            # Re-bind context vars here — _domain_v / _org_v /
+                            # _sector_v earlier in this function are only set
+                            # inside the `if _struct_broken:` branch so may
+                            # not be in scope at this point.
+                            _cpl_sector  = data.get('sector', 'Government')
+                            _cpl_org     = data.get('org_name',
+                                                     'The Organization')
+                            _cpl_mat     = data.get('maturity_level', 'initial')
+                            _cpl_mode    = (_generation_mode
+                                            if '_generation_mode' in dir()
+                                            else 'drafting')
+                            _completeness_flags = _enforce_technical_strategy_completeness(
+                                sections, lang, domain, fw_short,
+                                sector=_cpl_sector,
+                                org_name=_cpl_org,
+                                maturity=_cpl_mat,
+                                generation_mode=_cpl_mode,
+                                synth_status=_synth_status,
+                            )
+                            print(f'[STRATEGY-DIAG] completeness_pass '
+                                  f'flags={_completeness_flags} '
+                                  f'sector={_cpl_sector!r} '
+                                  f'org={_cpl_org!r} mode={_cpl_mode!r}',
+                                  flush=True)
+                        except Exception as _cp_e:
+                            print(f'[STRATEGY-DIAG] completeness_pass_failed: {_cp_e}',
+                                  flush=True)
+                            _completeness_flags = []
+                    # PR-REL3.3 v2: apply completeness section diffs
+                    # surgically.  Do not rebuild the whole document from a
+                    # section-order join (that dropped H2 wrappers and broke
+                    # live KPI PDF extractability / frozen export lock).
                     try:
-                        # Re-bind context vars here — _domain_v / _org_v /
-                        # _sector_v earlier in this function are only set
-                        # inside the `if _struct_broken:` branch so may
-                        # not be in scope at this point.
-                        _cpl_sector  = data.get('sector', 'Government')
-                        _cpl_org     = data.get('org_name',
-                                                 'The Organization')
-                        _cpl_mat     = data.get('maturity_level', 'initial')
-                        _cpl_mode    = (_generation_mode
-                                        if '_generation_mode' in dir()
-                                        else 'drafting')
-                        _completeness_flags = _enforce_technical_strategy_completeness(
-                            sections, lang, domain, fw_short,
-                            sector=_cpl_sector,
-                            org_name=_cpl_org,
-                            maturity=_cpl_mat,
-                            generation_mode=_cpl_mode,
-                            synth_status=_synth_status,
+                        from release_engine_v3.rel33_strategy_completeness_topup import (
+                            surgical_refresh_content as _stc_surg)
+                        _stc_cpl_touched = [
+                            k for k, v in sections.items()
+                            if isinstance(v, str)
+                            and v != (_stc_secs_before_cpl.get(k) or '')
+                        ]
+                        if _stc_cpl_touched:
+                            content = _stc_surg(
+                                content, _stc_secs_before_cpl, sections,
+                                _stc_cpl_touched)
+                    except Exception as _stc_cpl_err:  # noqa: BLE001
+                        print(
+                            '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                            f'completeness_surgical_refresh_skipped: '
+                            f'{_stc_cpl_err}',
+                            flush=True,
                         )
-                        print(f'[STRATEGY-DIAG] completeness_pass '
-                              f'flags={_completeness_flags} '
-                              f'sector={_cpl_sector!r} '
-                              f'org={_cpl_org!r} mode={_cpl_mode!r}',
-                              flush=True)
-                    except Exception as _cp_e:
-                        print(f'[STRATEGY-DIAG] completeness_pass_failed: {_cp_e}',
-                              flush=True)
-                        _completeness_flags = []
-                    # Rebuild content from completeness-fixed sections
-                    _section_order_c = list(STRATEGY_SECTION_ORDER)
-                    _fixed_parts_c = [sections[sk] for sk in _section_order_c
-                                      if sections.get(sk) and sections[sk].strip()]
-                    if _fixed_parts_c:
-                        content = '\n\n'.join(_fixed_parts_c)
                     # Re-audit to update _quality_issues_post (so SO gate sees
                     # the refreshed sections too)
                     try:
@@ -67288,6 +67845,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _diag_model['generation_mode'] = _generation_mode
                         log_diagnostic_model(_diag_model, tag='pre_synth')
                         _final_ctx = diagnostic_model_to_ctx(_diag_model)
+                        _final_ctx['document_type'] = _document_type
                         # PR-5B.5F1 status dict already initialized above.
                         # PR-5B.8B Section E: coarse stage beacon — final_synthesis.
                         _bump_stage('final_synthesis')
@@ -67871,7 +68429,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # _count_risk_rows_with_mitigation ≥ _RICHNESS_MIN_RISK_ROWS
                     # so `so_rows_insufficient` and `risk_rows_insufficient`
                     # never survive to the gate.
-                    if doc_subtype != 'board':
+                    # REL3.3 #2 — strategy-only vision/objective + confidence
+                    # repairers must never run for non-strategy documents
+                    # (risk/gap/etc). They inject strategy substance (vision
+                    # lede, NCA ECC default framework) that contaminates an
+                    # ERM risk document and trips the export domain guard.
+                    _strategy_repairers_allowed = (
+                        str(_document_type or 'strategy').strip().lower()
+                        == 'strategy')
+                    if doc_subtype != 'board' and _strategy_repairers_allowed:
                         try:
                             _vis_repair = repair_vision_objectives_if_insufficient(
                                 sections, lang,
@@ -68084,6 +68650,86 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'{_prre}',
                                 flush=True,
                             )
+
+                        # ── PR-REL3.3: deterministic strategy completeness
+                        # top-up ─────────────────────────────────────────────
+                        # Runs AFTER LLM generation / existing repair but
+                        # BEFORE the post-repair quality gate + save + export
+                        # freeze.  Strategy documents ONLY (never risk / gap).
+                        # Deterministically ensures domain-scoped minimums
+                        # (pillars >= 3, confidence/risk rows >= 6) by adding
+                        # only the missing rows/pillars from the domain
+                        # registries — preserving existing valid content,
+                        # avoiding duplicates and cross-domain contamination.
+                        # It NEVER weakens a gate: when it cannot safely
+                        # complete a section it leaves the section untouched
+                        # and the strict post-repair assertions / audit below
+                        # still fail closed.  When it legitimately completes a
+                        # section it clears that section's stale synth_status
+                        # marker so the audit re-validates the real content.
+                        if (str(_document_type or '').strip().lower()
+                                == 'strategy' and doc_subtype != 'board'):
+                            try:
+                                from release_engine_v3.\
+                                    rel33_strategy_completeness_topup import (
+                                        run_strategy_topup_v2 as _stc_v2)
+                                from release_engine_v3.domain_codes import (
+                                    normalize_domain_code as _stc_ndc)
+                                _stc_route = (
+                                    f'{_stc_ndc(domain) or domain}'
+                                    f':strategy:{lang}')
+                                _stc_late = _stc_v2(
+                                    sections,
+                                    content=content,
+                                    domain=domain,
+                                    document_type=_document_type,
+                                    lang=lang,
+                                    synth_status=_synth_status,
+                                    generation_stage='post_repair',
+                                    route=_stc_route,
+                                    emit=True,
+                                )
+                                _stc_diag = _stc_late.get('diag') or {}
+                                content = _stc_late.get('content', content)
+                                if _stc_late.get('fail_closed'):
+                                    print(
+                                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                                        'reason=rel33_strategy_topup_kpi_'
+                                        'preservation_failed',
+                                        flush=True,
+                                    )
+                                    return jsonify({
+                                        'success': False,
+                                        'strategy_id': None,
+                                        'error': (
+                                            'Strategy top-up failed closed: '
+                                            'KPI section/header must be '
+                                            'preserved.'
+                                            if lang == 'en' else
+                                            'فشل إكمال الاستراتيجية مع الحفاظ '
+                                            'على قسم مؤشرات الأداء.'
+                                        ),
+                                        'blocking_errors': [
+                                            'rel33_strategy_topup_kpi_'
+                                            'preservation_failed'],
+                                    }), 422
+                                if _stc_late.get('frozen_lock_expected_refresh'):
+                                    try:
+                                        _, _q_stc = _audit_doc_quality(
+                                            sections, doc_subtype, lang,
+                                            generation_mode=_generation_mode,
+                                        )
+                                        _quality_issues_post = list(_q_stc)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                            except Exception as _stc_err:  # noqa: BLE001
+                                # Never break generation on top-up failure;
+                                # the strict gates below remain authoritative.
+                                print(
+                                    '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                                    f'topup_skipped_error: {_stc_err}',
+                                    flush=True,
+                                )
 
                         # ── HARD ASSERTIONS after deterministic repair ──────
                         # These assertions verify that the repair functions
@@ -71310,6 +71956,39 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     'phase=before_post_normalization_audit',
                                     flush=True,
                                 )
+                            # REL3.3 — gap_assessment scope/remediation repair
+                            # immediately before post-normalization audit so
+                            # gap_scope_missing / gap_remediation_missing
+                            # cannot block save after convergence repair.
+                            if (str(_document_type or '').strip().lower()
+                                    == 'gap_assessment'
+                                    and isinstance(sections, dict)):
+                                try:
+                                    from release_engine_v3.rel33_gap_assessment_completeness import (
+                                        repair_and_audit_gap_assessment,
+                                    )
+                                    sections, _gap_pre_audit = (
+                                        repair_and_audit_gap_assessment(
+                                            sections,
+                                            selected_frameworks=_frameworks_raw,
+                                            domain=domain or 'global',
+                                            lang=lang,
+                                            phase='pre_final_audit',
+                                        ))
+                                    sections['_document_type'] = 'gap_assessment'
+                                    print(
+                                        '[REL33-GAP-ASSESSMENT] '
+                                        'pre_final_audit_repair '
+                                        f'defects={_gap_pre_audit}',
+                                        flush=True,
+                                    )
+                                except Exception as _gap_pre_e:  # noqa: BLE001
+                                    print(
+                                        '[REL33-GAP-ASSESSMENT] '
+                                        f'pre_final_audit_repair_failed: '
+                                        f'{_gap_pre_e}',
+                                        flush=True,
+                                    )
                             _post_norm_defects = _final_strategy_audit(
                                 sections, lang, doc_subtype,
                                 synth_status=_synth_status,
@@ -71321,6 +72000,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     if isinstance(_final_ctx, dict)
                                     else False
                                 ),
+                                document_type=_document_type,
                             )
                             print(
                                 '[STRATEGY-DIAG] post_normalization_audit '
@@ -71615,6 +72295,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     domain=domain,
                                                     org_structure_is_none=(
                                                         _dfc_final_osn),
+                                                    document_type=_document_type,
                                                 ))
                                             _dfc_final_remaining2 = (
                                                 _compute_missing_selected_framework_coverage(
@@ -71973,6 +72654,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                     domain=domain,
                                                     org_structure_is_none=(
                                                         _pr5b9y_osn),
+                                                    document_type=_document_type,
                                                 ))
                                         except Exception as _pr5b9yae:
                                             print(
@@ -72158,6 +72840,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 selected_frameworks=_frameworks_raw,
                                                 domain=domain,
                                                 org_structure_is_none=_cy11_org_none,
+                                                document_type=_document_type,
                                             ))
                                     except Exception as _cy11re:  # noqa: BLE001
                                         print(
@@ -72235,6 +72918,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                         selected_frameworks=_frameworks_raw,
                                                         domain=domain,
                                                         org_structure_is_none=_cy11_org_none,
+                                                        document_type=_document_type,
                                                     ))
                                             except Exception as _cy18re:  # noqa: BLE001
                                                 print(
@@ -72327,6 +73011,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                             _final_ctx, dict)
                                                         else False
                                                     ),
+                                                    document_type=_document_type,
                                                 ))
                                             print(
                                                 '[STRATEGY-DIAG] '
@@ -73268,14 +73953,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                             is_rel32_compiler_first,
                         )
                         if is_rel32_compiler_first(
-                                domain=(domain or '').strip().lower(),
+                                domain=_dcode,
                                 lang=lang,
                                 flags=_PRCY28_VERSION_FLAGS):
                             _gate_ctx = locals().get('_final_ctx') or {}
                             sections, _compiler_pre_rep = (
                                 apply_compiler_first_save_gate_sections(
                                     sections,
-                                    domain=domain,
+                                    domain=_dcode,
                                     lang=lang,
                                     flags=_PRCY28_VERSION_FLAGS,
                                     maturity_level=(
@@ -73303,6 +73988,66 @@ The confidence score is based on a comprehensive assessment of the organization'
                             f'{_compiler_pre_e}',
                             flush=True,
                         )
+                    # ── REL3.3 Domain Isolation Contract (pre-save) ──
+                    # Fail-closed: blank domain or Cyber-primary substance in
+                    # non-cyber sections blocks save before DB commit. Uses the
+                    # resolved _document_type (not the raw doc_type label) so
+                    # risk/gap artifacts are evaluated with the correct
+                    # document_type-aware guard.
+                    _presave_dtype = str(
+                        _document_type or 'strategy').strip().lower()
+                    try:
+                        from release_engine_v3.rel33_domain_guard import (
+                            evaluate_domain_isolation_contract,
+                            evaluate_rel33_risk_domain_isolation,
+                        )
+                        if _presave_dtype in ('risk', 'risk_assessment'):
+                            _iso_diag = evaluate_rel33_risk_domain_isolation(
+                                sections,
+                                domain=_dcode,
+                                document_type=_presave_dtype,
+                                route='api_generate_strategy',
+                                phase='pre_save',
+                                artifact_type='risk',
+                                section_classifier='save_gate',
+                                selected_registry=str(_dcode or ''),
+                                emit=True,
+                            )
+                        else:
+                            _iso_diag = evaluate_domain_isolation_contract(
+                                sections,
+                                domain=_dcode,
+                                route='api_generate_strategy',
+                                document_type=_presave_dtype,
+                                phase='pre_save',
+                                repairer_name='save_gate',
+                                selected_registry=str(_dcode or ''),
+                                emit=True,
+                            )
+                        if not _iso_diag.get('contract_passed'):
+                            _iso_blockers = list(
+                                _iso_diag.get('blocking_errors') or [])
+                            print(
+                                '[STRATEGY-GATE] save_decision=BLOCKED '
+                                'reason=rel33_domain_isolation_contract '
+                                f'errors={_iso_blockers!r}',
+                                flush=True,
+                            )
+                            return jsonify({
+                                'success': False,
+                                'strategy_id': None,
+                                'error': (
+                                    _iso_blockers[0]
+                                    if _iso_blockers
+                                    else 'rel33_domain_isolation_contract'),
+                                'blocking_errors': _iso_blockers,
+                            }), 422
+                    except Exception as _iso_e:
+                        print(
+                            f'[STRATEGY-DIAG] domain_isolation_pre_save_failed: '
+                            f'{_iso_e}',
+                            flush=True,
+                        )
                     if _compiler_first_applied:
                         try:
                             from release_engine_v3.rel32_complete_strategy_compiler import (
@@ -73314,7 +74059,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 evaluate_rel32_final_strategy_completeness(
                                     sections,
                                     lang=lang,
-                                    domain=(domain or 'cyber'),
+                                    domain=str(_dcode or ''),
                                     generation_mode=_generation_mode,
                                     stale_issues_before=list(
                                         _quality_issues_post or []),
@@ -74597,8 +75342,21 @@ The confidence score is based on a comprehensive assessment of the organization'
                 #    post-normalization window.
                 _remaining_so_final = _prcy63_critical_so_issue_tags(
                     _quality_issues_post)
+                _skip_so_final = _document_type in (
+                    'gap_assessment', 'risk', 'audit', 'policy', 'procedure')
+                try:
+                    from release_engine_v3.rel32_compiler import (
+                        is_rel32_compiler_first,
+                    )
+                    if is_rel32_compiler_first(
+                            domain=_cy28_dcode, lang=lang,
+                            flags=_PRCY28_VERSION_FLAGS,
+                            document_type=_document_type):
+                        _skip_so_final = True
+                except Exception:  # noqa: BLE001
+                    pass
                 if (doc_subtype != 'board' and _remaining_so_final
-                        and _cy28_dcode != 'cyber'):
+                        and not _skip_so_final):
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=strategic_objectives_malformed_post_normalization '
                           f'issues={sorted(_remaining_so_final)}', flush=True)
@@ -74985,6 +75743,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back
                 #    by _canonical_content_from_db for PDF/DOCX export.
+                # REL3.3 — the strategies table has no document_type column, so
+                # non-strategy document types (gap_assessment / risk) must ride
+                # inside sections_json for /api/strategy/latest to resolve the
+                # correct type and skip the strategy-only domain guard. Stamp it
+                # here (idempotent) so a later section reassignment cannot drop it.
+                _persist_dtype = str(_document_type or 'strategy').strip().lower()
+                if _persist_dtype and _persist_dtype != 'strategy' and isinstance(
+                        sections, dict):
+                    sections['_document_type'] = _persist_dtype
+                # REL3.3 P0 — persist the resolved domain inside sections_json
+                # (_contract_meta) so exports can recover it from the saved
+                # artifact even when the export request omits the domain.
+                if isinstance(sections, dict) and domain:
+                    _sec_cm = sections.get('_contract_meta')
+                    if not isinstance(_sec_cm, dict):
+                        _sec_cm = {}
+                    _sec_cm['domain'] = domain
+                    sections['_contract_meta'] = _sec_cm
                 _sections_json_str = _json_save.dumps(sections, ensure_ascii=False)
                 _content_json_obj  = _sections_to_json(
                     sections,
@@ -74992,6 +75768,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                     lang=lang,
                     title=_doc_title
                 )
+                _fws_save = list(
+                    data.get('frameworks')
+                    or data.get('selected_frameworks')
+                    or data.get('selected_frameworks_canonical')
+                    or [])
+                if isinstance(_content_json_obj, dict) and _fws_save:
+                    _content_json_obj['selected_frameworks'] = _fws_save
+                    _content_json_obj['frameworks'] = _fws_save
                 # PR-CY40 — sealed-artifact flag for downstream canonical
                 # loaders (preview / latest / PDF / DOCX) so they prefer
                 # ``strategies.content`` without reassembly or formatting.
@@ -75011,6 +75795,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 'prcy83': True,
                                 'artifact_builder': 'PR-CY83',
                                 'sealed': True,
+                                # REL3.3 P0 — domain rides in contract meta
+                                # so exports never re-derive it as cyber.
+                                'domain': domain,
                                 'final_hash': (
                                     _cy80_meta.get('final_hash')
                                     or _cy40_meta_hash),
@@ -78241,7 +79028,7 @@ def api_generate_pdf_async():
 
     # ── Fail-closed gate on async path ───────────────────────────────────────
     _art_id_a   = data.get('artifact_id')
-    _art_type_a = data.get('artifact_type', 'strategy')
+    _art_type_a = _rel33_normalize_export_artifact_type(data)
     _gen_mode_a = data.get('generation_mode', 'drafting')
     try:
         _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
@@ -78258,7 +79045,10 @@ def api_generate_pdf_async():
     # that the preview has already fixed. See _canonical_content_from_db
     # for the resolution order (sections_json → content → client fallback).
     try:
-        _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+        _db_canonical = _canonical_content_from_db(
+            _art_type_a, _art_id_a, session.get('user_id', 0),
+            request_frameworks=(
+                data.get('selected_frameworks') or data.get('frameworks')))
     except DomainContaminationError as _dce:
         # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
         # synchronously, before any task_id is issued.
@@ -78294,12 +79084,18 @@ def api_generate_pdf_async():
     # against the resolved request domain before queueing the build.
     if not (_db_canonical and _db_canonical.strip()):
         try:
+            _export_fws_pa = (
+                data.get('selected_frameworks') or data.get('frameworks') or [])
+            _export_dtype_pa = str(
+                data.get('document_type') or _art_type_a).strip().lower()
             _enforce_export_domain_isolation_from_text(
                 content,
                 domain=domain,
                 language=lang,
+                frameworks=_export_fws_pa,
                 artifact_type=_art_type_a,
                 artifact_id=_art_id_a,
+                document_type=_export_dtype_pa,
             )
         except DomainContaminationError as _dce_p:
             print(f'[EXPORT-DOMAIN-GUARD] PDF-async client-payload denied for '
@@ -78312,11 +79108,79 @@ def api_generate_pdf_async():
                 'artifact_id': _art_id_a,
             }), 422
 
+    # REL3.3 — load complete saved artifact by strategy_id (not client fragment).
+    _rel33_skip_frag_pa = False
+    _rel33_export_prep_pa: dict = {}
+    if _art_type_a == 'strategy':
+        try:
+            _rel33_uid_pa = session.get('user_id', 0)
+            _rel33_sid_pa = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id_a, _rel33_uid_pa)
+            if _rel33_sid_pa:
+                _rel33_prep_pa = _rel33_prepare_strategy_export_content(
+                    _art_type_a, _art_id_a, _rel33_sid_pa, _rel33_uid_pa,
+                    domain=domain, document_type='strategy',
+                    route='pdf-async', client_content=content)
+                if (_rel33_prep_pa.get('skip_fragment_gate')
+                        and (_rel33_prep_pa.get('content') or '').strip()):
+                    content = _rel33_prep_pa['content']
+                    _db_canonical = content
+                    _rel33_skip_frag_pa = True
+                    _rel33_export_prep_pa = dict(_rel33_prep_pa)
+        except Exception as _rel33_pa_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] pdf-async prepare failed: {_rel33_pa_e}',
+                  flush=True)
+    elif _art_type_a == 'risk':
+        try:
+            _rel33_uid_pa = session.get('user_id', 0)
+            _risk_id_pa = data.get('risk_id') or _art_id_a
+            _rel33_prep_risk_pa = _rel33_prepare_risk_export_content(
+                _art_id_a, _risk_id_pa, _rel33_uid_pa,
+                domain=domain, route='pdf-async',
+                client_content=content)
+        except Exception as _rel33_risk_pa_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] pdf-async risk prepare failed: '
+                  f'{_rel33_risk_pa_e}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        # Honor export-prep fail-closed synchronously (before spawning the
+        # async task): hard-block, never fall back to client content.
+        _blk_resp_pa = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_pa, data, route='pdf', domain=domain,
+            art_type=_art_type_a, art_id=_art_id_a, risk_id=_risk_id_pa)
+        if _blk_resp_pa is not None:
+            return _blk_resp_pa
+        _rel33_export_prep_pa = dict(_rel33_prep_risk_pa)
+        if (_rel33_prep_risk_pa.get('content') or '').strip():
+            content = _rel33_prep_risk_pa['content']
+            _db_canonical = content
+    elif _art_type_a == 'gap_assessment':
+        try:
+            _rel33_uid_pa = session.get('user_id', 0)
+            _rel33_sid_ga = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id_a, _rel33_uid_pa)
+            if _rel33_sid_ga:
+                _rel33_prep_ga = _rel33_prepare_gap_assessment_export_content(
+                    _art_id_a, _rel33_sid_ga, _rel33_uid_pa,
+                    domain=domain, route='pdf-async',
+                    client_content=content)
+                _rel33_export_prep_pa = dict(_rel33_prep_ga)
+                if (_rel33_prep_ga.get('skip_fragment_gate')
+                        and (_rel33_prep_ga.get('content') or '').strip()):
+                    content = _rel33_prep_ga['content']
+                    _db_canonical = content
+        except Exception as _rel33_ga_pa_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] pdf-async gap_assessment prepare failed: '
+                  f'{_rel33_ga_pa_e}', flush=True)
+
     # PR-5B.7C.1: synchronous fragment gate — refuse early so the user
     # gets a clear error instead of a queued task that produces a
     # misleading PDF. The inner sync api_generate_pdf() also runs this
     # gate (defence in depth) once we forward the artifact metadata.
-    if _art_type_a == 'strategy':
+    if _art_type_a == 'strategy' and not _rel33_skip_frag_pa:
         _is_frag_a, _found_a, _why_a = _is_strategy_export_fragment(content)
         if _is_frag_a:
             print(
@@ -78366,8 +79230,14 @@ def api_generate_pdf_async():
     _export_uid_pdf = session.get('user_id', 0)
     _export_strategy_id_pdf = (
         data.get('strategy_id') or _art_id_a)
+    _export_risk_id_pdf = data.get('risk_id') or (
+        _art_id_a if _art_type_a == 'risk' else None)
     _export_numeric_sid_pdf = _resolve_numeric_strategy_id(
         _export_strategy_id_pdf, _export_uid_pdf)
+    # REL3.3 staging-only diagnostic echo (gated). When requested + allowed,
+    # capture the detailed evidence blocker into the export-status JSON.
+    _debug_evidence_pdf = _rel33_debug_export_allowed(data)
+    _pdf_debug_holder: dict = {}
 
     def _build_pdf():
         import tempfile
@@ -78393,13 +79263,18 @@ def api_generate_pdf_async():
                       # client-payload path with artifact_id=None).
                       'artifact_id': _art_id_inner,
                       'artifact_type': _art_type_inner,
+                      'document_type': _rel33_export_document_type(_art_type_inner),
                       'generation_mode': _gen_mode_inner,
                       'strategy_id': (
                           _export_numeric_sid_pdf or _export_strategy_id_pdf),
+                      'risk_id': _export_risk_id_pdf,
                       # PR-5B.8S — forward selected frameworks so the
                       # composer's scope/methodology/traceability blocks
                       # are populated correctly.
-                      'selected_frameworks': _selected_fws_inner},
+                      'selected_frameworks': _selected_fws_inner,
+                      # REL3.3 — forward the staging-only diagnostic flag so
+                      # the sync route emits detailed evidence diagnostics.
+                      'rel33_debug_export_evidence': _debug_evidence_pdf},
                 headers={'Content-Type': 'application/json'}
             ):
                 # Manually patch session for auth
@@ -78423,6 +79298,22 @@ def api_generate_pdf_async():
                     f"task={_task_id[:8]} raw_body={err_body[:1000]}",
                     flush=True,
                 )
+                if _debug_evidence_pdf:
+                    try:
+                        import json as _json_dbg
+                        _parsed = _json_dbg.loads(err_body)
+                        _pdf_debug_holder['diag'] = {
+                            'reason': _parsed.get('reason'),
+                            'blocking_errors': _parsed.get('blocking_errors'),
+                            'gate': _parsed.get('gate'),
+                            'rel33_debug': _parsed.get('rel33_debug'),
+                            'rel33_export_gate_routing_diag': _parsed.get(
+                                'rel33_export_gate_routing_diag'),
+                            'rel33_risk_export_prep_contract': _parsed.get(
+                                'rel33_risk_export_prep_contract'),
+                        }
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise ValueError(
                     _prcy46_safe_export_error(err_body, _status_code))
 
@@ -78469,7 +79360,10 @@ def api_generate_pdf_async():
         except Exception as exc:
             import traceback
             print(f"ASYNC PDF ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _export_store[_task_id] = {'status': 'error', 'error': str(exc)}
+            _err_entry = {'status': 'error', 'error': str(exc)}
+            if _debug_evidence_pdf and _pdf_debug_holder.get('diag'):
+                _err_entry['diag'] = _pdf_debug_holder['diag']
+            _export_store[_task_id] = _err_entry
 
     threading.Thread(target=_build_pdf, daemon=True).start()
     return jsonify({'task_id': task_id})
@@ -78517,7 +79411,7 @@ def api_generate_docx_async():
 
     # ── Fail-closed gate on async path ───────────────────────────────────────
     _art_id_a   = data.get('artifact_id')
-    _art_type_a = data.get('artifact_type', 'strategy')
+    _art_type_a = _rel33_normalize_export_artifact_type(data)
     _gen_mode_a = data.get('generation_mode', 'drafting')
     try:
         _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
@@ -78531,7 +79425,10 @@ def api_generate_docx_async():
     # Mirror of the PDF-async parity fix — ensures DOCX export reads the
     # same repair-processed sections_json / content that the preview renders.
     try:
-        _db_canonical = _canonical_content_from_db(_art_type_a, _art_id_a, session.get('user_id', 0))
+        _db_canonical = _canonical_content_from_db(
+            _art_type_a, _art_id_a, session.get('user_id', 0),
+            request_frameworks=(
+                data.get('selected_frameworks') or data.get('frameworks')))
     except DomainContaminationError as _dce:
         # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
         # synchronously, before any task_id is issued.
@@ -78565,12 +79462,18 @@ def api_generate_docx_async():
     # PR-5B.7B.3: client-payload fallback guard for DOCX-async path.
     if not (_db_canonical and _db_canonical.strip()):
         try:
+            _export_fws_pa = (
+                data.get('selected_frameworks') or data.get('frameworks') or [])
+            _export_dtype_pa = str(
+                data.get('document_type') or _art_type_a).strip().lower()
             _enforce_export_domain_isolation_from_text(
                 content,
                 domain=domain,
                 language=lang,
+                frameworks=_export_fws_pa,
                 artifact_type=_art_type_a,
                 artifact_id=_art_id_a,
+                document_type=_export_dtype_pa,
             )
         except DomainContaminationError as _dce_p:
             print(f'[EXPORT-DOMAIN-GUARD] DOCX-async client-payload denied for '
@@ -78582,6 +79485,78 @@ def api_generate_docx_async():
                 'artifact_type': _art_type_a,
                 'artifact_id': _art_id_a,
             }), 422
+
+    # REL3.3 — load complete saved artifact by strategy_id (not client fragment).
+    _rel33_skip_frag_da = False
+    _rel33_export_prep_da: dict = {}
+    _rel33_risk_sections_da: dict = {}
+    if _art_type_a == 'strategy':
+        try:
+            _rel33_uid_da = session.get('user_id', 0)
+            _rel33_sid_da = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id_a, _rel33_uid_da)
+            if _rel33_sid_da:
+                _rel33_prep_da = _rel33_prepare_strategy_export_content(
+                    _art_type_a, _art_id_a, _rel33_sid_da, _rel33_uid_da,
+                    domain=domain, document_type='strategy',
+                    route='docx-async', client_content=content)
+                if (_rel33_prep_da.get('skip_fragment_gate')
+                        and (_rel33_prep_da.get('content') or '').strip()):
+                    content = _rel33_prep_da['content']
+                    _db_canonical = content
+                    _rel33_skip_frag_da = True
+                    _rel33_export_prep_da = dict(_rel33_prep_da)
+        except Exception as _rel33_da_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] docx-async prepare failed: {_rel33_da_e}',
+                  flush=True)
+    elif _art_type_a == 'risk':
+        try:
+            _rel33_uid_da = session.get('user_id', 0)
+            _risk_id_da = data.get('risk_id') or _art_id_a
+            _rel33_prep_risk_da = _rel33_prepare_risk_export_content(
+                _art_id_a, _risk_id_da, _rel33_uid_da,
+                domain=domain, route='docx-async',
+                client_content=content)
+        except Exception as _rel33_risk_da_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] docx-async risk prepare failed: '
+                  f'{_rel33_risk_da_e}', flush=True)
+            return jsonify({
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
+            }), 422
+        # Honor export-prep fail-closed synchronously (before spawning the
+        # async task): hard-block, never fall back to client content.
+        _blk_resp_da = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_da, data, route='docx', domain=domain,
+            art_type=_art_type_a, art_id=_art_id_a, risk_id=_risk_id_da)
+        if _blk_resp_da is not None:
+            return _blk_resp_da
+        _rel33_export_prep_da = dict(_rel33_prep_risk_da)
+        _rel33_risk_sections_da = dict(
+            _rel33_prep_risk_da.get('sections') or {})
+        if (_rel33_prep_risk_da.get('content') or '').strip():
+            content = _rel33_prep_risk_da['content']
+            _db_canonical = content
+    elif _art_type_a == 'gap_assessment':
+        try:
+            _rel33_uid_da = session.get('user_id', 0)
+            _rel33_sid_ga = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id_a, _rel33_uid_da)
+            if _rel33_sid_ga:
+                _rel33_prep_ga = _rel33_prepare_gap_assessment_export_content(
+                    _art_id_a, _rel33_sid_ga, _rel33_uid_da,
+                    domain=domain, route='docx-async',
+                    client_content=content)
+                _rel33_export_prep_da = dict(_rel33_prep_ga)
+                if (_rel33_prep_ga.get('skip_fragment_gate')
+                        and (_rel33_prep_ga.get('content') or '').strip()):
+                    content = _rel33_prep_ga['content']
+                    _db_canonical = content
+                    _rel33_skip_frag_da = True
+        except Exception as _rel33_ga_da_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] docx-async gap_assessment prepare failed: '
+                  f'{_rel33_ga_da_e}', flush=True)
 
     # PR-5B.7C.1: synchronous fragment gate — refuse early so the user
     # gets a clear error instead of a queued task that produces a
@@ -78598,12 +79573,13 @@ def api_generate_docx_async():
             f'db_canon_len={len(_db_canonical or "")} '
             f'db_sections={sorted(_db_secs_da)} '
             f'final_content_len={len(content or "")} '
-            f'final_sections={sorted(_client_secs_da)}',
+            f'final_sections={sorted(_client_secs_da)} '
+            f'rel33_skip_fragment={_rel33_skip_frag_da}',
             flush=True,
         )
     except Exception:
         pass
-    if _art_type_a == 'strategy':
+    if _art_type_a == 'strategy' and not _rel33_skip_frag_da:
         _is_frag_da, _found_da, _why_da = _is_strategy_export_fragment(content)
         if _is_frag_da:
             print(
@@ -78648,11 +79624,17 @@ def api_generate_docx_async():
     _export_uid = session.get('user_id', 0)
     _export_strategy_id = (
         data.get('strategy_id') or _art_id_a)
+    _export_risk_id = data.get('risk_id') or (
+        _art_id_a if _art_type_a == 'risk' else None)
     _export_numeric_sid = _resolve_numeric_strategy_id(
         _export_strategy_id, _export_uid)
     _export_db_bundle = (
         _load_sealed_strategy_export_bundle(_export_numeric_sid, _export_uid)
-        if _export_numeric_sid else {})
+        if _export_numeric_sid and _art_type_a == 'strategy' else {})
+    # REL3.3 staging-only diagnostic gate — captured in the request context so
+    # the background thread (which has no request) can still emit the routing
+    # diagnostic on failure. Never enabled in production.
+    _debug_evidence_docx = _rel33_debug_export_allowed(data)
 
     def _build():
         import tempfile
@@ -78686,13 +79668,36 @@ def api_generate_docx_async():
                             _rehyd.get('final_markdown') or _async_content)
                 except Exception:  # noqa: BLE001
                     pass
+                if _rel33_export_prep_da.get('skip_fragment_gate'):
+                    _prep_secs = _rel33_export_prep_da.get('sections') or {}
+                    _prep_content = _rel33_export_prep_da.get('content') or ''
+                    if _prep_content.strip():
+                        _async_content = _prep_content
+                    if _prep_secs:
+                        _async_sections = dict(_prep_secs)
+                if _rel33_risk_sections_da:
+                    _async_sections = dict(_rel33_risk_sections_da)
+                    if (_rel33_export_prep_da.get('content') or '').strip():
+                        _async_content = _rel33_export_prep_da['content']
                 if not _async_sections:
                     _async_sections = dict(
                         _export_db_bundle.get('sections') or {})
                 if not _async_sections:
-                    _async_sections = (
-                        _split_strategy_sections_by_h2(_async_content or '')
-                        or {})
+                    # REL3.3 — a risk artifact must never be sectionized by the
+                    # strategy splitter (it mints a bogus ``vision`` key from
+                    # risk prose and lets the strategy isolation contract
+                    # over-block). Use the risk-aware splitter instead.
+                    if _art_type_a in ('risk', 'risk_assessment'):
+                        from release_engine_v3.rel33_risk_artifact import (
+                            normalize_risk_export_sections as _norm_risk_secs,
+                            _split_risk_markdown as _split_risk_md,
+                        )
+                        _async_sections = _norm_risk_secs(
+                            _split_risk_md(_async_content or '')) or {}
+                    else:
+                        _async_sections = (
+                            _split_strategy_sections_by_h2(_async_content or '')
+                            or {})
                 _async_hash = ''
                 try:
                     _ach = _rel2_backend_callables().get('content_hash')
@@ -78707,6 +79712,8 @@ def api_generate_docx_async():
                     _async_cm['domain'] = _domain
                 _async_sid = str(
                     _export_numeric_sid or _export_strategy_id or '')
+                if _art_type_a == 'risk':
+                    _async_sid = str(_export_risk_id or _art_id_a or '')
                 _async_art = {
                     'sections': _async_sections,
                     'final_markdown': _async_content,
@@ -78714,6 +79721,8 @@ def api_generate_docx_async():
                     'sealed': bool(_cyber_sealed_docx_inner or _async_sections),
                     'strategy_id': _async_sid,
                     'artifact_id': str(_art_id_a or _async_sid or ''),
+                    'artifact_type': _art_type_a,
+                    'document_type': _rel33_export_document_type(_art_type_a),
                     '_numeric_strategy_id': str(_export_numeric_sid or ''),
                     '_rel32_export_user_id': _export_uid,
                     'final_hash': (
@@ -78789,7 +79798,41 @@ def api_generate_docx_async():
         except Exception as exc:
             import traceback
             print(f"ASYNC DOCX ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _export_store[_task_id] = {'status': 'error', 'error': str(exc)}
+            _err_entry_docx = {'status': 'error', 'error': str(exc)}
+            if _debug_evidence_docx:
+                try:
+                    _err_entry_docx['diag'] = {
+                        'reason': 'rel3_export_evidence_failed',
+                        'blocking_errors': [str(exc)],
+                        'rel33_export_gate_routing_diag': (
+                            build_rel33_export_gate_routing_diag(
+                                output_type='docx',
+                                route='docx',
+                                domain=_domain,
+                                document_type=_rel33_export_document_type(
+                                    _art_type_a),
+                                artifact_type=_art_type_a,
+                                artifact_id=str(_art_id_a or ''),
+                                risk_id=str(_export_risk_id or ''),
+                                export_handler='api_generate_docx_async',
+                                blocking_errors=[str(exc)],
+                                passed=False,
+                            )),
+                    }
+                    # Surface the export-prep contract decision on the async
+                    # failing path (observability for a contract that
+                    # passed-without-repair or repaired-then-failed).
+                    try:
+                        _pp = (_rel33_export_prep_da or {}).get(
+                            'export_prep_diag')
+                        if _pp:
+                            _err_entry_docx['diag'][
+                                'rel33_risk_export_prep_contract'] = _pp
+                    except Exception:  # noqa: BLE001
+                        pass
+                except Exception:  # noqa: BLE001
+                    pass
+            _export_store[_task_id] = _err_entry_docx
 
     threading.Thread(target=_build, daemon=True).start()
     return jsonify({'task_id': task_id})
@@ -78812,7 +79855,17 @@ def api_export_status(task_id):
     if status == 'done':
         return jsonify({'status': 'done', 'task_id': task_id})
     elif status == 'error':
-        return jsonify({'status': 'error', 'error': entry.get('error', 'Unknown error')}), 500
+        _resp = {'status': 'error', 'error': entry.get('error', 'Unknown error')}
+        # REL3.3 staging-only diagnostic echo (double-gated: stashed only when
+        # the export was started with the debug flag + allowed, and returned
+        # only when this status request also asks for it and is allowed).
+        if entry.get('diag') and _rel33_debug_export_allowed({
+                'rel33_debug_export_evidence': (
+                    request.args.get('rel33_debug_export_evidence')
+                    or (request.get_json(silent=True) or {}).get(
+                        'rel33_debug_export_evidence'))}):
+            _resp['rel33_debug_export_evidence'] = entry.get('diag')
+        return jsonify(_resp), 500
     return jsonify({'status': 'pending'})
 
 
@@ -78893,6 +79946,26 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             )
             _rel32_docx_block = guard_rel32_docx_export_bypass('_build_docx_bytes')
             if _rel32_docx_block:
+                try:
+                    from release_engine_v3.rel33_docx_export_authority import (
+                        emit_rel33_docx_export_authority_check,
+                        evaluate_rel33_docx_export_authority,
+                    )
+                    emit_rel33_docx_export_authority_check(
+                        evaluate_rel33_docx_export_authority(
+                            route='_build_docx_bytes',
+                            domain=domain or 'cyber',
+                            document_type=doc_type,
+                            artifact_id='',
+                            build_docx_bytes_called=True,
+                            called_from_authorized_export_pipeline=False,
+                            frozen_artifact_loaded=bool(sections),
+                            sections_json_loaded=bool(sections),
+                            export_authority='legacy_route',
+                            bypass_blocker=_rel32_docx_block,
+                        ))
+                except Exception:  # noqa: BLE001
+                    pass
                 raise ValueError(_rel32_docx_block)
         except ValueError:
             raise
@@ -79775,7 +80848,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 except Exception:  # noqa: BLE001
                     _cy22_docx_sections = {}
             if (isinstance(sections, dict) and sections
-                    and not str(_cy22_docx_sections.get('traceability') or '').strip()):
+                    and not str(
+                        _cy22_docx_sections.get('traceability') or '').strip()):
                 raise ValueError(
                     'rel32_docx_renderer_missing_frozen_traceability')
             try:
@@ -80763,17 +81837,28 @@ def api_generate_docx():
     sector   = data.get('sector', '').strip()
     doc_type = data.get('doc_type', 'Strategy Document')
     # Strict resolution — never silently default to Cyber Security on export.
+    # REL3.3 P0 — when the request payload omits the domain, resolve it from
+    # the saved DB/artifact metadata before failing closed.
     try:
         domain = resolve_export_domain(data.get('domain', ''),
                                        data.get('artifact_type', 'strategy'))
-    except DomainResolutionError as _de:
-        print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
-        return jsonify({'error': 'Missing or unsupported strategy domain '
-                                  'for DOCX export.'}), 400
+    except DomainResolutionError:
+        try:
+            domain = _rel33_resolve_export_domain_with_db_fallback(
+                data,
+                data.get('artifact_type', 'strategy'),
+                data.get('artifact_id'),
+                session.get('user_id', 0),
+                route='docx')
+        except DomainResolutionError as _de:
+            print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
+            return jsonify({'error': 'Missing or unsupported strategy domain '
+                                     'for DOCX export.',
+                            'reason': 'rel33_export_domain_missing'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _art_id   = data.get('artifact_id')
-    _art_type = data.get('artifact_type', 'strategy')
+    _art_type = _rel33_normalize_export_artifact_type(data)
     _gen_mode = data.get('generation_mode', 'drafting')
     try:
         _gate = _enforce_export_gate(_art_type, _art_id, content, _gen_mode, session.get('user_id', 0))
@@ -80787,7 +81872,10 @@ def api_generate_docx():
     # Same parity fix as PDF — ensures sync DOCX export uses the repair-
     # processed sections_json from the DB rather than stale client content.
     try:
-        _db_canonical_d = _canonical_content_from_db(_art_type, _art_id, session.get('user_id', 0))
+        _db_canonical_d = _canonical_content_from_db(
+            _art_type, _art_id, session.get('user_id', 0),
+            request_frameworks=(
+                data.get('selected_frameworks') or data.get('frameworks')))
     except DomainContaminationError as _dce:
         # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
         print(f'[EXPORT-DOMAIN-GUARD] DOCX denied for {_art_type}/{_art_id}: {_dce}',
@@ -80830,29 +81918,85 @@ def api_generate_docx():
         # PR-5B.7B.3: client-payload fallback — guard the request body too,
         # otherwise an unsaved/legacy artifact could still ship contaminated
         # content. Domain here is the request-resolved canonical name.
+        if not data.get('_rel33_compiler_frozen_authority'):
+            try:
+                _export_fws_d = (
+                    data.get('selected_frameworks') or data.get('frameworks') or [])
+                _export_dtype_d = str(
+                    data.get('document_type') or _art_type).strip().lower()
+                _enforce_export_domain_isolation_from_text(
+                    content,
+                    domain=domain,
+                    language=lang,
+                    frameworks=_export_fws_d,
+                    artifact_type=_art_type,
+                    artifact_id=_art_id,
+                    document_type=_export_dtype_d,
+                )
+            except DomainContaminationError as _dce_p:
+                print(f'[EXPORT-DOMAIN-GUARD] DOCX client-payload denied for '
+                      f'{_art_type}/{_art_id}: {_dce_p}', flush=True)
+                return jsonify({
+                    'error': 'Export blocked — saved strategy contains cross-domain content',
+                    'reason': 'domain_contamination',
+                    'domain': domain,
+                    'artifact_type': _art_type,
+                    'artifact_id': _art_id,
+                }), 422
+
+    _rel33_skip_frag_d = False
+    _rel33_risk_sections_d: dict = {}
+    if _art_type == 'strategy':
         try:
-            _enforce_export_domain_isolation_from_text(
-                content,
-                domain=domain,
-                language=lang,
-                artifact_type=_art_type,
-                artifact_id=_art_id,
-            )
-        except DomainContaminationError as _dce_p:
-            print(f'[EXPORT-DOMAIN-GUARD] DOCX client-payload denied for '
-                  f'{_art_type}/{_art_id}: {_dce_p}', flush=True)
+            _rel33_uid_d = session.get('user_id', 0)
+            _rel33_sid_d = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id, _rel33_uid_d)
+            if _rel33_sid_d:
+                _rel33_prep_d = _rel33_prepare_strategy_export_content(
+                    _art_type, _art_id, _rel33_sid_d, _rel33_uid_d,
+                    domain=domain, document_type='strategy',
+                    route='docx', client_content=content)
+                if (_rel33_prep_d.get('skip_fragment_gate')
+                        and (_rel33_prep_d.get('content') or '').strip()):
+                    content = _rel33_prep_d['content']
+                    _db_canonical_d = content
+                    _rel33_skip_frag_d = True
+        except Exception as _rel33_d_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] docx prepare failed: {_rel33_d_e}',
+                  flush=True)
+    elif _art_type == 'risk':
+        try:
+            _rel33_uid_d = session.get('user_id', 0)
+            _risk_id_d = data.get('risk_id') or _art_id
+            _rel33_prep_risk_d = _rel33_prepare_risk_export_content(
+                _art_id, _risk_id_d, _rel33_uid_d,
+                domain=domain, route='docx', client_content=content)
+        except Exception as _rel33_risk_d_e:  # noqa: BLE001
+            # Fail CLOSED on an unexpected prep exception — never continue with
+            # unrepaired client content.
+            print(f'[REL33-EXPORT] docx risk prepare failed: {_rel33_risk_d_e}',
+                  flush=True)
             return jsonify({
-                'error': 'Export blocked — saved strategy contains cross-domain content',
-                'reason': 'domain_contamination',
-                'domain': domain,
-                'artifact_type': _art_type,
-                'artifact_id': _art_id,
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
             }), 422
+        # Honor export-prep fail-closed: hard-block, no client fallback.
+        _blk_resp_d = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_d, data, route='docx', domain=domain,
+            art_type=_art_type, art_id=_art_id, risk_id=_risk_id_d)
+        if _blk_resp_d is not None:
+            return _blk_resp_d
+        _rel33_risk_sections_d = dict(
+            _rel33_prep_risk_d.get('sections') or {})
+        if (_rel33_prep_risk_d.get('content') or '').strip():
+            content = _rel33_prep_risk_d['content']
+            _db_canonical_d = content
 
     # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
     # source won (DB canonical OR client payload). See PDF route for the
     # full rationale (kpis+confidence fragment bug).
-    if _art_type == 'strategy':
+    if _art_type == 'strategy' and not _rel33_skip_frag_d:
         _is_frag_d, _found_secs_d, _why_d = _is_strategy_export_fragment(content)
         if _is_frag_d:
             print(
@@ -80947,7 +82091,23 @@ def api_generate_docx():
         _resolved_docx_sid = (
             _resolve_numeric_strategy_id(_art_id, session.get('user_id', 0))
             or _art_id or data.get('strategy_id') or '')
-        _export_sections = _split_strategy_sections_by_h2(content or '') or {}
+        if _art_type in ('risk', 'risk_assessment'):
+            # REL3.3 — never sectionize a risk artifact with the strategy
+            # splitter (mints a bogus ``vision`` key). Prefer resolved risk
+            # sections; fall back to the risk-aware markdown splitter.
+            if _rel33_risk_sections_d:
+                _export_sections = dict(_rel33_risk_sections_d)
+            else:
+                from release_engine_v3.rel33_risk_artifact import (
+                    normalize_risk_export_sections as _norm_risk_secs_d,
+                    _split_risk_markdown as _split_risk_md_d,
+                )
+                _export_sections = _norm_risk_secs_d(
+                    _split_risk_md_d(content or '')) or {}
+        else:
+            _export_sections = _split_strategy_sections_by_h2(content or '') or {}
+            if _rel33_risk_sections_d:
+                _export_sections = dict(_rel33_risk_sections_d)
         _export_hash = ''
         try:
             _ch = _rel2_export_be.get('content_hash')
@@ -81142,7 +82302,7 @@ def api_generate_docx():
                 f'errors={_rel26_errs[:8]}',
                 flush=True,
             )
-            return jsonify({
+            _docx_err_body = {
                 'error': (
                     'Export blocked — actual DOCX evidence '
                     'validation failed'),
@@ -81161,7 +82321,29 @@ def api_generate_docx():
                         'docx_missing_sections'),
                     'action_taken': _rel26_gate.get('action_taken'),
                 },
-            }), 422
+            }
+            # REL3.3 staging-only routing diagnostic (gated). Never alters the
+            # 422 outcome; adds visibility for DOCX failures (parity with PDF).
+            if _rel33_debug_export_allowed(data):
+                try:
+                    _docx_err_body['rel33_export_gate_routing_diag'] = (
+                        build_rel33_export_gate_routing_diag(
+                            output_type='docx',
+                            route='docx',
+                            domain=domain,
+                            document_type=_rel33_export_document_type(
+                                _art_type),
+                            artifact_type=_art_type,
+                            artifact_id=(data.get('artifact_id')
+                                         or _art_id or ''),
+                            risk_id=(data.get('risk_id') or ''),
+                            export_handler='api_generate_docx',
+                            blocking_errors=list(_rel26_errs or []),
+                            passed=False,
+                        ))
+                except Exception:  # noqa: BLE001
+                    pass
+            return jsonify(_docx_err_body), 422
 
         from flask import Response, stream_with_context
 
@@ -81478,19 +82660,30 @@ def api_generate_pdf():
     domain_pdf   = data.get('domain', '').strip()
     # Strict resolution for exports — never silently default to Cyber Security.
     # When the artifact is a strategy, missing/unknown domain is a hard error.
+    # REL3.3 P0 — when the request payload omits the domain, resolve it from
+    # the saved DB/artifact metadata before failing closed.
     if data.get('artifact_type', 'strategy') == 'strategy':
         try:
             _dcp = normalize_domain_strict(domain_pdf or None)
             domain_pdf = _DOMAIN_DISPLAY_EN[_dcp]
-        except DomainResolutionError as _de:
-            print(f"[DOMAIN] PDF export rejected: {_de}", flush=True)
-            return jsonify({'error': 'Missing or unsupported strategy domain '
-                                      'for PDF export.'}), 400
+        except DomainResolutionError:
+            try:
+                domain_pdf = _rel33_resolve_export_domain_with_db_fallback(
+                    data,
+                    data.get('artifact_type', 'strategy'),
+                    data.get('artifact_id'),
+                    session.get('user_id', 0),
+                    route='pdf')
+            except DomainResolutionError as _de:
+                print(f"[DOMAIN] PDF export rejected: {_de}", flush=True)
+                return jsonify({'error': 'Missing or unsupported strategy '
+                                         'domain for PDF export.',
+                                'reason': 'rel33_export_domain_missing'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _gen_mode_p = data.get('generation_mode', 'drafting')
     _art_id_p   = data.get('artifact_id')
-    _art_type_p = data.get('artifact_type', 'strategy')
+    _art_type_p = _rel33_normalize_export_artifact_type(data)
     try:
         _gate_p = _enforce_export_gate(_art_type_p, _art_id_p, content, _gen_mode_p, session.get('user_id', 0))
         if not _gate_p['allowed']:
@@ -81503,7 +82696,10 @@ def api_generate_pdf():
     # Sync PDF endpoint is used by async internally; we ALSO apply canonical
     # resolution here so any direct caller gets the same parity guarantee.
     try:
-        _db_canonical_p = _canonical_content_from_db(_art_type_p, _art_id_p, session.get('user_id', 0))
+        _db_canonical_p = _canonical_content_from_db(
+            _art_type_p, _art_id_p, session.get('user_id', 0),
+            request_frameworks=(
+                data.get('selected_frameworks') or data.get('frameworks')))
     except DomainContaminationError as _dce:
         # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
         print(f'[EXPORT-DOMAIN-GUARD] PDF denied for {_art_type_p}/{_art_id_p}: {_dce}',
@@ -81544,24 +82740,77 @@ def api_generate_pdf():
         content = _db_canonical_p
     else:
         # PR-5B.7B.3: client-payload fallback — guard the request body too.
+        if not data.get('_rel33_compiler_frozen_authority'):
+            try:
+                _export_fws_p = (
+                    data.get('selected_frameworks') or data.get('frameworks') or [])
+                _export_dtype_p = str(
+                    data.get('document_type') or _art_type_p).strip().lower()
+                _enforce_export_domain_isolation_from_text(
+                    content,
+                    domain=domain_pdf,
+                    language=lang,
+                    frameworks=_export_fws_p,
+                    artifact_type=_art_type_p,
+                    artifact_id=_art_id_p,
+                    document_type=_export_dtype_p,
+                )
+            except DomainContaminationError as _dce_p:
+                print(f'[EXPORT-DOMAIN-GUARD] PDF client-payload denied for '
+                      f'{_art_type_p}/{_art_id_p}: {_dce_p}', flush=True)
+                return jsonify({
+                    'error': 'Export blocked — saved strategy contains cross-domain content',
+                    'reason': 'domain_contamination',
+                    'domain': domain_pdf,
+                    'artifact_type': _art_type_p,
+                    'artifact_id': _art_id_p,
+                }), 422
+
+    _rel33_skip_frag_p = False
+    _rel33_risk_sections_p: dict = {}
+    if _art_type_p == 'strategy':
         try:
-            _enforce_export_domain_isolation_from_text(
-                content,
-                domain=domain_pdf,
-                language=lang,
-                artifact_type=_art_type_p,
-                artifact_id=_art_id_p,
-            )
-        except DomainContaminationError as _dce_p:
-            print(f'[EXPORT-DOMAIN-GUARD] PDF client-payload denied for '
-                  f'{_art_type_p}/{_art_id_p}: {_dce_p}', flush=True)
+            _rel33_uid_p = session.get('user_id', 0)
+            _rel33_sid_p = _resolve_numeric_strategy_id(
+                data.get('strategy_id') or _art_id_p, _rel33_uid_p)
+            if _rel33_sid_p:
+                _rel33_prep_p = _rel33_prepare_strategy_export_content(
+                    _art_type_p, _art_id_p, _rel33_sid_p, _rel33_uid_p,
+                    domain=domain_pdf, document_type='strategy',
+                    route='pdf', client_content=content)
+                if (_rel33_prep_p.get('skip_fragment_gate')
+                        and (_rel33_prep_p.get('content') or '').strip()):
+                    content = _rel33_prep_p['content']
+                    _db_canonical_p = content
+                    _rel33_skip_frag_p = True
+        except Exception as _rel33_p_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] pdf prepare failed: {_rel33_p_e}',
+                  flush=True)
+    elif _art_type_p == 'risk':
+        try:
+            _rel33_uid_p = session.get('user_id', 0)
+            _risk_id_p = data.get('risk_id') or _art_id_p
+            _rel33_prep_risk_p = _rel33_prepare_risk_export_content(
+                _art_id_p, _risk_id_p, _rel33_uid_p,
+                domain=domain_pdf, route='pdf', client_content=content)
+        except Exception as _rel33_risk_p_e:  # noqa: BLE001
+            print(f'[REL33-EXPORT] pdf risk prepare failed: {_rel33_risk_p_e}',
+                  flush=True)
             return jsonify({
-                'error': 'Export blocked — saved strategy contains cross-domain content',
-                'reason': 'domain_contamination',
-                'domain': domain_pdf,
-                'artifact_type': _art_type_p,
-                'artifact_id': _art_id_p,
+                'error': 'Export blocked — risk export-prep contract exception',
+                'reason': 'rel3_export_evidence_failed',
+                'blocking_errors': ['rel33_risk_export_prep_contract_exception'],
             }), 422
+        _blk_resp_p = _rel33_risk_prep_hard_block_response(
+            _rel33_prep_risk_p, data, route='pdf', domain=domain_pdf,
+            art_type=_art_type_p, art_id=_art_id_p, risk_id=_risk_id_p)
+        if _blk_resp_p is not None:
+            return _blk_resp_p
+        _rel33_risk_sections_p = dict(
+            _rel33_prep_risk_p.get('sections') or {})
+        if (_rel33_prep_risk_p.get('content') or '').strip():
+            content = _rel33_prep_risk_p['content']
+            _db_canonical_p = content
 
     # PR-5B.7C.1: FINAL completeness gate — applied to whichever content
     # source won (DB canonical OR client payload). The previous code only
@@ -81572,7 +82821,7 @@ def api_generate_pdf():
     # _canonical_content_from_db now refuses to return such fragments,
     # but we keep this final gate as defence-in-depth so the build
     # function never sees a fragmentary strategy.
-    if _art_type_p == 'strategy':
+    if _art_type_p == 'strategy' and not _rel33_skip_frag_p:
         _is_frag_p, _found_secs_p, _why_p = _is_strategy_export_fragment(content)
         if _is_frag_p:
             print(
@@ -81620,8 +82869,23 @@ def api_generate_pdf():
     ):
         _selected_fws_pdf = (
             data.get('selected_frameworks') or data.get('frameworks') or [])
-        _pdf_sections_early = (
-            _split_strategy_sections_by_h2(content or '') or {})
+        # REL3.3 — a risk artifact must carry document_type/artifact_type and
+        # risk-native sections into the authoritative export (mirrors the DOCX
+        # path). Without document_type the frozen-lock defaults to 'strategy'
+        # and blocks the risk PDF with rel32_incomplete_frozen_artifact.
+        if _art_type_p in ('risk', 'risk_assessment'):
+            if _rel33_risk_sections_p:
+                _pdf_sections_early = dict(_rel33_risk_sections_p)
+            else:
+                from release_engine_v3.rel33_risk_artifact import (
+                    normalize_risk_export_sections as _norm_risk_secs_pe,
+                    _split_risk_markdown as _split_risk_md_pe,
+                )
+                _pdf_sections_early = _norm_risk_secs_pe(
+                    _split_risk_md_pe(content or '')) or {}
+        else:
+            _pdf_sections_early = (
+                _split_strategy_sections_by_h2(content or '') or {})
         _pdf_hash_early = ''
         try:
             _pch = _rel2_backend_callables().get('content_hash')
@@ -81651,12 +82915,18 @@ def api_generate_pdf():
                     'sealed': bool(_cyber_sealed_pdf),
                     'strategy_id': str(_resolved_pdf_sid or ''),
                     'artifact_id': str(_art_id_p or _resolved_pdf_sid or ''),
+                    'artifact_type': _art_type_p,
+                    'document_type': _rel33_export_document_type(_art_type_p),
+                    'risk_id': (data.get('risk_id')
+                                if _art_type_p in ('risk', 'risk_assessment')
+                                else None),
                     '_numeric_strategy_id': str(
                         _resolve_numeric_strategy_id(_art_id_p, _pdf_uid) or ''),
                     'final_hash': _pdf_hash_early,
                     'contract_meta': {
                         'lang': lang,
                         'domain': domain_pdf,
+                        'document_type': _rel33_export_document_type(_art_type_p),
                         'selected_frameworks': _selected_fws_pdf,
                     },
                 },
@@ -81696,14 +82966,71 @@ def api_generate_pdf():
             _rel31_export, _rel31_evidence = _rel31_pdf
             if not _rel31_evidence.export_return_allowed:
                 _blk = list(_rel31_evidence.blocking_errors or [])[:12]
-                return jsonify({
+                _pdf_err_body = {
                     'error': (
                         'Export blocked — actual PDF evidence '
                         'validation failed'),
                     'reason': 'rel3_export_evidence_failed',
                     'blocking_errors': _blk,
                     'gate': _rel31_evidence.gate or {},
-                }), 422
+                }
+                # REL3.3 staging-only diagnostic echo (gated). Never alters the
+                # 422 outcome; only adds visibility fields for staging probes.
+                if _rel33_debug_export_allowed(data):
+                    try:
+                        _pdf_err_body['rel33_debug'] = (
+                            build_rel33_erm_pdf_evidence_diag(
+                                pdf_bytes=(
+                                    getattr(_rel31_export, 'pdf_bytes', b'')
+                                    or getattr(_rel31_export, 'bytes_data', b'')
+                                    or b''),
+                                domain=domain_pdf,
+                                document_type=_art_type_p,
+                                artifact_type=_art_type_p,
+                                risk_id=(data.get('risk_id')
+                                         or data.get('artifact_id') or ''),
+                                route='pdf',
+                                sections=_rel33_risk_sections_p,
+                                blocking_errors=list(
+                                    _rel31_evidence.blocking_errors or []),
+                                evidence_gate=_rel31_evidence.gate or {},
+                            ))
+                        _pdf_err_body['blocking_errors'] = list(
+                            _rel31_evidence.blocking_errors or [])
+                    except Exception as _diag_e:  # noqa: BLE001
+                        _pdf_err_body['rel33_debug'] = {
+                            'diag_error': str(_diag_e)}
+                    try:
+                        _pdf_err_body['rel33_export_gate_routing_diag'] = (
+                            build_rel33_export_gate_routing_diag(
+                                output_type='pdf',
+                                route='pdf',
+                                domain=domain_pdf,
+                                document_type=_rel33_export_document_type(
+                                    _art_type_p),
+                                artifact_type=_art_type_p,
+                                artifact_id=data.get('artifact_id') or '',
+                                risk_id=(data.get('risk_id')
+                                         or data.get('artifact_id') or ''),
+                                export_handler='api_generate_pdf',
+                                blocking_errors=list(
+                                    _rel31_evidence.blocking_errors or []),
+                                passed=False,
+                            ))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Surface the export-prep contract decision (it passed to
+                    # reach here) for full visibility of the risk export path.
+                    try:
+                        if _art_type_p in ('risk', 'risk_assessment') and (
+                                '_rel33_prep_risk_p' in dir()):
+                            _pp = locals().get('_rel33_prep_risk_p') or {}
+                            if _pp.get('export_prep_diag'):
+                                _pdf_err_body['rel33_risk_export_prep_contract'] = (
+                                    _pp.get('export_prep_diag'))
+                    except Exception:  # noqa: BLE001
+                        pass
+                return jsonify(_pdf_err_body), 422
             from flask import send_file
             _pdf_out = _rel31_export.pdf_bytes or _rel31_export.bytes_data or b''
             return send_file(
@@ -86383,6 +87710,8 @@ def api_generate_pdf():
             and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
         ):
             _pdf_sections = _split_strategy_sections_by_h2(content or '') or {}
+            if _rel33_risk_sections_p:
+                _pdf_sections = dict(_rel33_risk_sections_p)
             _pdf_hash = ''
             try:
                 _pch = _rel2_backend_callables().get('content_hash')
@@ -88664,7 +89993,11 @@ def _enforce_export_domain_isolation(sections_dict, domain, language,
                                      frameworks=None,
                                      artifact_type: str = "strategy",
                                      artifact_id=None,
-                                     keys_to_check=None) -> None:
+                                     keys_to_check=None,
+                                     route: str = '',
+                                     row_domain: str = '',
+                                     sealed_db_authority: bool = False,
+                                     document_type: str = 'strategy') -> None:
     """Raise DomainContaminationError if any section in ``sections_dict``
     contains forbidden cross-domain terms for the resolved ``domain``.
 
@@ -88676,6 +90009,9 @@ def _enforce_export_domain_isolation(sections_dict, domain, language,
     defaulting to Cyber Security. Callers MUST convert to HTTP 422.
     """
     if (artifact_type or "strategy") != "strategy":
+        return
+    _dtype = str(document_type or artifact_type or 'strategy').strip().lower()
+    if _dtype in ('gap_assessment', 'risk', 'risk_assessment'):
         return
     if not isinstance(sections_dict, dict):
         return
@@ -88690,34 +90026,51 @@ def _enforce_export_domain_isolation(sections_dict, domain, language,
         print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
               f'domain_unresolvable raw={domain!r}', flush=True)
         raise DomainContaminationError(msg)
-    contamination = validate_domain_isolation(
-        sections_dict, domain_context, keys_to_check=keys_to_check,
+    from release_engine_v3.rel33_domain_guard import evaluate_export_domain_guard
+    from release_engine_v3.rel33_authority import is_rel33_compiler_first
+
+    def _validate(secs, ctx):
+        return validate_domain_isolation(
+            secs, ctx, keys_to_check=keys_to_check)
+
+    def _compiler_first_for_guard(**kw):
+        return is_rel33_compiler_first(
+            domain=kw.get('domain', domain),
+            lang=kw.get('lang', language),
+            document_type=kw.get('document_type', _dtype),
+            flags={
+                'rel3': bool(_PRCY28_VERSION_FLAGS.get('rel3')),
+                'rel31': bool(_PRCY28_VERSION_FLAGS.get('rel31')),
+            },
+        )
+
+    evaluate_export_domain_guard(
+        sections_dict,
+        domain=domain,
+        language=language,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        route=route or 'export_domain_isolation',
+        document_type=_dtype,
+        row_domain=row_domain or domain,
+        selected_frameworks=frameworks,
+        validate_fn=_validate,
+        domain_context_fn=get_strategy_domain_context,
+        normalize_domain_fn=normalize_domain,
+        contamination_error_cls=DomainContaminationError,
+        is_compiler_first_fn=_compiler_first_for_guard,
+        sealed_db_authority=sealed_db_authority,
     )
-    if contamination:
-        domain_code = domain_context.get("code", "")
-        summary = "; ".join(
-            f"{rec.get('section', '?')}={list(rec.get('found_terms', []))[:4]}"
-            for rec in contamination
-        )
-        print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
-              f'domain={domain_code} contaminated sections={summary}',
-              flush=True)
-        domain_display = domain_context.get("display_en") or domain_code or ""
-        raise DomainContaminationError(
-            f"Export blocked — saved strategy contains cross-domain content "
-            f"({domain_display}): {summary}"
-        )
-    # Clean — single-line trace so operators can audit pass-through too.
-    print(f'[EXPORT-DOMAIN-GUARD] artifact={artifact_type}/{artifact_id} '
-          f'domain={domain_context.get("code", "")} clean '
-          f'sections={len([k for k, v in sections_dict.items() if v])}',
-          flush=True)
 
 
 def _enforce_export_domain_isolation_from_text(text, domain, language,
                                                frameworks=None,
                                                artifact_type: str = "strategy",
-                                               artifact_id=None) -> None:
+                                               artifact_id=None,
+                                               route: str = '',
+                                               row_domain: str = '',
+                                               sealed_db_authority: bool = False,
+                                               document_type: str = 'strategy') -> None:
     """Flattened-text wrapper around _enforce_export_domain_isolation.
 
     Used by the ``content`` fallback inside _canonical_content_from_db (when
@@ -88731,6 +90084,9 @@ def _enforce_export_domain_isolation_from_text(text, domain, language,
     """
     if (artifact_type or "strategy") != "strategy":
         return
+    _dtype = str(document_type or artifact_type or 'strategy').strip().lower()
+    if _dtype in ('gap_assessment', 'risk', 'risk_assessment'):
+        return
     if not isinstance(text, str) or not text.strip():
         return
     _enforce_export_domain_isolation(
@@ -88741,6 +90097,10 @@ def _enforce_export_domain_isolation_from_text(text, domain, language,
         artifact_type=artifact_type,
         artifact_id=artifact_id,
         keys_to_check=["flattened"],
+        route=route or 'export_domain_isolation_from_text',
+        row_domain=row_domain or domain,
+        sealed_db_authority=sealed_db_authority,
+        document_type=_dtype,
     )
 
 
@@ -88918,8 +90278,545 @@ def _is_strategy_export_fragment(text: str):
     return False, found, ''
 
 
+def _rel33_export_document_type(artifact_type: str) -> str:
+    """Preserve gap_assessment / risk document types on export routes."""
+    at = str(artifact_type or 'strategy').strip().lower()
+    if at in ('gap_assessment', 'risk'):
+        return at
+    if at in ('risk_assessment',):
+        return 'risk'
+    return 'strategy'
+
+
+def _rel33_debug_export_allowed(data: dict) -> bool:
+    """REL3.3 — gate for the staging-only export evidence diagnostic echo.
+
+    Returns True only when ALL hold:
+      * the request explicitly asks for it (``rel33_debug_export_evidence``);
+      * the runtime is staging/development (host contains 'staging' or is
+        localhost) OR an explicit debug/testing flag is set
+        (``REL33_STAGING_EXPORT_DIAG=1`` or a non-production ``FLASK_ENV``);
+    Never enabled in production. The diagnostic is returned only in the
+    export-status JSON, never embedded in generated document bytes, and never
+    contains secrets.
+    """
+    try:
+        if not (data or {}).get('rel33_debug_export_evidence'):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        host = str((request.host if request else '') or '').lower()
+    except Exception:  # noqa: BLE001
+        host = ''
+    if 'staging' in host or 'localhost' in host or '127.0.0.1' in host:
+        return True
+    env = str(os.getenv('FLASK_ENV', '') or '').strip().lower()
+    if env in ('staging', 'development', 'dev', 'test', 'testing'):
+        return True
+    if str(os.getenv('REL33_STAGING_EXPORT_DIAG', '') or '') == '1':
+        return True
+    return False
+
+
+def build_rel33_erm_pdf_evidence_diag(
+        *,
+        pdf_bytes: bytes,
+        domain: str,
+        document_type: str,
+        artifact_type: str,
+        risk_id,
+        route: str = 'pdf',
+        sections=None,
+        blocking_errors=None,
+        evidence_gate=None,
+) -> dict:
+    """Build [REL33-ERM-PDF-EVIDENCE-DIAG] for a failing ERM risk PDF export.
+
+    Diagnostic-only: computes visibility fields from the actual PDF bytes and
+    the risk-native sections. Never alters the pass/fail result and never
+    bypasses the evidence gate. Safe to call only behind the debug gate.
+    """
+    diag = {
+        'tag': '[REL33-ERM-PDF-EVIDENCE-DIAG]',
+        'route': str(route or 'pdf'),
+        'domain': str(domain or ''),
+        'document_type': str(document_type or ''),
+        'artifact_type': str(artifact_type or ''),
+        'risk_id': str(risk_id or ''),
+        'output_type': 'pdf',
+        'pdf_bytes_len': len(pdf_bytes or b''),
+        'pdf_text_len': 0,
+        'pdf_text_extract_source': '',
+        'pdf_text_has_null_bytes': False,
+        'arabic_font_registered': False,
+        'arabic_font_is_kufi': False,
+        'evidence_gate_name': 'rel3_authoritative_export_evidence',
+        'blocking_errors': list(blocking_errors or []),
+        'treatment_section_present': False,
+        'treatment_rows_expected': 0,
+        'treatment_rows_extracted': 0,
+        'treatment_headers_detected': [],
+        'treatment_keywords_detected': [],
+        'risk_register_rows_expected': 0,
+        'risk_register_rows_extracted': 0,
+        'risk_owner_rows_extracted': 0,
+        'kri_rows_extracted': 0,
+        'extraction_method': '',
+        'structured_table_count': 0,
+        'fallback_text_scan_used': False,
+        'normalized_arabic_scan_used': False,
+        'passed': not bool(blocking_errors),
+    }
+    _sections = dict(sections or {})
+    # PDF text extraction (pymupdf), never fatal.
+    text = ''
+    try:
+        import pymupdf as _pymupdf
+        _doc = _pymupdf.open(stream=pdf_bytes or b'', filetype='pdf')
+        text = '\n'.join(p.get_text() for p in _doc)
+        diag['pdf_text_extract_source'] = 'pymupdf'
+        try:
+            _tables = 0
+            for _p in _doc:
+                _found = _p.find_tables()
+                _tables += len(getattr(_found, 'tables', []) or [])
+            diag['structured_table_count'] = _tables
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as _pe:  # noqa: BLE001
+        diag['pdf_text_extract_source'] = f'error:{_pe!s:.60}'
+    diag['pdf_text_len'] = len(text)
+    diag['pdf_text_has_null_bytes'] = '\x00' in text
+    # Arabic font info.
+    try:
+        _fn, _fb = _ensure_arabic_pdf_font(required=False)
+        _fp = str(_ARABIC_PDF_FONT_PATH or '')
+        diag['arabic_font_registered'] = bool(_fp)
+        diag['arabic_font_is_kufi'] = 'kufi' in _fp.lower()
+    except Exception:  # noqa: BLE001
+        pass
+    # Risk treatment / register evidence (expected vs extracted from PDF text).
+    try:
+        from release_engine_v3.rel33_risk_treatment_evidence import (
+            count_treatment_rows_from_sections,
+            evaluate_erm_risk_treatment_evidence,
+        )
+        _risk_n, _treat_n = count_treatment_rows_from_sections(_sections)
+        diag['treatment_rows_expected'] = int(_treat_n)
+        diag['risk_register_rows_expected'] = int(_risk_n)
+        _tre = evaluate_erm_risk_treatment_evidence(
+            text, route='pdf', canonical_sections=_sections, pdf_blob=text)
+        diag['treatment_rows_extracted'] = int(
+            _tre.get('pdf_treatment_rows_extracted') or 0)
+        diag['extraction_method'] = str(_tre.get('evidence_source') or '')
+    except Exception:  # noqa: BLE001
+        pass
+    # Keyword / header visibility scan (best-effort, text-based).
+    try:
+        _low = text.lower()
+        _treat_headers = ['المعالج', 'خطة المعالجة', 'treatment', 'الضابط',
+                          'controls']
+        _treat_kw = ['المعالجة', 'المالك', 'الأولوية', 'mitigation', 'owner']
+        _kri_kw = ['kri', 'مؤشرات المخاطر', 'مؤشر مخاطر']
+        _owner_kw = ['المالك', 'مالك المخاطر', 'owner', 'risk owner']
+        diag['treatment_section_present'] = any(
+            (h in text) or (h in _low) for h in _treat_headers)
+        diag['treatment_headers_detected'] = [
+            h for h in _treat_headers if (h in text) or (h in _low)]
+        diag['treatment_keywords_detected'] = [
+            k for k in _treat_kw if (k in text) or (k in _low)]
+        diag['kri_rows_extracted'] = sum(
+            1 for k in _kri_kw if (k in text) or (k in _low))
+        diag['risk_owner_rows_extracted'] = sum(
+            1 for k in _owner_kw if (k in text) or (k in _low))
+        diag['fallback_text_scan_used'] = bool(text) and (
+            diag['structured_table_count'] == 0)
+        diag['normalized_arabic_scan_used'] = True
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(evidence_gate, dict) and evidence_gate:
+        # Surface only non-sensitive gate summary fields.
+        for _k in ('route_evidence_blocker', 'pdf_text_extraction_unreliable',
+                   'pdf_pass_from_actual_bytes', 'pdf_pass_from_render_fallback',
+                   'route_evidence_passed'):
+            if _k in evidence_gate:
+                diag[f'gate_{_k}'] = evidence_gate.get(_k)
+    return diag
+
+
+# REL3.3 — strategy-only export gates that are guarded off (by document_type)
+# for risk/risk_assessment artifacts. These are reported in the routing
+# diagnostic so a staging probe can confirm each was skipped for a risk export.
+_REL33_STRATEGY_ONLY_EXPORT_GATES = (
+    'roadmap_visible_row_count',
+    'strategy_section_parity_model_drift',
+    'strategy_kpi_main_schema',
+    'strategy_kpi_visible_drift',
+    'strategy_traceability_drift',
+    'strategy_pillars_completeness',
+    'strategy_vision_objectives_completeness',
+)
+# Risk-native gates that still run for a risk export (never skipped).
+_REL33_RISK_NATIVE_EXPORT_GATES = (
+    'risk_compiler_authority',
+    'risk_domain_isolation',
+    'risk_frozen_completeness',
+    'risk_treatment_evidence',
+    'actual_returned_file_evidence',
+    'non_empty_bytes',
+)
+
+
+def build_rel33_export_gate_routing_diag(
+        *,
+        output_type: str,
+        route: str = '',
+        domain: str = '',
+        document_type: str = '',
+        artifact_type: str = '',
+        artifact_id='',
+        risk_id='',
+        export_handler: str = '',
+        blocking_errors=None,
+        passed: bool = False,
+) -> dict:
+    """Build [REL33-EXPORT-GATE-ROUTING-DIAG] for a DOCX or PDF export.
+
+    Diagnostic-only, document_type-aware reflection of which export gates were
+    routed/applied/skipped. It NEVER alters the pass/fail outcome and never
+    bypasses a gate — it only reports the deterministic routing decision so a
+    staging probe (behind the rel33_debug_export_evidence flag) can confirm a
+    risk export used risk-native gates and skipped strategy-only gates.
+    """
+    _dtype = str(document_type or artifact_type or 'strategy').strip().lower()
+    _atype = str(artifact_type or document_type or 'strategy').strip().lower()
+    _is_risk = _dtype in ('risk', 'risk_assessment') or _atype in (
+        'risk', 'risk_assessment')
+    _blk = list(blocking_errors or [])
+    if _is_risk:
+        section_splitter = 'risk_native'
+        domain_guard = 'risk_native'
+        compiler_authority = 'risk_native'
+        model_drift_applied = False
+        model_drift_skip_reason = 'document_type_risk'
+        strategy_skipped = list(_REL33_STRATEGY_ONLY_EXPORT_GATES)
+        risk_applied = list(_REL33_RISK_NATIVE_EXPORT_GATES)
+        gates_applied = list(_REL33_RISK_NATIVE_EXPORT_GATES)
+        gates_skipped = list(_REL33_STRATEGY_ONLY_EXPORT_GATES)
+    else:
+        section_splitter = 'strategy_h2'
+        domain_guard = 'strategy_contract'
+        compiler_authority = (
+            'gap_native' if _dtype == 'gap_assessment' else 'strategy')
+        model_drift_applied = True
+        model_drift_skip_reason = ''
+        strategy_skipped = []
+        risk_applied = []
+        gates_applied = list(_REL33_STRATEGY_ONLY_EXPORT_GATES) + [
+            'actual_returned_file_evidence', 'non_empty_bytes']
+        gates_skipped = []
+    gates_considered = list(_REL33_STRATEGY_ONLY_EXPORT_GATES) + list(
+        _REL33_RISK_NATIVE_EXPORT_GATES)
+    return {
+        'tag': '[REL33-EXPORT-GATE-ROUTING-DIAG]',
+        'route': str(route or output_type or ''),
+        'output_type': str(output_type or ''),
+        'domain': str(domain or ''),
+        'document_type': _dtype,
+        'artifact_type': _atype,
+        'artifact_id': str(artifact_id or ''),
+        'risk_id': str(risk_id or ''),
+        'export_handler': str(export_handler or ''),
+        'exporter_selected': (
+            'risk_native_exporter' if _is_risk
+            else 'strategy_exporter'),
+        'section_splitter_selected': section_splitter,
+        'compiler_authority_selected': compiler_authority,
+        'gates_considered': gates_considered,
+        'gates_applied': gates_applied,
+        'gates_skipped': gates_skipped,
+        'strategy_gates_skipped_for_risk': strategy_skipped,
+        'risk_gates_applied': risk_applied,
+        'model_drift_gate_applied': model_drift_applied,
+        'model_drift_gate_skipped_reason': model_drift_skip_reason,
+        'domain_guard_selected': domain_guard,
+        'domain_guard_section_keys': sorted([
+            k for k in (
+                ('scenario', 'register', 'treatments', 'kri')
+                if _is_risk
+                else ('vision', 'pillars', 'roadmap', 'kpis', 'traceability'))
+        ]),
+        'blocking_errors': _blk,
+        'passed': bool(passed and not _blk),
+    }
+
+
+def _rel33_risk_prep_hard_block_response(
+        prep: dict, data: dict, *, route: str, domain: str,
+        art_type: str, art_id, risk_id):
+    """Return a hard-block (422) response when the risk export-prep contract
+    failed, else None.
+
+    REL3.3 fail-closed wiring: when resolve_rel33_risk_export_artifact fails
+    closed for a risk artifact (strategy-shaped after repair, cyber-primary in
+    kept risk sections, or a contract exception), the export route MUST NOT fall
+    back to client/original content. It hard-blocks with the export-prep-specific
+    blocker and (behind the debug gate) surfaces the export-prep + routing
+    diagnostics.
+    """
+    if str(art_type or '').strip().lower() not in ('risk', 'risk_assessment'):
+        return None
+    prep = prep or {}
+    blk = list(prep.get('blocking_errors') or [])
+    prep_failed = (prep.get('export_prep_contract_passed') is False) or any(
+        str(b).startswith('rel33_risk_export_prep') for b in blk)
+    if not prep_failed:
+        return None
+    if not blk:
+        blk = ['rel33_risk_export_prep_not_risk_native']
+    body = {
+        'error': (
+            'Export blocked — risk export-prep contract failed '
+            '(not risk-native)'),
+        'reason': 'rel3_export_evidence_failed',
+        'blocking_errors': blk,
+    }
+    if _rel33_debug_export_allowed(data):
+        if prep.get('export_prep_diag'):
+            body['rel33_risk_export_prep_contract'] = prep.get('export_prep_diag')
+        try:
+            body['rel33_export_gate_routing_diag'] = (
+                build_rel33_export_gate_routing_diag(
+                    output_type=route, route=route, domain=domain,
+                    document_type='risk', artifact_type='risk',
+                    artifact_id=str(art_id or ''), risk_id=str(risk_id or ''),
+                    export_handler=f'api_generate_{route}',
+                    blocking_errors=blk, passed=False))
+        except Exception:  # noqa: BLE001
+            pass
+    return jsonify(body), 422
+
+
+def _rel33_normalize_export_artifact_type(data: dict) -> str:
+    """Map request document_type to export artifact_type for strategy routes."""
+    atype = str((data or {}).get('artifact_type') or 'strategy').strip().lower()
+    dtype = str((data or {}).get('document_type') or '').strip().lower()
+    if dtype in ('risk', 'risk_assessment') or atype in ('risk', 'risk_assessment'):
+        return 'risk'
+    if dtype == 'strategy' or atype in ('strategy', 'strategy document'):
+        return 'strategy'
+    if atype in ('', 'none'):
+        return dtype or 'strategy'
+    return atype
+
+
+def _rel33_prepare_strategy_export_content(
+        artifact_type, artifact_id, strategy_id, user_id, *,
+        domain='', document_type='strategy', route='', client_content=''):
+    """REL3.3 — load complete saved artifact for export by strategy_id."""
+    from release_engine_v3.rel33_export_artifact import (
+        resolve_rel33_complete_export_artifact,
+    )
+    return resolve_rel33_complete_export_artifact(
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+        strategy_id=strategy_id,
+        user_id=int(user_id or 0),
+        domain=domain,
+        document_type=document_type,
+        route=route,
+        client_content=client_content or '',
+        load_bundle=_load_sealed_strategy_export_bundle,
+        assemble_sections=_assemble_canonical_from_sections,
+        is_fragment=_is_strategy_export_fragment,
+        split_content=_split_strategy_sections_by_h2,
+    )
+
+
+def _rel33_prepare_gap_assessment_export_content(
+        artifact_id, strategy_id, user_id, *,
+        domain='', route='', client_content=''):
+    """REL3.3 — load saved gap_assessment artifact by strategy_id."""
+    from release_engine_v3.rel33_export_artifact import (
+        _assemble_gap_assessment_from_sections,
+        resolve_rel33_complete_export_artifact,
+    )
+    return resolve_rel33_complete_export_artifact(
+        artifact_type='gap_assessment',
+        artifact_id=artifact_id,
+        strategy_id=strategy_id,
+        user_id=int(user_id or 0),
+        domain=domain,
+        document_type='gap_assessment',
+        route=route,
+        client_content=client_content or '',
+        load_bundle=_load_sealed_strategy_export_bundle,
+        assemble_sections=_assemble_gap_assessment_from_sections,
+        is_fragment=_is_strategy_export_fragment,
+        split_content=_split_strategy_sections_by_h2,
+    )
+
+
+def _load_risk_export_row(risk_id, user_id):
+    """Load a saved risk row for REL3.3 export (risks table authority)."""
+    if not risk_id:
+        return None
+    try:
+        _rid = int(risk_id)
+    except (TypeError, ValueError):
+        return None
+    if _rid <= 0:
+        return None
+    try:
+        _conn = get_db_direct()
+        _row = _conn.execute(
+            'SELECT id, analysis, language, domain, risk_level, asset_name, '
+            'threat FROM risks WHERE id = ? AND user_id = ?',
+            (_rid, user_id),
+        ).fetchone()
+        _conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not _row:
+        return None
+    _keys = _row.keys() if hasattr(_row, 'keys') else []
+    _analysis = _row['analysis'] if 'analysis' in _keys else ''
+    return {
+        'id': _row['id'] if 'id' in _keys else _rid,
+        'content': _analysis or '',
+        'analysis': _analysis or '',
+        'sections': {},
+        'domain': _row['domain'] if 'domain' in _keys else '',
+        'language': _row['language'] if 'language' in _keys else 'ar',
+    }
+
+
+def _load_strategy_risk_row(strategy_id, user_id, domain=''):
+    """Fallback: load strategy row only when document_type is risk-shaped."""
+    if not strategy_id:
+        return None
+    _sid = _resolve_numeric_strategy_id(strategy_id, user_id)
+    if not _sid:
+        try:
+            _sid = int(strategy_id)
+        except (TypeError, ValueError):
+            return None
+    if _sid <= 0:
+        return None
+    try:
+        _conn = get_db_direct()
+        _row = _conn.execute(
+            'SELECT id, sections_json, content, language, domain, '
+            'document_type FROM strategies WHERE id = ? AND user_id = ?',
+            (_sid, user_id),
+        ).fetchone()
+        _conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not _row:
+        return None
+    _keys = _row.keys() if hasattr(_row, 'keys') else []
+    _sections = {}
+    _sj = _row['sections_json'] if 'sections_json' in _keys else None
+    if _sj:
+        try:
+            import json as _json_risk
+            _sections = _json_risk.loads(_sj) if isinstance(_sj, str) else _sj
+            if not isinstance(_sections, dict):
+                _sections = {}
+        except Exception:  # noqa: BLE001
+            _sections = {}
+    _content = _row['content'] if 'content' in _keys else ''
+    _dtype = str(
+        _row['document_type'] if 'document_type' in _keys else ''
+        or (_sections or {}).get('_document_type') or '').strip().lower()
+    return {
+        'id': _row['id'] if 'id' in _keys else _sid,
+        'sections': _sections,
+        'content': _content or '',
+        'analysis': _content or '',
+        'domain': _row['domain'] if 'domain' in _keys else domain,
+        'language': _row['language'] if 'language' in _keys else 'ar',
+        'document_type': _dtype,
+    }
+
+
+def _assemble_risk_from_sections(sections_dict) -> str:
+    """Assemble canonical risk markdown from per-section dict."""
+    if not isinstance(sections_dict, dict):
+        return ''
+    _order = ('register', 'heatmap', 'appetite', 'treatments', 'confidence')
+    _parts = []
+    _seen = set()
+    for _k in _order:
+        _v = (sections_dict.get(_k) or '').strip()
+        if _v:
+            _parts.append(_v)
+            _seen.add(_k)
+    for _k, _v in sorted(sections_dict.items()):
+        if str(_k).startswith('_') or _k in _seen:
+            continue
+        _vs = str(_v or '').strip()
+        if _vs:
+            _parts.append(_vs)
+    return '\n\n'.join(_parts)
+
+
+def _rel33_prepare_risk_export_content(
+        artifact_id, risk_id, user_id, *,
+        domain='', route='', client_content=''):
+    """REL3.3 — load authoritative ERM risk artifact (not strategy rows)."""
+    from release_engine_v3.rel33_risk_artifact import (
+        resolve_rel33_risk_export_artifact,
+    )
+    return resolve_rel33_risk_export_artifact(
+        artifact_id=artifact_id,
+        risk_id=risk_id,
+        user_id=int(user_id or 0),
+        domain=domain,
+        route=route,
+        client_content=client_content or '',
+        load_risk_row=_load_risk_export_row,
+        load_strategy_risk_row=_load_strategy_risk_row,
+        assemble_sections=_assemble_risk_from_sections,
+        normalize_domain_fn=normalize_domain,
+    )
+
+
+def _db_row_frameworks_and_document_type(row, row_keys, sections=None):
+    """Extract selected frameworks + document_type — mirrors /api/strategy/latest."""
+    import json as _json_meta
+    document_type = 'strategy'
+    if 'document_type' in row_keys and row['document_type']:
+        document_type = str(row['document_type'] or 'strategy').strip().lower()
+    if sections is None and 'sections_json' in row_keys and row['sections_json']:
+        try:
+            sections = _json_meta.loads(row['sections_json'])
+        except Exception:  # noqa: BLE001
+            sections = None
+    if isinstance(sections, dict):
+        document_type = str(
+            sections.get('_document_type') or document_type).strip().lower()
+    frameworks = []
+    if 'content_json' in row_keys and row['content_json']:
+        try:
+            cj = row['content_json']
+            if isinstance(cj, str):
+                cj = _json_meta.loads(cj)
+            if isinstance(cj, dict):
+                frameworks = list(
+                    cj.get('selected_frameworks') or cj.get('frameworks') or [])
+                if cj.get('document_type'):
+                    document_type = str(cj['document_type']).strip().lower()
+        except Exception:  # noqa: BLE001
+            pass
+    return frameworks, document_type
+
+
 # ── Hard publishability gate for export (internal helper — not a route) ────────
-def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) -> str:
+def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int,
+                               *, request_frameworks=None) -> str:
     """Load the canonical markdown for an artifact directly from the DB.
 
     PURPOSE: preview and export MUST share the same repaired structured
@@ -88954,9 +90851,21 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
         _conn = get_db_direct()
         if artifact_type == 'strategy':
             _row = _conn.execute(
-                'SELECT sections_json, content_json, content, language, domain '
-                'FROM strategies WHERE id = ? AND user_id = ?',
+                'SELECT sections_json, content_json, content, language, domain, '
+                'document_type FROM strategies WHERE id = ? AND user_id = ?',
                 (_art_id, user_id)
+            ).fetchone()
+        elif artifact_type == 'risk':
+            _row = _conn.execute(
+                'SELECT analysis, language, domain FROM risks '
+                'WHERE id = ? AND user_id = ?',
+                (_art_id, user_id),
+            ).fetchone()
+        elif artifact_type == 'gap_assessment':
+            _row = _conn.execute(
+                'SELECT sections_json, content_json, content, language, domain, '
+                'document_type FROM strategies WHERE id = ? AND user_id = ?',
+                (_art_id, user_id),
             ).fetchone()
         else:
             _row = None
@@ -88968,9 +90877,33 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
         return ''
     _row_keys = _row.keys() if hasattr(_row, 'keys') else []
 
+    if artifact_type == 'risk':
+        _risk_prep = _rel33_prepare_risk_export_content(
+            _art_id, _art_id, user_id,
+            domain=_row['domain'] if 'domain' in _row_keys else '',
+            route='_canonical_content_from_db',
+        )
+        _risk_content = str(_risk_prep.get('content') or '')
+        if _risk_content.strip():
+            return _risk_content
+        _analysis = _row['analysis'] if 'analysis' in _row_keys else ''
+        return str(_analysis or '')
+
+    if artifact_type == 'gap_assessment':
+        _gap_prep = _rel33_prepare_gap_assessment_export_content(
+            _art_id, _art_id, user_id,
+            domain=_row['domain'] if 'domain' in _row_keys else '',
+            route='_canonical_content_from_db',
+        )
+        return str(_gap_prep.get('content') or '')
+
     # PR-CY40 — sealed cyber artifact: ``strategies.content`` is the
     # post-contract source of truth. Do not reassemble from
     # ``sections_json`` and do not run ``ensure_markdown_formatting``.
+    _row_fw, _row_dtype = _db_row_frameworks_and_document_type(_row, _row_keys)
+    if not _row_fw and request_frameworks:
+        _row_fw = list(request_frameworks)
+
     if artifact_type == 'strategy' and _strategy_row_is_sealed_cyber(_row):
         _content_sealed = _row['content'] if 'content' in _row_keys else None
         if _content_sealed and isinstance(_content_sealed, str) and _content_sealed.strip():
@@ -88980,8 +90913,13 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                 _content_sealed,
                 domain=_row_domain,
                 language=_row_language,
+                frameworks=_row_fw,
                 artifact_type=artifact_type,
                 artifact_id=_art_id,
+                route='_canonical_content_from_db',
+                row_domain=_row_domain,
+                sealed_db_authority=True,
+                document_type=_row_dtype,
             )
             try:
                 _content_sealed = _strip_html_comments(_content_sealed)
@@ -89029,12 +90967,20 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                 # so export routes can convert to HTTP 422.
                 _row_domain   = _row['domain']   if 'domain'   in _row_keys else None
                 _row_language = _row['language'] if 'language' in _row_keys else None
+                _sec_fw, _sec_dtype = _db_row_frameworks_and_document_type(
+                    _row, _row_keys, _secs)
+                if not _sec_fw and request_frameworks:
+                    _sec_fw = list(request_frameworks)
                 _enforce_export_domain_isolation(
                     _secs,
                     domain=_row_domain,
                     language=_row_language,
+                    frameworks=_sec_fw,
                     artifact_type=artifact_type,
                     artifact_id=_art_id,
+                    route='_canonical_content_from_db',
+                    row_domain=_row_domain,
+                    document_type=_sec_dtype,
                 )
                 # PR-5B.7B.4: delegate to shared helper for order + formatting.
                 # Behaviour preserved: same STRATEGY_SECTION_ORDER, same
@@ -89054,7 +91000,14 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
                     # already assembled from all 7 tabs).
                     if artifact_type == 'strategy':
                         try:
-                            _is_frag, _found, _why = _is_strategy_export_fragment(_canonical)
+                            from release_engine_v3.rel33_export_artifact import (
+                                sections_dict_export_complete,
+                            )
+                            if sections_dict_export_complete(_secs):
+                                _is_frag, _found, _why = False, set(), ''
+                            else:
+                                _is_frag, _found, _why = (
+                                    _is_strategy_export_fragment(_canonical))
                         except Exception:
                             _is_frag, _found, _why = False, set(), ''
                         if _is_frag:
@@ -89104,8 +91057,12 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
             _content_db,
             domain=_row_domain,
             language=_row_language,
+            frameworks=_row_fw,
             artifact_type=artifact_type,
             artifact_id=_art_id,
+            route='_canonical_content_from_db',
+            row_domain=_row_domain,
+            document_type=_row_dtype,
         )
         try:
             _content_db = _strip_html_comments(_content_db)
@@ -89121,7 +91078,22 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int) ->
         # '' so the export route falls through to the client payload.
         if artifact_type == 'strategy':
             try:
-                _is_frag2, _found2, _why2 = _is_strategy_export_fragment(_content_db_final)
+                from release_engine_v3.rel33_export_artifact import (
+                    sections_dict_export_complete,
+                )
+                _split_secs = {}
+                try:
+                    import json as _json_frag
+                    _sj = _row['sections_json'] if 'sections_json' in _row_keys else None
+                    if _sj:
+                        _split_secs = _json_frag.loads(_sj)
+                except Exception:  # noqa: BLE001
+                    _split_secs = {}
+                if sections_dict_export_complete(_split_secs):
+                    _is_frag2, _found2, _why2 = False, set(), ''
+                else:
+                    _is_frag2, _found2, _why2 = (
+                        _is_strategy_export_fragment(_content_db_final))
             except Exception:
                 _is_frag2, _found2, _why2 = False, set(), ''
             if _is_frag2:
@@ -91160,6 +93132,161 @@ def _run_risk_generation_task(task_id, user_id, data):
             pass
         content, val = _repair_and_revalidate(content, 'risk', lang)
 
+        # ── REL3.3 deterministic ERM risk-native compiler (save compiled only) ──
+        # The LLM output above is treated as MATERIAL ONLY. The compiler
+        # deterministically builds a schema-locked risk-native artifact: it
+        # extracts usable non-cyber risk/treatment/KRI rows, strips forbidden
+        # strategy sections and cyber-primary operating-model substance, and
+        # fills ERM fallback rows to meet minimums. Only compiled content is
+        # ever saved as an accepted ERM risk artifact. Fail CLOSED with
+        # rel33_risk_native_compiler_failed if the compiler cannot produce a
+        # valid risk-native artifact. Emits [REL33-RISK-NATIVE-COMPILER].
+        _rc_diag_echo = None
+        try:
+            from release_engine_v3.rel33_risk_native_compiler import (
+                compile_risk_native_artifact,
+            )
+            _rc = compile_risk_native_artifact(
+                content,
+                domain=domain,
+                document_type='risk',
+                lang=lang,
+                context={
+                    'asset': asset, 'threat': threat, 'category': category,
+                    'risk_level': risk_level,
+                    'org_name': data.get('org_name', ''),
+                    'sector': data.get('sector', ''),
+                },
+                route='generate-risk-async',
+                emit=True,
+            )
+            if data.get('rel33_debug_export_evidence'):
+                _rc_diag_echo = _rc.get('diag')
+            if not _rc.get('compiler_passed'):
+                _rc_blk = list(_rc.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_native_compiler '
+                      f'errors={_rc_blk!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_rc_blk[0] if _rc_blk
+                     else 'rel33_risk_native_compiler_failed'))
+                return
+            # Save COMPILED content only — never raw LLM structure. Re-validate
+            # so artifact_status/score reflect the persisted compiled document.
+            content = _rc.get('content') or content
+            content, val = _repair_and_revalidate(content, 'risk', lang)
+        except Exception as _rc_e:  # noqa: BLE001
+            import traceback as _tb_rc
+            print('[RISK-ASYNC] save_decision=BLOCKED '
+                  'reason=rel33_risk_native_compiler_failed '
+                  f'error={_rc_e!r}\n{_tb_rc.format_exc()}', flush=True)
+            fail_background_task(task_id, 'rel33_risk_native_compiler_failed')
+            return
+
+        # ── REL3.3 ERM risk-native generation contract (pre-save, defense-in-depth) ──
+        # The compiler above already guarantees risk-native structure. This
+        # contract is retained as a secondary boundary; it should now always
+        # pass on compiled content. Emits [REL33-RISK-GENERATION-CONTRACT].
+        _gc_diag_echo = None
+        try:
+            from release_engine_v3.rel33_risk_generation_contract import (
+                evaluate_risk_generation_contract,
+            )
+            _dom_l_gc = str(domain or '').lower()
+            _gc = evaluate_risk_generation_contract(
+                content,
+                domain=domain,
+                route='generate-risk-async',
+                generation_stage='pre_save',
+                selected_frameworks=(
+                    data.get('selected_frameworks')
+                    or data.get('frameworks') or []),
+                allow_cyber_context=(
+                    'cyber' in _dom_l_gc or 'سيبران' in _dom_l_gc),
+                emit=True,
+            )
+            # Keep a gated, content-free copy of the generation contract diag so
+            # it can be surfaced via /api/risk-status when the debug flag is set.
+            try:
+                if data.get('rel33_debug_export_evidence'):
+                    _gc_diag_echo = {
+                        k: v for k, v in _gc.items() if k != 'content'}
+            except Exception:  # noqa: BLE001
+                _gc_diag_echo = None
+            if _gc.get('contract_passed'):
+                _repaired = _gc.get('content') or content
+                if _repaired != content:
+                    # Re-validate the repaired risk-native content so the saved
+                    # artifact_status/score reflect the persisted document.
+                    content, val = _repair_and_revalidate(
+                        _repaired, 'risk', lang)
+            else:
+                _gc_blk = list(_gc.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_generation_contract '
+                      f'errors={_gc_blk!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_gc_blk[0] if _gc_blk
+                     else 'rel33_risk_generation_strategy_shape_detected'))
+                return
+        except Exception as _gc_e:  # noqa: BLE001
+            # REL3.3 — fail CLOSED on an unexpected generation-contract
+            # exception. Never save the original (possibly strategy-shaped or
+            # cyber-primary) content when the contract could not run.
+            import traceback as _tb_gc
+            print('[RISK-ASYNC] save_decision=BLOCKED '
+                  'reason=rel33_risk_generation_contract_exception '
+                  f'error={_gc_e!r}\n{_tb_gc.format_exc()}', flush=True)
+            fail_background_task(
+                task_id, 'rel33_risk_generation_contract_exception')
+            return
+
+        # ── REL3.3 ERM risk domain isolation (pre-save, fail-closed) ──
+        # A non-cyber risk document must never persist Cyber-*primary*
+        # substance. Emits [REL33-RISK-DOMAIN-ISOLATION]; blocks the save
+        # (fail-closed) when cyber-primary substance is detected. The risk
+        # async path runs no strategy repairer, so strategy_repairer_invoked
+        # is always False here.
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            from release_engine_v3.rel33_risk_artifact import (
+                normalize_risk_export_sections as _norm_risk_secs_g,
+                _split_risk_markdown as _split_risk_md_g,
+            )
+            from release_engine_v3.rel33_domain_guard import (
+                evaluate_rel33_risk_domain_isolation,
+            )
+            _risk_dcode = normalize_domain_code(str(domain or ''), default='')
+            _risk_secs_g = _norm_risk_secs_g(_split_risk_md_g(content or ''))
+            _risk_iso_g = evaluate_rel33_risk_domain_isolation(
+                _risk_secs_g,
+                domain=_risk_dcode,
+                document_type='risk',
+                route='generate-risk-async',
+                phase='pre_save',
+                artifact_type='risk',
+                section_classifier='risk_markdown',
+                selected_registry=_risk_dcode,
+                strategy_repairer_invoked=False,
+                emit=True,
+            )
+            if _risk_dcode and not _risk_iso_g.get('contract_passed'):
+                _risk_iso_blockers = list(
+                    _risk_iso_g.get('blocking_errors') or [])
+                print('[RISK-ASYNC] save_decision=BLOCKED '
+                      'reason=rel33_risk_domain_isolation '
+                      f'errors={_risk_iso_blockers!r}', flush=True)
+                fail_background_task(
+                    task_id,
+                    (_risk_iso_blockers[0] if _risk_iso_blockers
+                     else 'rel33_risk_domain_contamination'))
+                return
+        except Exception as _risk_iso_e:  # noqa: BLE001
+            print(f'[RISK-ASYNC] risk domain isolation (non-fatal): '
+                  f'{_risk_iso_e}', flush=True)
+
         risk_id = None
         try:
             conn = get_db_direct()
@@ -91210,7 +93337,7 @@ def _run_risk_generation_task(task_id, user_id, data):
                    {'domain': domain, 'asset': asset, 'threat': threat,
                     'risk_level': risk_level, 'async': True})
 
-        result = _json_async.dumps({
+        _risk_result_payload = {
             'success': True,
             'risk_id': risk_id,
             'analysis': content,
@@ -91219,7 +93346,16 @@ def _run_risk_generation_task(task_id, user_id, data):
             'artifact_status': 'reviewed' if val['valid'] else 'draft',
             'publishability_score': val['score'],
             'validation_issues': val['issues'],
-        }, ensure_ascii=False)
+        }
+        # Gated observability: surface [REL33-RISK-GENERATION-CONTRACT] and
+        # [REL33-RISK-NATIVE-COMPILER] via the risk-status result only when the
+        # request asked for it (debug flag).
+        if _gc_diag_echo:
+            _risk_result_payload['rel33_risk_generation_contract'] = (
+                _gc_diag_echo)
+        if _rc_diag_echo:
+            _risk_result_payload['rel33_risk_native_compiler'] = _rc_diag_echo
+        result = _json_async.dumps(_risk_result_payload, ensure_ascii=False)
         complete_background_task(task_id, result)
         print(f'[RISK-ASYNC] task {task_id[:8]} done — risk_id={risk_id}', flush=True)
 
@@ -91247,7 +93383,13 @@ def _classify_risk_level(data):
 
 
 def _build_risk_prompt(data):
-    """Build risk analysis prompt (thread-safe, no Flask context needed)."""
+    """Build risk analysis prompt (thread-safe, no Flask context needed).
+
+    REL3.3 #1 — the prompt is domain-scoped: a non-cyber domain (e.g. ERM)
+    must yield risk substance framed for that domain and must NOT default to
+    cyber-security governance (CISO/SOC/SIEM/CSIRT/NCA ECC). Cyber-specific
+    substance is only appropriate when the domain itself is Cyber Security.
+    """
     lang     = data.get('language', 'en')
     domain   = data.get('domain', 'Cyber Security')
     asset    = data.get('asset', 'Information System')
@@ -91256,28 +93398,100 @@ def _build_risk_prompt(data):
     context  = data.get('context', '')
     controls = data.get('existing_controls', '')
     risk_lvl = data.get('_risk_level', 'HIGH')
+    _fws = data.get('selected_frameworks') or data.get('frameworks') or []
+    _fw_txt = ', '.join(str(f) for f in _fws if str(f).strip())
+
+    _dom_l = str(domain or '').strip().lower()
+    _is_cyber = ('cyber' in _dom_l) or (_dom_l == 'الأمن السيبراني') or (
+        'سيبران' in _dom_l)
+
+    # REL3.3 — a risk artifact is an ERM risk-assessment document, never a
+    # strategy. Forbid strategy-shaped sections in ANY risk document (all
+    # domains), so the risk-native generation contract never has to reject it.
+    _risk_structure_rule_ar = (
+        '\nهيكل إلزامي: هذه وثيقة تقييم مخاطر مؤسسية (ERM) وليست استراتيجية. '
+        'لا تُنشئ أقسامًا استراتيجية مثل «الرؤية» أو «الأهداف الاستراتيجية» أو '
+        '«الركائز الاستراتيجية» أو «خارطة الطريق» أو «مؤشرات الأداء الرئيسية» '
+        '(كجدول مؤشرات استراتيجية) أو «نموذج الحوكمة» أو «مصفوفة تتبع الأطر '
+        'المرجعية» أو «المبادرات/المواءمة الاستراتيجية». اقتصر على أقسام '
+        'المخاطر: وصف السيناريو، سياق المخاطر، جدول تقييم المخاطر/سجل المخاطر، '
+        'الضوابط، استراتيجية/خطة المعالجة، مقاييس KRI للمراقبة، المالكون '
+        'والمسؤوليات، ملخص المخاطر.\n')
+    _risk_structure_rule_en = (
+        '\nMandatory structure: this is an ERM risk-assessment document, NOT a '
+        'strategy. Do NOT produce strategy sections such as Vision, Strategic '
+        'Objectives, Strategic Pillars, Roadmap, a strategy KPI table (Key '
+        'Performance Indicators as strategy KPIs), a Governance Model section, '
+        'a Traceability Matrix, or Strategic Initiatives/Alignment. Restrict '
+        'the document to risk sections only: scenario, risk context, risk '
+        'assessment/register table, controls, treatment strategy/plan, KRI '
+        'monitoring metrics, risk owners/responsibilities, risk summary.\n')
 
     if lang == 'ar':
+        if _is_cyber:
+            _domain_clause = (
+                f'المجال: {domain}\n'
+                + (f'الأطر المرجعية: {_fw_txt}\n' if _fw_txt else ''))
+            _scope_rule = ''
+        else:
+            _domain_clause = (
+                f'المجال: {domain}\n'
+                + (f'الأطر المرجعية: {_fw_txt}\n' if _fw_txt else ''))
+            _scope_rule = (
+                f'\nقيد أساسي: أبقِ التحليل ضمن مجال «{domain}» وأطره المرجعية. '
+                'استخدم مصطلحات إدارة المخاطر المؤسسية (شهية المخاطر، السجل، '
+                'المخاطر المتأصلة والمتبقية، الضوابط، مؤشرات المخاطر KRI، خطة '
+                'المعالجة، مالك المخاطر، لجنة المخاطر). لا تُدخل حوكمة الأمن '
+                'السيبراني أو مركز العمليات الأمنية (SOC/SIEM) أو فريق الاستجابة '
+                'للحوادث (CSIRT) أو رئيس أمن المعلومات (CISO) أو ضوابط NCA ECC/DCC '
+                'كعناصر أساسية، إلا إذا كانت ضابطًا عامًا مذكورًا عرضًا. '
+                'وبالأخص: يجب أن يستخدم قسم مؤشرات المخاطر (KRI) لغة إدارة '
+                'المخاطر المؤسسية (شهية المخاطر، المخاطر المتبقية والمتأصلة، '
+                'الضوابط، مؤشرات المخاطر KRI، فعالية المعالجة، مالك المخاطر، '
+                'لجنة المخاطر)، ولا يُنشئ صفوف نموذج تشغيل سيبراني مثل تأسيس '
+                'SOC/SIEM أو CISO أو CSIRT أو مبادرات IAM/PAM/MFA كعناصر أساسية '
+                'ما لم يختر المستخدم سياق مخاطر سيبرانية صراحةً.\n')
         prompt = (
             f'أنت محلل مخاطر GRC متخصص. أجرِ تحليل مخاطر شاملاً.\n\n'
+            f'{_domain_clause}'
             f'الأصل: {asset}\nالتهديد: {threat}\nالفئة: {category}\n'
-            f'مستوى الخطر الأولي: {risk_lvl}\n\n'
+            f'مستوى الخطر الأولي: {risk_lvl}\n'
+            f'{_scope_rule}'
+            f'{_risk_structure_rule_ar}\n'
             f'أنشئ تقرير تحليل مخاطر بتنسيق Markdown يتضمن:\n'
             f'1. وصف السيناريو\n'
             f'2. جدول تقييم المخاطر (الاحتمالية | التأثير | الدرجة | الخطورة)\n'
             f'3. التأثير التجاري والتنظيمي\n'
             f'4. جدول استراتيجية المعالجة (الضابط | النوع | الأولوية | الجدول الزمني | المالك)\n'
-            f'5. مقاييس KPI للمراقبة\n'
+            f'5. مقاييس KRI للمراقبة (مؤشرات المخاطر: شهية المخاطر، المخاطر '
+            f'المتبقية، فعالية المعالجة، مالك المخاطر)\n'
             f'6. توصيات التنفيذ الفوري\n'
             f'جميع الجداول يجب أن تحتوي على بيانات حقيقية. الحد الأدنى 1200 كلمة.'
         )
     else:
         context_clause = f'\nAdditional Context: {context}\n' if context else ''
         controls_clause = f'\nExisting Controls: {controls}\n' if controls else ''
+        fw_clause = f'Reference Frameworks: {_fw_txt}\n' if _fw_txt else ''
+        scope_rule = '' if _is_cyber else (
+            f'\nHard constraint: keep the analysis within the "{domain}" domain '
+            'and its reference frameworks. Use enterprise risk terminology '
+            '(risk appetite, register, inherent/residual risk, controls, KRIs, '
+            'treatment plan, risk owner, risk committee). Do NOT introduce '
+            'cybersecurity governance, a SOC/SIEM, CSIRT, a CISO as the primary '
+            'owner, or NCA ECC/DCC as the primary framework unless they appear '
+            'only as an incidental generic control. In particular, the KRI '
+            'section MUST use ERM risk language (risk appetite, inherent/'
+            'residual risk, controls, KRIs, treatment effectiveness, risk '
+            'owners, risk committee); do NOT generate cyber operating-model '
+            'rows such as establishing a SOC/SIEM, a CISO, CSIRT, or IAM/PAM/MFA '
+            'roadmap initiatives unless the user explicitly selected a Cyber '
+            'risk context.\n')
         prompt = (
             f'You are a Big4-grade GRC risk analyst. Conduct a comprehensive risk analysis.\n\n'
             f'Asset: {asset}\nThreat: {threat}\nCategory: {category}\n'
-            f'Domain: {domain}\nInitial Risk Level: {risk_lvl}\n'
+            f'Domain: {domain}\n{fw_clause}Initial Risk Level: {risk_lvl}\n'
+            f'{scope_rule}'
+            f'{_risk_structure_rule_en}'
             f'{context_clause}{controls_clause}\n'
             f'Produce a formal risk analysis report in Markdown with:\n'
             f'1. Threat Scenario Description\n'
@@ -91285,7 +93499,8 @@ def _build_risk_prompt(data):
             f'3. Business & Regulatory Impact Analysis\n'
             f'4. Treatment Strategy (table: Control | Type | Priority | Timeline | Owner)\n'
             f'5. Residual Risk after Controls\n'
-            f'6. KPI / Monitoring Metrics (table)\n'
+            f'6. KRI / Monitoring Metrics (table: risk appetite, residual risk, '
+            f'treatment effectiveness, risk owner)\n'
             f'7. Immediate Action Recommendations\n'
             f'All tables must have real populated rows. Minimum 1200 words.'
         )

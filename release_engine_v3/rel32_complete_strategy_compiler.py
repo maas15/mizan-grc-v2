@@ -73,7 +73,7 @@ def _objectives_table_valid(vision: str) -> bool:
     return _count_table_rows(blob, 5) >= 8
 
 
-def _section_check(body: str, kind: str) -> bool:
+def _section_check(body: str, kind: str, domain: str = 'cyber') -> bool:
     if not (body or '').strip():
         return False
     if kind == 'so_table':
@@ -87,7 +87,9 @@ def _section_check(body: str, kind: str) -> bool:
     if kind == 'gap_guides':
         return bool(re.search(r'دليل\s+تطبيق|Implementation Guide', body, re.I))
     if kind == 'roadmap_table':
-        return _count_table_rows(body, 5) >= 12
+        from release_engine_v3.rel32_registries import resolve_roadmap_families
+        min_rows = max(10, len(resolve_roadmap_families(domain)))
+        return _count_table_rows(body, 5) >= min_rows
     if kind == 'kpi_table':
         return _count_table_rows(body, 6) >= 11
     if kind == 'kpi_guides':
@@ -99,6 +101,11 @@ def _section_check(body: str, kind: str) -> bool:
     if kind == 'gov_table':
         return _count_table_rows(body, 4) >= 7
     if kind == 'trace_table':
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+        if dcode and dcode != 'cyber':
+            # Non-cyber: require a populated matrix, not NCA markers.
+            return _count_table_rows(body, 3) >= 5
         return 'NCA' in body and _count_table_rows(body, 3) >= 5
     return bool(body.strip())
 
@@ -124,7 +131,7 @@ def evaluate_rel32_final_strategy_completeness(
     for key, _label, kind in _MANDATORY_CHECKS:
         body = secs.get(key, '') or ''
         token = f'{key}:{kind}'
-        ok = _section_check(body, kind)
+        ok = _section_check(body, kind, domain=domain)
         if kind in ('so_table', 'gap_table', 'roadmap_table', 'kpi_table',
                     'gov_table', 'trace_table'):
             row_counts[token] = _count_table_rows(
@@ -252,7 +259,12 @@ def compile_complete_cyber_ar_technical_strategy(
     """Single save-authoritative compiler for Cyber Arabic Technical Strategy."""
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    # REL3.3 P0 — never default a blank request domain to cyber; resolve
+    # from ctx then backend metadata and let the compiler-first gate decide.
+    domain = str(
+        ctx.get('domain')
+        or (ctx.get('backend') or {}).get('domain')
+        or '').lower()
     flags = dict(ctx.get('flags') or (ctx.get('backend') or {}).get('flags') or {})
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         compiled = compile_canonical_strategy_document(
@@ -305,7 +317,11 @@ def restore_compiler_sections_before_hard_gate(
     """Re-apply compiler-owned sections immediately before PR-CY25 hard gate."""
     ctx = dict(request_context or {})
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    # REL3.3 P0 — blank domain must not be treated as cyber here.
+    domain = str(
+        ctx.get('domain')
+        or (ctx.get('backend') or {}).get('domain')
+        or '').lower()
     flags = dict(ctx.get('flags') or {})
     if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
         return dict(sections or {})

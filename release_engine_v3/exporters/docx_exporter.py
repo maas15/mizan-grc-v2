@@ -6,6 +6,10 @@ import inspect
 from typing import Any, Callable, Dict, Optional
 
 from release_engine_v3.contracts import ExportResult, RenderTree, _sha256_bytes
+from release_engine_v3.rel33_docx_export_authority import (
+    emit_rel33_docx_export_authority_check,
+    evaluate_rel33_docx_export_authority,
+)
 
 
 def _filter_build_kwargs(build_fn: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,6 +33,7 @@ def export_docx(
         org_name: str = '',
         sector: str = '',
         doc_type: str = 'Strategy Document',
+        document_type: str = '',
         domain: str = 'cyber',
         selected_frameworks=None,
         cyber_sealed_artifact: bool = False,
@@ -45,6 +50,22 @@ def export_docx(
             canonical_hash=render_tree.canonical_hash,
             blocking_errors=['rel3_export_failed:docx:build_docx_bytes_missing'],
         )
+
+    # REL3.3 — do not force Strategy Document on risk/gap/audit artifacts.
+    _art_dtype = str(
+        document_type
+        or (artifact_dict or {}).get('document_type')
+        or (artifact_dict or {}).get('doc_type')
+        or getattr(frozen_artifact, 'document_type', None)
+        or getattr(frozen_artifact, 'artifact_type', None)
+        or backend.get('document_type')
+        or '').strip().lower()
+    if (
+            _art_dtype
+            and _art_dtype not in ('strategy', '')
+            and str(doc_type or '').strip() in (
+                '', 'strategy', 'Strategy Document')):
+        doc_type = _art_dtype
 
     content = render_tree.markdown_view or ''
     sec_map: Dict[str, str] = {}
@@ -85,24 +106,108 @@ def export_docx(
         sections = backend.get('split_sections')
         sec_map = sections(content) if sections else {}
 
-    try:
-        docx_bytes = build_fn(
-            content,
-            filename,
-            lang,
-            **_filter_build_kwargs(build_fn, {
-                'org_name': org_name,
-                'sector': sector,
-                'doc_type': doc_type,
-                'domain': domain,
-                'selected_frameworks': selected_frameworks,
-                'cyber_sealed_artifact': cyber_sealed_artifact,
-                'sections': sec_map,
-            }),
+    # REL3.3 P0 — final domain guard on the exact sections used to build
+    # the returned bytes. Blank domain fails closed; data artifacts with
+    # cyber-primary roadmap rows are blocked before any bytes exist.
+    from release_engine_v3.rel33_domain_guard import (
+        evaluate_pre_export_bytes_domain_guard,
+    )
+    _guard_domain = str(backend.get('domain') or domain or '')
+    _guard_dtype = str(
+        backend.get('document_type') or _art_dtype or '').strip().lower()
+    # REL3.3 — for risk documents the strategy section splitter mints a
+    # ``vision`` key from the risk intro, so the pre-export domain guard would
+    # evaluate risk prose under strategy contract keys and emit
+    # rel33_domain_contamination:vision:cyber_primary. Build the guard's
+    # section view with the risk-native splitter so it only sees risk-native
+    # keys (scenario/register/treatments/kri) and routes through the
+    # risk-native isolation guard. Genuine cyber-primary substance in risk
+    # content is still blocked — as a risk-native section key, not "vision".
+    if _guard_dtype in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_risk_artifact import (
+            _split_risk_markdown as _split_risk_md,
+            normalize_risk_export_sections as _norm_risk_secs,
         )
+        _guard_sections = _norm_risk_secs(
+            _split_risk_md(content or '')) or {'register': content or ''}
+    else:
+        _guard_sections = sec_map if sec_map else {'roadmap': content}
+    _guard_blockers = evaluate_pre_export_bytes_domain_guard(
+        _guard_sections,
+        domain=_guard_domain,
+        route='docx',
+        artifact_id=render_tree.artifact_id,
+        document_type=_guard_dtype,
+    )
+    if _guard_blockers:
+        return ExportResult(
+            route_name='docx',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=_guard_blockers,
+        )
+
+    try:
+        from release_engine_v3.rel31_authority import rel31_export_adapter_context
+        frozen_loaded = bool(
+            frozen_artifact is not None
+            or backend.get('_rel32_frozen_export_lock_active')
+            or backend.get('_rel31_frozen_sections'))
+        sections_loaded = bool(sec_map)
+        with rel31_export_adapter_context():
+            docx_bytes = build_fn(
+                content,
+                filename,
+                lang,
+                **_filter_build_kwargs(build_fn, {
+                    'org_name': org_name,
+                    'sector': sector,
+                    'doc_type': doc_type,
+                    'domain': domain,
+                    'selected_frameworks': selected_frameworks,
+                    'cyber_sealed_artifact': cyber_sealed_artifact,
+                    'sections': sec_map,
+                }),
+            )
+        auth_diag = evaluate_rel33_docx_export_authority(
+            route='docx',
+            domain=domain,
+            document_type=doc_type,
+            artifact_id=render_tree.artifact_id,
+            build_docx_bytes_called=True,
+            called_from_authorized_export_pipeline=True,
+            frozen_artifact_loaded=frozen_loaded,
+            sections_json_loaded=sections_loaded,
+            export_authority='rel3_export_authoritative',
+        )
+        emit_rel33_docx_export_authority_check(auth_diag)
+        if not auth_diag.get('docx_export_authority_passed'):
+            return ExportResult(
+                route_name='docx',
+                artifact_id=render_tree.artifact_id,
+                render_tree_hash=render_tree.render_tree_hash,
+                canonical_hash=render_tree.canonical_hash,
+                blocking_errors=list(auth_diag.get('blocking_errors') or []),
+            )
     except ValueError as exc:
         from release_engine_v3.rel31_authority import normalize_rel3_export_blockers
         blockers = normalize_rel3_export_blockers([str(exc)], route='docx')
+        bypass_blk = str(exc) if 'rel32_docx_export_bypass_detected' in str(exc) else ''
+        emit_rel33_docx_export_authority_check(
+            evaluate_rel33_docx_export_authority(
+                route='docx',
+                domain=domain,
+                document_type=doc_type,
+                artifact_id=render_tree.artifact_id,
+                build_docx_bytes_called=True,
+                called_from_authorized_export_pipeline=False,
+                frozen_artifact_loaded=bool(frozen_artifact is not None),
+                sections_json_loaded=bool(sec_map),
+                export_authority='rel3_export_authoritative',
+                blocking_errors=blockers,
+                bypass_blocker=bypass_blk or None,
+            ))
         return ExportResult(
             route_name='docx',
             artifact_id=render_tree.artifact_id,

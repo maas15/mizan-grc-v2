@@ -118,17 +118,58 @@ REL3_ARABIC_CANONICAL_LITERAL_FIXES: Tuple[Tuple[str, str], ...] = (
 _MURAQABA_MUST_RE = re.compile(r'المراقبة المست(?!مر)')
 
 
+# Words that contain a preposition substring (e.g. في inside الشفافية) and
+# must never be split by _GLUE_RE.
+_GLUE_PROTECTED_WORDS = frozenset({
+    'الشفافية',
+    'شفافية',
+    'الاتفاقية',
+    'اتفاقية',
+    'الإضافية',
+    'إضافية',
+    'الكافية',
+    'كافية',
+})
+
+# If a prior pass already split a protected word, restore it.
+_GLUE_FALSE_POSITIVE_RESTORES: Tuple[Tuple[str, str], ...] = (
+    ('الشفا فية', 'الشفافية'),
+    ('شفا فية', 'شفافية'),
+    ('الاتفا قية', 'الاتفاقية'),
+    ('اتفا قية', 'اتفاقية'),
+    ('الإضا فية', 'الإضافية'),
+    ('إضا فية', 'إضافية'),
+    ('الكا فية', 'الكافية'),
+    ('كا فية', 'كافية'),
+)
+
+
 def _apply_glue_split(text: str) -> str:
     """Split glued prepositions but keep valid tokens like لمنع (to prevent)."""
 
     def _repl(m: re.Match[str]) -> str:
         g1, g2 = m.group(1), m.group(2)
+        # Look ahead: do not split inside protected whole words (الشفافية).
+        # Extend match to the end of the Arabic token and check allowlist.
+        end = m.end()
+        while end < len(text) and '\u0600' <= text[end] <= '\u06FF':
+            end += 1
+        start = m.start()
+        while start > 0 and '\u0600' <= text[start - 1] <= '\u06FF':
+            start -= 1
+        whole = text[start:end]
+        if whole in _GLUE_PROTECTED_WORDS or any(
+                w in whole for w in _GLUE_PROTECTED_WORDS):
+            return m.group(0)
         if g2 == 'من' and m.end() < len(text) and text[m.end()] == 'ع':
             if g1 == 'ل' or (g1.endswith('ل') and len(g1) <= 2):
                 return m.group(0)
         return f'{g1} {g2}'
 
-    return _GLUE_RE.sub(_repl, text)
+    out = _GLUE_RE.sub(_repl, text)
+    for bad, good in _GLUE_FALSE_POSITIVE_RESTORES:
+        out = out.replace(bad, good)
+    return out
 
 
 def _normalize_lam_mualeda(text: str) -> str:

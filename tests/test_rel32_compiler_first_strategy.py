@@ -184,7 +184,8 @@ class Rel32CompilerFirstTests(unittest.TestCase):
         r = _compile({'traceability': bad_trace})
         self.assertTrue(r.passed, r.blocking_errors)
         trace = r.legacy_sections.get('traceability', '')
-        canon = build_canonical_traceability_from_registry(lang='ar')
+        canon = build_canonical_traceability_from_registry(
+            lang='ar', domain='cyber')
         for fam in ('data_classification', 'dlp', 'encryption'):
             self.assertIn(
                 TRACE_CANONICAL_REGISTRY[fam]['expected_gap'], trace)
@@ -363,12 +364,16 @@ class Rel32CompilerFirstTests(unittest.TestCase):
 class Rel32AuthorityFlagsTests(unittest.TestCase):
 
     def test_compiler_first_flag_for_cyber_ar(self):
+        flags = {'rel3': True, 'rel31': True}
         self.assertTrue(is_rel32_compiler_first(
-            domain='cyber', lang='ar',
-            flags={'rel3': True, 'rel31': True}))
+            domain='cyber', lang='ar', flags=flags))
+        self.assertTrue(is_rel32_compiler_first(
+            domain='data', lang='ar', flags=flags))
         self.assertFalse(is_rel32_compiler_first(
-            domain='cyber', lang='en',
-            flags={'rel3': True, 'rel31': True}))
+            domain='cyber', lang='en', flags=flags))
+        self.assertFalse(is_rel32_compiler_first(
+            domain='cyber', lang='ar', flags=flags,
+            document_type='policy'))
 
 
 if __name__ == '__main__':

@@ -234,17 +234,25 @@ _EVIDENCE_ARTIFACT_MARKERS = (
 )
 
 _CONTROL_FAMILY_KEYWORDS = {
-    'compliance': ('امتثال', 'ecc', 'dcc', 'تنظيمي'),
-    'soc_monitoring': ('soc', 'siem', 'رصد'),
+    'compliance': (
+        'امتثال', 'ecc', 'dcc', 'تنظيمي', 'sdaia', 'ndmo', 'pdpl', 'تنظيم'),
+    'soc_monitoring': ('soc', 'siem', 'رصد', 'مراقبة'),
     'iam': ('iam', 'pam', 'mfa', 'هوية', 'صلاحيات'),
     'incident_response': (
         'csirt', 'حوادث', 'استجابة', 'فدية', 'تجزئة', 'segmentation',
-        'تصيد', 'phishing'),
+        'تصيد', 'phishing', 'انحراف', 'نماذج'),
     'vulnerability': ('ثغر', 'vulnerab', 'patch'),
-    'data_protection': ('بيانات', 'dlp', 'تصنيف', 'تشفير'),
+    'data_protection': (
+        'بيانات', 'dlp', 'تصنيف', 'تشفير', 'جودة', 'انحياز', 'خصوصية',
+        'pdpl', 'ndmo'),
     'resilience': ('نسخ', 'dr', 'استمرارية', 'تعافي'),
-    'awareness': ('توعية', 'تدريب', 'awareness'),
+    'awareness': ('توعية', 'تدريب', 'awareness', 'تبني', 'ثقافة'),
     'resource_capacity': ('موارد', 'طاقات', 'ميزانية', 'كفاءات'),
+    'capabilities': (
+        'قدرات', 'ملكية', 'مساءلة', 'أمناء', 'كفاءة', 'إشراف', 'بشري',
+        'قرارات', 'مشاريع', 'تحول', 'سجل', 'تعثر', 'تقييم'),
+    'operational_continuity': (
+        'استمرارية', 'منصات', 'تعافي', 'تشغيل', 'خدمات'),
     'third_party': (
         'أطراف', 'طرف ثالث', 'الأطراف', 'من الأطر', 'مورد', 'supplier',
         'vendor'),
@@ -586,15 +594,18 @@ def _so_target_has_scope(target: str, timeframe: str = '') -> bool:
     return False
 
 
-def check_strategic_objectives_positive_model(vision: str) -> List[str]:
+def check_strategic_objectives_positive_model(
+        vision: str,
+        *,
+        domain: str = 'cyber') -> List[str]:
     """Positive SO schema: complete rows, scoped targets, unique families."""
-    from cyber_board_ready_prcy88 import _detect_so_family
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain, default='cyber')
 
     defects: List[str] = []
     rows = _parse_so_table_rows(vision)
     if not rows:
         return ['so_table_missing']
-    family_hits: Dict[str, int] = {}
     for row in rows:
         obj = row.get('objective') or ''
         target = row.get('target') or ''
@@ -608,21 +619,49 @@ def check_strategic_objectives_positive_model(vision: str) -> List[str]:
             defects.append('so_target_percent_only')
         elif target.strip().endswith('%') and _arabic_word_count(target) < 3:
             defects.append('so_target_percent_only')
-        if target and not _so_target_has_scope(target, timeframe):
-            defects.append('so_target_without_scope')
+        if dcode == 'cyber':
+            if target and not _so_target_has_scope(target, timeframe):
+                defects.append('so_target_without_scope')
+    if dcode != 'cyber':
+        return list(dict.fromkeys(defects))[:12]
+
+    from cyber_board_ready_prcy88 import _detect_so_family
+
+    family_hits: Dict[str, int] = {}
+    for row in rows:
+        obj = row.get('objective') or ''
+        target = row.get('target') or ''
         prcy = _detect_so_family(obj)
         if prcy:
             spec = _PRCY88_SO_TO_SPEC.get(prcy)
             if spec:
                 family_hits[spec] = family_hits.get(spec, 0) + 1
+        if target and not _so_target_has_scope(target, row.get('timeframe') or ''):
+            defects.append('so_target_without_scope')
     for fam, count in family_hits.items():
         if count > 1:
             defects.append(f'so_duplicate_family:{fam}')
     return list(dict.fromkeys(defects))[:12]
 
 
-def check_so_families_present(vision: str) -> Tuple[List[str], Dict[str, bool]]:
-    """Positive SO family coverage (maps PRCY88 families to spec families)."""
+def check_so_families_present(
+        vision: str,
+        *,
+        domain: str = 'cyber') -> Tuple[List[str], Dict[str, bool]]:
+    """Positive SO family coverage (domain-aware)."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel32_registries import resolve_strategic_objective_registry
+
+    dcode = normalize_domain_code(domain, default='cyber')
+    if dcode != 'cyber':
+        registry = resolve_strategic_objective_registry(dcode)
+        rows = _count_so_objective_rows(vision)
+        present = {fam: rows >= len(registry) for fam in registry}
+        missing = (
+            [] if rows >= min(8, len(registry))
+            else list(registry.keys())[:8])
+        return missing, present
+
     from cyber_board_ready_prcy88 import (
         PRCY88_SO_FAMILIES,
         PRCY88_SO_FAMILY_TOKENS,
@@ -671,8 +710,13 @@ def _parse_pillar_initiative_rows(chunk: str) -> List[Dict[str, str]]:
     return rows
 
 
-def check_pillar_positive_model(pillars: str) -> List[str]:
+def check_pillar_positive_model(
+        pillars: str,
+        *,
+        domain: str = 'cyber') -> List[str]:
     """Canonical pillar positive model: capability family, framework, evidence."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='cyber')
     defects: List[str] = []
     narratives_seen: List[str] = []
     for chunk in re.split(r'(?=^###\s+)', pillars or '', flags=re.MULTILINE):
@@ -684,7 +728,7 @@ def check_pillar_positive_model(pillars: str) -> List[str]:
             if key in title_line:
                 cap_family = fam
                 break
-        if not cap_family:
+        if dcode == 'cyber' and not cap_family:
             defects.append(f'pillar_missing_capability_family:{title_line[:40]}')
         body = '\n'.join(
             ln for ln in chunk.splitlines()[1:]
@@ -694,8 +738,12 @@ def check_pillar_positive_model(pillars: str) -> List[str]:
             if norm in narratives_seen:
                 defects.append('pillar_duplicate_narrative')
             narratives_seen.append(norm)
-        if not re.search(r'NCA\s*(ECC|DCC)|\bECC\b|\bDCC\b', chunk):
-            defects.append(f'pillar_framework_mapping_missing:{cap_family or "unknown"}')
+        if dcode == 'cyber':
+            if not re.search(r'NCA\s*(ECC|DCC)|\bECC\b|\bDCC\b', chunk):
+                defects.append(
+                    f'pillar_framework_mapping_missing:{cap_family or "unknown"}')
+        # Non-cyber: per-chunk NCA ECC/DCC mapping is not required. Domain
+        # frameworks are validated at section level below (and by isolation).
         inits = _parse_pillar_initiative_rows(chunk)
         if len(inits) < 3 or len(inits) > 5:
             defects.append(f'pillar_initiative_count_invalid:{len(inits)}')
@@ -713,6 +761,16 @@ def check_pillar_positive_model(pillars: str) -> List[str]:
                 if 'المالك' in chunk or 'المسؤول' in chunk:
                     defects.append(
                         f'pillar_owner_missing:{row["initiative"][:30]}')
+    if dcode != 'cyber':
+        domain_fw = {
+            'data': r'NDMO|PDPL',
+            'ai': r'SDAIA|NIST\s*AI',
+            'dt': r'\bDGA\b',
+            'erm': r'ISO\s*31000|COSO',
+            'global': r'الأطر المختارة|framework',
+        }.get(dcode)
+        if domain_fw and not re.search(domain_fw, pillars or '', re.I):
+            defects.append(f'pillar_framework_mapping_missing:{dcode}')
     return list(dict.fromkeys(defects))[:20]
 
 
@@ -905,8 +963,29 @@ def extract_risk_treatments_list(confidence: str) -> List[Dict[str, str]]:
     return treatments
 
 
-def build_traceability_mapping_report(blob: str) -> List[Dict[str, Any]]:
+def build_traceability_mapping_report(
+        blob: str,
+        *,
+        domain: str = 'cyber') -> List[Dict[str, Any]]:
     """Required traceability semantic mappings with pass/fail per family."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='cyber')
+    if dcode != 'cyber':
+        # Non-cyber: report presence of domain-registry gaps, not NCA ECC/DCC.
+        from release_engine_v3.rel32_registries import resolve_trace_registry
+        order, registry = resolve_trace_registry(dcode)
+        report: List[Dict[str, Any]] = []
+        for fam_key in order:
+            expected_gap = registry[fam_key]['expected_gap']
+            actual = expected_gap if expected_gap in (blob or '') else ''
+            report.append({
+                'family': fam_key,
+                'expected_gap': expected_gap,
+                'actual_gap': actual,
+                'passed': bool(actual),
+            })
+        return report
+
     from release_engine.traceability_substance_model import (
         _cap_col_idx,
         _detect_family,
@@ -914,7 +993,7 @@ def build_traceability_mapping_report(blob: str) -> List[Dict[str, Any]]:
         _parse_trace_rows,
     )
 
-    report: List[Dict[str, Any]] = []
+    report = []
     lines, hdr, rows = _parse_trace_rows(blob or '')
     cap_idx = gap_idx = -1
     if hdr >= 0:
@@ -1044,6 +1123,7 @@ def _evaluate_visible_route(
         peer_row_counts: Optional[Dict[str, int]] = None,
         docx_reference: str = '',
         canonical_kpis: str = '',
+        domain: str = '',
 ) -> Dict[str, Any]:
     from release_engine.arabic_language_gate import repair_rel3_arabic_canonical_text
     blob = repair_rel3_arabic_canonical_text(blob or '')
@@ -1052,7 +1132,8 @@ def _evaluate_visible_route(
         blob, route=route, pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
         docx_reference=docx_reference,
-        canonical_kpis=canonical_kpis)
+        canonical_kpis=canonical_kpis,
+        domain=domain)
     pillar_dupes = check_pillar_duplicate_narratives(blob)
     pillar_generic = check_pillar_generic_outputs(blob)
     dup_metrics = check_duplicate_metric_labels(
@@ -1067,10 +1148,20 @@ def _evaluate_visible_route(
         pdf_layout_ok, pdf_layout_defects = check_pdf_layout_semantic(
             blob, docx_text=docx_reference, pdf_bytes=pdf_bytes)
 
-    road = check_roadmap_coverage(blob or '')
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code as _ndc_vr
+        _route_domain = _ndc_vr(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        _route_domain = str(domain or '').strip().lower()
+    road = check_roadmap_coverage(
+        blob or '', domain=_route_domain or 'cyber')
     kpi_scan = flat_kpi_kri_section_blob(blob) or blob or ''
     kpi_fams = _kpi_families_present(kpi_scan)
-    missing_kpi = [f for f in REQUIRED_KPI_FAMILIES if f not in kpi_fams]
+    # REL3.3 — Cyber REQUIRED_KPI_FAMILIES apply to cyber exports only.
+    _kpi_required = (
+        REQUIRED_KPI_FAMILIES if (not _route_domain or _route_domain == 'cyber')
+        else ())
+    missing_kpi = [f for f in _kpi_required if f not in kpi_fams]
     canon_fams: set = set()
     if canonical_kpis.strip():
         canon_fams = set(_kpi_families_present(canonical_kpis))
@@ -1142,7 +1233,10 @@ def _evaluate_visible_route(
     return evidence
 
 
-def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
+def _evaluate_canonical_sections(
+        sections: Dict[str, str],
+        *,
+        domain: str = 'cyber') -> Dict[str, Any]:
     """Positive model on canonical section markdown (pre-export)."""
     blob = '\n\n'.join(
         str(v) for v in (sections or {}).values() if isinstance(v, str))
@@ -1151,8 +1245,10 @@ def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
 
     vision = (sections or {}).get('vision', '') or ''
     so_rows = _count_so_objective_rows(vision)
-    so_missing_fams, so_fam_present = check_so_families_present(vision)
-    so_schema_defects = check_strategic_objectives_positive_model(vision)
+    so_missing_fams, so_fam_present = check_so_families_present(
+        vision, domain=domain)
+    so_schema_defects = check_strategic_objectives_positive_model(
+        vision, domain=domain)
     so_ok = (
         MIN_SO_OBJECTIVES <= so_rows <= MAX_SO_OBJECTIVES
         and not so_missing_fams
@@ -1171,12 +1267,21 @@ def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
     }
 
     pillars = (sections or {}).get('pillars', '') or ''
-    pillar_titles_found = sum(
-        1 for t in REQUIRED_PILLAR_TITLES if t in pillars)
-    pillar_defects = check_pillar_positive_model(pillars)
-    pillars_ok = pillar_titles_found >= 4 and not pillar_defects
-    if pillar_titles_found < 4:
-        blockers.append(f'pillar_count_invalid:{pillar_titles_found}')
+    from release_engine_v3.domain_codes import normalize_domain_code as _ndc
+    _dcode = _ndc(str(domain or ''), default='cyber')
+    if _dcode == 'cyber':
+        pillar_titles_found = sum(
+            1 for t in REQUIRED_PILLAR_TITLES if t in pillars)
+        pillar_defects = check_pillar_positive_model(pillars, domain=_dcode)
+        pillars_ok = pillar_titles_found >= 4 and not pillar_defects
+        if pillar_titles_found < 4:
+            blockers.append(f'pillar_count_invalid:{pillar_titles_found}')
+    else:
+        pillar_titles_found = len(re.findall(r'^###\s+', pillars, re.M))
+        pillar_defects = check_pillar_positive_model(pillars, domain=_dcode)
+        pillars_ok = pillar_titles_found >= 4 and not pillar_defects
+        if pillar_titles_found < 4:
+            blockers.append(f'pillar_count_invalid:{pillar_titles_found}')
     blockers.extend(pillar_defects[:8])
     section_results['strategic_pillars'] = {
         'passed': pillars_ok,
@@ -1184,7 +1289,8 @@ def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
         'positive_model_defects': pillar_defects,
     }
 
-    road = check_roadmap_coverage((sections or {}).get('roadmap', '') or blob)
+    road = check_roadmap_coverage(
+        (sections or {}).get('roadmap', '') or blob, domain=domain)
     road_count = int(road.get('visible_row_count') or 0)
     road_ok = (
         MIN_ROADMAP_ROWS <= road_count <= MAX_ROADMAP_ROWS
@@ -1234,11 +1340,21 @@ def _evaluate_canonical_sections(sections: Dict[str, str]) -> Dict[str, Any]:
         'risk_count': len(risk_treatments),
     }
 
-    trace_bad = check_traceability_bad_mappings(blob)
-    trace_report = build_traceability_mapping_report(blob)
-    trace_ok = not trace_bad
-    if not trace_ok:
-        blockers.extend(trace_bad[:6])
+    if _dcode == 'cyber':
+        trace_bad = check_traceability_bad_mappings(blob)
+        trace_report = build_traceability_mapping_report(blob, domain=_dcode)
+        trace_ok = not trace_bad
+        if not trace_ok:
+            blockers.extend(trace_bad[:6])
+    else:
+        # Non-cyber: cyber ECC/DCC mapping checkers must not apply.
+        trace_bad = []
+        trace_report = build_traceability_mapping_report(blob, domain=_dcode)
+        missing_trace = [r['family'] for r in trace_report if not r.get('passed')]
+        trace_ok = len(missing_trace) <= 2
+        if not trace_ok:
+            blockers.extend(
+                f'trace_family_missing:{f}' for f in missing_trace[:6])
     section_results['traceability'] = {
         'passed': trace_ok,
         'bad_mappings': trace_bad,
@@ -1279,8 +1395,11 @@ def evaluate_document_quality(
         extracted_docx_text: str = '',
         extracted_pdf_text: str = '',
         pdf_bytes: bytes = b'',
+        domain: str = 'cyber',
 ) -> Dict[str, Any]:
-    """Single authority compiler for Cyber Arabic Technical board-ready quality."""
+    """Single authority compiler for strategy document quality."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(domain, default='cyber')
     sections = dict(legacy_sections or {})
     if canonical_artifact is not None:
         if hasattr(canonical_artifact, 'legacy_sections'):
@@ -1288,20 +1407,20 @@ def evaluate_document_quality(
         elif isinstance(canonical_artifact, dict):
             sections.update(dict(canonical_artifact.get('sections') or {}))
 
-    canonical_eval = _evaluate_canonical_sections(sections)
+    canonical_eval = _evaluate_canonical_sections(sections, domain=dcode)
     canonical_kpis = (sections or {}).get('kpis', '') or ''
 
     peer_counts: Dict[str, int] = {}
     route_evidence: Dict[str, Any] = {}
     if extracted_preview_text.strip():
         route_evidence['preview'] = _evaluate_visible_route(
-            extracted_preview_text, route='preview')
+            extracted_preview_text, route='preview', domain=dcode)
         peer_counts['preview'] = route_evidence['preview'].get(
             'roadmap_visible_row_count') or 0
     if extracted_docx_text.strip():
         route_evidence['docx'] = _evaluate_visible_route(
             extracted_docx_text, route='docx',
-            peer_row_counts=peer_counts)
+            peer_row_counts=peer_counts, domain=dcode)
         peer_counts['docx'] = route_evidence['docx'].get(
             'roadmap_visible_row_count') or 0
     if extracted_pdf_text.strip() or pdf_bytes:
@@ -1309,7 +1428,8 @@ def evaluate_document_quality(
             extracted_pdf_text, route='pdf',
             pdf_bytes=pdf_bytes,
             peer_row_counts=peer_counts,
-            docx_reference=extracted_docx_text)
+            docx_reference=extracted_docx_text,
+            domain=dcode)
         peer_counts['pdf'] = route_evidence['pdf'].get(
             'roadmap_visible_row_count') or 0
 
@@ -1325,7 +1445,8 @@ def evaluate_document_quality(
                 pdf_bytes=pdf_bytes if route_name == 'pdf' else b'',
                 peer_row_counts=peer_counts,
                 docx_reference=extracted_docx_text,
-                canonical_kpis=canonical_kpis)
+                canonical_kpis=canonical_kpis,
+                domain=dcode)
 
     blocking: List[str] = list(canonical_eval.get('blocking_errors') or [])
     for route, ev in route_evidence.items():
@@ -1508,16 +1629,18 @@ def repair_document_quality_sections(
     except Exception:  # noqa: BLE001
         pass
 
-    if backend.get('baseline_strategic_objectives'):
+    from release_engine_v3.domain_codes import normalize_domain_code as _ndc_dqs
+    _dqs_domain = _ndc_dqs(str(domain or backend.get('domain') or ''), default='')
+    # REL3.3 P0 — Cyber board-ready SO baseline/catalog is cyber-only.
+    if _dqs_domain == 'cyber' and backend.get('baseline_strategic_objectives'):
         try:
             out, _ = backend['baseline_strategic_objectives'](out, lang, fws)
             repairs.append('dqs:baseline_strategic_objectives')
         except Exception:  # noqa: BLE001
             pass
-
-    out, so_rep = _inject_missing_dqs_so_families(
-        out, lang=lang, backend=backend)
-    repairs.extend(so_rep)
+        out, so_rep = _inject_missing_dqs_so_families(
+            out, lang=lang, backend=backend)
+        repairs.extend(so_rep)
 
     try:
         from release_engine.kpi_model import (
@@ -1543,7 +1666,7 @@ def repair_document_quality_sections(
             repair_traceability_canonical_families,
         )
         out, trace_diag = repair_traceability_canonical_families(
-            out, lang=lang, backend=backend)
+            out, lang=lang, domain=domain, backend=backend)
         if trace_diag.get('action_taken') != 'no_changes':
             repairs.append('dqs:traceability_canonical_families_repaired')
     except Exception:  # noqa: BLE001
@@ -1577,7 +1700,7 @@ def repair_document_quality_sections(
             finalize_risk_treatment,
             trim_risk_register_rows,
         )
-        out, _ = finalize_risk_treatment(out, lang=lang)
+        out, _ = finalize_risk_treatment(out, lang=lang, domain=domain)
         out, trimmed = trim_risk_register_rows(out, max_rows=MAX_RISKS)
         if trimmed:
             repairs.append('dqs:risk_register_trimmed')

@@ -74,12 +74,17 @@ def sections_from_frozen_artifact(
 def validate_docx_renderer_sections(
         sections: Dict[str, str],
         *,
-        frozen_complete: bool = False) -> Tuple[bool, List[str]]:
+        frozen_complete: bool = False,
+        document_type: str = 'strategy') -> Tuple[bool, List[str]]:
     blockers: List[str] = []
-    if not str(sections.get('traceability') or '').strip():
-        blockers.append('rel32_docx_renderer_missing_frozen_traceability')
-    if frozen_complete and not str(sections.get('governance') or '').strip():
-        blockers.append('rel32_docx_renderer_missing_frozen_governance')
+    dtype = str(document_type or 'strategy').strip().lower()
+    # REL3.3 — strategy-only frozen section requirements.
+    if dtype in ('strategy', ''):
+        if not str(sections.get('traceability') or '').strip():
+            blockers.append('rel32_docx_renderer_missing_frozen_traceability')
+        if frozen_complete and not str(
+                sections.get('governance') or '').strip():
+            blockers.append('rel32_docx_renderer_missing_frozen_governance')
     return (not blockers, blockers)
 
 
@@ -103,8 +108,16 @@ def bind_rel32_docx_renderer_input(
         (artifact_dict or {}).get('frozen_artifact_complete')
         or (artifact_dict or {}).get('_rel32_frozen_loaded')
         or backend.get('_rel32_frozen_export_lock_active'))
+    document_type = str(
+        (artifact_dict or {}).get('document_type')
+        or getattr(frozen, 'document_type', None)
+        or getattr(frozen, 'artifact_type', None)
+        or backend.get('document_type')
+        or 'strategy').strip().lower()
     ok, blockers = validate_docx_renderer_sections(
-        sections, frozen_complete=frozen_complete)
+        sections,
+        frozen_complete=frozen_complete,
+        document_type=document_type)
     trace_src = str(
         (artifact_dict or {}).get('_rel32_traceability_rows_loaded_from')
         or traceability_source

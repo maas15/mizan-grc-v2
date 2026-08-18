@@ -39,33 +39,169 @@ def _artifact_id_from(legacy: Dict[str, Any]) -> str:
     return f'rel3-{uuid.uuid4().hex[:12]}'
 
 
+# REL3.3 — forbidden strategy heading markers used to assert the final risk
+# markdown carries no strategy sections (defense-in-depth reporting only).
+_FA_FORBIDDEN_STRATEGY_HEADING_MARKERS = (
+    'الرؤية', 'الأهداف الاستراتيجية', 'الاهداف الاستراتيجية',
+    'الركائز الاستراتيجية', 'خارطة الطريق', 'خريطة الطريق',
+    'مصفوفة التتبع', 'مصفوفة تتبع', 'نموذج الحوكمة',
+    'مؤشرات الأداء الرئيسية', 'المواءمة الاستراتيجية',
+    'المبادرات الاستراتيجية', 'strategic objectives', 'strategic pillars',
+    'roadmap', 'traceability matrix', 'governance model', 'strategic vision',
+)
+
+
+def _fa_forbidden_headings_in(markdown: str) -> List[str]:
+    hits: List[str] = []
+    for ln in str(markdown or '').splitlines():
+        s = ln.strip()
+        if not s.startswith('##'):
+            continue
+        h = s.lstrip('#').strip().lower()
+        for m in _FA_FORBIDDEN_STRATEGY_HEADING_MARKERS:
+            if m.lower() in h:
+                hits.append(s.lstrip('#').strip())
+                break
+    return list(dict.fromkeys(hits))
+
+
+def _emit_rel33_final_artifact_document_type_diag(
+        *,
+        document_type: str,
+        artifact_type: str,
+        domain: str,
+        risk_id: str,
+        legacy_sections: Dict[str, Any],
+        markdown_view: str,
+        markdown_view_source: str,
+        strategy_fallback_considered: bool,
+        strategy_fallback_applied: bool,
+        strategy_fallback_skipped_reason: str,
+        risk_native_fallback_applied: bool,
+        risk_native_fallback_source: str,
+        blocking_errors: List[str],
+) -> None:
+    """Emit [REL33-FINAL-ARTIFACT-DOCUMENT-TYPE-DIAG] (never alters output)."""
+    import json as _json_fa
+    keys = [str(k) for k in (legacy_sections or {}).keys()
+            if not str(k).startswith('_')]
+    forbidden = _fa_forbidden_headings_in(markdown_view)
+    final_heads = [
+        ln.strip().lstrip('#').strip()
+        for ln in str(markdown_view or '').splitlines()
+        if ln.strip().startswith('##')]
+    diag = {
+        'tag': '[REL33-FINAL-ARTIFACT-DOCUMENT-TYPE-DIAG]',
+        'route': 'build_final_document_artifact',
+        'output_type': 'final_artifact',
+        'domain': str(domain or ''),
+        'document_type': str(document_type or ''),
+        'artifact_type': str(artifact_type or ''),
+        'risk_id': str(risk_id or ''),
+        'legacy_sections_count': len(keys),
+        'legacy_sections_keys': keys,
+        'markdown_view_source': str(markdown_view_source or ''),
+        'strategy_fallback_considered': bool(strategy_fallback_considered),
+        'strategy_fallback_applied': bool(strategy_fallback_applied),
+        'strategy_fallback_skipped_reason': str(
+            strategy_fallback_skipped_reason or ''),
+        'risk_native_fallback_applied': bool(risk_native_fallback_applied),
+        'risk_native_fallback_source': str(risk_native_fallback_source or ''),
+        'final_markdown_hash': hashlib.sha256(
+            str(markdown_view or '').encode('utf-8')).hexdigest()[:16],
+        'final_heading_keys': final_heads,
+        'forbidden_strategy_headings_in_final': forbidden,
+        'blocking_errors': list(blocking_errors or []),
+        'passed': not forbidden and not blocking_errors,
+    }
+    try:
+        print('[REL33-FINAL-ARTIFACT-DOCUMENT-TYPE-DIAG] '
+              + _json_fa.dumps(diag, ensure_ascii=False, default=str),
+              flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _legacy_to_canonical_sections(
         legacy_sections: Dict[str, str],
         *,
         lang: str = 'ar',
         domain: str = 'cyber',
         backend: Optional[Dict[str, Any]] = None,
-) -> Tuple[Dict[str, CanonicalSection], Dict[str, str]]:
+        document_type: str = 'strategy',
+        route: str = '',
+        phase: str = 'freeze',
+) -> Tuple[Dict[str, CanonicalSection], Dict[str, str], List[str]]:
+    """Build canonical sections. REL3.3 document-type compiler authority:
+
+    the REL32 strategy compiler (which synthesizes vision/pillars/environment/
+    roadmap/kpis) runs ONLY for document_type=strategy. Risk/gap artifacts are
+    compiled from their native sections and never synthesized into a strategy.
+    If the strategy compiler is somehow attempted for a non-strategy artifact
+    it fails closed with ``rel33_wrong_compiler_for_document_type:<dtype>``.
+    """
+    from release_engine_v3.rel33_domain_guard import (
+        emit_rel33_document_type_compiler_authority,
+        select_rel33_compiler,
+    )
     sections_src = dict(legacy_sections)
+    dtype = str(document_type or 'strategy').strip().lower()
+    is_risk = dtype in ('risk', 'risk_assessment')
+    compiler_selected = select_rel33_compiler(dtype)
+    authority_blockers: List[str] = []
+    strategy_compiler_attempted = False
+    strategy_compiler_blocked = False
+    synthetic_sections_created = False
+    native_present = sorted(
+        str(k) for k, v in sections_src.items()
+        if not str(k).startswith('_') and str(v or '').strip())
     try:
         from release_engine_v3.rel32_compiler import (
             compile_canonical_strategy_document,
             is_rel32_compiler_first,
         )
         flags = (backend or {}).get('flags') or {}
-        if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
-            compiled = compile_canonical_strategy_document(
-                sections_src,
-                request_context={
-                    'lang': lang,
-                    'domain': domain,
-                    'backend': backend or {},
-                },
-            )
-            if compiled.legacy_sections:
-                sections_src = dict(compiled.legacy_sections)
+        if is_risk:
+            # REL3.3 P0 — a risk artifact must NEVER be compiled as a strategy
+            # (that synthesizes vision/pillars/environment/roadmap/kpis and
+            # contaminates the risk document). Select the risk-native authority
+            # and never invoke the strategy compiler. compile_canonical_strategy_document
+            # itself fails closed if it is ever reached with a risk document_type.
+            compiler_selected = 'risk_native'
+        else:
+            # Preserve existing strategy/gap behavior exactly: the compiler
+            # authority is decided as before (strategy-shaped) for non-risk.
+            if is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+                strategy_compiler_attempted = True
+                compiled = compile_canonical_strategy_document(
+                    sections_src,
+                    request_context={
+                        'lang': lang,
+                        'domain': domain,
+                        'backend': backend or {},
+                    },
+                )
+                if compiled.legacy_sections:
+                    sections_src = dict(compiled.legacy_sections)
+                    synthetic_sections_created = True
     except Exception:  # noqa: BLE001
         pass
+    emit_rel33_document_type_compiler_authority({
+        'route': str(route or ''),
+        'domain': str(domain or ''),
+        'artifact_type': dtype,
+        'document_type': dtype,
+        'phase': str(phase or ''),
+        'compiler_selected': compiler_selected,
+        'compiler_requested': 'strategy' if strategy_compiler_attempted else compiler_selected,
+        'compiler_allowed': not strategy_compiler_blocked,
+        'freeze_authority': compiler_selected,
+        'strategy_compiler_attempted': strategy_compiler_attempted,
+        'strategy_compiler_blocked': strategy_compiler_blocked,
+        'native_sections_present': native_present,
+        'synthetic_strategy_sections_created': synthetic_sections_created,
+        'blocking_errors': list(authority_blockers),
+    })
     doc = build_strategy_document(sections_src)
     sections = doc.as_dict()
     raw_kpi = (
@@ -82,7 +218,7 @@ def _legacy_to_canonical_sections(
     if raw_trace:
         sections['traceability'] = enrich_traceability_section(
             sections['traceability'], raw_trace)
-    return sections, sections_src
+    return sections, sections_src, authority_blockers
 
 
 def _scrub_legacy_sections_arabic(
@@ -121,11 +257,28 @@ def build_final_document_artifact(
         meta.get('selected_frameworks')
         or legacy_artifact.get('selected_frameworks')
         or [])
-    domain = (
-        legacy_artifact.get('domain')
-        or meta.get('domain')
-        or 'cyber')
+    # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber. Blank
+    # stays blank; the canonical artifact then carries a blocking error so
+    # exports fail closed instead of rendering Cyber content.
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        domain = normalize_domain_code(
+            str(
+                legacy_artifact.get('domain')
+                or meta.get('domain')
+                or ''),
+            default='')
+    except Exception:  # noqa: BLE001
+        domain = str(
+            legacy_artifact.get('domain')
+            or meta.get('domain')
+            or '')
     lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
+    document_type = str(
+        meta.get('document_type')
+        or legacy_artifact.get('document_type')
+        or legacy_sections.get('_document_type')
+        or 'strategy').strip().lower()
     backend = dict(legacy_artifact.get('_rel32_backend') or {})
     backend.setdefault('flags', {
         'rel3': True,
@@ -134,16 +287,46 @@ def build_final_document_artifact(
     })
     backend.setdefault('selected_frameworks', fws)
     backend.setdefault('lang', lang)
-    canon_map, legacy_sections = _legacy_to_canonical_sections(
-        legacy_sections, lang=lang, domain=domain, backend=backend)
+    # REL3.3 — document-type-aware content propagation. For a risk artifact the
+    # authoritative build must carry the COMPILED risk-native markdown. When the
+    # legacy sections arrive empty (e.g. a frozen/authoritative build that lost
+    # the section map), derive risk-native sections from the compiled
+    # ``final_markdown`` so the artifact renders compiled risk content — never a
+    # synthesized strategy document.
+    _dtype_risk = str(document_type or '').strip().lower() in (
+        'risk', 'risk_assessment')
+    _compiled_md = str(legacy_artifact.get('final_markdown') or '').strip()
+    _risk_secs_present = any(
+        (not str(k).startswith('_')) and str(v).strip()
+        for k, v in legacy_sections.items())
+    if _dtype_risk and _compiled_md and not _risk_secs_present:
+        try:
+            from release_engine_v3.rel33_risk_artifact import (
+                _split_risk_markdown as _split_risk_md_fa,
+                normalize_risk_export_sections as _norm_risk_secs_fa,
+            )
+            legacy_sections = _norm_risk_secs_fa(
+                _split_risk_md_fa(_compiled_md))
+            _risk_secs_present = any(
+                (not str(k).startswith('_')) and str(v).strip()
+                for k, v in legacy_sections.items())
+        except Exception:  # noqa: BLE001
+            pass
+    canon_map, legacy_sections, _authority_blockers = _legacy_to_canonical_sections(
+        legacy_sections, lang=lang, domain=domain, backend=backend,
+        document_type=document_type, phase='build_final_document_artifact')
     canon_hash = compute_canonical_hash(canon_map)
     legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
+    blockers.extend(_authority_blockers)
+    if not str(domain or '').strip() and document_type == 'strategy':
+        blockers.append('rel33_export_domain_missing:canonical_artifact')
     quality = validate_canonical_quality(
         canon_map,
         legacy_sections=legacy_sections,
         domain=domain,
         lang=lang,
+        document_type=document_type,
     )
     blockers.extend(quality.get('blocking_errors') or [])
     rel2 = ((legacy_artifact.get('diagnostics') or {}).get('rel2') or {})
@@ -158,14 +341,74 @@ def build_final_document_artifact(
         str(v).strip()
         for k, v in legacy_sections.items()
         if isinstance(v, str) and v.strip() and not str(k).startswith('_'))
-    md_view = legacy_join or strategy_document_to_markdown(
-        build_strategy_document(legacy_sections))
+    # ── REL3.3 — final-artifact markdown_view is document_type-aware ──
+    # The strategy-document fallback (build_strategy_document → synthesizes
+    # vision/objectives/pillars/roadmap/KPI/governance/traceability) must NEVER
+    # run for a risk artifact. For risk: use the compiled/risk-native markdown,
+    # or fail closed — never synthesize a strategy document.
+    _artifact_type = str(
+        legacy_artifact.get('artifact_type')
+        or meta.get('artifact_type') or '').strip().lower()
+    _is_risk_final = _dtype_risk or _artifact_type in (
+        'risk', 'risk_assessment')
+    _fa_strategy_fallback_considered = False
+    _fa_strategy_fallback_applied = False
+    _fa_strategy_fallback_skipped_reason = ''
+    _fa_risk_native_fallback_applied = False
+    _fa_risk_native_fallback_source = ''
+    if _is_risk_final:
+        _fa_strategy_fallback_skipped_reason = 'document_type_risk'
+        # Prefer the COMPILED risk markdown directly — it preserves every
+        # risk-native table (register/treatments/KRI). Reconstructing from the
+        # slugified sections is lossy (the risk splitter collapses multiple
+        # ``مخاطر`` headings onto one ``register`` key), which would drop the
+        # register table from the exported bytes.
+        if _compiled_md:
+            md_view = _compiled_md
+            _fa_md_source = 'compiled_risk_content'
+            _fa_risk_native_fallback_applied = True
+            _fa_risk_native_fallback_source = 'final_markdown'
+        elif legacy_join:
+            md_view = legacy_join
+            _fa_md_source = 'risk_native_sections'
+            _fa_risk_native_fallback_applied = True
+            _fa_risk_native_fallback_source = 'legacy_sections'
+        else:
+            md_view = ''
+            _fa_md_source = 'none'
+            blockers.append('rel33_risk_artifact_empty_sections')
+    else:
+        if legacy_join:
+            md_view = legacy_join
+            _fa_md_source = 'legacy_sections'
+        else:
+            _fa_strategy_fallback_considered = True
+            _fa_strategy_fallback_applied = True
+            md_view = strategy_document_to_markdown(
+                build_strategy_document(legacy_sections))
+            _fa_md_source = 'strategy_document_builder'
+    _emit_rel33_final_artifact_document_type_diag(
+        document_type=document_type,
+        artifact_type=_artifact_type,
+        domain=domain,
+        risk_id=str(legacy_artifact.get('risk_id')
+                    or legacy_artifact.get('artifact_id') or ''),
+        legacy_sections=legacy_sections,
+        markdown_view=md_view,
+        markdown_view_source=_fa_md_source,
+        strategy_fallback_considered=_fa_strategy_fallback_considered,
+        strategy_fallback_applied=_fa_strategy_fallback_applied,
+        strategy_fallback_skipped_reason=_fa_strategy_fallback_skipped_reason,
+        risk_native_fallback_applied=_fa_risk_native_fallback_applied,
+        risk_native_fallback_source=_fa_risk_native_fallback_source,
+        blocking_errors=list(dict.fromkeys(blockers)),
+    )
     artifact = FinalDocumentArtifact(
         artifact_id=aid,
         strategy_id=strategy_id or aid,
-        domain=str(domain).lower(),
+        domain=str(domain or ''),
         language='ar' if str(lang).lower().startswith('ar') else 'en',
-        document_type='strategy',
+        document_type=document_type,
         strategy_type=str(
             meta.get('doc_subtype') or legacy_artifact.get('strategy_type')
             or 'technical'),

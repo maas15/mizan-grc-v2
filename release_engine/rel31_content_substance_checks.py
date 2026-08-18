@@ -133,7 +133,10 @@ def _count_roadmap_rows_flat(blob: str) -> int:
             return visible
     except Exception:  # noqa: BLE001
         pass
-    road = check_roadmap_coverage(blob or '')
+    # Count-only fallback — family resolution needs a domain; use cyber
+    # solely as a known registry for row counting (caller already tried
+    # the visible-row helper above).
+    road = check_roadmap_coverage(blob or '', domain='cyber')
     return int(road.get('visible_row_count') or 0)
 
 
@@ -304,7 +307,18 @@ def check_generic_risk_treatments(blob: str) -> List[str]:
     return list(dict.fromkeys(generic))
 
 
-def check_traceability_bad_mappings(blob: str) -> List[str]:
+def check_traceability_bad_mappings(
+        blob: str, *, domain: str = '') -> List[str]:
+    # REL3.3 — Cyber ECC/DCC gap-mapping evidence is cyber-only. Non-cyber
+    # domains use their own registries; applying the Cyber catalog produces
+    # false positives (e.g. حوكمة البيانات المؤسسية).
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if dcode and dcode != 'cyber':
+        return []
     defects = list(check_traceability_dcc_classification_invalid(blob))
     try:
         from release_engine_v3.rel32_docx_traceability_evidence import (
@@ -380,8 +394,17 @@ def check_arabic_residues_substance(blob: str) -> List[str]:
     return list(dict.fromkeys(residues))
 
 
-def check_roadmap_substance(blob: str) -> Tuple[int, List[str]]:
-    road = check_roadmap_coverage(blob or '')
+def check_roadmap_substance(
+        blob: str, *, domain: str = '') -> Tuple[int, List[str]]:
+    # REL3.3 — never default blank→cyber; family checks are domain-scoped.
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if not dcode:
+        return 0, ['rel33_export_domain_missing']
+    road = check_roadmap_coverage(blob or '', domain=dcode)
     flat_rows = count_flat_roadmap_initiatives(blob)
     parsed_rows = int(road.get('distinct_row_count') or 0)
     count = int(road.get('visible_row_count') or _count_roadmap_rows_flat(blob))
@@ -407,6 +430,7 @@ def evaluate_content_substance(
         peer_row_counts: Optional[Dict[str, int]] = None,
         docx_reference: str = '',
         canonical_kpis: str = '',
+        domain: str = '',
 ) -> Dict[str, Any]:
     """Full substance diagnostic for one export channel."""
     from release_engine_v3.document_quality_spec import (
@@ -432,10 +456,10 @@ def evaluate_content_substance(
         pass
     shallow = check_shallow_pillar_rows(blob)
     owners = check_pillar_owner_missing(blob)
-    row_count, road_defects = check_roadmap_substance(blob)
+    row_count, road_defects = check_roadmap_substance(blob, domain=domain)
     kpi_defects = check_kpi_semantic_defects(blob, route=route)
     risk_generic = check_generic_risk_treatments(blob)
-    trace_bad = check_traceability_bad_mappings(blob)
+    trace_bad = check_traceability_bad_mappings(blob, domain=domain)
     arabic = check_arabic_residues_substance(blob)
     pillar_dupes = check_pillar_duplicate_narratives(blob)
     pillar_generic = check_pillar_generic_outputs(blob)
@@ -520,13 +544,15 @@ def run_rel31_content_substance_checks(
         peer_row_counts: Optional[Dict[str, int]] = None,
         canonical_kpis: str = '',
         docx_reference: str = '',
+        domain: str = '',
 ) -> List[str]:
     """Return standardized substance defect codes."""
     diag = evaluate_content_substance(
         blob, route=route, pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
         canonical_kpis=canonical_kpis,
-        docx_reference=docx_reference)
+        docx_reference=docx_reference,
+        domain=domain)
     if diag.get('content_substance_passed'):
         return []
     return list(diag.get('blocking_errors') or [])
@@ -587,11 +613,12 @@ def repair_rel31_content_substance(
     if road.get('action_taken') and road.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{road.get("action_taken")}')
 
-    out, kpi = finalize_kpi_substance(out, lang=lang, backend=backend)
+    out, kpi = finalize_kpi_substance(
+        out, lang=lang, domain=domain, backend=backend)
     if kpi.get('action_taken') and kpi.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{kpi.get("action_taken")}')
 
-    out, risk = finalize_risk_treatment(out, lang=lang)
+    out, risk = finalize_risk_treatment(out, lang=lang, domain=domain)
     if risk.get('action_taken') and risk.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{risk.get("action_taken")}')
     from release_engine.risk_treatment_model import trim_risk_register_rows
@@ -599,7 +626,8 @@ def repair_rel31_content_substance(
     if trimmed:
         repairs.append('rel31_substance:risk_register_trimmed')
 
-    out, trace = finalize_traceability_substance(out, lang=lang)
+    out, trace = finalize_traceability_substance(
+        out, lang=lang, domain=domain, backend=backend)
     if trace.get('action_taken') and trace.get('action_taken') != 'validated':
         repairs.append(f'rel31_substance:{trace.get("action_taken")}')
 

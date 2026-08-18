@@ -322,11 +322,29 @@ def _collect_bad_mappings(text: str) -> List[str]:
     return bad
 
 
+def _resolve_trace_domain(
+        domain: str = '',
+        backend: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve domain for traceability; blank fails closed (never cyber)."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    raw = str(
+        domain
+        or (backend or {}).get('domain')
+        or '')
+    code = normalize_domain_code(raw, default='')
+    if not code:
+        raise ValueError('rel33_substance_domain_missing:traceability')
+    return code
+
+
 def build_traceability_matrix_rows_from_registry(
         *,
         lang: str = 'ar',
+        domain: str = '',
+        backend: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build traceability matrix model rows from TRACE_CANONICAL_REGISTRY only."""
+    """Build traceability matrix model rows from the domain registry."""
     if lang == 'ar':
         header = [
             'الإطار المرجعي', 'مجال القدرة / الضابط',
@@ -340,9 +358,19 @@ def build_traceability_matrix_rows_from_registry(
             'Metric', 'Related Risk',
         ]
 
+    dcode = _resolve_trace_domain(domain, backend)
+    if dcode == 'cyber':
+        order = _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
+        registry = TRACE_CANONICAL_REGISTRY
+        source = 'trace_canonical_registry'
+    else:
+        from release_engine_v3.rel32_registries import resolve_trace_registry
+        order, registry = resolve_trace_registry(dcode)
+        source = f'trace_registry:{dcode}'
+
     rows: List[List[str]] = []
-    for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER:
-        spec = TRACE_CANONICAL_REGISTRY[fam]
+    for fam in order:
+        spec = registry[fam]
         rows.append([
             spec['framework'],
             spec['capability'],
@@ -369,23 +397,34 @@ def build_traceability_matrix_rows_from_registry(
         'header': header,
         'rows': rows,
         'informative_rows': informative_rows,
-        'source': 'trace_canonical_registry',
+        'source': source,
+        'domain': dcode,
     }
 
 
 def build_canonical_traceability_from_registry(
         *,
         lang: str = 'ar',
+        domain: str = '',
+        backend: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Build full traceability matrix from canonical family registry only."""
+    """Build full traceability matrix from the domain family registry."""
     _ = lang
+    dcode = _resolve_trace_domain(domain, backend)
+    if dcode == 'cyber':
+        order = _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
+        registry = TRACE_CANONICAL_REGISTRY
+    else:
+        from release_engine_v3.rel32_registries import resolve_trace_registry
+        order, registry = resolve_trace_registry(dcode)
+
     header = (
         '| الإطار المرجعي | مجال القدرة / الضابط | الفجوة المرتبطة | '
         'المبادرة / النشاط | المؤشر | الخطر المرتبط |')
     sep = '|' + '---|' * 6
     rows: List[str] = []
-    for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER:
-        spec = TRACE_CANONICAL_REGISTRY[fam]
+    for fam in order:
+        spec = registry[fam]
         rows.append(
             '| {fw} | {cap} | {gap} | {init} | {met} | {risk} |'.format(
                 fw=spec['framework'],
@@ -403,48 +442,70 @@ def build_canonical_traceability_from_registry(
     )
 
 
-def _build_canonical_traceability() -> str:
-    return build_canonical_traceability_from_registry()
+def _build_canonical_traceability(
+        *,
+        domain: str = 'cyber',
+        backend: Optional[Dict[str, Any]] = None,
+) -> str:
+    return build_canonical_traceability_from_registry(
+        domain=domain, backend=backend)
 
 
 def repair_traceability_canonical_families(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
+        domain: str = '',
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Rebuild traceability from canonical gap families before REL3 freeze."""
-    _ = backend
+    """Rebuild traceability from domain gap families before REL3 freeze.
+
+    REL3.3 P0 — never inject Cyber NCA ECC/DCC rows into non-cyber domains.
+    Blank domain fails closed with ``rel33_substance_domain_missing``.
+    """
+    dcode = _resolve_trace_domain(domain, backend)
     text = (
         sections.get('traceability')
         or sections.get('traceability_matrix')
         or ''
     )
-    bad_before = _collect_bad_mappings(text)
-    if not bad_before and text.strip():
+    bad_before: List[str] = []
+    if dcode == 'cyber':
+        bad_before = _collect_bad_mappings(text)
+        if not bad_before and text.strip():
+            try:
+                from release_engine.rel31_content_substance_checks import (
+                    check_traceability_bad_mappings,
+                )
+                for defect in check_traceability_bad_mappings(text):
+                    if defect.startswith('trace_gap_mismatch:'):
+                        bad_before.append(defect)
+            except Exception:  # noqa: BLE001
+                pass
+
+    canonical_text = build_canonical_traceability_from_registry(
+        lang=lang, domain=dcode, backend=backend)
+    bad_after: List[str] = []
+    if dcode == 'cyber':
         try:
             from release_engine.rel31_content_substance_checks import (
                 check_traceability_bad_mappings,
             )
-            for defect in check_traceability_bad_mappings(text):
-                if defect.startswith('trace_gap_mismatch:'):
-                    bad_before.append(defect)
+            bad_after = check_traceability_bad_mappings(canonical_text)
         except Exception:  # noqa: BLE001
-            pass
+            bad_after = _collect_bad_mappings(canonical_text)
 
-    canonical_text = build_canonical_traceability_from_registry(lang=lang)
-    bad_after: List[str] = []
-    try:
-        from release_engine.rel31_content_substance_checks import (
-            check_traceability_bad_mappings,
-        )
-        bad_after = check_traceability_bad_mappings(canonical_text)
-    except Exception:  # noqa: BLE001
-        bad_after = _collect_bad_mappings(canonical_text)
+    if dcode == 'cyber':
+        order = list(_DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER)
+        registry = TRACE_CANONICAL_REGISTRY
+    else:
+        from release_engine_v3.rel32_registries import resolve_trace_registry
+        order_t, registry = resolve_trace_registry(dcode)
+        order = list(order_t)
 
     repaired_mappings = [
-        f'{fam}->{TRACE_CANONICAL_REGISTRY[fam]["expected_gap"]}'
-        for fam in _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
+        f'{fam}->{registry[fam]["expected_gap"]}'
+        for fam in order
     ]
     blockers = list(bad_after)
     passed = not blockers
@@ -458,14 +519,17 @@ def repair_traceability_canonical_families(
         'traceability_canonical_families_repaired')
 
     diag = {
+        'domain': dcode,
+        'selected_registry': dcode,
         'bad_mappings_before': list(dict.fromkeys(bad_before)),
         'repaired_mappings': repaired_mappings,
-        'canonical_gap_families_after': list(
-            _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER),
+        'canonical_gap_families_after': order,
         'trace_gap_mismatch_after': blockers,
         'traceability_canonical_passed': passed,
         'blocking_errors': blockers,
         'action_taken': action,
+        'cyber_registry_attempted': dcode == 'cyber',
+        'cyber_registry_blocked': dcode != 'cyber',
     }
     emit_rel3_traceability_canonical_repair(diag)
     return out, diag
@@ -486,9 +550,11 @@ def finalize_traceability_substance(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
+        domain: str = '',
+        backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     out, diag = repair_traceability_canonical_families(
-        sections, lang=lang)
+        sections, lang=lang, domain=domain, backend=backend)
     if diag.get('action_taken') == 'no_changes':
         text = out.get('traceability') or ''
         action = 'validated'

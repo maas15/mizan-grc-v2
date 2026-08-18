@@ -7,5 +7,10 @@
       "command": "ADMIN_PASSWORD=\"${ADMIN_PASSWORD:-mizan-dev-admin}\" SECRET_KEY=\"${SECRET_KEY:-mizan-dev-secret-key}\" FLASK_ENV=\"${FLASK_ENV:-development}\" python3 app.py"
     }
   ],
-  "ports": [5000]
+  "ports": [
+    {
+      "name": "web",
+      "port": 5000
+    }
+  ]
 }

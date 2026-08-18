@@ -653,7 +653,7 @@ def repair_sections_for_rendered_evidence(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
-        domain: str = 'cyber',
+        domain: str = '',
         backend: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     backend = backend or {}
@@ -666,26 +666,43 @@ def repair_sections_for_rendered_evidence(
     if out.get('vision'):
         out['vision'] = _repair_arabic_blob(
             _repair_so_weak_targets(out['vision']))
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        _dcode_ev = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        _dcode_ev = str(domain or '').strip().lower()
     if out.get('pillars'):
-        out['pillars'] = _repair_arabic_blob(
-            _repair_shallow_pillars(out['pillars']))
+        # REL3.3 — shallow-pillar enricher injects NCA ECC cyber prose.
+        if _dcode_ev == 'cyber':
+            out['pillars'] = _repair_arabic_blob(
+                _repair_shallow_pillars(out['pillars']))
+        else:
+            out['pillars'] = _repair_arabic_blob(out['pillars'])
     for key in ('roadmap', 'environment', 'gaps'):
         if out.get(key):
             out[key] = _repair_arabic_blob(out[key])
     if out.get('kpis'):
         sections_kpi, _ = _apply_inline_kpi_repairs({'kpis': out['kpis']})
         out['kpis'] = _repair_kpis(sections_kpi.get('kpis', out['kpis']))
-    out, _ = finalize_kpi_substance(out, lang=lang, backend=backend)
+    out, _ = finalize_kpi_substance(
+        out, lang=lang, domain=domain, backend=backend)
     if out.get('kpis'):
         out['kpis'] = _repair_kpis(out['kpis'])
-    for key in ('confidence', 'risk', 'risk_register'):
-        if out.get(key):
-            out[key] = _repair_risk_treatments(out[key])
-    out, _ = finalize_risk_treatment(out, lang=lang)
+    # REL3.3 — Cyber risk-theme fillers (MFA/SOC/CSIRT) are cyber-only.
+    if _dcode_ev == 'cyber':
+        for key in ('confidence', 'risk', 'risk_register'):
+            if out.get(key):
+                out[key] = _repair_risk_treatments(out[key])
+    out, _ = finalize_risk_treatment(out, lang=lang, domain=_dcode_ev or domain)
     if out.get('traceability'):
-        out['traceability'] = _repair_traceability(
-            _repair_arabic_blob(out['traceability']))
-    out, _ = finalize_traceability_substance(out, lang=lang)
+        # REL3.3 — CSIRT/NCA ECC gap rewrites are cyber-only.
+        if _dcode_ev == 'cyber':
+            out['traceability'] = _repair_traceability(
+                _repair_arabic_blob(out['traceability']))
+        else:
+            out['traceability'] = _repair_arabic_blob(out['traceability'])
+    out, _ = finalize_traceability_substance(
+        out, lang=lang, domain=domain, backend=backend)
 
     repaired, _ = finalize_roadmap(
         out, lang=lang, domain=domain,

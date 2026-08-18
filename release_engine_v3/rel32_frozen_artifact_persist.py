@@ -271,7 +271,18 @@ def rehydrate_frozen_from_persisted_dict(
 def assess_db_bundle_for_export(
         sections: Dict[str, Any],
         persisted_blob: Optional[Dict[str, Any]],
+        *,
+        document_type: str = 'strategy',
+        domain: str = '',
+        lang: str = 'ar',
+        flags: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    from release_engine_v3.rel33_frozen_completeness import (
+        evaluate_frozen_completeness_by_document_type,
+        rel33_compiler_first_sections_authority,
+    )
+
+    dtype = str(document_type or 'strategy').strip().lower()
     db_keys = sorted(_section_keys(sections))
     diag: Dict[str, Any] = {
         'db_sections_loaded': db_keys,
@@ -280,15 +291,78 @@ def assess_db_bundle_for_export(
         'artifact_loaded_from': 'none',
         'traceability_rows_loaded_from': 'inferred_text',
         'incomplete_frozen_artifact': False,
+        'document_type': dtype,
+        'domain': domain,
     }
-    if persisted_blob and frozen_artifact_complete(persisted_blob):
+    if dtype == 'gap_assessment':
+        complete, _, missing, _fc_diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=dtype,
+                domain=domain,
+                sections=sections,
+                persisted_blob=persisted_blob,
+                loaded_from='sections_json',
+                flags=flags,
+            ))
+        if complete:
+            diag.update({
+                'frozen_artifact_complete': True,
+                'artifact_loaded_from': 'gap_assessment_sections',
+                'traceability_rows_loaded_from': 'gap_assessment',
+                'completeness_rule_used': _fc_diag.get(
+                    'completeness_rule_used'),
+            })
+            return diag
         diag.update({
-            'frozen_artifact_complete': True,
-            'artifact_loaded_from': 'db_complete_artifact',
-            'traceability_rows_loaded_from': 'canonical_artifact',
+            'incomplete_frozen_artifact': True,
+            'missing_frozen_components': missing,
+            'artifact_loaded_from': 'gap_assessment_sections',
         })
         return diag
-    if is_legacy_section_bundle(sections):
+    if rel33_compiler_first_sections_authority(
+            {'sections': sections},
+            domain=domain,
+            lang=lang,
+            flags=flags,
+            document_type=dtype):
+        complete, _, missing, _fc_diag = (
+            evaluate_frozen_completeness_by_document_type(
+                document_type=dtype,
+                domain=domain,
+                sections=sections,
+                loaded_from='sections_json',
+                flags=flags,
+            ))
+        if complete:
+            diag.update({
+                'frozen_artifact_complete': True,
+                'artifact_loaded_from': 'rel33_compiler_first_sections',
+                'traceability_rows_loaded_from': 'sections_json',
+                'completeness_rule_used': _fc_diag.get(
+                    'completeness_rule_used'),
+            })
+            return diag
+    if persisted_blob:
+        complete, _, missing, _ = evaluate_frozen_completeness_by_document_type(
+            document_type=dtype,
+            persisted_blob=persisted_blob,
+            loaded_from='persisted_blob',
+        )
+        if complete:
+            diag.update({
+                'frozen_artifact_complete': True,
+                'artifact_loaded_from': 'db_complete_artifact',
+                'traceability_rows_loaded_from': 'canonical_artifact',
+            })
+            return diag
+        if dtype == 'strategy' and frozen_artifact_complete(persisted_blob):
+            diag.update({
+                'frozen_artifact_complete': True,
+                'artifact_loaded_from': 'db_complete_artifact',
+                'traceability_rows_loaded_from': 'canonical_artifact',
+            })
+            return diag
+    if is_legacy_section_bundle(sections) and dtype == 'strategy':
         diag.update({
             'incomplete_frozen_artifact': True,
             'artifact_loaded_from': 'legacy_sections',

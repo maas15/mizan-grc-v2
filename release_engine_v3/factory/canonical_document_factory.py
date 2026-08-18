@@ -54,7 +54,7 @@ class CanonicalDocumentFactory:
         canonical_doc = None
         artifact = None
 
-        if dtype == 'strategy' and dcode == 'cyber' and lang == 'ar':
+        if dtype == 'strategy' and lang == 'ar':
             try:
                 from release_engine_v3.rel32_compiler import (
                     compile_canonical_strategy_document,
@@ -62,7 +62,10 @@ class CanonicalDocumentFactory:
                 )
                 flags = ctx.flags or {}
                 if is_rel32_compiler_first(
-                        domain=dcode, lang=lang, flags=flags):
+                        domain=dcode,
+                        lang=lang,
+                        flags=flags,
+                        document_type=dtype):
                     compiled = compile_canonical_strategy_document(
                         sections,
                         request_context={
@@ -93,10 +96,12 @@ class CanonicalDocumentFactory:
                 'sections': sections,
                 'domain': dcode,
                 'language': lang,
+                'document_type': dtype,
                 'strategy_id': ctx.strategy_id or ctx.artifact_id,
                 'contract_meta': {
                     'lang': lang,
                     'domain': dcode,
+                    'document_type': dtype,
                     'selected_frameworks': ctx.frameworks,
                 },
                 '_rel32_backend': ctx.backend,

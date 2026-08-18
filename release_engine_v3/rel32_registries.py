@@ -71,14 +71,15 @@ KPI_CANONICAL_REGISTRY_FULL: Dict[str, Dict[str, str]] = dict(
 for _kf in PRCY88_KPI_FAMILIES:
     if _kf in PRCY88_KPI_CATALOG_AR:
         _cells = PRCY88_KPI_CATALOG_AR[_kf]
+        # PRCY88 catalog order: … | source | owner | frequency |
         KPI_CANONICAL_REGISTRY_FULL[_kf] = {
             'label_ar': _cells[1],
             'kpi_type': _cells[2],
             'target': _cells[3],
             'formula': _cells[4],
             'source': _cells[5],
-            'frequency': _cells[6],
-            'owner': _cells[7] if len(_cells) > 7 else 'CISO',
+            'owner': _cells[6] if len(_cells) > 6 else 'CISO',
+            'frequency': _cells[7] if len(_cells) > 7 else 'شهري',
         }
 
 # ── Traceability canonical registry ─────────────────────────────────────────
@@ -97,6 +98,557 @@ STRATEGIC_OBJECTIVE_REGISTRY: Dict[str, Tuple[str, ...]] = {
     for fam in PRCY88_SO_FAMILIES
     if fam in PRCY88_SO_CATALOG_AR
 }
+
+# ── Domain-specific strategic objectives (REL3.3 non-cyber) ───────────────────
+DATA_STRATEGIC_OBJECTIVE_REGISTRY: Dict[str, Tuple[str, ...]] = {
+    'data_governance': (
+        'تأسيس حوكمة البيانات المؤسسية',
+        'اعتماد إطار حوكمة NDMO',
+        'إطار حوكمة معتمد',
+        '6 أشهر',
+    ),
+    'data_quality': (
+        'رفع جودة البيانات التشغيلية',
+        '≥ 95% اكتمال البيانات الحرجة',
+        'تحسين قرارات الأعمال',
+        '12 شهراً',
+    ),
+    'metadata_catalog': (
+        'تفعيل كتالوج البيانات والبيانات الوصفية',
+        '100% فهرسة الأصول الحرجة',
+        'اكتشاف وإدارة البيانات',
+        '12 شهراً',
+    ),
+    'data_stewardship': (
+        'تغطية أمناء البيانات لجميع المجالات',
+        '100% مجالات بمالك بيانات',
+        'مساءلة واضحة',
+        '9 أشهر',
+    ),
+    'privacy_pdpl': (
+        'الامتثال لنظام حماية البيانات الشخصية',
+        '100% عمليات معالجة موثقة',
+        'حماية الخصوصية',
+        '12 شهراً',
+    ),
+    'data_security': (
+        'تطبيق ضوابط أمن البيانات',
+        '≥ 98% البيانات الحساسة محمية',
+        'تقليل مخاطر التسرب',
+        '12 شهراً',
+    ),
+    'data_sharing': (
+        'حوكمة مشاركة البيانات بين الجهات',
+        '100% اتفاقيات مشاركة معتمدة',
+        'تمكين التكامل الآمن',
+        '18 شهراً',
+    ),
+    'lifecycle_management': (
+        'إدارة دورة حياة البيانات',
+        '100% فئات بسياسات احتفاظ',
+        'امتثال NDMO',
+        '12 شهراً',
+    ),
+}
+
+AI_STRATEGIC_OBJECTIVE_REGISTRY: Dict[str, Tuple[str, ...]] = {
+    'ai_governance': (
+        'تأسيس حوكمة الذكاء الاصطناعي',
+        'سياسة AI معتمدة',
+        'إطار NIST AI RMF',
+        '6 أشهر',
+    ),
+    'model_inventory': (
+        'جرد شامل لنماذج الذكاء الاصطناعي',
+        '100% نماذج إنتاجية مسجلة',
+        'رؤية المخاطر',
+        '9 أشهر',
+    ),
+    'model_risk': (
+        'إدارة مخاطر النماذج',
+        '100% نماذج عالية الخطورة مقيمة',
+        'تخفيف مخاطر AI',
+        '12 شهراً',
+    ),
+    'bias_fairness': (
+        'مراقبة الانحياز والعدالة',
+        '≥ 95% نماذج حرجة مختبرة',
+        'عدالة القرارات',
+        '12 شهراً',
+    ),
+    'explainability': (
+        'قابلية تفسير قرارات AI',
+        '100% حالات حرجة قابلة للتفسير',
+        'ثقة أصحاب المصلحة',
+        '12 شهراً',
+    ),
+    'data_lineage': (
+        'تتبع سلسلة بيانات التدريب',
+        '100% مجموعات تدريب موثقة',
+        'امتثال ومساءلة',
+        '12 شهراً',
+    ),
+    'human_oversight': (
+        'إشراف بشري على قرارات AI',
+        '100% حالات حرجة بمراجعة بشرية',
+        'حوكمة قرارات آلية',
+        '9 أشهر',
+    ),
+    'ai_security': (
+        'أمن أنظمة الذكاء الاصطناعي',
+        'صفر ثغرات حرجة مفتوحة',
+        'حماية النماذج والبيانات',
+        '12 شهراً',
+    ),
+}
+
+DT_STRATEGIC_OBJECTIVE_REGISTRY: Dict[str, Tuple[str, ...]] = {
+    'digital_strategy': (
+        'تحديد استراتيجية التحول الرقمي',
+        'خارطة DGA معتمدة',
+        'مواءمة رؤية المؤسسة',
+        '6 أشهر',
+    ),
+    'service_digitization': (
+        'رقمنة الخدمات الأساسية',
+        '≥ 80% خدمات إلكترونية',
+        'تحسين تجربة المستفيد',
+        '18 شهراً',
+    ),
+    'platform_modernization': (
+        'تحديث المنصات التقنية',
+        '100% أنظمة حرجة على منصات حديثة',
+        'مرونة تشغيلية',
+        '24 شهراً',
+    ),
+    'cloud_adoption': (
+        'تبني الحوسبة السحابية',
+        '≥ 70% أعباء حرجة على السحابة',
+        'كفاءة وتوسع',
+        '18 شهراً',
+    ),
+    'api_integration': (
+        'تكامل الأنظمة عبر واجهات API',
+        '100% أنظمة حرجة متكاملة',
+        'تدفق بيانات موحد',
+        '12 شهراً',
+    ),
+    'customer_experience': (
+        'تحسين تجربة العملاء الرقمية',
+        '≥ 85% رضا المستفيدين',
+        'ولاء واستخدام',
+        '12 شهراً',
+    ),
+    'agile_delivery': (
+        'تبني التسليم الرشيق',
+        '100% فرق منتج بسprints',
+        'سرعة إطلاق',
+        '9 أشهر',
+    ),
+    'digital_governance': (
+        'حوكمة التحول الرقمي',
+        'لجنة تحول رقمي فعالة',
+        'إشراف ومتابعة',
+        '6 أشهر',
+    ),
+}
+
+# ── Domain-specific KPI registries (8-column canonical) ─────────────────────
+# Tuple order: label_ar, kpi_type, target, formula, source, owner, frequency
+_DATA_KPI_ROWS: Tuple[Tuple[str, ...], ...] = (
+    ('data_governance', 'نسبة تغطية حوكمة البيانات', 'KPI', '≥ 95%',
+     'عدد مجالات مغطاة ÷ إجمالي المجالات × 100',
+     'منصة حوكمة البيانات', 'CDO', 'ربع سنوي'),
+    ('data_quality', 'نسبة اكتمال البيانات الحرجة', 'KPI', '≥ 95%',
+     'حقول مكتملة ÷ حقول مطلوبة × 100',
+     'أداة جودة البيانات', 'مدير جودة البيانات', 'شهري'),
+    ('metadata_catalog', 'نسبة فهرسة الأصول في الكتالوج', 'KPI', '≥ 90%',
+     'أصول مفهرسة ÷ أصول حرجة × 100',
+     'كتالوج البيانات', 'مدير البيانات الوصفية', 'ربع سنوي'),
+    ('data_stewardship', 'نسبة تغطية أمناء البيانات', 'KPI', '100%',
+     'مجالات بأمين ÷ إجمالي المجالات × 100',
+     'سجل أمناء البيانات', 'مدير حوكمة البيانات', 'ربع سنوي'),
+    ('privacy_pdpl', 'نسبة عمليات المعالجة الموثقة', 'KPI', '100%',
+     'عمليات موثقة ÷ عمليات نشطة × 100',
+     'سجل RoPA', 'مسؤول حماية البيانات', 'ربع سنوي'),
+    ('data_security', 'نسبة البيانات الحساسة المحمية', 'KPI', '≥ 98%',
+     'سجلات محمية ÷ سجلات حساسة × 100',
+     'منصة أمن البيانات', 'مدير أمن البيانات', 'شهري'),
+    ('data_sharing', 'نسبة اتفاقيات المشاركة المعتمدة', 'KPI', '100%',
+     'اتفاقيات معتمدة ÷ تدفقات مشاركة × 100',
+     'سجل المشاركة', 'CDO', 'ربع سنوي'),
+    ('lifecycle_retention', 'نسبة فئات البيانات بسياسة احتفاظ', 'KPI', '100%',
+     'فئات بسياسة ÷ فئات معرفة × 100',
+     'سجل دورة الحياة', 'مدير حوكمة البيانات', 'ربع سنوي'),
+    ('consent_management', 'نسبة الموافقات المدارة إلكترونياً', 'KPI', '≥ 95%',
+     'موافقات إلكترونية ÷ إجمالي الموافقات × 100',
+     'منصة الموافقات', 'مسؤول حماية البيانات', 'شهري'),
+    ('dsr_response', 'متوسط زمن الاستجابة لطلبات DSR', 'KPI', '≤ 15 يوم',
+     'مجموع أيام الاستجابة ÷ عدد الطلبات',
+     'نظام DSR', 'مسؤول حماية البيانات', 'شهري'),
+    ('breach_notification', 'متوسط زمن الإبلاغ عن الانتهاكات', 'KPI', '≤ 72 ساعة',
+     'مجموع ساعات الإبلاغ ÷ عدد الحوادث',
+     'سجل الحوادث', 'مدير أمن البيانات', 'حسب الحادثة'),
+    ('ndmo_compliance', 'نسبة الامتثال لضوابط NDMO', 'KPI', '≥ 90%',
+     'ضوابط مطبقة ÷ ضوابط مطلوبة × 100',
+     'تقييم الامتثال', 'CDO', 'ربع سنوي'),
+)
+
+_AI_KPI_ROWS: Tuple[Tuple[str, ...], ...] = (
+    ('ai_governance', 'نسبة نماذج AI ضمن سياسة الحوكمة', 'KPI', '100%',
+     'نماذج مسجلة ÷ نماذج إنتاج × 100',
+     'سجل النماذج', 'مدير حوكمة AI', 'ربع سنوي'),
+    ('model_inventory', 'نسبة اكتمال جرد النماذج', 'KPI', '100%',
+     'نماذج موثقة ÷ نماذج نشطة × 100',
+     'مخزون النماذج', 'مدير مخاطر النماذج', 'شهري'),
+    ('model_risk', 'نسبة نماذج عالية الخطورة المقيّمة', 'KPI', '100%',
+     'نماذج مقيمة ÷ نماذج عالية الخطورة × 100',
+     'منصة MRM', 'مدير مخاطر النماذج', 'ربع سنوي'),
+    ('bias_fairness', 'نسبة نماذج حرجة مختبرة للانحياز', 'KPI', '≥ 95%',
+     'نماذج مختبرة ÷ نماذج حرجة × 100',
+     'أدوات Fairness', 'محلل AI', 'ربع سنوي'),
+    ('explainability', 'نسبة قرارات AI قابلة للتفسير', 'KPI', '≥ 90%',
+     'قرارات مفسرة ÷ قرارات حرجة × 100',
+     'منصة XAI', 'مدير حوكمة AI', 'شهري'),
+    ('data_lineage', 'نسبة مجموعات التدريب بسلسلة بيانات', 'KPI', '100%',
+     'مجموعات موثقة ÷ مجموعات نشطة × 100',
+     'سجل Lineage', 'مهندس بيانات AI', 'ربع سنوي'),
+    ('human_oversight', 'نسبة حالات AI الحرجة بمراجعة بشرية', 'KPI', '100%',
+     'حالات مراجعة ÷ حالات حرجة × 100',
+     'سجل الإشراف', 'مدير حوكمة AI', 'شهري'),
+    ('ai_incidents', 'عدد حوادث AI غير المعالجة', 'KRI', '0',
+     'عدد حوادث مفتوحة',
+     'سجل الحوادث', 'مدير AI Ops', 'شهري'),
+    ('model_drift', 'نسبة نماذج بانحراف مقبول', 'KPI', '≥ 95%',
+     'نماذج ضمن حدود ÷ نماذج مراقبة × 100',
+     'MLOps Monitor', 'مهندس MLOps', 'شهري'),
+    ('ai_training', 'نسبة فرق AI المدربة على الحوكمة', 'KPI', '100%',
+     'أفراد مدربون ÷ أفراد AI × 100',
+     'LMS', 'مدير التوعية', 'ربع سنوي'),
+    ('vendor_ai', 'نسبة موردي AI المقيّمين', 'KPI', '100%',
+     'موردون مقيمون ÷ موردون نشطون × 100',
+     'سجل الموردين', 'مدير المشتريات', 'ربع سنوي'),
+    ('ai_compliance', 'نسبة الامتثال لـ NIST AI RMF', 'KPI', '≥ 90%',
+     'ضوابط مطبقة ÷ ضوابط مطلوبة × 100',
+     'تقييم الامتثال', 'مدير حوكمة AI', 'ربع سنوي'),
+)
+
+_DT_KPI_ROWS: Tuple[Tuple[str, ...], ...] = (
+    ('service_digitization', 'نسبة الخدمات الرقمية', 'KPI', '≥ 80%',
+     'خدمات إلكترونية ÷ إجمالي الخدمات × 100',
+     'بوابة الخدمات', 'مدير التحول الرقمي', 'ربع سنوي'),
+    ('platform_uptime', 'توفر المنصات الحرجة', 'KPI', '≥ 99.5%',
+     'وقت التشغيل ÷ وقت Planned × 100',
+     'APM', 'مدير العمليات', 'شهري'),
+    ('cloud_adoption', 'نسبة الأعباء على السحابة', 'KPI', '≥ 70%',
+     'أعباء سحابية ÷ أعباء حرجة × 100',
+     'Cloud Dashboard', 'مهندس سحابة', 'ربع سنوي'),
+    ('api_coverage', 'نسبة تكامل الأنظمة عبر API', 'KPI', '100%',
+     'أنظمة متكاملة ÷ أنظمة حرجة × 100',
+     'API Gateway', 'مهندس تكامل', 'ربع سنوي'),
+    ('cx_satisfaction', 'رضا المستفيدين الرقمي', 'KPI', '≥ 85%',
+     'متوسط درجات الرضا',
+     'استطلاعات CX', 'مدير تجربة العملاء', 'ربع سنوي'),
+    ('agile_velocity', 'سرعة فرق المنتج', 'KPI', '≥ 85%',
+     'Story points مكتملة ÷ مخططة × 100',
+     'Jira', 'مدير Agile', 'شهري'),
+    ('legacy_retirement', 'نسبة أنظمة Legacy المتقاعدة', 'KPI', '≥ 60%',
+     'أنظمة متقاعدة ÷ أنظمة Legacy × 100',
+     'سجل التقاعد', 'مدير التحول الرقمي', 'ربع سنوي'),
+    ('digital_skills', 'نسبة الموظفين بمهارات رقمية', 'KPI', '≥ 80%',
+     'موظفون مدربون ÷ موظفون مستهدفون × 100',
+     'LMS', 'مدير التدريب', 'ربع سنوي'),
+    ('automation_rate', 'نسبة العمليات المؤتمتة', 'KPI', '≥ 50%',
+     'عمليات مؤتمتة ÷ عمليات مؤهلة × 100',
+     'RPA Dashboard', 'مدير الأتمتة', 'ربع سنوي'),
+    ('dga_compliance', 'نسبة الامتثال لـ DGA', 'KPI', '≥ 90%',
+     'ضوابط مطبقة ÷ ضوابط DGA × 100',
+     'تقييم DGA', 'مدير التحول الرقمي', 'ربع سنوي'),
+    ('project_delivery', 'نسبة مشاريع التحول في الموعد', 'KPI', '≥ 85%',
+     'مشاريع في الموعد ÷ مشاريع نشطة × 100',
+     'PMO', 'مدير PMO', 'شهري'),
+    ('digital_security', 'نسبة خدمات رقمية باختبار أمني', 'KPI', '100%',
+     'خدمات مختبرة ÷ خدمات جديدة × 100',
+     'DevSecOps', 'مدير أمن الخدمات الرقمية', 'شهري'),
+)
+
+
+def _rows_to_kpi_registry(
+        rows: Tuple[Tuple[str, ...], ...],
+) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        fam = row[0]
+        out[fam] = {
+            'label_ar': row[1],
+            'kpi_type': row[2],
+            'target': row[3],
+            'formula': row[4],
+            'source': row[5],
+            'owner': row[6],
+            'frequency': row[7],
+        }
+    return out
+
+
+DATA_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_DATA_KPI_ROWS)
+AI_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_AI_KPI_ROWS)
+DT_KPI_CANONICAL_REGISTRY = _rows_to_kpi_registry(_DT_KPI_ROWS)
+
+# ── Domain-specific roadmap families (REL3.3 data strategy) ─────────────────
+DATA_ROADMAP_FAMILIES: Tuple[str, ...] = (
+    'data_governance',
+    'data_quality',
+    'data_catalog_metadata',
+    'data_classification',
+    'data_lifecycle_retention',
+    'privacy_pdpl',
+    'consent_rights',
+    'data_breach_notification',
+    'data_lineage',
+    'master_data_management',
+)
+
+DATA_ROADMAP_CATALOG_AR: Dict[str, Tuple[str, ...]] = {
+    'data_governance': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تأسيس حوكمة البيانات المؤسسية', 'CDO',
+        'إطار حوكمة NDMO معتمد', 'NDMO'),
+    'data_quality': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تفعيل قواعد جودة البيانات', 'مدير جودة البيانات',
+        'معايير جودة معتمدة ومطبقة', 'NDMO'),
+    'data_catalog_metadata': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'إطلاق كتالوج البيانات والبيانات الوصفية', 'مسؤول الوصفية',
+        'كتالوج بيانات حرج مفهرس', 'NDMO'),
+    'data_classification': (
+        'المرحلة 1: تأسيس', '1-6 أشهر',
+        'تصنيف وجرد البيانات الحساسة', 'مسؤول حماية البيانات',
+        'سجل بيانات مصنفة معتمد', 'NDMO'),
+    'data_lifecycle_retention': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تطبيق سياسات دورة حياة البيانات والاحتفاظ', 'مدير حوكمة البيانات',
+        'سياسات احتفاظ معتمدة لكل فئة', 'NDMO'),
+    'privacy_pdpl': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تفعيل برنامج الامتثال لنظام PDPL', 'مسؤول حماية البيانات',
+        'سجل معالجة شخصية وضوابط خصوصية', 'PDPL'),
+    'consent_rights': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'أتمتة إدارة الموافقات وحقوق أصحاب البيانات', 'مسؤول حماية البيانات',
+        'منصة موافقات وDSR تشغيلية', 'PDPL'),
+    'data_breach_notification': (
+        'المرحلة 2: تمكين وتشغيل', '7-18 شهر',
+        'تأسيس إجراءات الإبلاغ عن خروقات البيانات', 'مدير أمن البيانات',
+        'خطة إبلاغ PDPL واختبار استجابة', 'PDPL'),
+    'data_lineage': (
+        'المرحلة 3: تحسين واستدامة', '19-24 شهر',
+        'توثيق سلسلة البيانات end-to-end', 'مهندس بيانات',
+        'Lineage حرج موثق ومحدث', 'NDMO'),
+    'master_data_management': (
+        'المرحلة 3: تحسين واستدامة', '19-24 شهر',
+        'تأسيس إدارة البيانات الرئيسية MDM', 'مدير البيانات الرئيسية',
+        'نطاقات MDM حرجة معتمدة', 'NDMO'),
+}
+
+DATA_ROADMAP_FAMILY_TOKENS: Dict[str, Tuple[str, ...]] = {
+    'data_governance': ('حوكمة البيانات', 'ndmo', 'data governance'),
+    'data_quality': ('جودة البيانات', 'data quality'),
+    'data_catalog_metadata': ('كتالوج', 'metadata', 'وصفية'),
+    'data_classification': ('تصنيف', 'classification', 'جرد'),
+    'data_lifecycle_retention': ('دورة حياة', 'احتفاظ', 'retention'),
+    'privacy_pdpl': ('pdpl', 'خصوصية', 'حماية البيانات الشخصية'),
+    'consent_rights': ('موافقة', 'consent', 'dsr', 'حقوق'),
+    'data_breach_notification': ('خروق', 'breach', 'إبلاغ'),
+    'data_lineage': ('lineage', 'سلسلة البيانات'),
+    'master_data_management': ('mdm', 'البيانات الرئيسية', 'master data'),
+}
+
+CYBER_ROADMAP_PRIMARY_MARKERS = (
+    'تأسيس حوكمة الأمن السيبراني',
+    'SOC/SIEM',
+    'NCA ECC',
+    'CISO',
+    'مدير SOC',
+    'CSIRT',
+    'IAM/PAM/MFA',
+)
+
+
+def _require_roadmap_domain(domain: str) -> str:
+    """REL3.3 P0 — blank domain must never resolve to Cyber roadmap families."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    d = normalize_domain_code(str(domain or ''), default='')
+    if not d:
+        raise ValueError('rel33_export_domain_missing:roadmap_family_source')
+    return d
+
+
+def resolve_roadmap_families(domain: str) -> Tuple[str, ...]:
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_FAMILIES
+    d = _require_roadmap_domain(domain)
+    if d == 'data':
+        return DATA_ROADMAP_FAMILIES
+    if d in DOMAIN_ROADMAP_FAMILIES:
+        return DOMAIN_ROADMAP_FAMILIES[d]
+    return ROADMAP_FAMILIES
+
+
+def resolve_roadmap_family_registry(
+        domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_CATALOGS
+    d = _require_roadmap_domain(domain)
+    if d == 'data':
+        return dict(DATA_ROADMAP_CATALOG_AR)
+    if d in DOMAIN_ROADMAP_CATALOGS:
+        return dict(DOMAIN_ROADMAP_CATALOGS[d])
+    return dict(ROADMAP_FAMILY_REGISTRY)
+
+
+def resolve_roadmap_family_tokens(domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine.roadmap_model import _FAMILY_TOKENS
+    from release_engine_v3.rel33_domain_substance import DOMAIN_ROADMAP_TOKENS
+    d = _require_roadmap_domain(domain)
+    if d == 'data':
+        return dict(DATA_ROADMAP_FAMILY_TOKENS)
+    if d in DOMAIN_ROADMAP_TOKENS:
+        return dict(DOMAIN_ROADMAP_TOKENS[d])
+    return dict(_FAMILY_TOKENS)
+
+
+def resolve_strategic_objective_registry(domain: str) -> Dict[str, Tuple[str, ...]]:
+    from release_engine_v3.rel33_domain_substance import (
+        ERM_STRATEGIC_OBJECTIVE_REGISTRY,
+        GLOBAL_STRATEGIC_OBJECTIVE_REGISTRY,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'strategic_objectives')
+    if d == 'data':
+        return DATA_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'ai':
+        return AI_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'dt':
+        return DT_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'erm':
+        return ERM_STRATEGIC_OBJECTIVE_REGISTRY
+    if d == 'global':
+        return GLOBAL_STRATEGIC_OBJECTIVE_REGISTRY
+    return STRATEGIC_OBJECTIVE_REGISTRY
+
+
+def resolve_kpi_canonical_registry(domain: str) -> Dict[str, Dict[str, str]]:
+    from release_engine_v3.rel33_domain_substance import (
+        ERM_KPI_ROWS,
+        GLOBAL_KPI_ROWS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'kpi_registry')
+    if d == 'data':
+        return DATA_KPI_CANONICAL_REGISTRY
+    if d == 'ai':
+        return AI_KPI_CANONICAL_REGISTRY
+    if d == 'dt':
+        return DT_KPI_CANONICAL_REGISTRY
+    if d == 'erm':
+        return _rows_to_kpi_registry(ERM_KPI_ROWS)
+    if d == 'global':
+        return _rows_to_kpi_registry(GLOBAL_KPI_ROWS)
+    return KPI_CANONICAL_REGISTRY_FULL
+
+
+def resolve_trace_registry(
+        domain: str) -> Tuple[Tuple[str, ...], Dict[str, Dict[str, str]]]:
+    """(family order, registry) of traceability substance for one domain."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_TRACE_ORDER,
+        DOMAIN_TRACE_REGISTRIES,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'traceability_registry')
+    if d == 'cyber':
+        return GAP_FAMILY_ORDER, {
+            fam: dict(spec) for fam, spec in TRACE_CANONICAL_REGISTRY.items()}
+    return DOMAIN_TRACE_ORDER[d], {
+        fam: dict(spec) for fam, spec in DOMAIN_TRACE_REGISTRIES[d].items()}
+
+
+def resolve_gap_family_registry(
+        domain: str) -> Tuple[Tuple[str, ...], Dict[str, Dict[str, str]]]:
+    """(family order, gap registry) derived from the domain trace registry."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_GAP_OWNERS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'gap_registry')
+    if d == 'cyber':
+        return GAP_FAMILY_ORDER, GAP_FAMILY_REGISTRY
+    order, trace = resolve_trace_registry(d)
+    owners = DOMAIN_GAP_OWNERS.get(d) or {}
+    registry: Dict[str, Dict[str, str]] = {}
+    for fam in order:
+        spec = trace[fam]
+        gap = spec['expected_gap']
+        registry[fam] = {
+            'gap_label': gap,
+            'description': spec['initiative'],
+            'priority': 'عالية' if 'غياب' in gap else 'متوسطة',
+            'status': 'مفتوحة',
+            'framework': spec['framework'],
+            'treatment': spec['initiative'],
+            'owner': owners.get(
+                spec['framework'],
+                next(iter(owners.values()), 'مدير الحوكمة')),
+        }
+    return order, registry
+
+
+def resolve_governance_role_registry(domain: str) -> Dict[str, Dict[str, str]]:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_GOVERNANCE_REGISTRIES,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'governance_registry')
+    if d == 'cyber':
+        return GOVERNANCE_ROLE_REGISTRY
+    return DOMAIN_GOVERNANCE_REGISTRIES[d]
+
+
+def resolve_pillar_catalog(
+        domain: str,
+) -> Tuple[Tuple[str, str, Tuple[Tuple[str, str, str, str], ...]], ...]:
+    """Non-cyber pillar catalogs; cyber keeps its legacy pillar builder."""
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_PILLAR_CATALOGS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'pillar_catalog')
+    if d == 'cyber':
+        raise ValueError('rel33_pillar_catalog_cyber_uses_legacy_builder')
+    return DOMAIN_PILLAR_CATALOGS[d]
+
+
+def resolve_environment_default(domain: str) -> str:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_ENVIRONMENT_DEFAULTS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'environment_default')
+    if d == 'cyber':
+        return ''
+    return DOMAIN_ENVIRONMENT_DEFAULTS[d]
+
+
+def resolve_confidence_risk_rows(
+        domain: str) -> Tuple[Tuple[str, str, str, str, str, str], ...]:
+    from release_engine_v3.rel33_domain_substance import (
+        DOMAIN_CONFIDENCE_RISK_ROWS,
+        require_rel33_substance_domain,
+    )
+    d = require_rel33_substance_domain(domain, 'confidence_risk_rows')
+    if d == 'cyber':
+        return ()
+    return DOMAIN_CONFIDENCE_RISK_ROWS[d]
 
 # ── Governance role registry (cyber) ────────────────────────────────────────
 GOVERNANCE_ROLE_REGISTRY: Dict[str, Dict[str, str]] = {

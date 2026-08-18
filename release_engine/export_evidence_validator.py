@@ -294,7 +294,8 @@ def _count_roadmap_rows_visible(blob: str) -> int:
 def _roadmap_defects_in(
         blob: str,
         *,
-        internal_row_count: int | None = None) -> List[str]:
+        internal_row_count: int | None = None,
+        domain: str = '') -> List[str]:
     defects: List[str] = []
     try:
         from release_engine.rel27_export_checks import _roadmap_section_blob
@@ -304,12 +305,11 @@ def _roadmap_defects_in(
     for bad in REL26_ROADMAP_BAD_INITIATIVES:
         if bad in scan_blob:
             defects.append(f'roadmap_bad_initiative:{bad}')
+    # Count-only probe — never require Cyber family coverage here.
+    # Family evidence is owned by rel27_channel_checks(domain=...).
     try:
-        from release_engine.rel27_export_checks import check_roadmap_coverage
-        road = check_roadmap_coverage(blob or '')
-        if road.get('exported_roadmap_coverage_valid'):
-            return defects
-        if int(road.get('visible_row_count') or 0) >= 10:
+        count_probe = _count_roadmap_rows_visible(scan_blob)
+        if count_probe >= 10:
             return defects
     except Exception:  # noqa: BLE001
         pass
@@ -343,8 +343,14 @@ def _channel_defects(
         internal_roadmap_row_count: int | None = None,
         peer_row_counts: Optional[Dict[str, int]] = None,
         canonical_kpis: str = '',
-        docx_reference: str = '') -> Dict[str, Any]:
+        docx_reference: str = '',
+        document_type: str = 'strategy',
+        canonical_sections: Optional[Dict[str, str]] = None,
+        docx_bytes: bytes = b'',
+        domain: str = '',
+) -> Dict[str, Any]:
     blob = text or ''
+    dtype = str(document_type or 'strategy').strip().lower()
     try:
         from release_engine_v3.rel31_authority import rel31_in_export_adapter
         from release_engine.arabic_language_gate import (
@@ -354,7 +360,19 @@ def _channel_defects(
             blob = repair_rel3_arabic_canonical_text(blob)
     except Exception:  # noqa: BLE001
         pass
-    rel27 = rel27_channel_checks(blob)
+    rel27 = (
+        rel27_channel_checks(blob, domain=domain)
+        if dtype == 'strategy' else {
+            'missing_sections': [],
+            'kpi_defects': [],
+            'roadmap_defects': [],
+            'risk_defects': [],
+            'traceability_defects': [],
+            'arabic_residues': [],
+            'kpi_canonical': {},
+            'roadmap_coverage': {},
+            'arabic_check': {},
+        })
     rel31_defects: List[str] = []
     substance_defects: List[str] = []
     try:
@@ -362,54 +380,97 @@ def _channel_defects(
             run_rel31_acceptance_checks,
         )
         rel31_defects = run_rel31_acceptance_checks(
-            blob, route=route, pdf_bytes=pdf_bytes)
+            blob, route=route, pdf_bytes=pdf_bytes,
+            document_type=dtype, domain=domain)
     except Exception:  # noqa: BLE001
         rel31_defects = []
     try:
         from release_engine.rel31_content_substance_checks import (
             run_rel31_content_substance_checks,
         )
-        substance_defects = run_rel31_content_substance_checks(
-            blob, route=route, pdf_bytes=pdf_bytes,
-            peer_row_counts=peer_row_counts,
-            canonical_kpis=canonical_kpis,
-            docx_reference=docx_reference)
+        if dtype in ('strategy', ''):
+            substance_defects = run_rel31_content_substance_checks(
+                blob, route=route, pdf_bytes=pdf_bytes,
+                peer_row_counts=peer_row_counts,
+                canonical_kpis=canonical_kpis,
+                docx_reference=docx_reference,
+                domain=domain)
     except Exception:  # noqa: BLE001
         substance_defects = []
-    kpi_defects = list(dict.fromkeys(
-        _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
-    rel27_road_defects = list(rel27.get('roadmap_defects') or [])
-    if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
-        rel27_road_defects = [
-            d for d in rel27_road_defects
-            if not str(d).startswith('roadmap_row_count')]
-    roadmap_defects = list(dict.fromkeys(
-        _roadmap_defects_in(
-            blob, internal_row_count=internal_roadmap_row_count)
-        + rel27_road_defects))
-    if (route == 'preview'
-            and internal_roadmap_row_count is not None
-            and internal_roadmap_row_count >= 10):
-        roadmap_defects = [
-            d for d in roadmap_defects
-            if str(d).startswith('roadmap_bad_initiative')]
+    # REL3.3 — strategy-only visible drift families (KPI-main, roadmap
+    # visible-row-count, traceability) must not run for risk documents. A
+    # risk artifact has no strategy KPI-main table / roadmap / traceability
+    # matrix; its KRI + treatment tables would otherwise be misread as those
+    # strategy sections and falsely block the export. These are guarded by
+    # document_type (not suppressed globally) — strategy and gap_assessment
+    # still run them; risk/risk_assessment route through risk-native gates
+    # (risk_defects / treatment evidence + risk-native domain guard).
+    _is_risk = dtype in ('risk', 'risk_assessment')
+    if _is_risk:
+        kpi_defects = []
+        roadmap_defects = []
+        traceability_defects = []
+    else:
+        kpi_defects = list(dict.fromkeys(
+            _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
+        rel27_road_defects = list(rel27.get('roadmap_defects') or [])
+        if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
+            rel27_road_defects = [
+                d for d in rel27_road_defects
+                if not str(d).startswith('roadmap_row_count')]
+        roadmap_defects = list(dict.fromkeys(
+            _roadmap_defects_in(
+                blob,
+                internal_row_count=internal_roadmap_row_count,
+                domain=domain)
+            + rel27_road_defects))
+        if (route == 'preview'
+                and internal_roadmap_row_count is not None
+                and internal_roadmap_row_count >= 10):
+            roadmap_defects = [
+                d for d in roadmap_defects
+                if str(d).startswith('roadmap_bad_initiative')]
+        traceability_defects = list(dict.fromkeys(
+            _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
     risk_defects = list(dict.fromkeys(
         _risk_defects_in(blob) + (rel27.get('risk_defects') or [])))
-    traceability_defects = list(dict.fromkeys(
-        _trace_defects_in(blob) + (rel27.get('traceability_defects') or [])))
+    if dtype == 'risk':
+        try:
+            from release_engine_v3.rel33_risk_treatment_evidence import (
+                risk_treatment_defects_for_channel,
+            )
+            risk_defects = risk_treatment_defects_for_channel(
+                blob,
+                route=route,
+                document_type=dtype,
+                canonical_sections=canonical_sections,
+                pdf_blob=docx_reference if route == 'pdf' else '',
+                docx_bytes=docx_bytes if route == 'docx' else b'',
+            )
+        except Exception:  # noqa: BLE001
+            risk_defects = list(dict.fromkeys(risk_defects))
     arabic_residues = list(dict.fromkeys(
         _arabic_defects_in(blob) + (rel27.get('arabic_residues') or [])))
-    forbidden = list(dict.fromkeys(
-        _forbidden_in(
-            blob, internal_roadmap_row_count=internal_roadmap_row_count)
-        + (rel27.get('missing_sections') or [])
-        + kpi_defects
-        + risk_defects
-        + traceability_defects
-        + arabic_residues
-        + rel31_defects
-        + substance_defects
-        + roadmap_defects))
+    if _is_risk:
+        # Risk-native forbidden set: keep arabic + risk treatment + rel31
+        # acceptance (already document_type-aware); drop strategy KPI/roadmap/
+        # traceability/missing-pillars families entirely.
+        forbidden = list(dict.fromkeys(
+            risk_defects
+            + arabic_residues
+            + rel31_defects))
+    else:
+        forbidden = list(dict.fromkeys(
+            _forbidden_in(
+                blob, internal_roadmap_row_count=internal_roadmap_row_count)
+            + (rel27.get('missing_sections') or [])
+            + kpi_defects
+            + risk_defects
+            + traceability_defects
+            + arabic_residues
+            + rel31_defects
+            + substance_defects
+            + roadmap_defects))
     return {
         'forbidden_patterns': forbidden,
         'missing_sections': rel27.get('missing_sections') or [],
@@ -450,6 +511,7 @@ def validate_actual_export_evidence(
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
         pdf_bytes: bytes = b'',
+        docx_bytes: bytes = b'',
         route_name: str = '',
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
@@ -492,19 +554,29 @@ def validate_actual_export_evidence(
             route='preview',
             internal_roadmap_row_count=internal_roadmap_row_count,
             peer_row_counts=peer_row_counts,
-            canonical_kpis=_canon_kpis)
+            canonical_kpis=_canon_kpis,
+            document_type=document_type,
+            canonical_sections=canonical_sections,
+            domain=domain)
         if preview_text else {})
     docx_def = (
         _channel_defects(
             docx_text, route='docx',
             peer_row_counts=peer_row_counts,
-            canonical_kpis=_canon_kpis)
-        if docx_text else {})
+            canonical_kpis=_canon_kpis,
+            document_type=document_type,
+            canonical_sections=canonical_sections,
+            docx_bytes=docx_bytes,
+            domain=domain)
+        if (docx_text or docx_bytes) else {})
     pdf_def = _channel_defects(
         pdf_text, route='pdf', pdf_bytes=pdf_bytes,
         peer_row_counts=peer_row_counts,
         canonical_kpis=_canon_kpis,
-        docx_reference=docx_text) if (pdf_text or pdf_bytes) else {}
+        docx_reference=docx_text,
+        document_type=document_type,
+        canonical_sections=canonical_sections,
+        domain=domain) if (pdf_text or pdf_bytes) else {}
 
     blocking: List[str] = []
     route_norm = normalize_route(route_name or '')
@@ -522,7 +594,14 @@ def validate_actual_export_evidence(
                 'rel2_actual_export_evidence_failed:pdf', pdf_def))
 
     drift: List[str] = []
-    if canonical_sections and route_name not in ('finalize', ''):
+    # REL3.3 — strategy section-parity model-drift (vision/pillars/roadmap/
+    # kpis/traceability hash equivalence) is strategy-only. A risk artifact
+    # is compiled risk-native (no such sections), so running it would emit
+    # spurious rel2_export_model_drift:<strategy_section> blockers. Guard by
+    # document_type; strategy + gap_assessment still run it.
+    _dtype_norm = str(document_type or 'strategy').strip().lower()
+    if (canonical_sections and route_name not in ('finalize', '')
+            and _dtype_norm not in ('risk', 'risk_assessment')):
         drift = check_export_model_drift(
             canonical_sections, preview_text, docx_text, pdf_text,
             hash_fn=hash_fn)
@@ -544,6 +623,8 @@ def validate_actual_export_evidence(
     pdf_checked = bool(pdf_text) or bool(pdf_bytes_had)
 
     route_verdict = apply_route_bound_verdict(
+        domain=domain,
+        document_type=document_type,
         route_name=route_name,
         preview_text=preview_text,
         docx_text=docx_text,
@@ -623,6 +704,7 @@ def validate_actual_export_evidence(
                 peer_row_counts=peer_row_counts,
                 docx_reference=docx_text if route_norm_emit == 'pdf' else '',
                 canonical_kpis=_canon_kpis,
+                domain=domain,
             )
             emit_rel31_content_substance_evidence(substance_diag)
     except Exception:  # noqa: BLE001
@@ -885,13 +967,20 @@ def repair_for_actual_export_defects(
             _build_canonical_pillars,
             finalize_pillars,
         )
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            _pil_dcode = normalize_domain_code(str(domain or ''), default='')
+        except Exception:  # noqa: BLE001
+            _pil_dcode = ''
         sections, pil_diag = finalize_pillars(
             sections, lang=lang, domain=domain, backend=backend)
         action = (pil_diag.get('action_taken') or '').strip()
         if action and action != 'no_changes':
             repairs.append(f'rel271:{action}')
         # Force canonical pillar headings when DOCX bytes lack names.
-        sections['pillars'] = _build_canonical_pillars(lang)
+        # REL3.3 — never inject Cyber canonical pillars into non-cyber domains.
+        if _pil_dcode == 'cyber':
+            sections['pillars'] = _build_canonical_pillars(lang)
         try:
             from release_engine.pillar_substance_model import finalize_pillar_substance
             sections, _ = finalize_pillar_substance(
@@ -904,8 +993,15 @@ def repair_for_actual_export_defects(
         fws = (
             (merged.get('contract_meta') or {}).get('selected_frameworks')
             or merged.get('selected_frameworks') or [])
+        # REL3.3 P0 — the board-ready baseline is a Cyber roadmap catalog;
+        # never inject it into non-cyber (or blank-domain) artifacts.
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            _road_dcode = normalize_domain_code(str(domain or ''), default='')
+        except Exception:  # noqa: BLE001
+            _road_dcode = ''
         baseline = backend.get('baseline_roadmap')
-        if baseline:
+        if baseline and _road_dcode == 'cyber':
             sections, _ = baseline(sections, lang, fws)
             repairs.append('rel271:baseline_roadmap_for_export')
         try:
@@ -919,12 +1015,13 @@ def repair_for_actual_export_defects(
             repairs.append('rel271:roadmap_owners_finalized')
         except Exception:  # noqa: BLE001
             pass
-        for bad in REL26_ROADMAP_BAD_INITIATIVES:
-            for key, val in list(sections.items()):
-                if isinstance(val, str) and bad in val:
-                    sections[key] = val.replace(
-                        bad, 'تأسيس CISO ولجنة حوكمة')
-            repairs.append('rel271:roadmap_bad_initiative_scrubbed')
+        if _road_dcode == 'cyber':
+            for bad in REL26_ROADMAP_BAD_INITIATIVES:
+                for key, val in list(sections.items()):
+                    if isinstance(val, str) and bad in val:
+                        sections[key] = val.replace(
+                            bad, 'تأسيس CISO ولجنة حوكمة')
+                repairs.append('rel271:roadmap_bad_initiative_scrubbed')
 
     if _export_defect_needs_kpi_schema_repair(export_diag):
         from release_engine.kpi_model import (

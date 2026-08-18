@@ -118,7 +118,7 @@ class Rel32PreviewTableDomBindingTests(unittest.TestCase):
         self.assertEqual(diag['blocking_errors'], [])
 
     def test_06_compiler_kpi_markdown_renders_canonical_headers(self):
-        doc = compile_canonical_strategy_document(_ctx())
+        doc = compile_canonical_strategy_document({}, request_context=_ctx())
         kpis = doc.legacy_sections.get('kpis') or ''
         self.assertIn('وصف المؤشر', kpis)
         self.assertIn('المؤشر', kpis)

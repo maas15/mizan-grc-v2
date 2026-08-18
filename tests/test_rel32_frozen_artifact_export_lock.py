@@ -165,7 +165,8 @@ def _persisted_load_dict(
 
 
 def _minimal_sections(trace_body: str | None = None) -> dict:
-    trace = trace_body or build_canonical_traceability_from_registry(lang='ar')
+    trace = trace_body or build_canonical_traceability_from_registry(
+        lang='ar', domain='cyber')
     return {
         'vision': (
             '## الرؤية والأهداف الاستراتيجية\n\n'

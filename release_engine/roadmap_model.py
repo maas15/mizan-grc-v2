@@ -153,12 +153,19 @@ def _row_blob(row: Dict[str, str]) -> str:
 def _families_for_row(row: Dict[str, str]) -> List[str]:
     blob = _row_blob(row)
     matched: List[str] = []
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import detect_family_markers
+        matched.extend(detect_family_markers(blob))
+    except Exception:  # noqa: BLE001
+        pass
     for fam, tokens in _FAMILY_TOKENS.items():
+        if fam in matched:
+            continue
         if any(
                 (t.lower() in blob if t.isascii() else t in blob)
                 for t in tokens):
             matched.append(fam)
-    return matched
+    return list(dict.fromkeys(matched))
 
 
 def _detect_families(rows: List[Dict[str, str]]) -> Dict[str, bool]:

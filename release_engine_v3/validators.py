@@ -23,10 +23,27 @@ def validate_canonical_quality(
         legacy_sections: Optional[Dict[str, str]] = None,
         domain: str = 'cyber',
         lang: str = 'ar',
+        document_type: str = 'strategy',
 ) -> Dict[str, Any]:
     """Validate canonical model; delegates visible checks to REL2 validators."""
-    blockers: List[str] = []
+    dtype = str(document_type or 'strategy').strip().lower()
     legacy = legacy_sections or {}
+    if dtype != 'strategy':
+        blob = '\n\n'.join(
+            str(v).strip()
+            for v in legacy.values()
+            if isinstance(v, str) and v.strip())
+        ch = rel27_channel_checks(blob) if blob.strip() else {}
+        blockers: List[str] = []
+        blockers.extend(ch.get('arabic_residues') or [])
+        return {
+            'blocking_errors': list(dict.fromkeys(blockers)),
+            'kpi_valid': None,
+            'roadmap_row_count': None,
+            'pillar_check': True,
+            'document_type': dtype,
+        }
+    blockers: List[str] = []
     blob = '\n\n'.join(
         (legacy.get(k) or '')
         for k in ('vision', 'pillars', 'environment', 'gaps',
@@ -37,7 +54,9 @@ def validate_canonical_quality(
         from release_engine_v3.section_models import build_strategy_document
         blob = strategy_document_to_markdown(
             build_strategy_document(legacy))
-    blockers.extend(check_pillars_after_strategic_heading(blob))
+    # REL3.3 — pillar name evidence is domain-scoped (never cyber-default).
+    blockers.extend(
+        check_pillars_after_strategic_heading(blob, domain=domain))
     kpi_chk = check_kpi_canonical(blob)
     if not kpi_chk.get('exported_kpi_canonical_valid'):
         blockers.extend(kpi_chk.get('defects') or [])
@@ -53,7 +72,9 @@ def validate_canonical_quality(
         'blocking_errors': list(dict.fromkeys(blockers)),
         'kpi_valid': kpi_chk.get('exported_kpi_canonical_valid'),
         'roadmap_row_count': road.get('visible_row_count'),
-        'pillar_check': not check_pillars_after_strategic_heading(blob),
+        'pillar_check': not check_pillars_after_strategic_heading(
+            blob, domain=domain),
+        'document_type': dtype,
     }
 
 
@@ -65,9 +86,11 @@ def validate_export_text(
         pdf_text: str = '',
         domain: str = 'cyber',
         lang: str = 'ar',
+        document_type: str = 'strategy',
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
         pdf_bytes: bytes = b'',
+        docx_bytes: bytes = b'',
         canonical_sections: Optional[Dict[str, str]] = None,
         final_hash: str = '',
 ) -> Dict[str, Any]:
@@ -78,10 +101,11 @@ def validate_export_text(
         pdf_text,
         domain=domain,
         lang=lang,
-        document_type='strategy',
+        document_type=document_type,
         pdf_text_extraction_unreliable=pdf_text_extraction_unreliable,
         pdf_bytes_had=pdf_bytes_had,
         pdf_bytes=pdf_bytes,
+        docx_bytes=docx_bytes,
         route_name=route,
         final_hash=final_hash,
         canonical_sections=canonical_sections,
@@ -98,6 +122,16 @@ def validate_export_text(
         else:
             rel3_blockers.append(
                 f'rel3_export_evidence_failed:{route}:{err}')
+    dtype = str(document_type or 'strategy').strip().lower()
+    if dtype not in ('strategy', '') and route in ('docx', 'pdf', 'preview'):
+        _strategy_only = (
+            'missing_pillars', 'kpi_', 'roadmap_row', 'traceability_',
+            'pillars_after', 'exported_kpi', 'rel32_kpi', 'pillar_owner',
+            'placeholder_pillar', 'strategic_heading', 'objectives',
+        )
+        rel3_blockers = [
+            b for b in rel3_blockers
+            if not any(tok in b for tok in _strategy_only)]
     gate['blocking_errors'] = rel3_blockers
     gate['rel3_evidence'] = True
     return gate

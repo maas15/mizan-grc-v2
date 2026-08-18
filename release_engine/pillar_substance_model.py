@@ -205,17 +205,68 @@ def _enrich_pillar_text(text: str) -> Tuple[str, List[str], List[str], List[str]
     return '\n\n'.join(out_parts).rstrip() + '\n', shallow_pillars, shallow_initiatives, generic_outputs
 
 
+def _build_domain_pillars_markdown(domain: str, lang: str = 'ar') -> str:
+    """Build non-cyber pillar markdown from DOMAIN_PILLAR_CATALOGS."""
+    from release_engine_v3.rel32_registries import resolve_pillar_catalog
+    catalog = resolve_pillar_catalog(domain)
+    parts = ['## الركائز الاستراتيجية', '']
+    for title, narrative, inits in catalog:
+        parts.append(f'### {title}')
+        parts.append('')
+        parts.append(narrative)
+        parts.append('')
+        parts.append('| المبادرة | الوصف | المخرج المتوقع | المسؤول |')
+        parts.append('|---|---|---|---|')
+        for init, desc, output, owner in inits:
+            parts.append(f'| {init} | {desc} | {output} | {owner} |')
+        parts.append('')
+    return '\n'.join(parts).rstrip() + '\n'
+
+
 def finalize_pillar_substance(
         sections: Dict[str, str],
         *,
         lang: str = 'ar',
-        domain: str = 'cyber',
+        domain: str = '',
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    dcode = (domain or '').strip().lower()
-    if dcode not in ('cyber', 'cyber_security'):
-        return sections, {
+    """Domain-gated pillar substance. Blank domain fails closed.
+
+    REL3.3 P0 — never default blank to cyber; never inject Cyber pillar
+    families into non-cyber domains.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    if not dcode:
+        raise ValueError('rel33_substance_domain_missing:pillars')
+
+    if dcode != 'cyber':
+        text = sections.get('pillars', '') or ''
+        # Rebuild when missing headings or when cyber-primary titles leak in.
+        cyber_titles = (
+            'حوكمة ونموذج التشغيل',
+            'الحماية والكشف والاستجابة',
+            'الهوية وحماية البيانات',
+            'المرونة واستمرارية الأعمال',
+        )
+        needs_rebuild = (
+            not re.search(r'^#{3,4}\s+', text, re.MULTILINE)
+            or any(t in text for t in cyber_titles)
+            or 'CSIRT' in text
+            or 'SOC' in text
+        )
+        if needs_rebuild:
+            text = _build_domain_pillars_markdown(dcode, lang=lang)
+        out = dict(sections)
+        out['pillars'] = text
+        return out, {
+            'domain': dcode,
+            'selected_registry': dcode,
             'pillar_depth_passed': True,
-            'action_taken': 'skipped_non_cyber',
+            'action_taken': (
+                'domain_pillars_rebuilt' if needs_rebuild else 'validated'),
+            'cyber_registry_attempted': False,
+            'cyber_registry_blocked': True,
+            'blocking_error_if_any': '',
         }
 
     text = sections.get('pillars', '') or ''
@@ -230,6 +281,8 @@ def finalize_pillar_substance(
         out = dict(sections)
         out['pillars'] = text
         return out, {
+            'domain': dcode,
+            'selected_registry': 'cyber',
             'shallow_pillars_before': [],
             'shallow_pillars_after': [],
             'shallow_initiatives_before': [],
@@ -252,6 +305,8 @@ def finalize_pillar_substance(
     out = dict(sections)
     out['pillars'] = enriched
     diag = {
+        'domain': dcode,
+        'selected_registry': 'cyber',
         'shallow_pillars_before': shallow_b,
         'shallow_pillars_after': shallow_a,
         'shallow_initiatives_before': shallow_i,

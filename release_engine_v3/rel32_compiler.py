@@ -40,7 +40,10 @@ from release_engine_v3.rel32_registries import (
     STRATEGIC_OBJECTIVE_REGISTRY,
     TRACEABILITY_CANONICAL_REGISTRY,
     TRACEABILITY_FAMILY_ORDER,
+    resolve_kpi_canonical_registry,
+    resolve_strategic_objective_registry,
 )
+from release_engine_v3.domain_codes import normalize_domain_code
 
 _RAW_AI_MARKDOWN_FORBIDDEN_AS_AUTHORITY = (
     'rel32_forbidden:raw_ai_markdown_structural_authority',
@@ -164,10 +167,16 @@ def is_rel32_compiler_first(
         *,
         domain: str = 'cyber',
         lang: str = 'ar',
-        flags: Optional[Dict[str, Any]] = None) -> bool:
-    """REL3.2 compiler applies to cyber Arabic authoritative strategy paths."""
-    from release_engine_v3.rel31_authority import is_rel3_authoritative
-    return is_rel3_authoritative(domain=domain, lang=lang, flags=flags)
+        flags: Optional[Dict[str, Any]] = None,
+        document_type: str = 'strategy') -> bool:
+    """REL3.2 compiler applies to REL3.3 strategy paths (all domains, Arabic)."""
+    from release_engine_v3.rel33_authority import is_rel33_compiler_first
+    return is_rel33_compiler_first(
+        domain=domain,
+        lang=lang,
+        flags=flags,
+        document_type=document_type,
+    )
 
 
 def _heading_line(section_key: str) -> str:
@@ -292,6 +301,7 @@ def _build_vision_section(
         *,
         lang: str,
         backend: Dict[str, Any],
+        domain: str = 'cyber',
 ) -> Tuple[str, Tuple[StrategicObjectiveRow, ...]]:
     rows: List[StrategicObjectiveRow] = []
     parts = [_heading_line('vision'), '']
@@ -304,8 +314,9 @@ def _build_vision_section(
         '| # | الهدف الاستراتيجي | المستهدف القابل للقياس | '
         'المبرر | الإطار الزمني |')
     parts.append('|---|---|---|---|---|')
-    for i, fam in enumerate(STRATEGIC_OBJECTIVE_REGISTRY, 1):
-        cat = STRATEGIC_OBJECTIVE_REGISTRY[fam]
+    so_registry = resolve_strategic_objective_registry(domain)
+    for i, fam in enumerate(so_registry, 1):
+        cat = so_registry[fam]
         obj, tgt, rationale, tf = cat[0], cat[1], cat[2], cat[3]
         rows.append(StrategicObjectiveRow(
             str(i), obj, tgt, rationale, tf, family=fam))
@@ -317,7 +328,15 @@ def _build_pillars_section(
         narrative: str,
         *,
         lang: str,
+        domain: str = '',
 ) -> Tuple[str, Tuple[PillarRow, ...], Tuple[PillarInitiativeRow, ...]]:
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'pillars_section')
+    if dcode != 'cyber':
+        return _build_domain_pillars_section(
+            narrative, lang=lang, domain=dcode)
     from release_engine.pillar_model import _build_canonical_pillars
 
     text = _build_canonical_pillars(lang)
@@ -354,6 +373,42 @@ def _build_pillars_section(
     return text, tuple(pillars), tuple(initiatives)
 
 
+def _build_domain_pillars_section(
+        narrative: str,
+        *,
+        lang: str,
+        domain: str,
+) -> Tuple[str, Tuple[PillarRow, ...], Tuple[PillarInitiativeRow, ...]]:
+    """REL3.3 — non-cyber pillars come from the domain substance catalog only."""
+    _ = lang
+    from release_engine_v3.rel32_registries import resolve_pillar_catalog
+    catalog = resolve_pillar_catalog(domain)
+    parts = [_heading_line('pillars'), '']
+    if narrative.strip():
+        from release_engine.rendered_evidence_validator import _repair_arabic_blob
+        parts.extend([
+            _apply_arabic_registry_repairs(_repair_arabic_blob(narrative.strip())),
+            ''])
+    pillars: List[PillarRow] = []
+    initiatives: List[PillarInitiativeRow] = []
+    for i, (heading, pillar_narrative, inits) in enumerate(catalog, 1):
+        fam = f'{domain}_pillar_{i}'
+        pillars.append(PillarRow(heading, family=fam))
+        parts.append(f'### {heading}')
+        parts.append('')
+        parts.append(pillar_narrative)
+        parts.append('')
+        parts.append('| المبادرة | الوصف | المخرج المتوقع | المسؤول |')
+        parts.append('|---|---|---|---|')
+        for init, desc, output, owner in inits:
+            initiatives.append(PillarInitiativeRow(
+                init, desc, output, owner, pillar_family=fam))
+            parts.append(f'| {init} | {desc} | {output} | {owner} |')
+        parts.append('')
+    text = '\n'.join(parts).rstrip() + '\n'
+    return text, tuple(pillars), tuple(initiatives)
+
+
 def _apply_arabic_registry_repairs(text: str) -> str:
     out = text or ''
     for bad, good in ARABIC_CANONICAL_REPAIR_REGISTRY:
@@ -361,13 +416,21 @@ def _apply_arabic_registry_repairs(text: str) -> str:
     return out
 
 
-def _build_environment_section(narrative: str) -> str:
+def _build_environment_section(narrative: str, *, domain: str = '') -> str:
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
-    default = (
-        'تشمل البيئة التنظيمية متطلبات NCA ECC وNCA DCC '
-        'وضوابط حماية البيانات الوطنية، مع سياق تهديدات التصيد '
-        'والبرمجيات الخبيثة وتسرب البيانات ومخاطر سلسلة التوريد '
-        'والتشغيل على الأنظمة الحرجة.')
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'environment_section')
+    if dcode == 'cyber':
+        default = (
+            'تشمل البيئة التنظيمية متطلبات NCA ECC وNCA DCC '
+            'وضوابط حماية البيانات الوطنية، مع سياق تهديدات التصيد '
+            'والبرمجيات الخبيثة وتسرب البيانات ومخاطر سلسلة التوريد '
+            'والتشغيل على الأنظمة الحرجة.')
+    else:
+        from release_engine_v3.rel32_registries import resolve_environment_default
+        default = resolve_environment_default(dcode)
     body = (narrative or '').strip()
     if body:
         body = _apply_arabic_registry_repairs(_repair_arabic_blob(body))
@@ -378,14 +441,18 @@ def _build_environment_section(narrative: str) -> str:
 
 def _build_gaps_section(
         ai_gaps: str,
+        *,
+        domain: str = '',
 ) -> Tuple[str, Tuple[GapRow, ...], Tuple[GapTreatmentRow, ...]]:
+    from release_engine_v3.rel32_registries import resolve_gap_family_registry
+    gap_order, gap_registry = resolve_gap_family_registry(domain)
     gap_rows: List[GapRow] = []
     treatments: List[GapTreatmentRow] = []
     parts = [_heading_line('gaps'), '']
     parts.append('| # | الفجوة | الوصف | الأولوية | الحالة |')
     parts.append('|---|---|---|---|---|')
-    for i, fam in enumerate(GAP_FAMILY_ORDER, 1):
-        spec = GAP_FAMILY_REGISTRY[fam]
+    for i, fam in enumerate(gap_order, 1):
+        spec = gap_registry[fam]
         gap_rows.append(GapRow(
             str(i), spec['gap_label'], spec['description'],
             spec['priority'], spec['status'], family=fam,
@@ -418,29 +485,28 @@ def _build_roadmap_section(
         domain: str,
         backend: Dict[str, Any],
 ) -> Tuple[str, Tuple[RoadmapRow, ...]]:
-    """Always build roadmap from registry — AI table structure is ignored."""
+    """Build roadmap from domain registry — never cyber fallback for data."""
     _ = ai_roadmap
-    from release_engine.roadmap_model import (
-        ROADMAP_FAMILIES,
-        _ROADMAP_CATALOG_AR,
-        finalize_roadmap,
+    from release_engine_v3.rel32_registries import (
+        resolve_roadmap_families,
+        resolve_roadmap_family_registry,
     )
+    families = resolve_roadmap_families(domain)
+    registry = resolve_roadmap_family_registry(domain)
     parts = [_heading_line('roadmap'), '']
     parts.append(
         '| المرحلة | الإطار الزمني | المبادرة | المالك | '
         'المخرج | الإطار |')
     parts.append('|---|---|---|---|---|---|')
-    for fam in ROADMAP_FAMILIES:
-        cat = tuple(
-            ROADMAP_FAMILY_REGISTRY.get(fam)
-            or _ROADMAP_CATALOG_AR.get(fam)
-            or ())
+    for fam in families:
+        cat = tuple(registry.get(fam) or ())
         if len(cat) < 6:
             continue
         parts.append(
             f'| {cat[0]} | {cat[1]} | {cat[2]} | {cat[3]} | '
             f'{cat[4]} | {cat[5]} |')
     text = '\n'.join(parts) + '\n'
+    from release_engine.roadmap_model import finalize_roadmap
     sections, _ = finalize_roadmap(
         {'roadmap': text},
         lang=lang,
@@ -474,7 +540,14 @@ def _build_kpis_section(
         *,
         lang: str,
         backend: Dict[str, Any],
+        domain: str = '',
 ) -> Tuple[str, Tuple[KpiRow, ...], Tuple[KpiFormulaRow, ...]]:
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'kpis_section')
+    backend = dict(backend or {})
+    backend.setdefault('domain', dcode)
     parts = [_heading_line('kpis'), '']
     parts.append(
         '| # | وصف المؤشر | النوع | القيمة المستهدفة | '
@@ -482,20 +555,36 @@ def _build_kpis_section(
     parts.append('|---|---|---|---|---|---|---|---|')
     kpi_rows: List[KpiRow] = []
     formula_rows: List[KpiFormulaRow] = []
-    order = list(KPI_CANONICAL_REGISTRY_FULL.keys())
+    kpi_registry = resolve_kpi_canonical_registry(dcode)
+    order = list(kpi_registry.keys())
     if not order:
-        order = ['soc_mttd', 'incident_response_mttr']
+        if dcode == 'cyber':
+            order = list(KPI_CANONICAL_REGISTRY_FULL.keys()) or [
+                'soc_mttd', 'incident_response_mttr']
+        else:
+            raise ValueError(f'rel33_substance_domain_missing:kpi_registry:{dcode}')
+    _domain_default_owner = {
+        'cyber': 'CISO',
+        'data': 'CDO',
+        'ai': 'مدير حوكمة AI',
+        'dt': 'مدير التحول الرقمي',
+        'erm': 'رئيس إدارة المخاطر',
+        'global': 'مدير تقييم الفجوات',
+    }
     for i, fam in enumerate(order, 1):
-        reg = KPI_CANONICAL_REGISTRY_FULL[fam]
+        reg = kpi_registry[fam]
+        owner = reg.get('owner') or _domain_default_owner.get(dcode, '')
+        freq = reg.get('frequency') or 'شهري'
+        if owner in ('—', '-', '—', '') or owner == freq:
+            owner = reg.get('owner') or _domain_default_owner.get(dcode, '')
         kpi_rows.append(KpiRow(
             str(i), reg['label_ar'], reg.get('kpi_type', 'KPI'),
             reg['target'], reg['formula'], reg['source'],
-            reg.get('frequency', 'شهري'),
-            reg.get('owner', 'CISO'), family=fam))
+            freq, owner, family=fam))
         parts.append(
             f'| {i} | {reg["label_ar"]} | {reg.get("kpi_type", "KPI")} | '
             f'{reg["target"]} | {reg["formula"]} | {reg["source"]} | '
-            f'{reg.get("frequency", "شهري")} | {reg.get("owner", "CISO")} |')
+            f'{freq} | {owner} |')
         formula_rows.append(KpiFormulaRow(
             str(i), reg['label_ar'], reg['formula'], reg['source']))
     parts.append('')
@@ -526,14 +615,18 @@ def _build_confidence_section(
         ai_confidence: str,
         *,
         lang: str,
+        domain: str = '',
         maturity_current: str = 'initial',
         maturity_target: str = '',
         horizon_months: int = 18,
 ) -> Tuple[str, Tuple[ConfidenceFactorRow, ...], Tuple[RiskRegisterRow, ...], str, str]:
     from release_engine.risk_treatment_model import (
-        _REQUIRED_RISK_THEMES,
         specific_risk_treatment_for_blob,
     )
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'confidence_section')
     score = DEFAULT_CONFIDENCE_SCORE
     rationale = DEFAULT_CONFIDENCE_RATIONALE
     m = re.search(r'(\d{1,3})\s*%', ai_confidence or '')
@@ -559,14 +652,24 @@ def _build_confidence_section(
     parts.append('| # | العامل | الوصف | الأهمية |')
     parts.append('|---|---|---|---|')
     grade = str(min(5, max(1, round(score_val / 20))))
-    _factor_desc = {
-        'اكتمال المدخلات': 'اكتمال مدخلات التقييم والبيانات المرجعية',
-        'تغطية الأطر المرجعية': 'تغطية NCA ECC وNCA DCC والمتطلبات التنظيمية',
-        'جدوى خارطة الطريق': 'قابلية تنفيذ خارطة الطريق ضمن الأفق الزمني',
-        'جاهزية الموارد': 'توفر الموارد البشرية والتقنية والتمويل',
-        'نضج الحوكمة': 'نضج هيكل الحوكمة والمساءلة السيبرانية',
-        'جاهزية حماية البيانات': 'جاهزية ضوابط حماية البيانات والخصوصية',
-    }
+    if dcode == 'cyber':
+        _factor_desc = {
+            'اكتمال المدخلات': 'اكتمال مدخلات التقييم والبيانات المرجعية',
+            'تغطية الأطر المرجعية': 'تغطية NCA ECC وNCA DCC والمتطلبات التنظيمية',
+            'جدوى خارطة الطريق': 'قابلية تنفيذ خارطة الطريق ضمن الأفق الزمني',
+            'جاهزية الموارد': 'توفر الموارد البشرية والتقنية والتمويل',
+            'نضج الحوكمة': 'نضج هيكل الحوكمة والمساءلة السيبرانية',
+            'جاهزية حماية البيانات': 'جاهزية ضوابط حماية البيانات والخصوصية',
+        }
+    else:
+        _factor_desc = {
+            'اكتمال المدخلات': 'اكتمال مدخلات التقييم والبيانات المرجعية',
+            'تغطية الأطر المرجعية': 'تغطية الأطر المرجعية للمجال والمتطلبات التنظيمية',
+            'جدوى خارطة الطريق': 'قابلية تنفيذ خارطة الطريق ضمن الأفق الزمني',
+            'جاهزية الموارد': 'توفر الموارد البشرية والتقنية والتمويل',
+            'نضج الحوكمة': 'نضج هيكل الحوكمة والمساءلة المؤسسية',
+            'جاهزية حماية البيانات': 'جاهزية ضوابط البيانات والخصوصية للمجال',
+        }
     for i, (fname, weight) in enumerate(CONFIDENCE_FACTOR_REGISTRY, 1):
         w_pct = int(re.sub(r'\D', '', weight) or '0')
         contrib = f'{round(w_pct * score_val / 100, 1)}%'
@@ -581,17 +684,28 @@ def _build_confidence_section(
         '| # | المخاطر | الاحتمالية | التأثير | خطة المعالجة | المالك |')
     parts.append('|---|---|---|---|---|---|')
     risk_rows: List[RiskRegisterRow] = []
-    risk_labels = (
-        ('امتثال تنظيمي', 'متوسط', 'عالٍ', 'compliance', 'مدير الامتثال'),
-        ('قدرات رصد وكشف', 'متوسط', 'عالٍ', 'capabilities', 'مدير SOC'),
-        ('حماية البيانات', 'متوسط', 'عالٍ', 'data_protection', 'مدير حماية البيانات'),
-        ('استجابة للحوادث', 'متوسط', 'عالٍ', 'incident_response', 'قائد CSIRT'),
-        ('موارد وتمويل', 'منخفض', 'متوسط', 'resource_capacity', 'CISO'),
-        ('استمرارية التشغيل', 'منخفض', 'عالٍ', 'operational_continuity',
-         'مدير استمرارية الأعمال'),
-    )
-    for i, (risk, lik, imp, theme, owner) in enumerate(risk_labels, 1):
-        treatment = RISK_TREATMENT_REGISTRY.get(
+    if dcode == 'cyber':
+        risk_labels = (
+            ('امتثال تنظيمي', 'متوسط', 'عالٍ', 'compliance', 'مدير الامتثال', ''),
+            ('قدرات رصد وكشف', 'متوسط', 'عالٍ', 'capabilities', 'مدير SOC', ''),
+            ('حماية البيانات', 'متوسط', 'عالٍ', 'data_protection',
+             'مدير حماية البيانات', ''),
+            ('استجابة للحوادث', 'متوسط', 'عالٍ', 'incident_response',
+             'قائد CSIRT', ''),
+            ('موارد وتمويل', 'منخفض', 'متوسط', 'resource_capacity', 'CISO', ''),
+            ('استمرارية التشغيل', 'منخفض', 'عالٍ', 'operational_continuity',
+             'مدير استمرارية الأعمال', ''),
+        )
+    else:
+        from release_engine_v3.rel32_registries import resolve_confidence_risk_rows
+        risk_labels = tuple(
+            (r, lik, imp, theme, owner, treat)
+            for r, lik, imp, theme, owner, treat
+            in resolve_confidence_risk_rows(dcode)
+        )
+    for i, row in enumerate(risk_labels, 1):
+        risk, lik, imp, theme, owner = row[0], row[1], row[2], row[3], row[4]
+        treatment = row[5] if len(row) > 5 and row[5] else RISK_TREATMENT_REGISTRY.get(
             theme, specific_risk_treatment_for_blob(risk, lang=lang))
         risk_rows.append(RiskRegisterRow(
             str(i), risk, lik, imp, treatment, owner, theme=theme))
@@ -599,14 +713,23 @@ def _build_confidence_section(
     return '\n'.join(parts) + '\n', tuple(factor_rows), tuple(risk_rows), score, rationale
 
 
-def _build_governance_section() -> Tuple[str, Tuple[GovernanceRoleRow, ...]]:
+def _build_governance_section(
+        *,
+        domain: str = '',
+) -> Tuple[str, Tuple[GovernanceRoleRow, ...]]:
+    from release_engine_v3.rel32_registries import resolve_governance_role_registry
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'governance_section')
+    registry = resolve_governance_role_registry(dcode)
     parts = [_heading_line('governance'), '']
     parts.append(
         '| الدور | نطاق المسؤولية | المساءلة | '
         'التقارير / التصعيد | الإطار المرتبط |')
     parts.append('|---|---|---|---|---|')
     roles: List[GovernanceRoleRow] = []
-    for spec in GOVERNANCE_ROLE_REGISTRY.values():
+    for spec in registry.values():
         roles.append(GovernanceRoleRow(
             spec['role'], spec['scope'], spec['accountability'],
             spec['escalation'], spec['framework']))
@@ -619,17 +742,26 @@ def _build_governance_section() -> Tuple[str, Tuple[GovernanceRoleRow, ...]]:
 def _build_traceability_section(
         *,
         lang: str,
+        domain: str = '',
+        backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Tuple[TraceabilityGapRow, ...], Tuple[TraceabilityInitiativeRow, ...]]:
     from release_engine.traceability_substance_model import (
         build_canonical_traceability_from_registry,
     )
-    text = build_canonical_traceability_from_registry(lang=lang)
+    from release_engine_v3.rel32_registries import resolve_trace_registry
+    from release_engine_v3.rel33_domain_substance import (
+        require_rel33_substance_domain,
+    )
+    dcode = require_rel33_substance_domain(domain, 'traceability_section')
+    text = build_canonical_traceability_from_registry(
+        lang=lang, domain=dcode, backend=backend)
     text = re.sub(
         r'^##\s+[^\n]+', _heading_line('traceability'), text, count=1, flags=re.M)
     gap_matrix: List[TraceabilityGapRow] = []
     init_matrix: List[TraceabilityInitiativeRow] = []
-    for fam in TRACEABILITY_FAMILY_ORDER:
-        spec = TRACEABILITY_CANONICAL_REGISTRY[fam]
+    order, registry = resolve_trace_registry(dcode)
+    for fam in order:
+        spec = registry[fam]
         gap_matrix.append(TraceabilityGapRow(
             spec['framework'], spec['capability'], spec['expected_gap'], fam))
         init_matrix.append(TraceabilityInitiativeRow(
@@ -648,18 +780,20 @@ def _document_from_sections(
 ) -> CanonicalStrategyDocument:
     vision_text, objectives = _build_vision_section(
         _extract_narrative_from_blob(sections.get('vision', '')),
-        lang=lang, backend=backend)
+        lang=lang, backend=backend, domain=domain)
     pillars_text, pillars, initiatives = _build_pillars_section(
         _extract_narrative_from_blob(sections.get('pillars', '')),
-        lang=lang)
+        lang=lang, domain=domain)
     env_text = _build_environment_section(
-        _extract_narrative_from_blob(sections.get('environment', '')))
-    gaps_text, gaps, treatments = _build_gaps_section(sections.get('gaps', ''))
+        _extract_narrative_from_blob(sections.get('environment', '')),
+        domain=domain)
+    gaps_text, gaps, treatments = _build_gaps_section(
+        sections.get('gaps', ''), domain=domain)
     roadmap_text, roadmap = _build_roadmap_section(
         sections.get('roadmap', ''),
         lang=lang, domain=domain, backend=backend)
     kpis_text, kpis, formulas = _build_kpis_section(
-        sections.get('kpis', ''), lang=lang, backend=backend)
+        sections.get('kpis', ''), lang=lang, backend=backend, domain=domain)
     _horizon = int(metadata.get('roadmap_horizon_months') or 18)
     _maturity_cur = str(
         metadata.get('maturity_level') or metadata.get('maturity') or 'initial')
@@ -667,12 +801,14 @@ def _document_from_sections(
     conf_text, factors, risks, score, rationale = _build_confidence_section(
         sections.get('confidence', ''),
         lang=lang,
+        domain=domain,
         maturity_current=_maturity_cur,
         maturity_target=_maturity_tgt,
         horizon_months=_horizon,
     )
-    gov_text, gov_roles = _build_governance_section()
-    trace_text, trace_gaps, trace_inits = _build_traceability_section(lang=lang)
+    gov_text, gov_roles = _build_governance_section(domain=domain)
+    trace_text, trace_gaps, trace_inits = _build_traceability_section(
+        lang=lang, domain=domain, backend=backend)
     appendices = sections.get('appendices', '') or ''
 
     compiled_sections = {
@@ -725,7 +861,7 @@ def canonical_document_to_legacy_sections(
     built = _document_from_sections(
         {}, metadata=doc.metadata,
         lang=backend.get('lang', 'ar'),
-        domain=backend.get('domain', 'cyber'),
+        domain=str(backend.get('domain') or ''),
         backend=backend)
     return dict((built.metadata or {}).get('_compiled_sections') or {})
 
@@ -752,7 +888,7 @@ def _run_post_compile_repairs(
             repair_traceability_canonical_families,
         )
         out, trace_diag = repair_traceability_canonical_families(
-            out, lang=lang, backend=backend)
+            out, lang=lang, domain=domain, backend=backend)
         if trace_diag.get('action_taken') != 'no_changes':
             repairs.append('rel32:traceability_canonical_repair')
     except Exception:  # noqa: BLE001
@@ -809,8 +945,58 @@ def compile_canonical_strategy_document(
     are always compiler-owned. Returns fail-closed CompileResult on schema/DQS block.
     """
     ctx = dict(request_context or {})
+    # REL3.3 P0 fail-closed — the strategy compiler must never run for a risk
+    # artifact (that synthesizes strategy sections and contaminates the risk
+    # document). The canonical builder routes risk to the risk-native path;
+    # this is a defensive guard for any other caller that reaches here with a
+    # risk document_type. Do not silently fall back to strategy compilation.
+    _ctx_dtype = str(
+        ctx.get('document_type')
+        or (ctx.get('backend') or {}).get('document_type')
+        or 'strategy').strip().lower()
+    if _ctx_dtype in ('risk', 'risk_assessment'):
+        from release_engine_v3.rel33_domain_guard import (
+            emit_rel33_document_type_compiler_authority,
+        )
+        _risk_sections, _ = _normalize_raw_input(raw_ai_output)
+        emit_rel33_document_type_compiler_authority({
+            'route': str(ctx.get('route') or ''),
+            'domain': str(ctx.get('domain') or ''),
+            'artifact_type': _ctx_dtype,
+            'document_type': _ctx_dtype,
+            'phase': 'compile_canonical_strategy_document',
+            'compiler_selected': 'risk_native',
+            'compiler_requested': 'strategy',
+            'compiler_allowed': False,
+            'freeze_authority': 'risk_native',
+            'strategy_compiler_attempted': True,
+            'strategy_compiler_blocked': True,
+            'native_sections_present': sorted(
+                str(k) for k in _risk_sections if not str(k).startswith('_')),
+            'synthetic_strategy_sections_created': False,
+            'blocking_errors': [
+                f'rel33_wrong_compiler_for_document_type:{_ctx_dtype}'],
+        })
+        return CompileResult(
+            document=None,
+            legacy_sections=dict(_risk_sections),
+            repairs=[],
+            blocking_errors=[
+                f'rel33_wrong_compiler_for_document_type:{_ctx_dtype}'],
+            passed=False,
+            diagnostics={'compiler': 'rel32', 'blocked_document_type': _ctx_dtype},
+        )
     lang = str(ctx.get('lang') or 'ar')
-    domain = str(ctx.get('domain') or 'cyber').lower()
+    # REL3.3 P0 — never rebrand a blank domain as cyber. Resolve from ctx
+    # then backend metadata; blank fails closed via the domain-aware
+    # registries (rel33_export_domain_missing) instead of compiling a
+    # Cyber document for a non-cyber route.
+    domain = normalize_domain_code(
+        str(
+            ctx.get('domain')
+            or (ctx.get('backend') or {}).get('domain')
+            or ''),
+        default='')
     backend = dict(ctx.get('backend') or {})
     backend.setdefault('lang', lang)
     backend.setdefault('selected_frameworks', ctx.get('selected_frameworks') or [])
@@ -859,7 +1045,7 @@ def compile_canonical_strategy_document(
         from release_engine_v3.document_quality_spec import (
             evaluate_document_quality,
         )
-        dqs = evaluate_document_quality(legacy_sections=legacy)
+        dqs = evaluate_document_quality(legacy_sections=legacy, domain=domain)
         if not dqs.get('passed'):
             for err in dqs.get('blocking_errors') or []:
                 blockers.append(f'rel32_dqs:{err}')
@@ -941,18 +1127,23 @@ def apply_compiler_first_save_gate_sections(
         backend: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Replace AI sections with compiler-owned structure before save-gate validation."""
-    if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+    if not is_rel32_compiler_first(
+            domain=normalize_domain_code(domain, default='cyber'),
+            lang=lang, flags=flags,
+            document_type=str(
+                (backend or {}).get('document_type') or 'strategy')):
         return dict(sections or {}), []
     from release_engine_v3.rel32_complete_strategy_compiler import (
         compile_complete_cyber_ar_technical_strategy,
     )
     _backend = dict(backend or {})
     _backend.setdefault('flags', dict(flags or {}))
+    dcode = normalize_domain_code(domain, default='cyber')
     compiled = compile_complete_cyber_ar_technical_strategy(
         dict(sections or {}),
         request_context={
             'lang': lang,
-            'domain': (domain or 'cyber').strip().lower(),
+            'domain': dcode,
             'maturity_level': maturity_level,
             'maturity': maturity_level,
             'roadmap_horizon_months': roadmap_horizon_months,
