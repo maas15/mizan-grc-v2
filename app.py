@@ -68455,6 +68455,61 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 flush=True,
                             )
 
+                        # ── PR-REL3.3: deterministic strategy completeness
+                        # top-up ─────────────────────────────────────────────
+                        # Runs AFTER LLM generation / existing repair but
+                        # BEFORE the post-repair quality gate + save + export
+                        # freeze.  Strategy documents ONLY (never risk / gap).
+                        # Deterministically ensures domain-scoped minimums
+                        # (pillars >= 3, confidence/risk rows >= 6) by adding
+                        # only the missing rows/pillars from the domain
+                        # registries — preserving existing valid content,
+                        # avoiding duplicates and cross-domain contamination.
+                        # It NEVER weakens a gate: when it cannot safely
+                        # complete a section it leaves the section untouched
+                        # and the strict post-repair assertions / audit below
+                        # still fail closed.  When it legitimately completes a
+                        # section it clears that section's stale synth_status
+                        # marker so the audit re-validates the real content.
+                        if (str(_document_type or '').strip().lower()
+                                == 'strategy' and doc_subtype != 'board'):
+                            try:
+                                from release_engine_v3.\
+                                    rel33_strategy_completeness_topup import (
+                                        apply_strategy_completeness_topup)
+                                from release_engine_v3.domain_codes import (
+                                    normalize_domain_code as _stc_ndc)
+                                _stc_route = (
+                                    f'{_stc_ndc(domain) or domain}'
+                                    f':strategy:{lang}')
+                                _stc_diag = apply_strategy_completeness_topup(
+                                    sections,
+                                    domain=domain,
+                                    document_type=_document_type,
+                                    lang=lang,
+                                    synth_status=_synth_status,
+                                    generation_stage='post_repair',
+                                    route=_stc_route,
+                                    emit=True,
+                                )
+                                if _stc_diag.get('topup_applied'):
+                                    _stc_parts = [
+                                        sections[sk]
+                                        for sk in _section_order_r
+                                        if sections.get(sk)
+                                        and sections[sk].strip()
+                                    ]
+                                    if _stc_parts:
+                                        content = '\n\n'.join(_stc_parts)
+                            except Exception as _stc_err:  # noqa: BLE001
+                                # Never break generation on top-up failure;
+                                # the strict gates below remain authoritative.
+                                print(
+                                    '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                                    f'topup_skipped_error: {_stc_err}',
+                                    flush=True,
+                                )
+
                         # ── HARD ASSERTIONS after deterministic repair ──────
                         # These assertions verify that the repair functions
                         # actually produced valid content before the audit gate
