@@ -61629,6 +61629,24 @@ def api_generate_strategy():
         _document_type = _doc_type_aliases.get(_document_type, _document_type)
         print(f"DEBUG: document_type = {_document_type!r}", flush=True)
 
+        # REL3.3 — resolve missing org/framework context for gap_assessment
+        # only, before prompt/diagnostic-model build, so generation never
+        # receives "Not specified" / "غير محدد" as org or framework labels.
+        if _document_type == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    resolve_gap_assessment_context as _rel33_gap_ctx,
+                )
+                _rel33_gap_ctx(
+                    data, lang=lang, domain=domain,
+                    document_type=_document_type, emit=True)
+            except Exception as _gap_ctx_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'context_resolver_skipped: {_gap_ctx_err}',
+                    flush=True,
+                )
+
         # ── PR-5B.6D.1: request-scoped fail-closed status dict.
         # Initialized early so every Tier-3/Tier-4 ``_force_inject_mandatory_section``
         # call site (and any AI-first synthesizer that raises ``RepairError``)
@@ -61837,6 +61855,47 @@ def api_generate_strategy():
                           if tech_list != 'None specified'
                           else ', '.join(_model_additional_tech))
         frameworks_list = ', '.join(_model_frameworks) if _model_frameworks else 'Not specified'
+        if _document_type == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    sanitize_gap_prompt_text as _gap_ph_san,
+                    FRAMEWORK_PROFILE_AR as _gap_fw_ar,
+                    FRAMEWORK_PROFILE_EN as _gap_fw_en,
+                    ORG_PROFILE_AR as _gap_org_ar,
+                    CHALLENGES_AR as _gap_ch_ar,
+                    CHALLENGES_EN as _gap_ch_en,
+                )
+                _gap_fw_sel = []
+                if isinstance(data, dict):
+                    _raw_fw = data.get('frameworks') or []
+                    if isinstance(_raw_fw, str):
+                        _raw_fw = [p.strip() for p in _raw_fw.split(',')
+                                   if p.strip()]
+                    _gap_fw_sel = [str(x).strip() for x in _raw_fw if x]
+                if not _model_frameworks or frameworks_list in (
+                        'Not specified', 'غير محدد', 'N/A'):
+                    frameworks_list = (
+                        ', '.join(_gap_fw_sel) if _gap_fw_sel else (
+                            _gap_fw_ar if lang == 'ar' else _gap_fw_en))
+                if not org_structure or org_structure in (
+                        'Not specified', 'غير محدد', 'N/A', 'لا يوجد'):
+                    org_structure = (
+                        _gap_org_ar if lang == 'ar' else
+                        'the organization under assessment')
+                if not _model_challenges or str(_model_challenges).strip() in (
+                        'Not specified', 'غير محدد', 'N/A'):
+                    _model_challenges = (
+                        _gap_ch_ar if lang == 'ar' else _gap_ch_en)
+                else:
+                    _model_challenges = _gap_ph_san(
+                        _model_challenges, lang=lang,
+                        frameworks=_gap_fw_sel)
+            except Exception as _gap_san_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'prompt_sanitize_skipped: {_gap_san_err}',
+                    flush=True,
+                )
         
         if lang == 'ar':
             # Map domain to Arabic specialized context
@@ -62000,7 +62059,17 @@ def api_generate_strategy():
 (ب) الفجوة المحددة التي تُعالجها (مثال: "إنشاء إدارة الأمن السيبراني بقيادة CISO وسلطة الحوكمة" وليس "إطار الحوكمة")
 (ج) التقنية الموجودة فعلاً حيثما كانت معروفة
 كل اسم مبادرة يجب أن يكون محدداً بما يكفي لتمييزه عن أي وثيقة أخرى لمنظمة مختلفة."""
-            
+            if _document_type == 'gap_assessment':
+                try:
+                    from release_engine_v3.rel33_gap_placeholder_completion import (
+                        sanitize_gap_prompt_text as _gap_ctx_san,
+                    )
+                    org_context_block_ar = _gap_ctx_san(
+                        org_context_block_ar, lang='ar',
+                        frameworks=_model_frameworks)
+                except Exception:  # noqa: BLE001
+                    pass
+
             # Pre-compute Arabic domain-specific text
             _domain_isolation_ar = {
                 'Cyber Security': 'أمن سيبراني. لا تذكر لجان حوكمة بيانات أو أخلاقيات AI أو مكاتب تحول رقمي',
@@ -66330,6 +66399,59 @@ The confidence score is based on a comprehensive assessment of the organization'
                 ),
                 'missing_core_sections': sorted(_remaining_core),
             }), 422
+
+        # REL3.3 — deterministic gap_assessment placeholder completion
+        # AFTER generation/repair and BEFORE the placeholder-text gate.
+        # Does not run for strategy or risk.  The gate below still runs
+        # and still fail-closes if any leftover tokens remain.
+        if str(_document_type or '').strip().lower() == 'gap_assessment':
+            try:
+                from release_engine_v3.rel33_gap_placeholder_completion import (
+                    run_gap_placeholder_completion as _rel33_gap_ph,
+                )
+                from release_engine_v3.domain_codes import (
+                    normalize_domain_code as _gap_ph_ndc)
+                _gap_ph = _rel33_gap_ph(
+                    sections,
+                    data=data if isinstance(data, dict) else {},
+                    domain=domain,
+                    document_type=_document_type,
+                    lang=lang,
+                    route=(
+                        f"{_gap_ph_ndc(domain, default='global')}"
+                        f':gap_assessment:{lang}'),
+                    emit=True,
+                )
+                if _gap_ph.get('fail_closed'):
+                    print(
+                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                        'reason=rel33_gap_placeholder_completion_failed',
+                        flush=True,
+                    )
+                    return jsonify({
+                        'success': False,
+                        'strategy_id': None,
+                        'error': (
+                            'Unresolved placeholder text ("Not specified" / '
+                            '"غير محدد") remains after gap completion. '
+                            'Please complete framework / org profile '
+                            'selection and regenerate.'
+                            if lang == 'en' else
+                            'توجد نصوص نائبة غير محلولة ("Not specified" / '
+                            '"غير محدد") بعد محاولة الإكمال الحتمي لتقييم '
+                            'الفجوات. يُرجى استكمال اختيار الإطار التنظيمي '
+                            '/ ملف المنظمة وإعادة التوليد.'
+                        ),
+                        'blocking_errors': [
+                            'rel33_gap_placeholder_completion_failed'],
+                        'placeholder_sections': ['gaps'],
+                    }), 422
+            except Exception as _gap_ph_err:  # noqa: BLE001
+                print(
+                    '[REL33-GAP-PLACEHOLDER-COMPLETION] '
+                    f'completion_skipped: {_gap_ph_err}',
+                    flush=True,
+                )
 
         # ── Placeholder-text gate (NEW) ───────────────────────────────────────
         # Strings like "Not specified" leak into saved strategies when the
