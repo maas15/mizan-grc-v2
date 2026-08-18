@@ -1,15 +1,18 @@
-"""PR-REL3.3 — deterministic strategy completeness top-up.
+"""PR-REL3.3 — deterministic strategy completeness top-up (v2, surgical).
 
 This module ensures STRATEGY documents deterministically meet their minimum
 completeness thresholds *before* the post-repair quality gate and the save /
-export-freeze decision run.  It exists to remove non-determinism from the
-strategy generation path (observed as transient generation-quality misses such
-as ``synth_failed:pillars`` / ``confidence_risk_rows=5 (need >= 6)``) without
-weakening any gate.
+export-freeze decision run.  v2 is a document-preserving completion pass:
+it patches only the incomplete section bodies and never rebuilds the whole
+document from a section-order join (that rebuild dropped H2 wrappers and
+broke live KPI PDF extractability / frozen export lock).
 
 Guarantees (strategy documents only):
+  * strategic objectives        >= ``STRATEGY_TOPUP_MIN_OBJECTIVES``
   * strategic pillars           >= ``STRATEGY_TOPUP_MIN_PILLARS``
   * confidence/risk table rows  >= ``STRATEGY_TOPUP_MIN_RISK_ROWS``
+  * KPI main section/header     unchanged unless this module is asked to
+    repair KPI (it never is)
 
 Design constraints (hard):
   * Runs ONLY for ``document_type == 'strategy'``.  Never for ``risk`` or
@@ -33,12 +36,21 @@ The thresholds mirror the binding runtime gates in ``app.py``:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 # ── Binding minimums (kept in sync with app.py runtime gates) ────────────────
+STRATEGY_TOPUP_MIN_OBJECTIVES = 4
+# Post-repair assertion in app.py still requires >= 6 valid SO rows.
+STRATEGY_TOPUP_TARGET_OBJECTIVES = 6
 STRATEGY_TOPUP_MIN_PILLARS = 3
 STRATEGY_TOPUP_MIN_RISK_ROWS = 6
+
+_KPI_PRESERVE_KEYS = (
+    'kpis', 'roadmap', 'gaps', 'environment', 'governance',
+    'traceability', 'kri',
+)
 
 # ── Placeholder tokens (mirror app._TS_PLACEHOLDER_TOKENS) ───────────────────
 _PLACEHOLDER_TOKENS = (
@@ -62,6 +74,29 @@ _PILLAR_INIT_HDR_TOKENS = re.compile(
     r'المبادرة|الوصف|المخرج|المتوقع)',
     re.IGNORECASE,
 )
+_OBJ_HDR_RE = re.compile(
+    r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+    re.IGNORECASE,
+)
+_OBJ_TF_RE = re.compile(
+    r'\d{1,6}\s*(?:months?|years?|weeks?|days?'
+    r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)'
+    r'|(?:within|خلال)\s+\d{1,6}'
+    r'|(?:within|خلال)\s+(?:months?|years?|weeks?|days?'
+    r'|أشهر|شهر|شهراً|سنوات|سنة|أسابيع|أسبوع|أيام|يوم)',
+    re.IGNORECASE,
+)
+_CANONICAL_H2 = {
+    'vision': 'الرؤية والأهداف الاستراتيجية',
+    'pillars': 'الركائز الاستراتيجية',
+    'environment': 'البيئة التنظيمية والتهديدات',
+    'gaps': 'تحليل الفجوات',
+    'roadmap': 'خارطة الطريق التنفيذية',
+    'kpis': 'مؤشرات الأداء الرئيسية',
+    'confidence': 'تقييم الثقة والمخاطر',
+    'governance': 'نموذج الحوكمة والمسؤوليات',
+    'traceability': 'مصفوفة تتبع الأطر المرجعية',
+}
 
 # Cyber-primary substance markers that must never leak into data/ai/dt/global
 # top-up content.  Used only as a defensive self-check on ADDED content.
@@ -200,6 +235,9 @@ def _new_diag(route: str, domain: str, document_type: str, lang: str,
         'artifact_type': 'strategy',
         'language': lang,
         'generation_stage': stage,
+        'objectives_before': None,
+        'objectives_after': None,
+        'objectives_added': 0,
         'pillars_before': None,
         'pillars_after': None,
         'pillars_added': 0,
@@ -210,6 +248,11 @@ def _new_diag(route: str, domain: str, document_type: str, lang: str,
         'domain_profile': '',
         'contamination_check_passed': True,
         'quality_gate_minimums_met': False,
+        'kpi_preserved': True,
+        'final_quality_gate_inputs': {},
+        'final_quality_gate_passed': False,
+        'pdf_kpi_extractability_precheck_passed': None,
+        'frozen_export_lock_ready': None,
         'topup_applied': False,
         'blocking_errors': [],
         'passed': True,
@@ -227,21 +270,22 @@ def apply_strategy_completeness_topup(
         route: str = '',
         emit: bool = True,
 ) -> Dict[str, Any]:
-    """Deterministically top up strategy pillars / confidence-risk rows.
+    """Deterministically top up strategy objectives / pillars / risk rows.
 
-    Mutates ``sections`` in place (only when it can legitimately complete a
-    section) and returns the ``[REL33-STRATEGY-COMPLETENESS-TOPUP]``
-    diagnostic dict.  When ``synth_status`` is provided, a section that is
-    successfully completed has its stale ``'failed'`` marker cleared (the
-    section is now genuinely complete and the downstream audit re-validates
-    the content).
+    Mutates only the incomplete section bodies in ``sections``.  Never
+    rebuilds the whole document.  Returns the
+    ``[REL33-STRATEGY-COMPLETENESS-TOPUP]`` diagnostic dict.
     """
     dcode = _normalize_domain(domain)
     diag = _new_diag(route, dcode, str(document_type or 'strategy').lower(),
                      lang, generation_stage)
+    kpi_before = sections.get('kpis', '') if isinstance(sections, dict) else ''
+    preserve_before = _snapshot_preserve_sections(sections)
 
     if not is_strategy_completeness_topup_applicable(document_type):
         diag['generation_stage'] = 'skipped_non_strategy'
+        _fill_counts(sections if isinstance(sections, dict) else {}, diag)
+        _finalize_gate_inputs(diag)
         _emit(diag, emit)
         return diag
 
@@ -249,6 +293,7 @@ def apply_strategy_completeness_topup(
         diag['blocking_errors'].append(
             'rel33_strategy_completeness_topup_failed:invalid_sections')
         diag['passed'] = False
+        _finalize_gate_inputs(diag)
         _emit(diag, emit)
         return diag
 
@@ -256,28 +301,27 @@ def apply_strategy_completeness_topup(
     if profile is None:
         # Unknown/unsupported domain — cannot safely synthesize domain
         # substance.  Fail closed; do NOT touch the sections.
-        diag['pillars_before'] = _count_substantive_pillars(
-            sections.get('pillars', '') or '')
-        diag['confidence_risk_rows_before'] = _count_risk_rows_with_mitigation(
-            sections.get('confidence', '') or '')
-        diag['pillars_after'] = diag['pillars_before']
-        diag['confidence_risk_rows_after'] = diag['confidence_risk_rows_before']
-        need = (diag['pillars_before'] < STRATEGY_TOPUP_MIN_PILLARS
-                or diag['confidence_risk_rows_before']
-                < STRATEGY_TOPUP_MIN_RISK_ROWS)
+        _fill_counts(sections, diag)
+        need = (
+            (diag['objectives_before'] or 0) < STRATEGY_TOPUP_MIN_OBJECTIVES
+            or (diag['pillars_before'] or 0) < STRATEGY_TOPUP_MIN_PILLARS
+            or (diag['confidence_risk_rows_before'] or 0)
+            < STRATEGY_TOPUP_MIN_RISK_ROWS)
         if need:
             diag['blocking_errors'].append(
                 'rel33_strategy_completeness_topup_failed:unsupported_domain')
             diag['passed'] = False
+        _finalize_gate_inputs(diag)
         _emit(diag, emit)
         return diag
 
     diag['domain_profile'] = profile['name']
 
+    obj_changed = _topup_objectives(sections, profile, lang, diag)
     pillars_changed = _topup_pillars(sections, profile, lang, diag)
     conf_changed = _topup_confidence_risk(sections, profile, lang, diag)
 
-    diag['topup_applied'] = bool(pillars_changed or conf_changed)
+    diag['topup_applied'] = bool(obj_changed or pillars_changed or conf_changed)
 
     # Contamination self-check on ADDED substance for non-cyber domains.
     if dcode != 'cyber' and diag['topup_applied']:
@@ -287,19 +331,46 @@ def apply_strategy_completeness_topup(
             diag['blocking_errors'].append(
                 'rel33_strategy_completeness_topup_failed:contamination')
 
+    pres = evaluate_kpi_preservation(
+        {'kpis': kpi_before}, sections, route=route, domain=dcode,
+        document_type=str(document_type or 'strategy'),
+        topup_applied=diag['topup_applied'],
+        sections_touched=list(diag['sections_touched']),
+        diag=diag, emit=emit)
+    if not pres.get('kpi_section_preserved') or not pres.get('kpi_header_preserved'):
+        diag['blocking_errors'].append(
+            'rel33_strategy_topup_kpi_preservation_failed')
+        diag['kpi_preserved'] = False
+        _restore_preserve_sections(sections, preserve_before)
+    else:
+        if not _unrelated_sections_preserved(preserve_before, sections,
+                                             diag['sections_touched']):
+            diag['blocking_errors'].append(
+                'rel33_strategy_topup_unrelated_section_mutated')
+            _restore_preserve_sections(sections, preserve_before)
+
     diag['quality_gate_minimums_met'] = (
-        (diag['pillars_after'] or 0) >= STRATEGY_TOPUP_MIN_PILLARS
+        (diag['objectives_after'] or 0) >= STRATEGY_TOPUP_MIN_OBJECTIVES
+        and (diag['pillars_after'] or 0) >= STRATEGY_TOPUP_MIN_PILLARS
         and (diag['confidence_risk_rows_after'] or 0)
         >= STRATEGY_TOPUP_MIN_RISK_ROWS
     )
+    _finalize_gate_inputs(diag)
     diag['passed'] = (
         not diag['blocking_errors'] and diag['quality_gate_minimums_met'])
+    diag['final_quality_gate_passed'] = diag['passed']
+    diag['frozen_export_lock_ready'] = bool(
+        diag['passed'] and diag.get('kpi_preserved'))
 
     # Clear stale synth_status markers for sections genuinely completed, so
     # the post-normalization audit does not block on an already-repaired
     # section.  The audit still independently re-validates the content.
     if (synth_status is not None and isinstance(synth_status, dict)
             and not diag['blocking_errors']):
+        if ('vision' in diag['sections_touched']
+                and (diag['objectives_after'] or 0)
+                >= STRATEGY_TOPUP_MIN_OBJECTIVES):
+            synth_status.pop('vision', None)
         if ('pillars' in diag['sections_touched']
                 and (diag['pillars_after'] or 0) >= STRATEGY_TOPUP_MIN_PILLARS):
             synth_status.pop('pillars', None)
@@ -317,11 +388,13 @@ def apply_strategy_completeness_topup(
 # ════════════════════════════════════════════════════════════════════════════
 
 def _resolve_domain_profile(dcode: str) -> Optional[Dict[str, Any]]:
+    objectives = _resolve_objective_catalog(dcode)
     if dcode == 'cyber':
         return {
             'name': 'cyber',
             'pillars': _CYBER_PILLARS,
             'risk_rows': _CYBER_RISK_ROWS,
+            'objectives': objectives,
         }
     if dcode in ('data', 'ai', 'dt', 'global'):
         try:
@@ -335,8 +408,181 @@ def _resolve_domain_profile(dcode: str) -> Optional[Dict[str, Any]]:
             return None
         if not pillars or not risk_rows:
             return None
-        return {'name': dcode, 'pillars': pillars, 'risk_rows': risk_rows}
+        return {
+            'name': dcode,
+            'pillars': pillars,
+            'risk_rows': risk_rows,
+            'objectives': objectives,
+        }
     return None
+
+
+def _resolve_objective_catalog(dcode: str) -> Tuple[Tuple[str, str, str, str], ...]:
+    try:
+        from release_engine_v3.rel32_registries import (
+            resolve_strategic_objective_registry,
+        )
+        raw = resolve_strategic_objective_registry(dcode) or {}
+    except Exception:  # noqa: BLE001
+        raw = {}
+    out: List[Tuple[str, str, str, str]] = []
+    for _fam, cells in raw.items():
+        if not cells or len(cells) < 4:
+            continue
+        out.append((str(cells[0]), str(cells[1]), str(cells[2]), str(cells[3])))
+    return tuple(out)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Strategic objectives top-up
+# ════════════════════════════════════════════════════════════════════════════
+
+def _topup_objectives(sections: Dict[str, Any], profile: Dict[str, Any],
+                      lang: str, diag: Dict[str, Any]) -> bool:
+    text = sections.get('vision', '') or ''
+    before = _count_valid_objective_rows(text)
+    diag['objectives_before'] = before
+    diag['objectives_after'] = before
+    target = max(STRATEGY_TOPUP_MIN_OBJECTIVES, STRATEGY_TOPUP_TARGET_OBJECTIVES)
+    if before >= target:
+        return False
+
+    catalog = profile.get('objectives') or ()
+    existing = _existing_objective_names(text)
+    to_add: List[Tuple[str, str, str, str]] = []
+    for obj, metric, just, tf in catalog:
+        if before + len(to_add) >= target:
+            break
+        if _norm_key(obj) in existing:
+            continue
+        if any(_is_placeholder(x) for x in (obj, metric, just, tf)):
+            continue
+        if not _OBJ_TF_RE.search(tf or ''):
+            continue
+        to_add.append((obj, metric, just, tf))
+
+    if before + len(to_add) < STRATEGY_TOPUP_MIN_OBJECTIVES:
+        diag['blocking_errors'].append(
+            'rel33_strategy_completeness_topup_failed:objectives')
+        return False
+
+    if _has_objective_table(text):
+        new_text = _append_objective_rows(text, to_add)
+        if new_text is None:
+            diag['blocking_errors'].append(
+                'rel33_strategy_completeness_topup_failed:objectives_insert')
+            return False
+    else:
+        new_text = _render_objectives_table(to_add, existing_text=text)
+
+    sections['vision'] = new_text
+    diag['objectives_added'] = len(to_add)
+    diag['objectives_after'] = _count_valid_objective_rows(new_text)
+    if 'vision' not in diag['sections_touched']:
+        diag['sections_touched'].append('vision')
+    return True
+
+
+def _has_objective_table(vision_text: str) -> bool:
+    if not vision_text:
+        return False
+    for ln in vision_text.split('\n'):
+        if _OBJ_HDR_RE.match(ln.strip()):
+            return True
+    return False
+
+
+def _existing_objective_names(vision_text: str) -> set:
+    names = set()
+    for cells in _iter_table_rows(vision_text, _OBJ_HDR_RE):
+        if len(cells) >= 2 and cells[0].replace('.', '').isdigit():
+            names.add(_norm_key(cells[1]))
+    return names
+
+
+def _append_objective_rows(
+        vision_text: str,
+        rows: List[Tuple[str, str, str, str]],
+) -> Optional[str]:
+    lines = vision_text.split('\n')
+    hdr_idx = -1
+    for i, ln in enumerate(lines):
+        if _OBJ_HDR_RE.match(ln.strip()):
+            hdr_idx = i
+            break
+    if hdr_idx < 0:
+        return None
+    last_data_idx = hdr_idx
+    data_count = 0
+    j = hdr_idx + 1
+    while j < len(lines):
+        s = lines[j].strip()
+        if not s:
+            k = j + 1
+            while k < len(lines) and not lines[k].strip():
+                k += 1
+            if k < len(lines) and lines[k].strip().startswith('|') \
+                    and lines[k].strip().endswith('|'):
+                j = k
+                continue
+            break
+        if not (s.startswith('|') and s.endswith('|')):
+            break
+        if _SEP_ROW_RE.match(s):
+            last_data_idx = j
+            j += 1
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if cells and cells[0].replace('.', '').isdigit():
+            data_count += 1
+        last_data_idx = j
+        j += 1
+    new_row_lines = []
+    for offset, (obj, metric, just, tf) in enumerate(rows, 1):
+        n = data_count + offset
+        new_row_lines.append(
+            f'| {n} | {obj} | {metric} | {just} | {tf} |')
+    out = lines[:last_data_idx + 1] + new_row_lines + lines[last_data_idx + 1:]
+    return '\n'.join(out)
+
+
+def _render_objectives_table(
+        rows: List[Tuple[str, str, str, str]],
+        *,
+        existing_text: str = '',
+) -> str:
+    lines = [
+        '### الأهداف الاستراتيجية',
+        '',
+        '| # | الهدف الاستراتيجي | المستهدف القابل للقياس | المبرر | الإطار الزمني |',
+        '|---|---|---|---|---|',
+    ]
+    for i, (obj, metric, just, tf) in enumerate(rows, 1):
+        lines.append(f'| {i} | {obj} | {metric} | {just} | {tf} |')
+    block = '\n'.join(lines) + '\n'
+    if (existing_text or '').strip():
+        return existing_text.rstrip() + '\n\n' + block
+    return block
+
+
+def _count_valid_objective_rows(vision_text: str) -> int:
+    """Mirror app.count_valid_objective_rows."""
+    if not vision_text:
+        return 0
+    n = 0
+    for cells in _iter_table_rows(vision_text, _OBJ_HDR_RE):
+        if len(cells) != 5:
+            continue
+        if not cells[0].replace('.', '').isdigit():
+            continue
+        if any(_is_placeholder(cells[i]) for i in (1, 2, 3)):
+            continue
+        if not _OBJ_TF_RE.search(cells[4] or ''):
+            continue
+        if _OBJ_TF_RE.search(cells[1] or ''):
+            continue
+        n += 1
+    return n
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -648,6 +894,262 @@ def _norm_key(s: Any) -> str:
     return re.sub(r'\s+', ' ', str(s or '')).strip().lower()
 
 
+def _section_hash(text: Any) -> str:
+    return hashlib.sha256(str(text or '').encode('utf-8')).hexdigest()
+
+
+def _kpi_header_cells(text: Any) -> List[str]:
+    blob = str(text or '')
+    try:
+        from release_engine_v3.rel32_kpi_main_schema_evidence import (
+            extract_kpi_main_header_labels_from_text,
+        )
+        hdr = extract_kpi_main_header_labels_from_text(blob)
+        if hdr:
+            return list(hdr)
+    except Exception:  # noqa: BLE001
+        pass
+    expected = ['#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
+                'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك']
+    for ln in blob.splitlines():
+        s = ln.strip()
+        if not (s.startswith('|') and s.endswith('|')):
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if cells[:len(expected)] == expected:
+            return cells
+        if 'وصف المؤشر' in s and '#' in cells[:1]:
+            return cells
+    return []
+
+
+def _snapshot_preserve_sections(sections: Any) -> Dict[str, str]:
+    if not isinstance(sections, dict):
+        return {}
+    snap = {}
+    for k, v in sections.items():
+        if isinstance(v, str):
+            snap[k] = v
+    return snap
+
+
+def _restore_preserve_sections(sections: Dict[str, Any],
+                               snap: Dict[str, str]) -> None:
+    for k, v in snap.items():
+        sections[k] = v
+
+
+def _unrelated_sections_preserved(
+        before: Dict[str, str], after: Dict[str, Any],
+        touched: List[str]) -> bool:
+    touched_set = set(touched or [])
+    for k, old in before.items():
+        if k in touched_set:
+            continue
+        if (after.get(k) or '') != old:
+            return False
+    return True
+
+
+def _fill_counts(sections: Dict[str, Any], diag: Dict[str, Any]) -> None:
+    diag['objectives_before'] = _count_valid_objective_rows(
+        sections.get('vision', '') or '')
+    diag['objectives_after'] = diag['objectives_before']
+    diag['pillars_before'] = _count_substantive_pillars(
+        sections.get('pillars', '') or '')
+    diag['pillars_after'] = diag['pillars_before']
+    diag['confidence_risk_rows_before'] = _count_risk_rows_with_mitigation(
+        sections.get('confidence', '') or '')
+    diag['confidence_risk_rows_after'] = diag['confidence_risk_rows_before']
+
+
+def _finalize_gate_inputs(diag: Dict[str, Any]) -> None:
+    diag['final_quality_gate_inputs'] = {
+        'objectives': diag.get('objectives_after'),
+        'objectives_minimum': STRATEGY_TOPUP_MIN_OBJECTIVES,
+        'pillars': diag.get('pillars_after'),
+        'pillars_minimum': STRATEGY_TOPUP_MIN_PILLARS,
+        'confidence_risk_rows': diag.get('confidence_risk_rows_after'),
+        'confidence_risk_minimum': STRATEGY_TOPUP_MIN_RISK_ROWS,
+    }
+    try:
+        from release_engine_v3.rel32_kpi_main_schema_evidence import (
+            evaluate_kpi_main_schema_from_export_text,
+        )
+        # Precheck is informational; KPI body is not repaired here.
+        diag['pdf_kpi_extractability_precheck_passed'] = None
+    except Exception:  # noqa: BLE001
+        diag['pdf_kpi_extractability_precheck_passed'] = None
+
+
+def evaluate_kpi_preservation(
+        before_sections: Dict[str, Any],
+        after_sections: Dict[str, Any],
+        *,
+        route: str = '',
+        domain: str = '',
+        document_type: str = 'strategy',
+        topup_applied: bool = False,
+        sections_touched: Optional[List[str]] = None,
+        diag: Optional[Dict[str, Any]] = None,
+        emit: bool = True,
+) -> Dict[str, Any]:
+    kpi_before = before_sections.get('kpis', '') or ''
+    kpi_after = after_sections.get('kpis', '') or ''
+    hdr_before = _kpi_header_cells(kpi_before)
+    hdr_after = _kpi_header_cells(kpi_after)
+    hash_before = _section_hash(kpi_before)
+    hash_after = _section_hash(kpi_after)
+    section_preserved = hash_before == hash_after and kpi_before == kpi_after
+    header_preserved = list(hdr_before) == list(hdr_after)
+    blocking: List[str] = []
+    if not section_preserved or not header_preserved:
+        blocking.append('rel33_strategy_topup_kpi_preservation_failed')
+    if diag is not None:
+        diag['kpi_preserved'] = bool(section_preserved and header_preserved)
+        try:
+            from release_engine_v3.rel32_kpi_main_schema_evidence import (
+                evaluate_kpi_main_schema_from_export_text,
+            )
+            pre = evaluate_kpi_main_schema_from_export_text(
+                kpi_after, route_name='precheck')
+            diag['pdf_kpi_extractability_precheck_passed'] = bool(
+                pre.get('kpi_main_schema_passed')) if kpi_after.strip() else True
+        except Exception:  # noqa: BLE001
+            if kpi_after.strip() and hdr_after:
+                diag['pdf_kpi_extractability_precheck_passed'] = True
+    pres = {
+        'diag': 'REL33-STRATEGY-TOPUP-PRESERVATION',
+        'route': route,
+        'domain': domain,
+        'document_type': document_type,
+        'topup_applied': topup_applied,
+        'sections_touched': list(sections_touched or []),
+        'objective_rows_before': (diag or {}).get('objectives_before'),
+        'objective_rows_after': (diag or {}).get('objectives_after'),
+        'pillars_before': (diag or {}).get('pillars_before'),
+        'pillars_after': (diag or {}).get('pillars_after'),
+        'confidence_risk_rows_before': (diag or {}).get(
+            'confidence_risk_rows_before'),
+        'confidence_risk_rows_after': (diag or {}).get(
+            'confidence_risk_rows_after'),
+        'kpi_section_hash_before': hash_before,
+        'kpi_section_hash_after': hash_after,
+        'kpi_section_preserved': section_preserved,
+        'kpi_header_before': hdr_before,
+        'kpi_header_after': hdr_after,
+        'kpi_header_preserved': header_preserved,
+        'frozen_lock_expected_refresh': bool(topup_applied),
+        'blocking_errors': blocking,
+        'passed': not blocking,
+    }
+    if emit:
+        try:
+            print('[REL33-STRATEGY-TOPUP-PRESERVATION] '
+                  f"route={pres['route']!r} domain={pres['domain']!r} "
+                  f"document_type={pres['document_type']!r} "
+                  f"applied={pres['topup_applied']} "
+                  f"touched={pres['sections_touched']} "
+                  f"obj={pres['objective_rows_before']}->"
+                  f"{pres['objective_rows_after']} "
+                  f"pillars={pres['pillars_before']}->{pres['pillars_after']} "
+                  f"risk={pres['confidence_risk_rows_before']}->"
+                  f"{pres['confidence_risk_rows_after']} "
+                  f"kpi_preserved={pres['kpi_section_preserved']} "
+                  f"kpi_header_preserved={pres['kpi_header_preserved']} "
+                  f"frozen_lock_expected_refresh="
+                  f"{pres['frozen_lock_expected_refresh']} "
+                  f"blockers={pres['blocking_errors']} "
+                  f"passed={pres['passed']}",
+                  flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return pres
+
+
+def surgical_refresh_content(
+        content: str,
+        sections_before: Dict[str, Any],
+        sections_after: Dict[str, Any],
+        touched: List[str],
+) -> str:
+    """Replace only touched section bodies in ``content``. Never rebuild all."""
+    out = content or ''
+    for key in touched or []:
+        old = sections_before.get(key) or ''
+        new = sections_after.get(key) or ''
+        if old == new:
+            continue
+        if (old or '').strip() and old in out:
+            out = out.replace(old, new, 1)
+            continue
+        if (old or '').strip() and old.rstrip() in out:
+            out = out.replace(old.rstrip(), new.rstrip(), 1)
+            continue
+        heading = _CANONICAL_H2.get(key)
+        marker = f'## {heading}' if heading else ''
+        if marker and marker in out and (new or '').strip():
+            idx = out.find(marker)
+            after = idx + len(marker)
+            rest = out[after:]
+            nxt = re.search(r'\n##\s+', rest)
+            body = ('\n\n' + new.strip() + '\n') if (new or '').strip() else '\n'
+            if nxt:
+                out = out[:after] + body + rest[nxt.start():]
+            else:
+                out = out[:after] + body
+            continue
+        if (new or '').strip():
+            suffix = (f'\n\n## {heading}\n\n{new.strip()}\n'
+                      if heading else f'\n\n{new.strip()}\n')
+            out = out.rstrip() + suffix
+    return out
+
+
+def run_strategy_topup_v2(
+        sections: Dict[str, Any],
+        *,
+        content: str = '',
+        domain: Any = '',
+        document_type: Any = 'strategy',
+        lang: str = 'ar',
+        synth_status: Optional[Dict[str, Any]] = None,
+        generation_stage: str = 'pre_completeness_gate',
+        route: str = '',
+        emit: bool = True,
+) -> Dict[str, Any]:
+    """Apply surgical top-up and refresh ``content`` without a full rebuild."""
+    before = _snapshot_preserve_sections(sections)
+    diag = apply_strategy_completeness_topup(
+        sections,
+        domain=domain,
+        document_type=document_type,
+        lang=lang,
+        synth_status=synth_status,
+        generation_stage=generation_stage,
+        route=route,
+        emit=emit,
+    )
+    fail_closed = (
+        'rel33_strategy_topup_kpi_preservation_failed' in (
+            diag.get('blocking_errors') or [])
+    )
+    new_content = content or ''
+    if diag.get('topup_applied') and not fail_closed:
+        new_content = surgical_refresh_content(
+            content, before, sections, list(diag.get('sections_touched') or []))
+    return {
+        'diag': diag,
+        'content': new_content,
+        'fail_closed': fail_closed,
+        'fail_closed_reason': (
+            'rel33_strategy_topup_kpi_preservation_failed'
+            if fail_closed else ''),
+        'frozen_lock_expected_refresh': bool(diag.get('topup_applied')
+                                             and not fail_closed),
+    }
+
+
 def _added_content_domain_clean(sections: Dict[str, Any],
                                 diag: Dict[str, Any]) -> bool:
     """Defensive: ensure no cyber-primary markers were added to a non-cyber
@@ -673,6 +1175,9 @@ def _emit(diag: Dict[str, Any], emit: bool) -> None:
         print('[REL33-STRATEGY-COMPLETENESS-TOPUP] '
               f"route={diag.get('route')!r} domain={diag.get('domain')!r} "
               f"document_type={diag.get('document_type')!r} "
+              f"objectives={diag.get('objectives_before')}->"
+              f"{diag.get('objectives_after')} "
+              f"(+{diag.get('objectives_added')}) "
               f"pillars={diag.get('pillars_before')}->{diag.get('pillars_after')} "
               f"(+{diag.get('pillars_added')}) "
               f"risk_rows={diag.get('confidence_risk_rows_before')}"
@@ -680,7 +1185,13 @@ def _emit(diag: Dict[str, Any], emit: bool) -> None:
               f"(+{diag.get('confidence_risk_rows_added')}) "
               f"touched={diag.get('sections_touched')} "
               f"applied={diag.get('topup_applied')} "
+              f"kpi_preserved={diag.get('kpi_preserved')} "
               f"minimums_met={diag.get('quality_gate_minimums_met')} "
+              f"gate_inputs={diag.get('final_quality_gate_inputs')} "
+              f"gate_passed={diag.get('final_quality_gate_passed')} "
+              f"pdf_kpi_precheck="
+              f"{diag.get('pdf_kpi_extractability_precheck_passed')} "
+              f"frozen_ready={diag.get('frozen_export_lock_ready')} "
               f"blockers={diag.get('blocking_errors')} "
               f"passed={diag.get('passed')}",
               flush=True)

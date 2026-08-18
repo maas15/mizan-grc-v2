@@ -67378,42 +67378,116 @@ The confidence score is based on a comprehensive assessment of the organization'
                             ),
                             'board_defects': [list(d) for d in _board_defects],
                         }), 422
-                if doc_subtype != 'board':
+                    if doc_subtype != 'board':
+                        # PR-REL3.3 v2: surgical strategy top-up BEFORE the
+                        # 4-row completeness gate so missing objectives can
+                        # be completed without rebuilding the whole document.
+                        if str(_document_type or '').strip().lower() == 'strategy':
+                            try:
+                                from release_engine_v3.\
+                                    rel33_strategy_completeness_topup import (
+                                        run_strategy_topup_v2)
+                                from release_engine_v3.domain_codes import (
+                                    normalize_domain_code as _stc_ndc_early)
+                                _stc_early = run_strategy_topup_v2(
+                                    sections,
+                                    content=content,
+                                    domain=domain,
+                                    document_type=_document_type,
+                                    lang=lang,
+                                    synth_status=_synth_status,
+                                    generation_stage='pre_completeness_gate',
+                                    route=(
+                                        f'{_stc_ndc_early(domain) or domain}'
+                                        f':strategy:{lang}'),
+                                    emit=True,
+                                )
+                                content = _stc_early.get('content', content)
+                                if _stc_early.get('fail_closed'):
+                                    print(
+                                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                                        'reason=rel33_strategy_topup_kpi_'
+                                        'preservation_failed',
+                                        flush=True,
+                                    )
+                                    return jsonify({
+                                        'success': False,
+                                        'strategy_id': None,
+                                        'error': (
+                                            'Strategy top-up failed closed: '
+                                            'KPI section/header must be '
+                                            'preserved.'
+                                            if lang == 'en' else
+                                            'فشل إكمال الاستراتيجية مع الحفاظ '
+                                            'على قسم مؤشرات الأداء.'
+                                        ),
+                                        'blocking_errors': [
+                                            'rel33_strategy_topup_kpi_'
+                                            'preservation_failed'],
+                                    }), 422
+                            except Exception as _stc_early_err:  # noqa: BLE001
+                                print(
+                                    '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                                    f'topup_early_skipped_error: '
+                                    f'{_stc_early_err}',
+                                    flush=True,
+                                )
+                        _stc_secs_before_cpl = {
+                            k: v for k, v in sections.items()
+                            if isinstance(v, str)
+                        }
+                        try:
+                            # Re-bind context vars here — _domain_v / _org_v /
+                            # _sector_v earlier in this function are only set
+                            # inside the `if _struct_broken:` branch so may
+                            # not be in scope at this point.
+                            _cpl_sector  = data.get('sector', 'Government')
+                            _cpl_org     = data.get('org_name',
+                                                     'The Organization')
+                            _cpl_mat     = data.get('maturity_level', 'initial')
+                            _cpl_mode    = (_generation_mode
+                                            if '_generation_mode' in dir()
+                                            else 'drafting')
+                            _completeness_flags = _enforce_technical_strategy_completeness(
+                                sections, lang, domain, fw_short,
+                                sector=_cpl_sector,
+                                org_name=_cpl_org,
+                                maturity=_cpl_mat,
+                                generation_mode=_cpl_mode,
+                                synth_status=_synth_status,
+                            )
+                            print(f'[STRATEGY-DIAG] completeness_pass '
+                                  f'flags={_completeness_flags} '
+                                  f'sector={_cpl_sector!r} '
+                                  f'org={_cpl_org!r} mode={_cpl_mode!r}',
+                                  flush=True)
+                        except Exception as _cp_e:
+                            print(f'[STRATEGY-DIAG] completeness_pass_failed: {_cp_e}',
+                                  flush=True)
+                            _completeness_flags = []
+                    # PR-REL3.3 v2: apply completeness section diffs
+                    # surgically.  Do not rebuild the whole document from a
+                    # section-order join (that dropped H2 wrappers and broke
+                    # live KPI PDF extractability / frozen export lock).
                     try:
-                        # Re-bind context vars here — _domain_v / _org_v /
-                        # _sector_v earlier in this function are only set
-                        # inside the `if _struct_broken:` branch so may
-                        # not be in scope at this point.
-                        _cpl_sector  = data.get('sector', 'Government')
-                        _cpl_org     = data.get('org_name',
-                                                 'The Organization')
-                        _cpl_mat     = data.get('maturity_level', 'initial')
-                        _cpl_mode    = (_generation_mode
-                                        if '_generation_mode' in dir()
-                                        else 'drafting')
-                        _completeness_flags = _enforce_technical_strategy_completeness(
-                            sections, lang, domain, fw_short,
-                            sector=_cpl_sector,
-                            org_name=_cpl_org,
-                            maturity=_cpl_mat,
-                            generation_mode=_cpl_mode,
-                            synth_status=_synth_status,
+                        from release_engine_v3.rel33_strategy_completeness_topup import (
+                            surgical_refresh_content as _stc_surg)
+                        _stc_cpl_touched = [
+                            k for k, v in sections.items()
+                            if isinstance(v, str)
+                            and v != (_stc_secs_before_cpl.get(k) or '')
+                        ]
+                        if _stc_cpl_touched:
+                            content = _stc_surg(
+                                content, _stc_secs_before_cpl, sections,
+                                _stc_cpl_touched)
+                    except Exception as _stc_cpl_err:  # noqa: BLE001
+                        print(
+                            '[REL33-STRATEGY-COMPLETENESS-TOPUP] '
+                            f'completeness_surgical_refresh_skipped: '
+                            f'{_stc_cpl_err}',
+                            flush=True,
                         )
-                        print(f'[STRATEGY-DIAG] completeness_pass '
-                              f'flags={_completeness_flags} '
-                              f'sector={_cpl_sector!r} '
-                              f'org={_cpl_org!r} mode={_cpl_mode!r}',
-                              flush=True)
-                    except Exception as _cp_e:
-                        print(f'[STRATEGY-DIAG] completeness_pass_failed: {_cp_e}',
-                              flush=True)
-                        _completeness_flags = []
-                    # Rebuild content from completeness-fixed sections
-                    _section_order_c = list(STRATEGY_SECTION_ORDER)
-                    _fixed_parts_c = [sections[sk] for sk in _section_order_c
-                                      if sections.get(sk) and sections[sk].strip()]
-                    if _fixed_parts_c:
-                        content = '\n\n'.join(_fixed_parts_c)
                     # Re-audit to update _quality_issues_post (so SO gate sees
                     # the refreshed sections too)
                     try:
@@ -68476,14 +68550,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                             try:
                                 from release_engine_v3.\
                                     rel33_strategy_completeness_topup import (
-                                        apply_strategy_completeness_topup)
+                                        run_strategy_topup_v2 as _stc_v2)
                                 from release_engine_v3.domain_codes import (
                                     normalize_domain_code as _stc_ndc)
                                 _stc_route = (
                                     f'{_stc_ndc(domain) or domain}'
                                     f':strategy:{lang}')
-                                _stc_diag = apply_strategy_completeness_topup(
+                                _stc_late = _stc_v2(
                                     sections,
+                                    content=content,
                                     domain=domain,
                                     document_type=_document_type,
                                     lang=lang,
@@ -68492,15 +68567,39 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     route=_stc_route,
                                     emit=True,
                                 )
-                                if _stc_diag.get('topup_applied'):
-                                    _stc_parts = [
-                                        sections[sk]
-                                        for sk in _section_order_r
-                                        if sections.get(sk)
-                                        and sections[sk].strip()
-                                    ]
-                                    if _stc_parts:
-                                        content = '\n\n'.join(_stc_parts)
+                                _stc_diag = _stc_late.get('diag') or {}
+                                content = _stc_late.get('content', content)
+                                if _stc_late.get('fail_closed'):
+                                    print(
+                                        '[STRATEGY-GATE] save_decision=BLOCKED '
+                                        'reason=rel33_strategy_topup_kpi_'
+                                        'preservation_failed',
+                                        flush=True,
+                                    )
+                                    return jsonify({
+                                        'success': False,
+                                        'strategy_id': None,
+                                        'error': (
+                                            'Strategy top-up failed closed: '
+                                            'KPI section/header must be '
+                                            'preserved.'
+                                            if lang == 'en' else
+                                            'فشل إكمال الاستراتيجية مع الحفاظ '
+                                            'على قسم مؤشرات الأداء.'
+                                        ),
+                                        'blocking_errors': [
+                                            'rel33_strategy_topup_kpi_'
+                                            'preservation_failed'],
+                                    }), 422
+                                if _stc_late.get('frozen_lock_expected_refresh'):
+                                    try:
+                                        _, _q_stc = _audit_doc_quality(
+                                            sections, doc_subtype, lang,
+                                            generation_mode=_generation_mode,
+                                        )
+                                        _quality_issues_post = list(_q_stc)
+                                    except Exception:  # noqa: BLE001
+                                        pass
                             except Exception as _stc_err:  # noqa: BLE001
                                 # Never break generation on top-up failure;
                                 # the strict gates below remain authoritative.

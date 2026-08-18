@@ -28,12 +28,18 @@ import re
 import pytest
 
 from release_engine_v3.rel33_strategy_completeness_topup import (
+    STRATEGY_TOPUP_MIN_OBJECTIVES,
     STRATEGY_TOPUP_MIN_PILLARS,
     STRATEGY_TOPUP_MIN_RISK_ROWS,
     apply_strategy_completeness_topup,
+    evaluate_kpi_preservation,
     is_strategy_completeness_topup_applicable,
+    run_strategy_topup_v2,
+    surgical_refresh_content,
     _count_risk_rows_with_mitigation,
     _count_substantive_pillars,
+    _count_valid_objective_rows,
+    _section_hash,
 )
 
 
@@ -64,6 +70,32 @@ def _confidence_with_n_risks(n, *, domain_label='dt'):
     return _CSF_BLOCK + '\n' + table + '\nدرجة الثقة: 85%\n'
 
 
+_VALID_KPI_SECTION = (
+    '## مؤشرات الأداء الرئيسية\n\n'
+    '| # | وصف المؤشر | النوع | القيمة المستهدفة | صيغة الاحتساب | مصدر | التكرار | المالك |\n'
+    '|---|---|---|---|---|---|---|---|\n'
+    '| 1 | نضج حوكمة البيانات | KPI | ≥ 90% | (المطبق ÷ الإجمالي) × 100 | سجل الحوكمة | ربع سنوي | مدير حوكمة البيانات |\n'
+    '| 2 | جودة البيانات | KPI | ≥ 95% | (السجلات المطابقة ÷ الإجمالي) × 100 | منصة الجودة | شهري | CDO |\n'
+    '| 3 | تغطية التصنيف | KPI | ≥ 85% | (الأصول المصنفة ÷ الإجمالي) × 100 | سجل الأصول | ربع سنوي | مدير البيانات |\n'
+    '| 4 | اكتمال الوصفية | KPI | ≥ 80% | (الحقول الموصوفة ÷ الإجمالي) × 100 | الكتالوج | شهري | مسؤول الوصفية |\n'
+)
+
+_FROZEN_MARKER = '<!-- mizan-rel32-frozen-lock:v1 -->\n'
+
+
+def _valid_objectives_block(n=4, label='عام'):
+    rows = []
+    for i in range(1, n + 1):
+        rows.append(
+            f'| {i} | هدف {label} رقم {i} | ≥ {80 + i}% | مبرر موضوعي رقم {i} | '
+            f'{6 + i} أشهر |')
+    return (
+        '### الأهداف الاستراتيجية\n\n'
+        '| # | الهدف الاستراتيجي | المستهدف القابل للقياس | المبرر | الإطار الزمني |\n'
+        '|---|---|---|---|---|\n'
+        + '\n'.join(rows) + '\n')
+
+
 def _valid_pillars_block():
     parts = []
     for i in range(1, 4):
@@ -79,7 +111,12 @@ def _valid_pillars_block():
 # ── 1. data: 0 pillars -> deterministic data pillar ──────────────────────────
 
 def test_data_zero_pillars_gets_data_pillar():
-    sections = {'pillars': '', 'confidence': _confidence_with_n_risks(6)}
+    sections = {
+        'pillars': '',
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _VALID_KPI_SECTION,
+        'vision': _valid_objectives_block(4, 'data'),
+    }
     diag = apply_strategy_completeness_topup(
         sections, domain='Data Management', document_type='strategy',
         lang='ar', route='data:strategy:ar', emit=False)
@@ -89,6 +126,7 @@ def test_data_zero_pillars_gets_data_pillar():
     assert diag['passed'] is True
     # data-specific substance present (NDMO/data governance)
     assert 'حوكمة البيانات' in sections['pillars']
+    assert sections['kpis'] == _VALID_KPI_SECTION
 
 
 # ── 2. dt: 5 risk rows -> topped up to >= 6 ──────────────────────────────────
@@ -258,11 +296,14 @@ def test_diagnostic_fields_present():
         lang='ar', route='data:strategy:ar', emit=False)
     for field in (
             'route', 'domain', 'document_type', 'artifact_type', 'language',
-            'generation_stage', 'pillars_before', 'pillars_after',
+            'generation_stage', 'objectives_before', 'objectives_after',
+            'objectives_added', 'pillars_before', 'pillars_after',
             'pillars_added', 'confidence_risk_rows_before',
             'confidence_risk_rows_after', 'confidence_risk_rows_added',
             'sections_touched', 'domain_profile',
             'contamination_check_passed', 'quality_gate_minimums_met',
+            'kpi_preserved', 'final_quality_gate_inputs',
+            'final_quality_gate_passed', 'frozen_export_lock_ready',
             'topup_applied', 'blocking_errors', 'passed'):
         assert field in diag
     assert diag['domain'] == 'data'
@@ -280,11 +321,19 @@ def test_diagnostic_fields_present():
 ])
 def test_output_passes_real_app_counters(domain, label):
     import app  # heavy import; validates alignment with runtime gates
-    sections = {'pillars': '', 'confidence': _confidence_with_n_risks(5)}
+    sections = {
+        'pillars': '',
+        'confidence': _confidence_with_n_risks(5),
+        'kpis': _VALID_KPI_SECTION,
+        'roadmap': 'خارطة الطريق الأصلية تبقى كما هي.',
+    }
+    kpi_before = sections['kpis']
+    roadmap_before = sections['roadmap']
     diag = apply_strategy_completeness_topup(
         sections, domain=domain, document_type='strategy', lang='ar',
         route=f'{label}:strategy:ar', emit=False)
     assert diag['passed'] is True
+    assert app.count_valid_objective_rows(sections.get('vision', '') or '') >= 4
     # Real confidence/risk counter (post-repair assertion floor is 6).
     assert app._count_risk_rows_with_mitigation(sections['confidence']) >= 6
     # Real CSF floor.
@@ -302,6 +351,8 @@ def test_output_passes_real_app_counters(domain, label):
         if app._pillar_has_substantive_initiative(pt[bs:be]):
             n_pill += 1
     assert n_pill >= STRATEGY_TOPUP_MIN_PILLARS
+    assert sections['kpis'] == kpi_before
+    assert sections['roadmap'] == roadmap_before
 
 
 # ── 13. ERM risk sections never mutated ──────────────────────────────────────
@@ -387,3 +438,196 @@ def test_topup_idempotent():
         lang='ar', emit=False)
     assert diag2['topup_applied'] is False
     assert sections == after_first
+
+
+# ── v2: objectives / KPI preservation / surgical content ─────────────────────
+
+def test_ai_less_than_four_objectives_topped_up():
+    vision = _valid_objectives_block(2, 'ai')
+    sections = {
+        'vision': vision,
+        'pillars': _valid_pillars_block(),
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _VALID_KPI_SECTION,
+    }
+    diag = apply_strategy_completeness_topup(
+        sections, domain='Artificial Intelligence', document_type='strategy',
+        lang='ar', route='ai:strategy:ar', emit=False)
+    assert diag['objectives_before'] == 2
+    assert diag['objectives_after'] >= STRATEGY_TOPUP_MIN_OBJECTIVES
+    assert diag['objectives_added'] >= 2
+    assert _count_valid_objective_rows(sections['vision']) >= 4
+    assert 'حوكمة الذكاء الاصطناعي' in sections['vision']
+    assert 'هدف ai رقم 1' in sections['vision']
+    assert sections['kpis'] == _VALID_KPI_SECTION
+    assert diag['kpi_preserved'] is True
+    assert diag['passed'] is True
+
+
+def test_data_zero_pillars_does_not_change_kpi_section():
+    sections = {
+        'vision': _valid_objectives_block(6, 'data'),
+        'pillars': '',
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _VALID_KPI_SECTION,
+        'roadmap': 'مبادرة خارطة أصلية',
+    }
+    kpi_hash = _section_hash(sections['kpis'])
+    apply_strategy_completeness_topup(
+        sections, domain='Data Management', document_type='strategy',
+        lang='ar', emit=False)
+    assert _section_hash(sections['kpis']) == kpi_hash
+    assert sections['kpis'] == _VALID_KPI_SECTION
+    assert sections['roadmap'] == 'مبادرة خارطة أصلية'
+
+
+def test_dt_five_risk_rows_does_not_change_kpi_section():
+    sections = {
+        'vision': _valid_objectives_block(6, 'dt'),
+        'pillars': _valid_pillars_block(),
+        'confidence': _confidence_with_n_risks(5),
+        'kpis': _VALID_KPI_SECTION,
+    }
+    before = sections['kpis']
+    apply_strategy_completeness_topup(
+        sections, domain='Digital Transformation', document_type='strategy',
+        lang='ar', emit=False)
+    assert sections['kpis'] is before or sections['kpis'] == before
+
+
+def test_cyber_topup_preserves_kpi_pdf_header():
+    from release_engine_v3.rel32_kpi_main_schema_evidence import (
+        extract_kpi_main_header_labels_from_text,
+        evaluate_kpi_main_schema_from_export_text,
+    )
+    sections = {
+        'vision': _valid_objectives_block(2, 'cyber'),
+        'pillars': _valid_pillars_block(),
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _VALID_KPI_SECTION,
+    }
+    hdr_before = extract_kpi_main_header_labels_from_text(sections['kpis'])
+    apply_strategy_completeness_topup(
+        sections, domain='Cyber Security', document_type='strategy',
+        lang='ar', route='cyber:strategy:ar', emit=False)
+    hdr_after = extract_kpi_main_header_labels_from_text(sections['kpis'])
+    assert hdr_before == hdr_after
+    assert hdr_after[0] == '#'
+    assert 'وصف المؤشر' in hdr_after
+    schema = evaluate_kpi_main_schema_from_export_text(
+        sections['kpis'], route_name='pdf')
+    assert schema.get('kpi_main_schema_passed') is True, schema
+
+
+def test_cyber_topup_preserves_or_refreshes_frozen_lock_metadata():
+    sections = {
+        'vision': _valid_objectives_block(2, 'cyber'),
+        'pillars': _valid_pillars_block(),
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _FROZEN_MARKER + _VALID_KPI_SECTION,
+    }
+    marker_before = sections['kpis']
+    result = run_strategy_topup_v2(
+        sections, content=marker_before,
+        domain='Cyber Security', document_type='strategy',
+        lang='ar', route='cyber:strategy:ar', emit=False)
+    assert result['diag']['passed'] is True
+    assert sections['kpis'] == marker_before
+    assert 'mizan-rel32-frozen-lock' in sections['kpis']
+    assert result['frozen_lock_expected_refresh'] is True
+    assert result['fail_closed'] is False
+    assert result['diag']['frozen_export_lock_ready'] is True
+
+
+def test_topup_preserves_unrelated_sections_byte_for_byte():
+    unrelated = {
+        'roadmap': 'نص خارطة الطريق الأصلي حرفياً.',
+        'gaps': 'نص الفجوات الأصلي حرفياً.',
+        'environment': 'نص البيئة الأصلي حرفياً.',
+        'traceability': '| إطار | ضابط |\n| ECC | 1-1 |',
+        'kpis': _VALID_KPI_SECTION,
+    }
+    sections = {
+        'vision': _valid_objectives_block(1, 'data'),
+        'pillars': '',
+        'confidence': _confidence_with_n_risks(3),
+        **unrelated,
+    }
+    snapshots = dict(unrelated)
+    apply_strategy_completeness_topup(
+        sections, domain='Data Management', document_type='strategy',
+        lang='ar', emit=False)
+    for key, expected in snapshots.items():
+        assert sections[key] == expected, key
+
+
+def test_topup_does_not_modify_valid_kpi_main_table():
+    sections = {
+        'vision': _valid_objectives_block(6, 'ai'),
+        'pillars': _valid_pillars_block(),
+        'confidence': _confidence_with_n_risks(6),
+        'kpis': _VALID_KPI_SECTION,
+    }
+    apply_strategy_completeness_topup(
+        sections, domain='Artificial Intelligence', document_type='strategy',
+        lang='ar', emit=False)
+    assert sections['kpis'] == _VALID_KPI_SECTION
+
+
+def test_preservation_diag_fail_closed_if_kpi_mutated():
+    before = {'kpis': _VALID_KPI_SECTION}
+    after = {'kpis': _VALID_KPI_SECTION.replace('وصف المؤشر', 'المؤشر')}
+    pres = evaluate_kpi_preservation(
+        before, after, route='cyber:strategy:ar', domain='cyber',
+        topup_applied=True, sections_touched=['pillars'], emit=False)
+    assert pres['passed'] is False
+    assert 'rel33_strategy_topup_kpi_preservation_failed' in pres['blocking_errors']
+    assert pres['kpi_section_preserved'] is False
+
+
+def test_surgical_refresh_does_not_rebuild_unrelated_content():
+    vision = _valid_objectives_block(1, 'ai')
+    kpis = _VALID_KPI_SECTION
+    content = (
+        f'## الرؤية والأهداف الاستراتيجية\n\n{vision}\n\n'
+        f'## مؤشرات الأداء الرئيسية\n\n{kpis}'
+    )
+    sections_before = {'vision': vision, 'kpis': kpis}
+    sections_after = {
+        'vision': vision + '\n| 2 | هدف جديد | ≥ 90% | مبرر | 12 شهراً |\n',
+        'kpis': kpis,
+    }
+    out = surgical_refresh_content(
+        content, sections_before, sections_after, ['vision'])
+    assert kpis in out
+    assert out.count('وصف المؤشر') == content.count('وصف المؤشر')
+    assert 'هدف جديد' in out
+
+
+def test_live_style_missing_objectives_pillars_confidence_pass_app_counters():
+    import app
+    sections = {
+        'vision': _valid_objectives_block(1, 'data'),
+        'pillars': '',
+        'confidence': _confidence_with_n_risks(4),
+        'kpis': _VALID_KPI_SECTION,
+    }
+    diag = apply_strategy_completeness_topup(
+        sections, domain='Data Management', document_type='strategy',
+        lang='ar', emit=False)
+    assert diag['passed'] is True
+    assert app.count_valid_objective_rows(sections['vision']) >= 4
+    assert app._count_risk_rows_with_mitigation(sections['confidence']) >= 6
+    pt = sections['pillars']
+    matches = list(app._PILLAR_HEADING_RE_GLOBAL.finditer(pt))
+    all_h3 = list(re.finditer(r'^###[^#\n][^\n]*$', pt, re.M))
+    if len(all_h3) > len(matches):
+        matches = all_h3
+    n_pill = 0
+    for i, m in enumerate(matches):
+        bs = m.end()
+        be = matches[i + 1].start() if i + 1 < len(matches) else len(pt)
+        if app._pillar_has_substantive_initiative(pt[bs:be]):
+            n_pill += 1
+    assert n_pill >= STRATEGY_TOPUP_MIN_PILLARS
+    assert sections['kpis'] == _VALID_KPI_SECTION
