@@ -544,5 +544,176 @@ class TestRel34CyberExportVisibleQuality(unittest.TestCase):
             lock)
 
 
+class TestRel34DataFrozenLockReplay(unittest.TestCase):
+    """Data frozen-lock replay must use apply_rel31's final artifact."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import json
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        tmp = tempfile.mkdtemp(prefix='test_rel34_data_lock_')
+        os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
+        os.environ.setdefault('SECRET_KEY', 'test-secret-key')
+        os.environ.setdefault(
+            'DATABASE_URL', 'sqlite:///' + os.path.join(tmp, 'test.db'))
+        os.environ.setdefault('OPENAI_API_KEY', '')
+        os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
+        if 'app' in sys.modules and hasattr(
+                sys.modules['app'], '_rel31_backend_callables'):
+            cls._app = sys.modules['app']
+        else:
+            spec = importlib.util.spec_from_file_location(
+                'app', root / 'app.py')
+            cls._app = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls._app)
+            sys.modules['app'] = cls._app
+        fixture = root / 'tests' / 'fixtures' / 'rel34_data_staging_sections.json'
+        cls._sections = json.loads(fixture.read_text(encoding='utf-8'))
+
+    @staticmethod
+    def _sha(text: object) -> str:
+        import hashlib
+        return hashlib.sha256(str(text or '').encode('utf-8')).hexdigest()
+
+    def test_visible_cleanup_does_not_mutate_internal_data_sections(self):
+        before = {
+            k: self._sha(v)
+            for k, v in self._sections.items()
+            if isinstance(v, str) and not str(k).startswith('_')
+        }
+        originals = deepcopy(self._sections)
+        for k, v in originals.items():
+            if isinstance(v, str) and not str(k).startswith('_'):
+                sanitize_visible_export_text(v, 'ar')
+        after = {
+            k: self._sha(v)
+            for k, v in originals.items()
+            if isinstance(v, str) and not str(k).startswith('_')
+        }
+        self.assertEqual(before, after)
+        self.assertFalse(any(
+            'family:' in str(v) for v in self._sections.values()))
+        self.assertEqual(
+            ensure_cyber_roadmap_coverage([], 'ar', domain='data'), [])
+        self.assertEqual(
+            ensure_cyber_gap_action_plans([], 'ar', domain='data'), [])
+
+    def test_replay_uses_final_artifact_and_lock_agrees(self):
+        from release_engine_v3.canonical_document import clear_artifact_registry
+        from release_engine_v3.orchestrator import clear_rel3_caches
+        from release_engine_v3.rel31_authority import (
+            apply_rel31_authoritative_contract,
+            clear_rel3_route_artifact_hashes,
+            rel3_export_authoritative,
+            _ROUTE_ARTIFACT_HASHES,
+        )
+        from release_engine_v3.rel32_complete_strategy_compiler import (
+            compile_complete_cyber_ar_technical_strategy,
+        )
+        from release_engine_v3.rel32_frozen_export_lock import (
+            clear_rel32_frozen_export_lock,
+            emit_rel32_frozen_artifact_export_lock,
+            sync_rel32_generation_hashes_from_final_artifact,
+        )
+
+        clear_rel3_caches()
+        clear_rel3_route_artifact_hashes()
+        clear_rel32_frozen_export_lock()
+        clear_artifact_registry()
+        backend = self._app._rel31_backend_callables()
+        flags = {'rel3': True, 'rel31': True, 'rel32': True, 'rel33': True}
+        compiled = compile_complete_cyber_ar_technical_strategy(
+            dict(self._sections),
+            request_context={
+                'lang': 'ar',
+                'domain': 'data',
+                'document_type': 'strategy',
+                'flags': flags,
+                'backend': backend,
+                'maturity_level': 'developing',
+                'roadmap_horizon_months': 18,
+            },
+        )
+        secs = dict(compiled.legacy_sections or self._sections)
+        art = {
+            'sections': secs,
+            'final_markdown': '\n\n'.join(
+                v for v in secs.values() if isinstance(v, str) and v.strip()),
+            'domain': 'data',
+            'document_type': 'strategy',
+            'strategy_id': 'rel34-data-lock',
+            'artifact_id': 'rel34-data-lock',
+            'contract_meta': {
+                'lang': 'ar',
+                'domain': 'data',
+                'document_type': 'strategy',
+            },
+        }
+        art = apply_rel31_authoritative_contract(
+            art, backend=backend, flags=flags)
+        stale = str(
+            ((_ROUTE_ARTIFACT_HASHES.get('rel34-data-lock') or {})
+             .get('generation') or {}).get('canonical_hash') or '')
+        final = str(art.get('rel3_canonical_hash') or '')
+        self.assertTrue(final)
+        stale_lock = emit_rel32_frozen_artifact_export_lock('rel34-data-lock')
+        # Extra exports without sync reproduce the staging script miss.
+        kwargs = {
+            'filename': 'data.docx',
+            'lang': 'ar',
+            'domain': 'data',
+            'selected_frameworks': [],
+            'doc_type': 'Strategy Document',
+        }
+        export_hashes = {}
+        evidences = {}
+        exports = {}
+        for route in ('preview', 'docx', 'pdf'):
+            export, evidence = rel3_export_authoritative(
+                route, art, backend=backend, flags=flags, export_kwargs=kwargs)
+            export_hashes[route] = export.canonical_hash
+            evidences[route] = evidence
+            exports[route] = export
+        unsynced = emit_rel32_frozen_artifact_export_lock('rel34-data-lock')
+        if stale and stale != final:
+            self.assertFalse(unsynced.get('export_lock_passed'), unsynced)
+        sync = sync_rel32_generation_hashes_from_final_artifact(art)
+        self.assertEqual(sync.get('artifact_source'), 'rel31_final_frozen')
+        self.assertTrue(sync.get('synced'))
+        synced = emit_rel32_frozen_artifact_export_lock('rel34-data-lock')
+        self.assertTrue(synced.get('export_lock_passed'), synced)
+        self.assertEqual(synced.get('generation_canonical_hash'), final)
+        self.assertEqual(synced.get('preview_canonical_hash'), final)
+        self.assertEqual(synced.get('docx_canonical_hash'), final)
+        self.assertEqual(synced.get('pdf_canonical_hash'), final)
+        self.assertTrue(evidences['docx'].export_return_allowed)
+        self.assertTrue(evidences['pdf'].export_return_allowed)
+        self.assertEqual(export_hashes['docx'], final)
+        self.assertFalse(visible_text_has_internal_markers(
+            sanitize_visible_export_text(str(secs.get('kpis') or ''), 'ar')))
+        from pathlib import Path
+        from release_engine_v3.rel32_kpi_main_schema_evidence import (
+            evaluate_kpi_main_schema_from_docx_bytes,
+            evaluate_kpi_main_schema_from_pdf_bytes,
+        )
+        docx_kpi = evaluate_kpi_main_schema_from_docx_bytes(
+            exports['docx'].docx_bytes or b'', route_name='docx')
+        self.assertTrue(docx_kpi.get('kpi_main_schema_passed'), docx_kpi)
+        self.assertGreaterEqual(int(docx_kpi.get('row_count') or 0), 10)
+        live_pdf = Path(
+            '/opt/cursor/artifacts/rel34_staging/data_strategy_ar/export.pdf')
+        if live_pdf.exists():
+            pdf_kpi = evaluate_kpi_main_schema_from_pdf_bytes(
+                live_pdf.read_bytes(), route_name='pdf')
+            self.assertTrue(pdf_kpi.get('kpi_main_schema_passed'), pdf_kpi)
+            self.assertGreaterEqual(int(pdf_kpi.get('row_count') or 0), 10)
+
+
 if __name__ == '__main__':
     unittest.main()
