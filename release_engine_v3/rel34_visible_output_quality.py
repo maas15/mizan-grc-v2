@@ -35,10 +35,15 @@ REL34_AR_LITERAL_FIXES: Tuple[Tuple[str, str], ...] = (
     # NBSP keeps "معدل معالجة" readable without recreating the PRCY41
     # false-positive token ``ل معالجة`` (regular space) in scanners.
     ('معدلمعالجة', 'معدل\u00a0معالجة'),
+    ('معدل معال جة', 'معدل\u00a0معالجة'),
     ('NCA DCCو', 'NCA DCC و'),
     ('NCA ECCو', 'NCA ECC و'),
     ('المتوقع المخرج', 'المخرج المتوقع'),
+    ('المرتبط الإطار', 'الإطار المرتبط'),
 )
+
+GAP_ACTION_APPENDIX_TITLE_AR = 'ملحق ج — خطط معالجة الفجوات التفصيلية'
+GAP_ACTION_APPENDIX_TITLE_EN = 'Appendix C — Detailed Gap Action Plans'
 
 KPI_SUBHEAD_GUIDES = 'أ. أدلة تقييم مؤشرات الأداء'
 KPI_SUBHEAD_MAIN = 'ب. جدول مؤشرات الأداء الرئيسية'
@@ -286,6 +291,7 @@ _TABLE_FORCE_SCHEMAS = (
     'strategic_objectives', 'pillar_initiatives',
     'gap_main', 'gap_action', 'gap_table',
     'roadmap', 'conf_factor', 'risk_register',
+    'governance', 'trace_fw_gap', 'trace_fw_init', 'traceability',
 )
 
 
@@ -320,12 +326,14 @@ def apply_rel34_arabic_cleanup(text: str, lang: str = 'ar') -> str:
     for bad, good in REL34_AR_LITERAL_FIXES:
         if bad in s:
             s = s.replace(bad, good)
+    s = re.sub(r'معدل\s+معال\s+جة', 'معدل\u00a0معالجة', s)
     s = re.sub(
         r'(NCA\s+DCC)\s*و\s*(NCA\s+ECC)',
         'NCA ECC و NCA DCC',
         s,
         flags=re.I,
     )
+    s = re.sub(r'(NCA)\s+(ECC|DCC)\s{2,}', r'\1 \2 ', s, flags=re.I)
     # Space between an English acronym and a glued Arabic و (DCCو → DCC و).
     # Do not split valid و+Arabic words such as وهيكل after CISO.
     s = re.sub(r'([A-Za-z0-9/+\-]{2,})و', r'\1 و', s)
@@ -516,6 +524,70 @@ def ensure_cyber_gap_action_plans(
     return out
 
 
+def relocate_gap_action_guides_to_appendix(
+        blocks: Optional[Dict[str, Any]],
+        lang: str = 'ar',
+) -> Dict[str, Any]:
+    """Keep the gap summary in the body; move detailed guides to Appendix C."""
+    out = dict(blocks or {})
+    gap = dict(out.get('gap_analysis') or {})
+    tables = list(gap.get('tables') or [])
+    main = [t for t in tables if t.get('schema') != 'gap_action']
+    actions = [t for t in tables if t.get('schema') == 'gap_action']
+    gap['tables'] = main
+    out['gap_analysis'] = gap
+    appx = dict(out.get('appendices') or {})
+    if actions:
+        appx['gap_action_tables'] = actions
+        appx['gap_action_title'] = (
+            GAP_ACTION_APPENDIX_TITLE_AR if lang == 'ar'
+            else GAP_ACTION_APPENDIX_TITLE_EN)
+        if not appx.get('title'):
+            appx['title'] = 'الملاحق' if lang == 'ar' else 'Appendices'
+    out['appendices'] = appx
+    return out
+
+
+def collect_gap_action_tables(
+        blocks: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Gap action guides from the body and/or Appendix C."""
+    blk = blocks or {}
+    found: List[Dict[str, Any]] = []
+    for t in ((blk.get('gap_analysis') or {}).get('tables') or []):
+        if t.get('schema') == 'gap_action':
+            found.append(t)
+    for t in ((blk.get('appendices') or {}).get('gap_action_tables') or []):
+        if t.get('schema') == 'gap_action' or t.get('rows'):
+            found.append(t)
+    return found
+
+
+def polish_traceability_split_titles(
+        split_tables: List[Dict[str, Any]],
+        lang: str = 'ar',
+) -> List[Dict[str, Any]]:
+    """Avoid repeating the same framework title on consecutive tables."""
+    out: List[Dict[str, Any]] = []
+    for st in split_tables or []:
+        nt = dict(st)
+        schema = str(nt.get('schema') or '')
+        raw = str(nt.get('title') or '').strip()
+        fw = raw.split('—')[0].split('-')[0].strip() or raw
+        if lang == 'ar':
+            if schema == 'trace_fw_gap':
+                nt['title'] = f'{fw} — الفجوات' if fw else 'الفجوات'
+            elif schema == 'trace_fw_init':
+                nt['title'] = f'{fw} — المبادرات' if fw else 'المبادرات'
+        else:
+            if schema == 'trace_fw_gap':
+                nt['title'] = f'{fw} — Gaps' if fw else 'Gaps'
+            elif schema == 'trace_fw_init':
+                nt['title'] = f'{fw} — Initiatives' if fw else 'Initiatives'
+        out.append(nt)
+    return out
+
+
 def structure_kpi_section_block(
         block: Optional[Dict[str, Any]],
         lang: str = 'ar',
@@ -584,8 +656,11 @@ def prefer_professional_tables(
     out = dict(fallbacks or {})
     if dtype in ('risk', 'risk_assessment', 'risk_register'):
         return out
-    if dtype != 'strategy' or not _is_cyber_domain(domain):
+    if dtype != 'strategy':
         return out
+    # REL34.1 — executive strategy tables for every strategy domain.
+    # Risk/ERM keeps existing card fallbacks.
+    _ = domain
     for key in _TABLE_FORCE_SCHEMAS:
         out.pop(key, None)
     return out
@@ -619,6 +694,10 @@ def count_structured_rows(model: Optional[Dict[str, Any]]) -> Dict[str, int]:
             counts['gap_action_guides'] += 1
         else:
             counts['gap_rows'] += len(t.get('rows') or [])
+    counts['gap_action_guides'] = max(
+        counts['gap_action_guides'],
+        len(collect_gap_action_tables(blocks)),
+    )
     road = blocks.get('roadmap') or {}
     for t in road.get('tables') or []:
         counts['roadmap_rows'] += len(t.get('rows') or [])
@@ -643,6 +722,36 @@ def count_structured_rows(model: Optional[Dict[str, Any]]) -> Dict[str, int]:
         if blocks.get(key):
             counts['sections_present'] += 1
     return counts
+
+
+def pdf_blank_page_before_appendices(pdf_bytes: bytes) -> bool:
+    """True when the page immediately before appendices is empty/near-empty."""
+    if not pdf_bytes:
+        return False
+    try:
+        from PyPDF2 import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages = [(p.extract_text() or '') for p in reader.pages]
+    except Exception:  # noqa: BLE001
+        return False
+    body_idx = None
+    for i, text in enumerate(pages):
+        if 'ملحق ج' in text or 'Appendix C' in text:
+            body_idx = i
+            break
+        if 'الملاحق' in text or 'Appendices' in text:
+            body_idx = i
+    if body_idx is None or body_idx == 0:
+        return False
+    prev = re.sub(
+        r'(CONFIDENTIAL|Prepared by Mizan|سرية ومعدة|Page\s+\d+|'
+        r'[\d\s|•\-–—]+)',
+        '',
+        pages[body_idx - 1] or '',
+        flags=re.I,
+    )
+    return len(prev) < 12
 
 
 def parity_counts_match(

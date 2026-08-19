@@ -14,16 +14,21 @@ from professional_strategy_render import (
 from release_engine_v3.rel34_visible_output_quality import (
     CYBER_GAP_ACTION_CATALOG,
     CYBER_ROADMAP_CATALOG,
+    GAP_ACTION_APPENDIX_TITLE_AR,
     KPI_SUBHEAD_FORMULA,
     KPI_SUBHEAD_GUIDES,
     KPI_SUBHEAD_MAIN,
     apply_rel34_arabic_cleanup,
+    collect_gap_action_tables,
     count_structured_rows,
     ensure_cyber_gap_action_plans,
     ensure_cyber_roadmap_coverage,
     kpi_section_has_required_subheads,
     parity_counts_match,
+    pdf_blank_page_before_appendices,
+    polish_traceability_split_titles,
     prefer_professional_tables,
+    relocate_gap_action_guides_to_appendix,
     sanitize_visible_export_text,
     strip_visible_internal_markers,
     structure_kpi_section_block,
@@ -148,6 +153,10 @@ class TestRel34ArabicCleanup(unittest.TestCase):
         self.assertNotIn('معدلمعالجة', out)
         self.assertNotIn('NCA DCCو', out)
         self.assertNotIn('المتوقع المخرج', out)
+        self.assertNotIn('معدل معال جة', apply_rel34_arabic_cleanup(
+            'معدل معال جة الحوادث', 'ar'))
+        self.assertNotIn('المرتبط الإطار', apply_rel34_arabic_cleanup(
+            'المرتبط الإطار', 'ar'))
         self.assertIn('معدل', out)
         self.assertIn('معالجة', out)
         self.assertIn('المخرج المتوقع', out)
@@ -186,6 +195,25 @@ class TestRel34RoadmapExpansion(unittest.TestCase):
 
     def test_catalog_covers_ten_families(self):
         self.assertEqual(len(CYBER_ROADMAP_CATALOG), 10)
+
+
+class TestRel34AppendixRelocation(unittest.TestCase):
+    def test_moves_guides_to_appendix_c(self):
+        tables = ensure_cyber_gap_action_plans([], 'ar', domain='cyber')
+        blocks = relocate_gap_action_guides_to_appendix(
+            {'gap_analysis': {'tables': [
+                {'schema': 'gap_main', 'rows': [['1', 'فجوة']]},
+                *tables,
+            ]}},
+            'ar',
+        )
+        body = (blocks['gap_analysis'].get('tables') or [])
+        self.assertEqual([t.get('schema') for t in body], ['gap_main'])
+        actions = collect_gap_action_tables(blocks)
+        self.assertEqual(len(actions), 10)
+        self.assertEqual(
+            blocks['appendices']['gap_action_title'],
+            GAP_ACTION_APPENDIX_TITLE_AR)
 
 
 class TestRel34GapActionBalance(unittest.TestCase):
@@ -243,11 +271,11 @@ class TestRel34TablePreferenceAndParity(unittest.TestCase):
         self.assertIn('kpi_main', strat)
         data = prefer_professional_tables(
             fb, document_type='strategy', domain='data')
-        self.assertEqual(data['roadmap'], 'roadmap_cards')
+        self.assertNotIn('roadmap', data)
         risk = prefer_professional_tables(fb, document_type='risk')
         self.assertEqual(risk['roadmap'], 'roadmap_cards')
 
-    def test_layout_fallback_keeps_overflow_cards_for_dense_arabic(self):
+    def test_layout_fallback_prefers_strategy_tables(self):
         model = {
             'document_type': 'strategy',
             'domain': 'cyber',
@@ -263,7 +291,8 @@ class TestRel34TablePreferenceAndParity(unittest.TestCase):
             },
         }
         fb = compute_pdf_export_layout_fallbacks(model, 'ar')
-        self.assertEqual(fb.get('roadmap'), 'roadmap_cards')
+        self.assertNotEqual(fb.get('roadmap'), 'roadmap_cards')
+        self.assertNotIn('roadmap', fb)
 
     def test_parity_helper(self):
         left = count_structured_rows({
@@ -322,10 +351,13 @@ class TestRel34EnrichmentIntegration(unittest.TestCase):
         road_blob = ' '.join(' '.join(str(c) for c in r) for r in road_rows)
         self.assertIn('NCA ECC', road_blob)
         self.assertIn('NCA DCC', road_blob)
-        gap_actions = [
-            t for t in (blocks['gap_analysis'].get('tables') or [])
-            if t.get('schema') == 'gap_action']
+        gap_actions = collect_gap_action_tables(blocks)
         self.assertGreaterEqual(len(gap_actions), 10)
+        self.assertTrue(
+            any(
+                GAP_ACTION_APPENDIX_TITLE_AR in str(
+                    (blocks.get('appendices') or {}).get('gap_action_title') or '')
+                for _ in (0,)))
         kpi = blocks['kpi_kri_framework']
         self.assertIn(KPI_SUBHEAD_GUIDES, kpi.get('paragraphs') or [])
         titles = [t.get('title') for t in kpi.get('tables') or []]
@@ -464,6 +496,8 @@ class TestRel34CyberExportVisibleQuality(unittest.TestCase):
             if 'family:' in self._pdf_text else '')
         self.assertNotIn('family:', self._docx_text)
         self.assertNotIn('family:', self._pdf_text)
+        self.assertFalse(
+            visible_text_has_internal_markers(self._pdf_text))
 
     def test_roadmap_coverage_and_frameworks(self):
         rows = (
@@ -478,12 +512,16 @@ class TestRel34CyberExportVisibleQuality(unittest.TestCase):
         self.assertNotIn('family:', visible)
 
     def test_gap_action_plans_for_ten_major_gaps(self):
-        tables = (
-            ((self._model.get('blocks') or {}).get('gap_analysis') or {})
-            .get('tables') or []
-        )
-        actions = [t for t in tables if t.get('schema') == 'gap_action']
+        blocks = self._model.get('blocks') or {}
+        actions = collect_gap_action_tables(blocks)
         self.assertGreaterEqual(len(actions), 10)
+        self.assertEqual(
+            (blocks.get('appendices') or {}).get('gap_action_title'),
+            GAP_ACTION_APPENDIX_TITLE_AR)
+        body_actions = [
+            t for t in ((blocks.get('gap_analysis') or {}).get('tables') or [])
+            if t.get('schema') == 'gap_action']
+        self.assertEqual(body_actions, [])
         for t in actions:
             self.assertGreaterEqual(len(t.get('rows') or []), 3)
             for row in t['rows']:
@@ -505,6 +543,13 @@ class TestRel34CyberExportVisibleQuality(unittest.TestCase):
                 kpi_rows = max(kpi_rows, len(table.rows) - 1)
         self.assertGreaterEqual(kpi_rows, 10)
         self.assertGreater(len(self._pdf_bytes), 1000)
+        from release_engine_v3.rel32_kpi_main_schema_evidence import (
+            evaluate_kpi_main_schema_from_pdf_bytes,
+        )
+        pdf_kpi = evaluate_kpi_main_schema_from_pdf_bytes(
+            self._pdf_bytes, route_name='pdf')
+        self.assertTrue(pdf_kpi.get('kpi_main_schema_passed'), pdf_kpi)
+        self.assertGreaterEqual(int(pdf_kpi.get('row_count') or 0), 10)
 
     def test_kpi_subheads_present_once(self):
         blob = self._docx_text
@@ -534,6 +579,55 @@ class TestRel34CyberExportVisibleQuality(unittest.TestCase):
                 'الأهداف', 'الحوكمة'):
             self.assertIn(token, self._docx_text)
         self.assertGreater(len(self._pdf_text), 200)
+
+    def test_rel34_1_objectives_are_tables_not_cards(self):
+        fb = compute_pdf_export_layout_fallbacks(self._model, 'ar')
+        self.assertNotEqual(fb.get('strategic_objectives'), 'objective_cards')
+        # Stacked label noise should not dominate the objectives block.
+        self.assertLessEqual(
+            self._docx_text.count('المستهدف القابل للقياس'), 3)
+
+    def test_rel34_1_roadmap_ten_initiatives_and_table(self):
+        rows = (
+            ((self._model.get('blocks') or {}).get('roadmap') or {})
+            .get('tables') or [{}]
+        )[0].get('rows') or []
+        self.assertGreaterEqual(len(rows), 10)
+        fb = compute_pdf_export_layout_fallbacks(self._model, 'ar')
+        self.assertNotEqual(fb.get('roadmap'), 'roadmap_cards')
+        visible = sanitize_visible_export_text(
+            ' '.join(' '.join(str(c) for c in r) for r in rows), 'ar')
+        self.assertNotIn('family:', visible)
+
+    def test_rel34_1_no_blank_page_before_appendices(self):
+        self.assertFalse(
+            pdf_blank_page_before_appendices(self._pdf_bytes),
+            'blank/near-blank page immediately before appendices')
+        self.assertIn('الملاحق', self._docx_text)
+        self.assertIn(GAP_ACTION_APPENDIX_TITLE_AR, self._docx_text)
+
+    def test_rel34_1_traceability_titles_not_duplicated(self):
+        split = (
+            ((self._model.get('blocks') or {}).get('traceability_matrix') or {})
+            .get('split_tables') or [])
+        titles = [str(t.get('title') or '') for t in split]
+        polished = polish_traceability_split_titles(
+            [{'schema': 'trace_fw_gap', 'title': 'NCA DCC'},
+             {'schema': 'trace_fw_init', 'title': 'NCA DCC'}], 'ar')
+        self.assertNotEqual(polished[0]['title'], polished[1]['title'])
+        self.assertTrue(all(titles[i] != titles[i + 1]
+                            for i in range(len(titles) - 1)) or not titles)
+
+    def test_rel34_1_governance_present(self):
+        gov = (self._model.get('blocks') or {}).get('governance_ownership') or {}
+        self.assertTrue(gov.get('rows') or 'حوكمة' in self._docx_text)
+
+    def test_rel34_1_arabic_split_word_cleanup(self):
+        blob = sanitize_visible_export_text(
+            'معدل معال جة و المرتبط الإطار', 'ar')
+        self.assertNotIn('معدل معال جة', blob)
+        self.assertNotIn('المرتبط الإطار', blob)
+        self.assertIn('الإطار المرتبط', blob)
 
     def test_frozen_export_lock_remains_true(self):
         lock = self._lock or {}

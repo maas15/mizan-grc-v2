@@ -312,6 +312,13 @@ def check_pillar_duplicate_narratives(blob: str) -> List[str]:
                 continue
             if stripped in ('—', '-', '#') or stripped.startswith('|'):
                 continue
+            # Running header/footer is not a pillar narrative.
+            if (
+                    'CONFIDENTIAL' in stripped
+                    or 'Prepared by Mizan' in stripped
+                    or 'سرية ومعدة' in stripped
+                    or stripped.startswith('Page ')):
+                continue
             norm = re.sub(r'\s+', ' ', stripped)
             if norm in seen_para:
                 dupes.append(norm[:80])
