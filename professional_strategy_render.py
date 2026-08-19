@@ -97,6 +97,10 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('Trust Zero', 'Zero Trust'),
     ('PAM/IAM', 'IAM/PAM'),
     ('فريقمن', 'فريق من'),
+    # REL34 — safe visible residues (must not create older PRCY41 tokens).
+    ('NCA DCCو', 'NCA DCC و'),
+    ('NCA ECCو', 'NCA ECC و'),
+    ('المتوقع المخرج', 'المخرج المتوقع'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -5840,6 +5844,14 @@ def enrich_professional_blocks(
     gap_tables = [
         ensure_gap_action_table_min_rows(t, lang_n) for t in gap_tables
     ]
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            ensure_cyber_gap_action_plans,
+        )
+        gap_tables = ensure_cyber_gap_action_plans(
+            gap_tables, lang_n, domain=domain_n)
+    except Exception:  # noqa: BLE001
+        pass
     blocks['gap_analysis'] = {
         **(blocks.get('gap_analysis') or {}),
         'paragraphs': _clean_paras(gaps, 2),
@@ -5861,6 +5873,20 @@ def enrich_professional_blocks(
             'rows': _rows,
             'row_meta': _meta,
         }
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            ensure_cyber_roadmap_coverage,
+        )
+        _expanded = ensure_cyber_roadmap_coverage(
+            list((road_tbl or {}).get('rows') or []),
+            lang_n, domain=domain_n)
+        if _expanded:
+            road_tbl = dict(road_tbl or {})
+            road_tbl['schema'] = 'roadmap'
+            road_tbl['header'] = road_tbl.get('header') or _road_schema
+            road_tbl['rows'] = _expanded
+    except Exception:  # noqa: BLE001
+        pass
     road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
     emit_roadmap_framework_mapping_diag(
         {'blocks': {**blocks, 'roadmap': {'tables': [road_tbl]}}},
@@ -5901,6 +5927,14 @@ def enrich_professional_blocks(
     }
     blocks = _normalize_kpi_tables_semantics(
         {'blocks': blocks}, lang_n)['blocks']
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            structure_kpi_section_block,
+        )
+        blocks['kpi_kri_framework'] = structure_kpi_section_block(
+            blocks.get('kpi_kri_framework') or {}, lang_n)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')
@@ -6721,6 +6755,13 @@ def prepare_pdf_arabic_text(text, reshaper=None, bidi_display=None,
     if not text:
         return text
     t = str(text)
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            sanitize_visible_export_text,
+        )
+        t = sanitize_visible_export_text(t, 'ar')
+    except Exception:  # noqa: BLE001
+        pass
     if reshaper is None or bidi_display is None:
         return t
     protected: Dict[str, str] = {}

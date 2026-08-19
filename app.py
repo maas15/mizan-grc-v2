@@ -14810,9 +14810,19 @@ def _prepare_final_render_text(text, lang='ar'):
     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
     try:
         from professional_strategy_render import prepare_final_render_text
-        return prepare_final_render_text(text or '', lang)
+        out = prepare_final_render_text(text or '', lang)
     except Exception:  # noqa: BLE001
-        return text or ''
+        out = text or ''
+    # REL34 — visible-export only: strip family:* and apply Arabic cleanup.
+    # In-memory validators still see internal stamps / pre-cleanup tokens.
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            sanitize_visible_export_text,
+        )
+        out = sanitize_visible_export_text(out, lang)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _strip_render_markdown_residue(text):
