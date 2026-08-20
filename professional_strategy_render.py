@@ -97,6 +97,10 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('Trust Zero', 'Zero Trust'),
     ('PAM/IAM', 'IAM/PAM'),
     ('فريقمن', 'فريق من'),
+    # REL34 — safe visible residues (must not create older PRCY41 tokens).
+    ('NCA DCCو', 'NCA DCC و'),
+    ('NCA ECCو', 'NCA ECC و'),
+    ('المتوقع المخرج', 'المخرج المتوقع'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -134,9 +138,12 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
         'max_cell_len': 120, 'render_mode': 'table',
     },
     'pillar_initiatives': {
-        'col_weights': [0.06, 0.30, 0.34, 0.30],
-        'font_size': 9, 'header_font_size': 9, 'padding': 6,
-        'max_cell_len': 100, 'render_mode': 'table',
+        # 4-col: المبادرة | الوصف | المخرج المتوقع | المسؤول
+        # (not a leading '#' column — 6% was collapsing the initiative cell).
+        'col_weights': [0.24, 0.28, 0.28, 0.20],
+        'font_size': 8, 'header_font_size': 8, 'padding': 5,
+        'max_cell_len': 120, 'render_mode': 'table',
+        'nowrap_headers': True,
     },
     'gap_main': {
         'col_weights': [0.05, 0.22, 0.38, 0.15, 0.20],
@@ -156,11 +163,12 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     'kpi_main': {
         # REL3.3 — denser safe table layout (never cards): smaller font/padding,
         # wider formula/source wrap budget so forced table lock produces bytes.
-        'col_weights': [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17],
-        'font_size': 7, 'header_font_size': 8, 'padding': 4,
+        'col_weights': [0.06, 0.16, 0.07, 0.14, 0.20, 0.13, 0.08, 0.16],
+        'font_size': 7, 'header_font_size': 7, 'padding': 3,
         'max_cell_len': 96, 'render_mode': 'table',
         'allow_page_break_inside': True,
         'wrap_columns': (4, 5),  # formula, source
+        'nowrap_headers': True,
     },
     'kpi_formula': {
         'col_weights': [0.06, 0.28, 0.36, 0.30],
@@ -170,8 +178,9 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
         'wrap_columns': (2, 3),
     },
     'conf_factor': {
-        'render_mode': 'cards', 'font_size': 9, 'padding': 6,
-        'max_cell_len': 48,
+        'col_weights': [0.34, 0.14, 0.22, 0.30],
+        'font_size': 8, 'header_font_size': 8, 'padding': 4,
+        'max_cell_len': 64, 'render_mode': 'cards',
     },
     'risk_register': {
         'col_weights': [0.05, 0.24, 0.14, 0.12, 0.28, 0.17],
@@ -665,9 +674,9 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
     if schema == 'pillar_initiatives' and ncols == 5:
-        return [0.05, 0.22, 0.28, 0.25, 0.20]
+        return [0.20, 0.24, 0.24, 0.16, 0.16]
     if schema == 'pillar_initiatives' and ncols == 4:
-        return [0.06, 0.30, 0.34, 0.30]
+        return [0.24, 0.28, 0.28, 0.20]
     if ncols == 5:
         return [0.06, 0.28, 0.22, 0.22, 0.22]
     if ncols == 6:
@@ -1472,6 +1481,26 @@ def compute_pdf_export_layout_fallbacks(
         blocks = (model or {}).get('blocks') or {}
         if _model_has_table_rows(blocks, 'roadmap', 'roadmap'):
             merged['roadmap'] = 'roadmap_cards'
+    # REL34.1 — last-mile: prefer executive tables for strategy PDFs.
+    # Risk/ERM keeps the card fallbacks above.
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            prefer_professional_tables,
+        )
+        merged = prefer_professional_tables(
+            merged,
+            document_type=str((model or {}).get('document_type') or 'strategy'),
+            domain=str((model or {}).get('domain') or ''),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    if _rel33_force_canonical_kpi_table_in_pdf(model):
+        for _ks in ('kpi_main', 'kpi_formula', 'kpi_summary', 'kpi_details'):
+            if _kpi_table_has_canonical_schema(model, _ks):
+                merged.pop(_ks, None)
+                canon = _canonical_stack_schema(_ks)
+                if canon:
+                    merged.pop(canon, None)
     return merged
 
 
@@ -1554,7 +1583,8 @@ def pdf_objectives_readable_layout_applied(
     if not has_obj:
         return True
     fb = compute_pdf_export_layout_fallbacks(model, lang)
-    return fb.get('strategic_objectives') == 'objective_cards'
+    # REL34.1 — a real table is the preferred executive layout.
+    return fb.get('strategic_objectives') in (None, '', 'objective_cards')
 
 
 def pdf_pillars_no_duplicate_initiative_rendering(
@@ -1568,7 +1598,7 @@ def pdf_pillars_no_duplicate_initiative_rendering(
         return True
     fb = compute_pdf_export_layout_fallbacks(model, lang)
     return fb.get('pillar_initiatives') in (
-        'pillar_initiative_cards', 'compact_3col')
+        None, '', 'pillar_initiative_cards', 'compact_3col')
 
 
 def pdf_arabic_spacing_final_cleanup_passed(
@@ -1586,10 +1616,16 @@ def pdf_dense_table_polish_passed(
         return True
     fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     warnings = collect_vertical_stack_warnings(model)
-    remaining = [
-        w for w in warnings
-        if w.get('schema') in PRCY62_POLISH_SCHEMAS
-        and not _stack_fallback_for_schema(w.get('schema', ''), fallbacks)]
+    remaining = []
+    for w in warnings:
+        schema = w.get('schema', '')
+        if schema not in PRCY62_POLISH_SCHEMAS:
+            continue
+        if _stack_fallback_for_schema(schema, fallbacks):
+            continue
+        if _rel34_preferred_table_resolves(model, schema):
+            continue
+        remaining.append(w)
     return len(remaining) == 0
 
 
@@ -1727,6 +1763,26 @@ def _apply_prcy87_executive_ar_pdf_layout(
     return out
 
 
+def _rel34_preferred_table_resolves(
+        model: Optional[Dict[str, Any]], schema: str) -> bool:
+    """REL34.1 — strategy PDFs may keep a real table instead of cards."""
+    dtype = str((model or {}).get('document_type') or 'strategy').lower()
+    if dtype in ('risk', 'risk_assessment', 'risk_register'):
+        return False
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            prefer_professional_tables,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    probe = prefer_professional_tables(
+        {schema: 'cards'},
+        document_type=dtype,
+        domain=str((model or {}).get('domain') or ''),
+    )
+    return schema not in probe
+
+
 def evaluate_vertical_stack_gate(
         model: Optional[Dict[str, Any]],
         fallbacks: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -1745,6 +1801,9 @@ def evaluate_vertical_stack_gate(
         fb = _stack_fallback_for_schema(schema, fallbacks or {})
         if fb:
             w['action_taken'] = f'fallback:{fb}'
+            continue
+        if _rel34_preferred_table_resolves(model, schema):
+            w['action_taken'] = 'rel34_professional_table'
     remaining = [
         w for w in all_warnings
         if not w.get('action_taken')]
@@ -2854,6 +2913,10 @@ def _finalize_professional_blocks(
             blk['entries'] = [
                 (str(a), prepare_final_render_text(str(b), lang))
                 for a, b in (blk.get('entries') or [])]
+        if kind == 'appendices' and blk.get('gap_action_tables'):
+            blk['gap_action_tables'] = [
+                _sanitize_table_spec(t, lang) or t
+                for t in (blk.get('gap_action_tables') or [])]
         if kind == 'scope_frameworks' and blk.get('frameworks'):
             blk['frameworks'] = [
                 {**fw,
@@ -2950,7 +3013,8 @@ def get_professional_export_section_keys(
             present.append(kind)
         elif kind == 'strategic_pillars' and blk.get('pillar_blocks'):
             present.append(kind)
-        elif kind == 'appendices' and blk.get('entries'):
+        elif kind == 'appendices' and (
+                blk.get('entries') or blk.get('gap_action_tables')):
             present.append(kind)
         elif kind == 'governance_ownership' and blk.get('rows'):
             present.append(kind)
@@ -5744,6 +5808,10 @@ def enrich_professional_blocks(
     # downstream consumer (roadmap/KPI table builders, exporters, guards)
     # sees the same domain instead of re-deriving (and defaulting) it.
     model['domain'] = domain_n
+    model['document_type'] = str(
+        model.get('document_type')
+        or (metadata or {}).get('document_type')
+        or 'strategy')
     try:
         from release_engine_v3.domain_codes import normalize_domain_code
         from release_engine_v3.rel33_domain_guard import (
@@ -5840,11 +5908,26 @@ def enrich_professional_blocks(
     gap_tables = [
         ensure_gap_action_table_min_rows(t, lang_n) for t in gap_tables
     ]
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            ensure_cyber_gap_action_plans,
+        )
+        gap_tables = ensure_cyber_gap_action_plans(
+            gap_tables, lang_n, domain=domain_n)
+    except Exception:  # noqa: BLE001
+        pass
     blocks['gap_analysis'] = {
         **(blocks.get('gap_analysis') or {}),
         'paragraphs': _clean_paras(gaps, 2),
         'tables': gap_tables,
     }
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            relocate_gap_action_guides_to_appendix,
+        )
+        blocks = relocate_gap_action_guides_to_appendix(blocks, lang_n)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Roadmap — mandatory structured table (header-aware + phase coverage).
     road = _sec('roadmap')
@@ -5861,6 +5944,20 @@ def enrich_professional_blocks(
             'rows': _rows,
             'row_meta': _meta,
         }
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            ensure_cyber_roadmap_coverage,
+        )
+        _expanded = ensure_cyber_roadmap_coverage(
+            list((road_tbl or {}).get('rows') or []),
+            lang_n, domain=domain_n)
+        if _expanded:
+            road_tbl = dict(road_tbl or {})
+            road_tbl['schema'] = 'roadmap'
+            road_tbl['header'] = road_tbl.get('header') or _road_schema
+            road_tbl['rows'] = _expanded
+    except Exception:  # noqa: BLE001
+        pass
     road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
     emit_roadmap_framework_mapping_diag(
         {'blocks': {**blocks, 'roadmap': {'tables': [road_tbl]}}},
@@ -5901,6 +5998,14 @@ def enrich_professional_blocks(
     }
     blocks = _normalize_kpi_tables_semantics(
         {'blocks': blocks}, lang_n)['blocks']
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            structure_kpi_section_block,
+        )
+        blocks['kpi_kri_framework'] = structure_kpi_section_block(
+            blocks.get('kpi_kri_framework') or {}, lang_n)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')
@@ -5965,6 +6070,14 @@ def enrich_professional_blocks(
                 'header': list(SCHEMA_TRACE_FW_INIT_AR),
                 'rows': fw_init,
             })
+        try:
+            from release_engine_v3.rel34_visible_output_quality import (
+                polish_traceability_split_titles,
+            )
+            split_tables = polish_traceability_split_titles(
+                split_tables, lang_n)
+        except Exception:  # noqa: BLE001
+            pass
         blocks['traceability_matrix'] = {
             **trace,
             'split_tables': split_tables,
@@ -6166,12 +6279,9 @@ def governance_pdf_split_valid(blocks: Dict[str, Any]) -> bool:
 
 def pdf_confidence_factor_layout_valid(
         conf_factor_tbl: List[Dict[str, Any]]) -> bool:
-    """PR-CY53 — confidence factors use card layout; labels intact."""
+    """PR-CY53 — confidence factor labels stay intact (cards or table)."""
     if not conf_factor_tbl:
         return True
-    prof = get_pdf_table_layout_profile('conf_factor', 4)
-    if prof.get('render_mode') != 'cards':
-        return False
     return confidence_factor_labels_intact(conf_factor_tbl)
 
 
@@ -6236,14 +6346,22 @@ def prcy47_docmodel_professional_checks(
     environment_table_clean = _no_pipe('environment_context')
 
     gap_tables = (blocks.get('gap_analysis') or {}).get('tables') or []
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            collect_gap_action_tables,
+        )
+        _gap_actions = collect_gap_action_tables(blocks)
+    except Exception:  # noqa: BLE001
+        _gap_actions = [
+            t for t in gap_tables if t.get('schema') == 'gap_action']
     gap_guides_clean = (
         _no_pipe('gap_analysis')
         and not any('طوة الخ' in str(c)
-                    for t in gap_tables for r in (t.get('rows') or [])
+                    for t in _gap_actions for r in (t.get('rows') or [])
                     for c in r)
         and all(
             len(t.get('rows') or []) >= GAP_ACTION_GUIDE_MIN_ROWS
-            for t in gap_tables if t.get('schema') == 'gap_action'))
+            for t in _gap_actions))
 
     road_tbls = (blocks.get('roadmap') or {}).get('tables') or []
     road_rows = (road_tbls[0].get('rows') if road_tbls else []) or []
@@ -6292,8 +6410,8 @@ def prcy47_docmodel_professional_checks(
     arabic_spacing_final_passed = arabic_concat_remaining == 0
     gap_guide_headers_clean = all(
         (tbl.get('header') or [''])[0] == 'الخطوة'
-        for tbl in gap_tables if tbl.get('schema') == 'gap_action'
-    ) if any(t.get('schema') == 'gap_action' for t in gap_tables) else True
+        for tbl in _gap_actions
+    ) if _gap_actions else True
     roadmap_rows_meaningful = bool(road_rows) and not any(
         _is_dash_heavy_row(r) for r in road_rows)
     conf_factor_tbl = [t for t in (blocks.get('confidence_risk_register') or {})
@@ -6317,7 +6435,7 @@ def prcy47_docmodel_professional_checks(
         if kind == 'traceability_matrix':
             return bool(blk.get('split_tables') or blk.get('rows'))
         if kind == 'appendices':
-            return bool(blk.get('entries'))
+            return bool(blk.get('entries') or blk.get('gap_action_tables'))
         return False
 
     pdf_docx_section_parity = all(
@@ -6334,7 +6452,7 @@ def prcy47_docmodel_professional_checks(
         gap_guide_headers_clean
         and not any(
             str(c).strip() in ('طوة', 'الخ') or 'طوة الخ' in str(c)
-            for t in gap_tables if t.get('schema') == 'gap_action'
+            for t in _gap_actions
             for r in (t.get('rows') or []) for c in r))
     final_table_cell_arabic_cleanup_passed = not any(
         bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
@@ -6356,7 +6474,8 @@ def prcy47_docmodel_professional_checks(
         pdf_docx_section_parity and docx_professional_sections_present)
 
     # PR-CY52 — PDF table-cell rendering gates.
-    pdf_gap_headers_clean_val = pdf_gap_headers_clean(gap_tables)
+    pdf_gap_headers_clean_val = pdf_gap_headers_clean(
+        list(gap_tables) + list(_gap_actions))
     pdf_confidence_factor_labels_intact = confidence_factor_labels_intact(
         conf_factor_tbl)
     pdf_roadmap_cell_density_valid = roadmap_cell_density_valid(road_rows)
@@ -6721,6 +6840,13 @@ def prepare_pdf_arabic_text(text, reshaper=None, bidi_display=None,
     if not text:
         return text
     t = str(text)
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            sanitize_visible_export_text,
+        )
+        t = sanitize_visible_export_text(t, 'ar')
+    except Exception:  # noqa: BLE001
+        pass
     if reshaper is None or bidi_display is None:
         return t
     protected: Dict[str, str] = {}

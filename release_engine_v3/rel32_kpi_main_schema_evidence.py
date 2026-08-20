@@ -199,11 +199,18 @@ def _kpi_table_looks_like_main(rows: List[List[str]]) -> bool:
     if not rows:
         return False
     blob = ' '.join(' '.join(r) for r in rows[:4])
-    tokens = (
+    ascii_tokens = (
         'KPI', 'KRI', 'SOC', 'SIEM', 'CISO', 'CDO', 'DPO', 'CSIRT',
-        'مدير', 'مؤشر', 'مالك', 'مصدر', 'التكرار',
     )
-    return any(t in blob for t in tokens)
+    if any(t.lower() in blob.lower() for t in ascii_tokens):
+        return True
+    try:
+        from release_engine_v3.rel33_pdf_evidence_norm import arabic_token_present
+    except Exception:  # noqa: BLE001
+        return any(t in blob for t in ('مدير', 'مؤشر', 'مالك', 'مصدر', 'التكرار'))
+    return any(
+        arabic_token_present(blob, t)
+        for t in ('مدير', 'مؤشر', 'مالك', 'مصدر', 'التكرار'))
 
 
 def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
@@ -257,8 +264,11 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
                 if hdr_norm[:len(expected)] == expected_norm:
                     header_idx = i
                     break
+                first = (cells[0] or '').replace('\x00', '').strip()
                 if arabic_token_present(
-                        ' '.join(cells), 'وصف المؤشر') and '#' in cells[0]:
+                        ' '.join(cells), 'وصف المؤشر') and (
+                            '#' in first or first in ('', '#')
+                            or (cells[0] or '').startswith('#')):
                     header_idx = i
                     break
             data_rows: List[List[str]] = []

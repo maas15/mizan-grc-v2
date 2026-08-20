@@ -447,6 +447,7 @@ def _local_hash_lock(
         from release_engine_v3.rel32_frozen_export_lock import (
             clear_rel32_frozen_export_lock,
             emit_rel32_frozen_artifact_export_lock,
+            sync_rel32_generation_hashes_from_final_artifact,
         )
         from release_engine_v3.rel32_kpi_main_schema_evidence import (
             evaluate_kpi_main_schema_from_export_text,
@@ -493,6 +494,7 @@ def _local_hash_lock(
                     v for v in sections.values() if isinstance(v, str) and v.strip())
                 art['final_markdown'] = content
         art = apply_rel31_authoritative_contract(art, backend=backend, flags=flags)
+        sync = sync_rel32_generation_hashes_from_final_artifact(art)
         contract = art.get('rel31_generation_contract') or {}
         kwargs = {
             'filename': f"{case['domain']}.docx",
@@ -511,6 +513,13 @@ def _local_hash_lock(
         lock = emit_rel32_frozen_artifact_export_lock(strategy_id)
         canon = {r: routes[r].canonical_hash for r in routes}
         tree = {r: routes[r].render_tree_hash for r in routes}
+        final_canon = str(sync.get('canonical_hash') or '')
+        hashes_match = bool(
+            final_canon
+            and final_canon == str(lock.get('generation_canonical_hash') or '')
+            and final_canon == str(lock.get('preview_canonical_hash') or '')
+            and final_canon == str(lock.get('docx_canonical_hash') or '')
+            and final_canon == str(lock.get('pdf_canonical_hash') or ''))
         kpi_diag: Dict[str, Any] = {}
         if case['document_type'] == 'strategy':
             kpi_text = (sections or {}).get('kpis') or content
@@ -552,6 +561,9 @@ def _local_hash_lock(
                 r: list(evidences[r].blocking_errors or []) for r in routes},
             'export_lock_passed': bool(lock.get('export_lock_passed')),
             'rel32_frozen_lock': lock,
+            'artifact_source': sync.get('artifact_source'),
+            'replay_export_lock_passed': bool(lock.get('export_lock_passed')),
+            'hashes_match': hashes_match,
             'kpi_main_schema': kpi_diag,
             'preview_dom_binding_passed': preview_dom_passed,
             'legacy_path_used': legacy,
@@ -583,6 +595,10 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         'kpi_owner_consistency_passed': None,
         'frozen_export_lock_passed': False,
         'frozen_lock_passed': False,
+        'app_export_lock_passed': None,
+        'replay_export_lock_passed': None,
+        'artifact_source': '',
+        'hashes_match': None,
         'canonical_hash_equal': False,
         'render_tree_hash_equal': False,
         'legacy_path_used': True,
@@ -667,6 +683,10 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         script_blockers.append('local_replay_save_mismatch_live_saved')
     row['frozen_export_lock_passed'] = bool(lock.get('export_lock_passed'))
     row['frozen_lock_passed'] = row['frozen_export_lock_passed']
+    row['replay_export_lock_passed'] = bool(lock.get('replay_export_lock_passed'))
+    row['artifact_source'] = str(lock.get('artifact_source') or '')
+    row['hashes_match'] = lock.get('hashes_match')
+    row['rel32_frozen_lock'] = lock.get('rel32_frozen_lock')
     row['canonical_hash_equal'] = bool(lock.get('canonical_hash_equal'))
     row['render_tree_hash_equal'] = bool(lock.get('render_tree_hash_equal'))
     row['legacy_path_used'] = bool(lock.get('legacy_path_used'))
@@ -698,6 +718,9 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         return row
     row['docx_export_return_allowed'] = bool(docx.get('export_return_allowed'))
     row['pdf_export_return_allowed'] = bool(pdf.get('export_return_allowed'))
+    row['app_export_lock_passed'] = (
+        row['docx_export_return_allowed']
+        and row['pdf_export_return_allowed'])
     if not row['docx_export_return_allowed']:
         app_blockers.extend(docx.get('blocking_errors') or [
             'docx_export_return_allowed=false'])

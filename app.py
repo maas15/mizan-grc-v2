@@ -14810,9 +14810,19 @@ def _prepare_final_render_text(text, lang='ar'):
     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
     try:
         from professional_strategy_render import prepare_final_render_text
-        return prepare_final_render_text(text or '', lang)
+        out = prepare_final_render_text(text or '', lang)
     except Exception:  # noqa: BLE001
-        return text or ''
+        out = text or ''
+    # REL34 — visible-export only: strip family:* and apply Arabic cleanup.
+    # In-memory validators still see internal stamps / pre-cleanup tokens.
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            sanitize_visible_export_text,
+        )
+        out = sanitize_visible_export_text(out, lang)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _strip_render_markdown_residue(text):
@@ -81294,6 +81304,14 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     _docx_pro_paragraph(f'{_lbl}: {_body}')
                 else:
                     _docx_pro_label_paragraph(_lbl, _body)
+            if blk.get('gap_action_tables'):
+                _g_title = blk.get('gap_action_title') or ''
+                if _g_title:
+                    _docx_pro_heading(_g_title)
+                for _gt in (blk.get('gap_action_tables') or []):
+                    if _gt.get('title'):
+                        _docx_pro_heading(_gt['title'])
+                    _docx_pro_grid_table(_gt.get('header'), _gt.get('rows'))
             return
         # Default body sections: vision, environment, gaps, roadmap, kpis, confidence
         if blk.get('title'):
@@ -84162,7 +84180,15 @@ def api_generate_pdf():
                 return ''
             _lang = 'ar' if is_arabic else 'en'
             t = _prepare_final_render_text(str(t), _lang)
+            # NBSP is used in-model to avoid PRCY41 false positives;
+            # emit a real space in the PDF so extractors keep word pairs.
+            t = str(t).replace('\u00a0', ' ')
             if is_arabic:
+                # Keep ASCII-only tokens (KPI "#", MFA, etc.) out of
+                # Arabic reshape so returned-PDF extractors still see
+                # the canonical characters.
+                if str(t).isascii():
+                    return str(t)
                 size = 15 if sty == 'title' else (9 if sty == 'label' else 10)
                 font = arabic_font_bold if sty in ('title', 'label') else arabic_font_name
                 try:
@@ -84583,8 +84609,18 @@ def api_generate_pdf():
             if split_tbls:
                 for st in split_tbls:
                     if st.get('title'):
-                        flow.append(Paragraph(
-                            _pro_text(st['title'], 'label'), _pro_label_sty))
+                        _tt = str(st['title'])
+                        if '—' in _tt:
+                            _left, _right = _tt.split('—', 1)
+                            if _left.strip().isascii():
+                                _shown = (
+                                    f"{_left.strip()} — "
+                                    f"{_pro_text(_right.strip(), 'label')}")
+                            else:
+                                _shown = _pro_text(_tt, 'label')
+                        else:
+                            _shown = _pro_text(_tt, 'label')
+                        flow.append(Paragraph(_shown, _pro_label_sty))
                     ncols = len(st.get('header') or [])
                     weights = (
                         [0.22, 0.38, 0.40] if ncols == 3
@@ -84734,7 +84770,9 @@ def api_generate_pdf():
             return flow
 
         def _pro_render_appendices(block):
-            flow = list(_pro_section_heading(block.get('title', '')))
+            from reportlab.platypus import KeepTogether
+            head = list(_pro_section_heading(block.get('title', '')))
+            flow = []
             for label, body in (block.get('entries') or []):
                 if label.startswith('•'):
                     flow.append(Paragraph(
@@ -84746,7 +84784,30 @@ def api_generate_pdf():
                     if body:
                         flow.append(Paragraph(_pro_text(body, 'body'), _pro_body_sty))
                     flow.append(Spacer(1, 0.05 * inch))
-            return flow
+            _gap_title = block.get('gap_action_title') or ''
+            _gap_tbls = block.get('gap_action_tables') or []
+            if _gap_tbls:
+                if _gap_title:
+                    flow.append(Spacer(1, 0.12 * inch))
+                    flow.append(Paragraph(
+                        f"<b>{_pro_text(_gap_title, 'label')}</b>",
+                        _pro_label_sty))
+                    flow.append(Spacer(1, 0.08 * inch))
+                for _gt in _gap_tbls:
+                    if _gt.get('title'):
+                        flow.append(Paragraph(
+                            _pro_text(_gt['title'], 'label'),
+                            _pro_label_sty))
+                        flow.append(Spacer(1, 0.06 * inch))
+                    for fl in _pro_render_table_adaptive(
+                            _gt, _strategy_doc_model or {},
+                            tracker=_p41_pdf_tracker):
+                        flow.append(fl)
+                    flow.append(Spacer(1, 0.08 * inch))
+            if flow:
+                keep_n = min(4, len(flow))
+                return [KeepTogether(head + flow[:keep_n])] + flow[keep_n:]
+            return head
 
         # ── PR-CY41 — Professional schema table renderer ─────────────────
         def _pro_render_schema_table(table_spec, col_weights=None,
@@ -84770,8 +84831,11 @@ def api_generate_pdf():
                 prof = {}
             if tracker is not None and schema:
                 tracker.layout_profiles_applied.append(schema)
+            # REL34.1 — card profiles still render as a real table when
+            # the adaptive dispatcher already chose the table path.
             if prof.get('render_mode') == 'cards':
-                return []
+                prof = dict(prof)
+                prof['render_mode'] = 'table'
             if not col_weights:
                 col_weights = prof.get('col_weights')
             if not col_weights:
@@ -84798,13 +84862,28 @@ def api_generate_pdf():
             pad = prof.get('padding', 5)
             _val_sty = ParagraphStyle(
                 'ProTblVal', parent=_pro_value_sty, fontSize=fs, leading=fs + 3)
+            _ascii_val_sty = ParagraphStyle(
+                'ProTblValAscii', parent=_val_sty, fontName='Helvetica')
             _hdr_sty = ParagraphStyle(
                 'ProTblHdr', parent=_pro_label_sty, fontSize=hfs,
                 leading=hfs + 3)
-            tbl_rows = [[
-                Paragraph(f"<b>{_pro_text(h, 'label')}</b>", _hdr_sty)
-                for h in hdr
-            ]]
+            _nowrap = bool(prof.get('nowrap_headers'))
+            _ascii_hdr_sty = ParagraphStyle(
+                'ProTblHdrAscii', parent=_hdr_sty,
+                fontName='Helvetica-Bold', alignment=1)
+            _hdr_cells = []
+            for h in hdr:
+                label = str(h or '')
+                if _nowrap:
+                    label = label.replace(' ', '\u00a0')
+                if label.isascii():
+                    _hdr_cells.append(
+                        Paragraph(f"<b>{label}</b>", _ascii_hdr_sty))
+                else:
+                    _hdr_cells.append(
+                        Paragraph(
+                            f"<b>{_pro_text(label, 'label')}</b>", _hdr_sty))
+            tbl_rows = [_hdr_cells]
             for r in rows:
                 cells = list(r) + [''] * (ncols - len(r))
                 row_cells = []
@@ -84812,8 +84891,11 @@ def api_generate_pdf():
                     txt = str(c)
                     if prof:
                         txt = _truncate_cell_for_profile(txt, prof)
-                    row_cells.append(
-                        Paragraph(_pro_text(txt, 'value'), _val_sty))
+                    if str(txt).isascii():
+                        row_cells.append(Paragraph(str(txt), _ascii_val_sty))
+                    else:
+                        row_cells.append(
+                            Paragraph(_pro_text(txt, 'value'), _val_sty))
                 tbl_rows.append(row_cells)
             tbl = Table(
                 tbl_rows, colWidths=col_widths,
@@ -85375,9 +85457,10 @@ def api_generate_pdf():
                             story.append(Paragraph(
                                 _pro_text(pt, 'label'), _pro_label_sty))
                         _paras = pb.get('paragraphs') or []
-                        if (pb.get('table')
-                                and _pillar_fb == 'pillar_initiative_cards'):
-                            _paras = _paras[:1]
+                        # REL34.1 — when a pillar table is present, skip
+                        # prose that would duplicate initiative cells.
+                        if pb.get('table'):
+                            _paras = []
                         for para in _paras:
                             story.append(Paragraph(
                                 _pro_text(para, 'body'), _pro_body_sty))
@@ -85398,15 +85481,18 @@ def api_generate_pdf():
                         if para and str(para).strip():
                             story.append(Paragraph(
                                 _pro_text(para, 'body'), _pro_body_sty))
+                            story.append(Spacer(1, 0.08 * inch))
                     for tbl in (blk.get('tables') or []):
                         if tbl.get('title'):
                             story.append(Paragraph(
                                 _pro_text(tbl['title'], 'label'),
                                 _pro_label_sty))
+                            story.append(Spacer(1, 0.10 * inch))
                         tracker.kpi_tables_rendered += 1
                         for fl in _pro_render_table_adaptive(
                                 tbl, model, tracker=tracker):
                             story.append(fl)
+                        story.append(Spacer(1, 0.12 * inch))
                 else:
                     for para in (blk.get('paragraphs') or []):
                         if para and str(para).strip():
@@ -85417,7 +85503,12 @@ def api_generate_pdf():
                             story.append(Paragraph(
                                 _pro_text(tbl['title'], 'label'),
                                 _pro_label_sty))
-                        if tbl.get('schema') == 'conf_factor':
+                            story.append(Spacer(1, 0.08 * inch))
+                        _conf_fb = (
+                            model.get('_pdf_stack_fallbacks') or {}
+                        ).get(tbl.get('schema'))
+                        if (tbl.get('schema') == 'conf_factor'
+                                and _conf_fb == 'cards'):
                             for fl in _pro_render_conf_factor_cards(
                                     tbl, tracker=tracker):
                                 story.append(fl)
@@ -85425,7 +85516,11 @@ def api_generate_pdf():
                             for fl in _pro_render_table_adaptive(
                                     tbl, model, tracker=tracker):
                                 story.append(fl)
-                story.append(PageBreak())
+                # Last body section is followed by post-body
+                # governance/traceability page breaks. Skip the extra
+                # break so we do not leave a blank page.
+                if kind != 'confidence_risk_register':
+                    story.append(PageBreak())
             return tracker
 
         # Inject document control (only for strategy exports with model)
@@ -86895,7 +86990,10 @@ def api_generate_pdf():
                 )
                 for _kind, _renderer in _post_pairs:
                     _blk = _blocks.get(_kind, {})
-                    story.append(PageBreak())
+                    # REL34.1 — do not insert an extra break before
+                    # appendices (avoids a blank/near-blank page).
+                    if _kind != 'appendices':
+                        story.append(PageBreak())
                     if _kind == 'governance_ownership' and _p41_pdf_tracker:
                         for _fl in _pro_render_governance(
                                 _blk, tracker=_p41_pdf_tracker):

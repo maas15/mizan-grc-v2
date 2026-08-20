@@ -151,6 +151,49 @@ def register_rel32_frozen_export_lock(
     }
 
 
+def sync_rel32_generation_hashes_from_final_artifact(
+        art: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Point generation lock hashes at apply_rel31's final frozen artifact.
+
+    ``apply_rel31_authoritative_contract`` records generation hashes before
+    document-quality / save rebuilds. Extra preview/docx/pdf exports then
+    load the *final* stored artifact. Without this sync, ``emit_rel32``
+    compares a stale generation hash to the authoritative export hash.
+    This does not change lock rules; it only uses the final artifact.
+    """
+    from release_engine_v3.rel31_authority import record_rel3_route_artifact_hashes
+
+    sid = str(art.get('strategy_id') or art.get('artifact_id') or '').strip()
+    canon = str(art.get('rel3_canonical_hash') or '').strip()
+    tree = str(art.get('rel3_render_tree_hash') or '').strip()
+    if not sid or not canon:
+        return {
+            'artifact_source': 'missing_final_frozen',
+            'strategy_id': sid,
+            'canonical_hash': canon,
+            'render_tree_hash': tree,
+            'synced': False,
+        }
+    record_rel3_route_artifact_hashes(
+        sid, 'generation', canonical_hash=canon, render_tree_hash=tree)
+
+    class _FinalArt:
+        strategy_id = sid
+        artifact_id = str(art.get('artifact_id') or sid)
+        canonical_hash = canon
+        render_tree_hash = tree
+
+    register_rel32_frozen_export_lock(_FinalArt(), render_tree_hash=tree)
+    return {
+        'artifact_source': 'rel31_final_frozen',
+        'strategy_id': sid,
+        'canonical_hash': canon,
+        'render_tree_hash': tree,
+        'synced': True,
+    }
+
+
 def _client_sections_diverge(
         artifact_dict: Dict[str, Any],
         frozen: FinalDocumentArtifact) -> bool:
