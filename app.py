@@ -13969,6 +13969,10 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
                             rf'\b{_re_g2.escape(disp_ac)}\b', blob_raw2):
                         kept2.append((ac, ar, en))
                         continue
+                    # REL35 — unselected NIST AI RMF must not re-enter
+                    # the glossary via the Arabic expansion alone.
+                    if ac == 'NIST_AI_RMF':
+                        continue
                     if ar and ar in blob_raw2:
                         kept2.append((ac, ar, en))
                         continue
@@ -30176,6 +30180,21 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     # given domain, this is a no-op (preserves ECC-only and non-cyber
     # behaviour).
     try:
+        try:
+            from release_engine_v3.rel35_domain_framework_fidelity import (
+                repair_sections_for_fidelity as _rel35_repair,
+            )
+            _rel35_secs, _rel35_diag = _rel35_repair(
+                sections if isinstance(sections, dict) else {},
+                domain=domain or '',
+                document_type=_dtype,
+                selected_frameworks=selected_frameworks,
+                lang=lang,
+            )
+            if isinstance(sections, dict):
+                sections.update(_rel35_secs)
+        except Exception:  # noqa: BLE001
+            pass
         if selected_frameworks:
             _fw_missing = _compute_missing_selected_framework_coverage(
                 sections, selected_frameworks, domain=domain, lang=lang,

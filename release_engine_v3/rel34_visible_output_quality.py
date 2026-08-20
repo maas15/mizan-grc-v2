@@ -40,6 +40,9 @@ REL34_AR_LITERAL_FIXES: Tuple[Tuple[str, str], ...] = (
     ('NCA ECCو', 'NCA ECC و'),
     ('المتوقع المخرج', 'المخرج المتوقع'),
     ('المرتبط الإطار', 'الإطار المرتبط'),
+    ('المسؤولإشراف البشري', 'مسؤول الإشراف البشري'),
+    ('المسؤولوصفية', 'مدير البيانات الوصفية'),
+    ('سجلمعالجة', 'سجل\u00a0معالجة'),
 )
 
 GAP_ACTION_APPENDIX_TITLE_AR = 'ملحق ج — خطط معالجة الفجوات التفصيلية'
@@ -399,11 +402,14 @@ def ensure_cyber_roadmap_coverage(
         lang: str = 'ar',
         *,
         domain: str = 'cyber',
+        document_type: str = 'strategy',
         min_rows: int = 8,
 ) -> List[List[str]]:
     """Deterministic cyber-only top-up to 8–10 roadmap initiatives."""
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    if d not in ('cyber', 'cyber_security', 'cybersecurity', ''):
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, document_type):
         return list(rows or [])
     out = [list(r) for r in (rows or []) if any(str(c or '').strip() for c in r)]
     for spec in CYBER_ROADMAP_CATALOG:
@@ -483,10 +489,13 @@ def ensure_cyber_gap_action_plans(
         lang: str = 'ar',
         *,
         domain: str = 'cyber',
+        document_type: str = 'strategy',
 ) -> List[Dict[str, Any]]:
     """Ensure each of the 10 major cyber gaps has a non-empty action plan."""
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    if d not in ('cyber', 'cyber_security', 'cybersecurity', ''):
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, document_type):
         return list(tables or [])
     out = [dict(t) for t in (tables or [])]
     existing_actions = [
@@ -635,10 +644,10 @@ def kpi_section_has_required_subheads(text: str) -> bool:
 
 
 def _is_cyber_domain(domain: str = '') -> bool:
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    return d in (
-        'cyber', 'cyber_security', 'cybersecurity', 'cybersec',
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
     )
+    return is_cyber_strategy(domain, 'strategy')
 
 
 def prefer_professional_tables(
