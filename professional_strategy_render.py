@@ -166,7 +166,7 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     'kpi_main': {
         # REL3.3 — denser safe table layout (never cards): smaller font/padding,
         # wider formula/source wrap budget so forced table lock produces bytes.
-        'col_weights': [0.06, 0.16, 0.07, 0.14, 0.20, 0.13, 0.08, 0.16],
+        'col_weights': [0.05, 0.15, 0.07, 0.13, 0.19, 0.12, 0.13, 0.16],
         'font_size': 7, 'header_font_size': 7, 'padding': 3,
         'max_cell_len': 96, 'render_mode': 'table',
         'allow_page_break_inside': True,
@@ -255,6 +255,9 @@ SCHEMA_GAP_MAIN_AR = (
 )
 SCHEMA_GAP_ACTION_AR = (
     'الخطوة', 'الإجراء', 'المسؤول', 'الإطار الزمني', 'الناتج',
+)
+SCHEMA_GAP_ACTION_EN = (
+    'Step', 'Action', 'Owner', 'Timeframe', 'Output',
 )
 SCHEMA_ROADMAP_AR = (
     'المرحلة', 'الفترة', 'المبادرة', 'المسؤول',
@@ -671,7 +674,7 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
     if schema == 'kpi_main' and ncols == 8:
-        return [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17]
+        return [0.04, 0.17, 0.07, 0.12, 0.19, 0.13, 0.12, 0.16]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.06, 0.28, 0.36, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
@@ -3780,6 +3783,141 @@ def _rel35_default_owner(domain: str = '') -> str:
         return 'مالك المبادرة'
 
 
+def _rel36_default_risk_owner(domain: str = '', lang: str = 'ar') -> str:
+    """Language-aware register owner. Never inject CISO into non-cyber domains."""
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if str(lang or 'ar').lower().startswith('en'):
+        return {
+            'data': 'Data Governance Manager',
+            'ai': 'AI Governance Lead',
+            'dt': 'Digital Transformation Manager',
+            'cyber': 'CISO',
+            'erm': 'Risk Management Head',
+            'global': 'Initiative Owner',
+        }.get(dcode, 'Initiative Owner')
+    return _rel35_default_owner(domain)
+
+
+def _default_risk_register_rows(
+        lang: str = 'ar', domain: str = '') -> List[List[str]]:
+    """Separate risk-register rows when source text has none.
+
+    PR-CY47 requires ``risk_register_separate`` whenever a confidence-factor
+    table exists. English strategy sections often omit a parseable register.
+    Catalogs stay domain-aware so Data/AI never receive CISO/SIEM/CSIRT.
+    """
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    owner = _rel36_default_risk_owner(domain, lang)
+    en = str(lang or 'ar').lower().startswith('en')
+    catalogs = {
+        'cyber': (
+            (
+                ['1', 'ضعف حوكمة الأمن السيبراني', 'متوسطة', 'عالٍ',
+                 'تفعيل لجنة CISO واعتماد السياسات التشغيلية', 'CISO'],
+                ['2', 'تأخر الكشف عن الحوادث', 'متوسطة', 'عالٍ',
+                 'تشغيل SOC/SIEM وتحسين زمن الكشف MTTD', 'CISO'],
+                ['3', 'ضعف إدارة الهوية والوصول', 'متوسطة', 'عالٍ',
+                 'تطبيق IAM وPAM وMFA على الحسابات الحرجة', 'CISO'],
+            ),
+            (
+                ['1', 'Weak cybersecurity governance', 'Medium', 'High',
+                 'Activate the CISO committee and approve operating policies',
+                 'CISO'],
+                ['2', 'Delayed incident detection', 'Medium', 'High',
+                 'Operate SOC/SIEM and improve MTTD', 'CISO'],
+                ['3', 'Weak identity and access control', 'Medium', 'High',
+                 'Implement IAM, PAM, and MFA on privileged accounts',
+                 'CISO'],
+            ),
+        ),
+        'data': (
+            (
+                ['1', 'ضعف تصنيف البيانات', 'متوسطة', 'عالٍ',
+                 'اعتماد تصنيف البيانات ومراقبة الالتزام', owner],
+                ['2', 'فجوات حماية البيانات الشخصية', 'متوسطة', 'عالٍ',
+                 'تطبيق ضوابط الخصوصية ومراجعة معالجة البيانات', owner],
+                ['3', 'ضعف جودة البيانات التشغيلية', 'منخفضة', 'متوسط',
+                 'تشغيل مقاييس الجودة ومعالجة السجلات الناقصة', owner],
+            ),
+            (
+                ['1', 'Weak data classification', 'Medium', 'High',
+                 'Approve classification and monitor adherence', owner],
+                ['2', 'Personal-data protection gaps', 'Medium', 'High',
+                 'Apply privacy controls and review processing', owner],
+                ['3', 'Weak operational data quality', 'Low', 'Medium',
+                 'Run quality metrics and remediate incomplete records',
+                 owner],
+            ),
+        ),
+        'ai': (
+            (
+                ['1', 'ضعف حوكمة نماذج الذكاء الاصطناعي', 'متوسطة', 'عالٍ',
+                 'اعتماد سياسة استخدام النماذج ومساءلة المالك', owner],
+                ['2', 'مخاطر التحيز والشفافية', 'متوسطة', 'عالٍ',
+                 'مراجعة العدالة وتوثيق قرارات النماذج', owner],
+                ['3', 'ضعف ضوابط بيانات التدريب', 'متوسطة', 'متوسط',
+                 'تقييد مصادر البيانات وتتبع استخدامها', owner],
+            ),
+            (
+                ['1', 'Weak AI model governance', 'Medium', 'High',
+                 'Approve model-use policy and owner accountability', owner],
+                ['2', 'Bias and transparency risk', 'Medium', 'High',
+                 'Review fairness and document model decisions', owner],
+                ['3', 'Weak training-data controls', 'Medium', 'Medium',
+                 'Restrict data sources and trace their use', owner],
+            ),
+        ),
+        'dt': (
+            (
+                ['1', 'ضعف قابلية التشغيل البيني', 'متوسطة', 'عالٍ',
+                 'تفعيل واجهات التكامل ومعايير التبادل', owner],
+                ['2', 'فجوات تكامل الخدمات الحكومية', 'متوسطة', 'عالٍ',
+                 'ربط القنوات الحرجة عبر منصة تكامل معتمدة', owner],
+                ['3', 'ضعف نضج القنوات الرقمية', 'منخفضة', 'متوسط',
+                 'تحسين تجربة الخدمة ومراقبة الاعتماد', owner],
+            ),
+            (
+                ['1', 'Weak interoperability', 'Medium', 'High',
+                 'Enable integration APIs and exchange standards', owner],
+                ['2', 'Government service integration gaps', 'Medium', 'High',
+                 'Connect critical channels through an approved platform',
+                 owner],
+                ['3', 'Weak digital-channel maturity', 'Low', 'Medium',
+                 'Improve service experience and monitor adoption', owner],
+            ),
+        ),
+    }
+    generic = (
+        (
+            ['1', 'ضعف ملكية التنفيذ', 'متوسطة', 'عالٍ',
+             'تعيين مالك معتمد وخطة معالجة خلال 90 يوماً', owner],
+            ['2', 'تأخر إغلاق الفجوات', 'متوسطة', 'عالٍ',
+             'تتبع المعالجة شهرياً ورفع التصعيد عند الانحراف', owner],
+            ['3', 'ضعف قياس الأثر', 'منخفضة', 'متوسط',
+             'ربط المؤشرات بالمخاطر ومراجعة الانحراف', owner],
+        ),
+        (
+            ['1', 'Weak execution ownership', 'Medium', 'High',
+             'Assign an approved owner and a 90-day treatment plan', owner],
+            ['2', 'Delayed gap closure', 'Medium', 'High',
+             'Track treatment monthly and escalate variance', owner],
+            ['3', 'Weak impact measurement', 'Low', 'Medium',
+             'Link indicators to risks and review variance', owner],
+        ),
+    )
+    pair = catalogs.get(dcode, (generic, generic))
+    rows = pair[1] if en else pair[0]
+    return [list(r) for r in rows]
+
+
 def normalize_roadmap_table(
         section_text: str, lang: str = 'ar',
         domain: str = 'cyber') -> Optional[Dict[str, Any]]:
@@ -4763,7 +4901,7 @@ def _normalize_kpi_tables_semantics(
         formula_tbl['rows'] = new_formula
     elif new_formula:
         hdr = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
-            '#', 'Indicator', 'Formula', 'Data Source'))
+            '#', 'Indicator', 'Calculation Formula', 'Data Source'))
         tables.append({
             'schema': 'kpi_formula', 'header': hdr, 'rows': new_formula})
     kpi_blk['tables'] = tables
@@ -4808,14 +4946,14 @@ def split_kpi_tables(
     tables = parse_markdown_tables(section_text)
     out: List[Dict[str, Any]] = []
     main_schema = list(SCHEMA_KPI_MAIN_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
-        'Frequency', 'Owner'))
+        '#', 'KPI Description', 'Type', 'Target Value',
+        'Calculation Formula', 'Source', 'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Formula', 'Data Source'))
+        '#', 'Indicator', 'Calculation Formula', 'Data Source'))
     _canonical_main_hdr_ar = list(SCHEMA_KPI_MAIN_AR)
     _canonical_main_hdr_en = [
-        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
-        'Frequency', 'Owner']
+        '#', 'KPI Description', 'Type', 'Target Value',
+        'Calculation Formula', 'Source', 'Frequency', 'Owner']
     for tbl in tables:
         if len(tbl) < 1:
             continue
@@ -5580,7 +5718,8 @@ def _impact_to_priority(impact: str, lang: str = 'ar') -> str:
 
 
 def normalize_confidence_risk(
-        section_text: str, lang: str = 'ar') -> Dict[str, Any]:
+        section_text: str, lang: str = 'ar',
+        domain: str = '') -> Dict[str, Any]:
     """PR-CY48 — confidence score card + canonical factor table + separate
     risk register. Never mixes critical-success-factor tables with the
     confidence factor assessment or repeats the score in every contribution."""
@@ -5653,8 +5792,11 @@ def normalize_confidence_risk(
         'confidence_score': conf_score,
         'factor_table': {'schema': 'conf_factor', 'header': factor_schema,
                          'rows': factor_rows},
-        'risk_table': ({'schema': 'risk_register', 'header': risk_schema,
-                        'rows': risk_rows} if risk_rows else None),
+        'risk_table': {
+            'schema': 'risk_register',
+            'header': risk_schema,
+            'rows': risk_rows or _default_risk_register_rows(lang, domain),
+        },
     }
 
 
@@ -6321,7 +6463,7 @@ def enrich_professional_blocks(
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')
-    conf_norm = normalize_confidence_risk(conf, lang_n)
+    conf_norm = normalize_confidence_risk(conf, lang_n, domain=domain_n)
     conf_tables = [conf_norm['factor_table']]
     if conf_norm.get('risk_table'):
         conf_tables.append(conf_norm['risk_table'])
@@ -6620,10 +6762,10 @@ def pdf_gap_headers_clean(gap_tables: List[Dict[str, Any]]) -> bool:
                    if t.get('schema') == 'gap_action']
     if not action_tbls:
         return True
-    canon = list(SCHEMA_GAP_ACTION_AR)
+    canons = (list(SCHEMA_GAP_ACTION_AR), list(SCHEMA_GAP_ACTION_EN))
     for tbl in action_tbls:
         hdr = tbl.get('header') or []
-        if list(hdr) != canon:
+        if list(hdr) not in canons:
             return False
         for r in (tbl.get('rows') or []):
             for c in r:
@@ -6737,8 +6879,10 @@ def prcy47_docmodel_professional_checks(
         1 for bad, _ in PRCY41_AR_CONCAT_FIXES
         if bad in str(blocks))
     arabic_spacing_final_passed = arabic_concat_remaining == 0
+    _gap_first = (
+        'الخطوة' if str(lang or 'ar').lower().startswith('ar') else 'Step')
     gap_guide_headers_clean = all(
-        (tbl.get('header') or [''])[0] == 'الخطوة'
+        (tbl.get('header') or [''])[0] in ('الخطوة', 'Step', _gap_first)
         for tbl in _gap_actions
     ) if _gap_actions else True
     roadmap_rows_meaningful = bool(road_rows) and not any(

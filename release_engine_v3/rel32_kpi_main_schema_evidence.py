@@ -11,6 +11,7 @@ from release_engine_v3.rel32_preview_table_dom import (
 )
 from release_engine_v3.rel32_table_schema_binding import (
     REL32_KPI_MAIN_EXPECTED_SCHEMA_AR,
+    REL32_KPI_MAIN_EXPECTED_SCHEMA_EN,
     emit_rel32_kpi_main_schema_consistency_diag,
     emit_rel32_kpi_owner_consistency_diag,
     evaluate_kpi_main_schema_consistency,
@@ -18,6 +19,28 @@ from release_engine_v3.rel32_table_schema_binding import (
     find_kpi_main_table,
     rebind_table_spec,
 )
+
+
+def _normalize_kpi_lang(lang: str) -> str:
+    raw = str(lang or 'ar').strip().lower()
+    if raw.startswith('en'):
+        return 'en'
+    return 'ar'
+
+
+def _kpi_expected_schema(lang: str = 'ar') -> List[str]:
+    if _normalize_kpi_lang(lang) == 'en':
+        return list(REL32_KPI_MAIN_EXPECTED_SCHEMA_EN)
+    return list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+
+
+def _lang_from_kpi_headers(headers: List[str], default: str = 'ar') -> str:
+    blob = ' '.join(str(h) for h in (headers or []))
+    if 'KPI Description' in blob or 'Source' in blob:
+        return 'en'
+    if 'وصف المؤشر' in blob or 'مصدر' in blob:
+        return 'ar'
+    return _normalize_kpi_lang(default)
 
 
 def _cells_from_markdown_row(line: str) -> List[str]:
@@ -33,21 +56,31 @@ def _kpi_main_section_blob(blob: str) -> str:
 
 
 def _canonical_kpi_header_cells(cells: List[str]) -> bool:
-    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
-    if len(cells) >= len(expected) and cells[:len(expected)] == expected:
-        return True
-    return cells == expected
+    for expected in (
+            list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR),
+            list(REL32_KPI_MAIN_EXPECTED_SCHEMA_EN)):
+        if len(cells) >= len(expected) and cells[:len(expected)] == expected:
+            return True
+        if cells == expected:
+            return True
+    blob = ' '.join(cells)
+    return (
+        len(cells) >= 8
+        and (
+            'وصف المؤشر' in blob
+            or 'KPI Description' in blob)
+        and cells[0] in ('#', 'رقم'))
 
 
 def _locate_canonical_kpi_table_in_docx(doc: Any) -> tuple[List[str], List[List[str]]]:
     """Prefer the 8-column canonical KPI table over legacy KPI-like tables."""
-    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
     best: tuple[List[str], List[List[str]]] = ([], [])
     for table in doc.tables:
         for i, row in enumerate(table.rows):
             cells = [(c.text or '').strip() for c in row.cells]
             if not cells or not _canonical_kpi_header_cells(cells):
                 continue
+            expected = _kpi_expected_schema(_lang_from_kpi_headers(cells))
             headers = cells[:len(expected)]
             rows_out: List[List[str]] = []
             for j in range(i + 1, len(table.rows)):
@@ -74,19 +107,24 @@ def extract_kpi_main_header_labels_from_docx(raw: bytes) -> List[str]:
         headers, _rows = _locate_canonical_kpi_table_in_docx(doc)
         if headers:
             return headers
-        expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+        expected_ar = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+        expected_en = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_EN)
         for table in doc.tables:
             for row in table.rows:
                 cells = [(c.text or '').strip() for c in row.cells]
                 if not cells:
                     continue
-                blob_ln = ' '.join(cells).lower()
-                if not any(k in blob_ln for k in ('مؤشر', 'kpi', 'indicator', 'وصف')):
+                blob_ln = ' '.join(cells)
+                blob_low = blob_ln.lower()
+                if not any(k in blob_low for k in (
+                        'مؤشر', 'kpi', 'indicator', 'وصف')):
                     continue
-                if 'وصف المؤشر' in blob_ln and len(cells) >= len(expected):
-                    return cells[:len(expected)]
-                if cells[0] in ('#', 'رقم') and len(cells) >= len(expected):
-                    return cells[:len(expected)]
+                if 'KPI Description' in blob_ln and len(cells) >= len(expected_en):
+                    return cells[:len(expected_en)]
+                if 'وصف المؤشر' in blob_ln and len(cells) >= len(expected_ar):
+                    return cells[:len(expected_ar)]
+                if cells[0] in ('#', 'رقم') and len(cells) >= len(expected_ar):
+                    return cells[:len(expected_ar)]
         return []
     except Exception:  # noqa: BLE001
         return []
@@ -114,7 +152,8 @@ def extract_kpi_main_rows_from_docx(raw: bytes) -> List[List[str]]:
             for i, row in enumerate(table.rows):
                 cells = [(c.text or '').strip() for c in row.cells]
                 blob_ln = ' '.join(cells).lower()
-                if header_idx < 0 and 'وصف المؤشر' in blob_ln:
+                if header_idx < 0 and (
+                        'وصف المؤشر' in blob_ln or 'KPI Description' in blob_ln):
                     header_idx = i
                     continue
                 if header_idx >= 0 and i > header_idx:
@@ -139,12 +178,13 @@ def evaluate_kpi_main_schema_from_docx_bytes(
 ) -> Dict[str, Any]:
     headers = extract_kpi_main_header_labels_from_docx(raw)
     rows = extract_kpi_main_rows_from_docx(raw)
-    if headers and rows:
+    lang_n = _lang_from_kpi_headers(headers, lang)
+    if headers:
         diag = evaluate_kpi_main_schema_consistency(
             route_name=route_name,
             header_labels=headers,
             rows=rows,
-            lang=lang,
+            lang=lang_n,
             repair_rows=False,
         )
         emit_rel32_kpi_main_schema_consistency_diag(diag)
@@ -158,7 +198,7 @@ def evaluate_kpi_main_schema_from_docx_bytes(
     except Exception:  # noqa: BLE001
         pass
     return evaluate_kpi_main_schema_from_export_text(
-        text, route_name=route_name, lang=lang)
+        text, route_name=route_name, lang=lang_n)
 
 
 def _emit_kpi_extractability(
@@ -185,7 +225,7 @@ def _emit_kpi_extractability(
         'table_render_mode': table_render_mode,
         'used_cards_fallback': used_cards_fallback,
         'header_labels': list(header_labels or []),
-        'expected_header_labels': list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR),
+        'expected_header_labels': list(header_labels or REL32_KPI_MAIN_EXPECTED_SCHEMA_AR),
         'row_count_rendered': row_count_rendered,
         'row_count_extracted': row_count_extracted,
         'kpi_pdf_extractable': kpi_pdf_extractable,
@@ -224,8 +264,11 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
         arabic_token_present,
         normalize_arabic_loose,
     )
-    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected_ar = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected_en = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_EN)
+    expected = expected_ar
     expected_norm = [normalize_arabic_loose(h) for h in expected]
+    expected_en_norm = [h.lower() for h in expected_en]
     rows: List[List[str]] = []
     try:
         import fitz
@@ -242,19 +285,34 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
         except Exception:  # noqa: BLE001
             continue
         for table in tables:
+            extracted: List[List[str]] = []
             try:
-                df = table.to_pandas()
+                extracted = [
+                    [str(c or '').strip().replace('\n', ' ') for c in row]
+                    for row in (table.extract() or [])
+                ]
             except Exception:  # noqa: BLE001
+                try:
+                    df = table.to_pandas()
+                    extracted = [
+                        [str(v).strip().replace('\n', ' ') for v in series.tolist()]
+                        for _, series in df.iterrows()
+                    ]
+                except Exception:  # noqa: BLE001
+                    continue
+            if not extracted:
                 continue
-            ncol = int(df.shape[1])
-            if ncol < len(expected):
+            ncol = max((len(r) for r in extracted), default=0)
+            if ncol < len(expected_en):
                 continue
             raw_rows: List[List[str]] = []
-            for _, series in df.iterrows():
+            for row in extracted:
                 cells = [
-                    str(v).strip().replace('\n', ' ')
-                    for v in series.tolist()[:len(expected)]
+                    str(c or '').strip().replace('\n', ' ')
+                    for c in row[:len(expected)]
                 ]
+                if len(cells) < len(expected):
+                    cells = cells + [''] * (len(expected) - len(cells))
                 raw_rows.append(cells)
             if not raw_rows:
                 continue
@@ -263,13 +321,22 @@ def _kpi_rows_from_pdf_tables(raw: bytes) -> List[List[str]]:
                 hdr_norm = [normalize_arabic_loose(c) for c in cells]
                 if hdr_norm[:len(expected)] == expected_norm:
                     header_idx = i
+                    expected = expected_ar
+                    break
+                if [c.lower() for c in cells[:len(expected_en)]] == expected_en_norm:
+                    header_idx = i
+                    expected = expected_en
                     break
                 first = (cells[0] or '').replace('\x00', '').strip()
-                if arabic_token_present(
-                        ' '.join(cells), 'وصف المؤشر') and (
+                joined = ' '.join(cells)
+                if (
+                        arabic_token_present(joined, 'وصف المؤشر')
+                        or 'KPI Description' in joined) and (
                             '#' in first or first in ('', '#')
                             or (cells[0] or '').startswith('#')):
                     header_idx = i
+                    if 'KPI Description' in joined:
+                        expected = expected_en
                     break
             data_rows: List[List[str]] = []
             start = header_idx + 1 if header_idx >= 0 else 0
@@ -304,14 +371,14 @@ def evaluate_kpi_main_schema_from_pdf_bytes(
     KPI table that IS present in the returned PDF is not falsely reported as
     header-not-found because Arabic glyphs did not survive naive extraction.
     """
-    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected = _kpi_expected_schema(lang)
     rows = _kpi_rows_from_pdf_tables(raw)
     if rows:
         diag = evaluate_kpi_main_schema_consistency(
             route_name=route_name,
             header_labels=list(expected),
             rows=rows,
-            lang=lang,
+            lang=_normalize_kpi_lang(lang),
             repair_rows=False,
         )
         if diag.get('kpi_main_schema_passed'):
@@ -351,25 +418,66 @@ def evaluate_kpi_main_schema_from_pdf_bytes(
 def extract_kpi_main_header_labels_from_text(blob: str) -> List[str]:
     """Extract KPI main header labels from returned DOCX/PDF/preview text."""
     section = _kpi_main_section_blob(blob)
-    expected = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected_ar = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    expected_en = list(REL32_KPI_MAIN_EXPECTED_SCHEMA_EN)
     for ln in section.splitlines():
         if not ln.strip().startswith('|') or '---' in ln:
             continue
         cells = _cells_from_markdown_row(ln)
         if not cells:
             continue
-        blob_ln = ' '.join(cells).lower()
-        if not any(k in blob_ln for k in ('مؤشر', 'kpi', 'indicator', 'وصف')):
+        blob_ln = ' '.join(cells)
+        blob_low = blob_ln.lower()
+        if not any(k in blob_low for k in ('مؤشر', 'kpi', 'indicator', 'وصف')):
             continue
-        if cells[0] in ('#', 'رقم') or 'وصف المؤشر' in ln or 'المؤشر' in ln:
+        if (
+                cells[0] in ('#', 'رقم')
+                or 'وصف المؤشر' in ln
+                or 'KPI Description' in ln
+                or 'المؤشر' in ln):
             return cells
-    lines = [ln.strip() for ln in section.splitlines() if ln.strip()]
-    for i, ln in enumerate(lines):
-        if ln != expected[0]:
-            continue
-        window = lines[i:i + len(expected)]
-        if window == expected:
+    search = section if (
+        section and any(
+            h in section for h in (
+                'وصف المؤشر', 'KPI Description', 'Calculation Formula',
+                'صيغة الاحتساب'))
+    ) else (blob or '')
+    raw_lines = [ln.strip() for ln in search.splitlines() if ln.strip()]
+    lines: List[str] = []
+    i = 0
+    while i < len(raw_lines):
+        # Rejoin wrapped single-word headers (Frequency → Frequenc / y).
+        if i + 1 < len(raw_lines) and len(raw_lines[i + 1]) <= 3:
+            cand = raw_lines[i] + raw_lines[i + 1]
+            if cand in expected_ar or cand in expected_en:
+                lines.append(cand)
+                i += 2
+                continue
+        lines.append(raw_lines[i])
+        i += 1
+    for expected in (expected_ar, expected_en):
+        for i, ln in enumerate(lines):
+            if ln != expected[0]:
+                continue
+            window = lines[i:i + len(expected)]
+            if window == expected:
+                return list(expected)
+        # Card / one-label-per-line PDF extract: all visible labels present.
+        text_labels = [h for h in expected if h != '#']
+        if text_labels and all(
+                any(h == ln or ln.startswith(h + ':') or h in ln for ln in lines)
+                for h in text_labels):
             return list(expected)
+        joined = ' '.join(lines)
+        if text_labels and all(h in joined for h in text_labels):
+            return list(expected)
+    if search != (blob or '') and (blob or ''):
+        blob_lines = [ln.strip() for ln in (blob or '').splitlines() if ln.strip()]
+        blob_joined = ' '.join(blob_lines)
+        for expected in (expected_ar, expected_en):
+            text_labels = [h for h in expected if h != '#']
+            if text_labels and all(h in blob_joined for h in text_labels):
+                return list(expected)
     return []
 
 
@@ -426,7 +534,7 @@ def evaluate_kpi_main_schema_from_preview_html(
         html_text, route_name=route_name)
     parser = _KpiTableRowsParser()
     parser.feed(html_text or '')
-    headers = parser.headers or list(REL32_KPI_MAIN_EXPECTED_SCHEMA_AR)
+    headers = parser.headers or list(_kpi_expected_schema('ar'))
     all_br = _bound_rows_from_cells(headers, parser.rows, repair=False)
     diag = evaluate_kpi_main_schema_consistency(
         route_name=route_name,
@@ -457,11 +565,12 @@ def evaluate_kpi_main_schema_from_export_text(
 ) -> Dict[str, Any]:
     headers = extract_kpi_main_header_labels_from_text(blob)
     rows = _extract_main_kpi_rows(blob)
+    lang_n = _lang_from_kpi_headers(headers, lang)
     diag = evaluate_kpi_main_schema_consistency(
         route_name=route_name,
         header_labels=headers,
         rows=rows,
-        lang=lang,
+        lang=lang_n,
         repair_rows=False,
     )
     if not headers:

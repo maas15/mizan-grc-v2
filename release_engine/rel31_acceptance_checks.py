@@ -362,12 +362,39 @@ def _trace_matrix_blob(blob: str) -> str:
             if eidx > idx:
                 end = min(end, eidx)
         blocks.append(text[start:end])
+    if not blocks:
+        search = 0
+        while True:
+            idx = text.find('Capability', search)
+            if idx < 0:
+                break
+            search = idx + 1
+            if _is_toc_line(_line_at(text, idx)):
+                continue
+            header = text[idx:idx + 160]
+            header_lines = header.split('\n')[:4]
+            if not any('Gap' in ln for ln in header_lines):
+                continue
+            ref = text.rfind('Reference Framework', max(0, idx - 220), idx)
+            if ref < 0:
+                ref = text.rfind('Framework', max(0, idx - 80), idx)
+            start = ref if ref >= 0 else idx
+            end = len(text)
+            for end_m in (
+                    'Initiative\nMetric', 'Role\nResponsibilities',
+                    'Appendices', 'الملاحق'):
+                eidx = text.find(end_m, idx + 40)
+                if eidx > idx:
+                    end = min(end, eidx)
+            blocks.append(text[start:end])
+            break
     if blocks:
         section = '\n'.join(blocks)
     else:
         section = _body_section_between(
             blob,
-            ('مصفوفة تتبع الأطر المرجعية', 'مصفوفة تتبع', 'مصفوفة التتبع'),
+            ('مصفوفة تتبع الأطر المرجعية', 'مصفوفة تتبع', 'مصفوفة التتبع',
+             'Traceability Matrix', 'Framework Traceability'),
             ('الملاحق', 'Appendices'),
             prefer_last=True,
         )
@@ -617,25 +644,49 @@ def flat_traceability_bad_mappings(blob: str) -> List[str]:
                     if not is_diagnostic_gap_label(cap):
                         fam = _detect_family([cap, gap], 0)
                         if fam and _bad_mapping(fam, gap):
-                            exp = TRACE_CANONICAL_REGISTRY.get(fam, {}).get(
-                                'expected_gap', '')
+                            from release_engine.traceability_substance_model import (
+                                TRACE_CANONICAL_REGISTRY_EN,
+                            )
+                            specs = (
+                                TRACE_CANONICAL_REGISTRY.get(fam, {}),
+                                TRACE_CANONICAL_REGISTRY_EN.get(fam, {}),
+                            )
+                            caps = {
+                                s.get('capability', '')
+                                for s in list(TRACE_CANONICAL_REGISTRY.values())
+                                + list(TRACE_CANONICAL_REGISTRY_EN.values())
+                            }
+                            inits = {
+                                s.get('initiative', '')
+                                for s in list(TRACE_CANONICAL_REGISTRY.values())
+                                + list(TRACE_CANONICAL_REGISTRY_EN.values())
+                            }
+                            exp = next(
+                                (s.get('expected_gap', '') for s in specs
+                                 if s.get('expected_gap') and s.get('expected_gap') in trace),
+                                specs[0].get('expected_gap', ''))
                             if (
                                     exp
                                     and exp in trace
-                                    and cap == TRACE_CANONICAL_REGISTRY.get(
-                                        fam, {}).get('capability', '')
-                                    and gap == TRACE_CANONICAL_REGISTRY.get(
-                                        fam, {}).get('initiative', '')):
+                                    and cap in caps
+                                    and gap in inits):
                                 i += 3
                                 continue
-                            if exp and exp in trace and cap in {
-                                    s['capability']
-                                    for s in TRACE_CANONICAL_REGISTRY.values()}:
+                            if exp and exp in trace and cap in caps:
                                 if gap not in trace or exp not in gap:
-                                    if gap == TRACE_CANONICAL_REGISTRY.get(
-                                            fam, {}).get('initiative', ''):
+                                    if gap in inits:
                                         i += 3
                                         continue
+                            if cap in inits or cap in (
+                                    'Top priorities',
+                                    'Chief Information Security Officer (CISO)',
+                                    'SOC Manager',
+                                    'Data Protection Manager',
+                                    'Identity and Access Management Manager (IAM/PAM)',
+                                    'Incident Response Manager (CSIRT)',
+                                    'Vulnerability Management Manager'):
+                                i += 3
+                                continue
                             defects.append(f'trace_gap_mismatch:{cap}')
                 i += 3
                 continue

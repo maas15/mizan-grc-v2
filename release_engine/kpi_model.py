@@ -270,7 +270,10 @@ def repair_kpi_canonical_families(
     canonical_rows: List[Dict[str, str]] = []
     for i, fam in enumerate(order, 1):
         row = dict(merged[fam])
-        if fam in KPI_CANONICAL_REGISTRY and cyber_registry_allowed:
+        if (
+                fam in KPI_CANONICAL_REGISTRY
+                and cyber_registry_allowed
+                and str(lang or 'ar').lower().startswith('ar')):
             row = _canonical_registry_row(fam, i, typed=typed)
         else:
             row['num'] = str(i)
@@ -801,8 +804,15 @@ def finalize_kpi_semantics(
 
 
 def _apply_inline_kpi_repairs(
-        sections: Dict[str, str]) -> Tuple[Dict[str, str], str]:
+        sections: Dict[str, str],
+        *,
+        lang: str = 'ar') -> Tuple[Dict[str, str], str]:
     text = sections.get('kpis', '') or ''
+    lang_n = 'en' if str(lang or 'ar').lower().startswith('en') else 'ar'
+    if lang_n == 'ar':
+        blob = (text or '')
+        if 'KPI Description' in blob or 'Calculation Formula' in blob:
+            lang_n = 'en'
     lines, rows = _parse_kpi_rows(text)
     if not rows:
         out = dict(sections)
@@ -821,7 +831,7 @@ def _apply_inline_kpi_repairs(
         if cells and cells[0].isdigit() and row_idx < len(repaired_rows):
             out_lines[i] = '| ' + ' | '.join(repaired_rows[row_idx]) + ' |'
             row_idx += 1
-    new_text = _sync_kpi_formula_appendix('\n'.join(out_lines), lang='ar')
+    new_text = _sync_kpi_formula_appendix('\n'.join(out_lines), lang=lang_n)
     out = dict(sections)
     out['kpis'] = new_text
     return out, new_text

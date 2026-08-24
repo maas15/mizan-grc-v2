@@ -231,16 +231,17 @@ def validate_returned_export_bytes(
                         preview_html, route_name='preview')
                 elif preview_text.strip():
                     kpi_diag = evaluate_kpi_main_schema_from_export_text(
-                        preview_text, route_name='preview')
+                        preview_text, route_name='preview',
+                        lang=artifact.language)
             elif route_n == 'docx' and docx_bytes:
                 from release_engine_v3.rel32_kpi_main_schema_evidence import (
                     evaluate_kpi_main_schema_from_docx_bytes,
                 )
                 kpi_diag = evaluate_kpi_main_schema_from_docx_bytes(
-                    docx_bytes, route_name='docx')
+                    docx_bytes, route_name='docx', lang=artifact.language)
             elif route_n == 'docx' and docx_text.strip():
                 kpi_diag = evaluate_kpi_main_schema_from_export_text(
-                    docx_text, route_name='docx')
+                    docx_text, route_name='docx', lang=artifact.language)
             elif route_n == 'pdf' and pdf_bytes:
                 # REL3.3 — evaluate KPI main from structured PDF-bytes table
                 # extraction (canonical 8-column table the renderer emitted),
@@ -251,10 +252,11 @@ def validate_returned_export_bytes(
                 )
                 kpi_diag = evaluate_kpi_main_schema_from_pdf_bytes(
                     pdf_bytes, route_name='pdf',
+                    lang=artifact.language,
                     domain=artifact.domain, document_type=dtype)
             elif route_n == 'pdf' and pdf_text.strip():
                 kpi_diag = evaluate_kpi_main_schema_from_export_text(
-                    pdf_text, route_name='pdf')
+                    pdf_text, route_name='pdf', lang=artifact.language)
             if kpi_diag:
                 gate = merge_kpi_main_schema_blockers(gate, kpi_diag)
             from release_engine_v3.rel32_kpi_owner_consistency_evidence import (

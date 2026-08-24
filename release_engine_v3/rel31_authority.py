@@ -954,7 +954,13 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
-    lang = backend.get('lang', 'ar')
+    lang = str(
+        backend.get('lang')
+        or (art.get('contract_meta') or {}).get('lang')
+        or art.get('lang')
+        or art.get('language')
+        or 'ar')
+    backend['lang'] = lang
     # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber; resolve
     # from artifact, contract_meta, then backend, else keep '' so the
     # downstream roadmap validator fails closed (rel33_export_domain_missing).
@@ -1244,11 +1250,30 @@ def rel3_export_authoritative(
         or (artifact_dict.get('contract_meta') or {}).get('domain')
         or '')
     domain = normalize_domain_code(_raw_domain, default='')
-    lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
+    lang = str(
+        (artifact_dict.get('contract_meta') or {}).get('lang')
+        or artifact_dict.get('lang')
+        or artifact_dict.get('language')
+        or (export_kwargs or {}).get('lang')
+        or 'ar')
     route_n = (route or 'preview').lower()
     if not domain:
         raise ValueError(f'rel33_export_domain_missing:{route_n}')
-    if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
+    from release_engine_v3.rel36_bilingual_preview_export_authority import (
+        is_rel36_bilingual_export_authoritative,
+    )
+    _rel36_export_ok = is_rel36_bilingual_export_authoritative(
+        domain=domain,
+        lang=lang,
+        document_type=str(
+            artifact_dict.get('document_type')
+            or (artifact_dict.get('contract_meta') or {}).get('document_type')
+            or 'strategy'),
+        flags=flags,
+    )
+    if not (
+            is_rel3_authoritative(domain=domain, lang=lang, flags=flags)
+            or _rel36_export_ok):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
 
     from release_engine_v3.rel32_frozen_export_lock import (
@@ -1262,6 +1287,7 @@ def rel3_export_authoritative(
     art['domain'] = domain
     backend.setdefault('flags', flags)
     backend['domain'] = domain
+    backend['lang'] = lang
 
     frozen_pre, lock_meta = resolve_frozen_artifact_for_export(
         art, backend=backend, route=route_n, flags=flags)
@@ -1530,6 +1556,27 @@ def rel3_export_authoritative(
     track_rel32_export_route_state(_sid, route_n, lock_meta)
     emit_rel32_frozen_artifact_export_lock(
         _sid, route=route_n, lock_meta=lock_meta)
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            emit_rel36_bilingual_export_authority,
+            evaluate_rel36_bilingual_export_authority,
+        )
+        emit_rel36_bilingual_export_authority(
+            evaluate_rel36_bilingual_export_authority(
+                route=route_n,
+                lang=lang,
+                domain=domain,
+                document_type=document_type,
+                output_type=route_n,
+                selected_exporter='rel3_export_authoritative',
+                authoritative_path_used=True,
+                legacy_builder_attempted=False,
+                docx_bypass_detected=False,
+                pdf_professional_renderer_used=(route_n == 'pdf'),
+                blocking_errors=list(getattr(evidence, 'blocking_errors', None) or []),
+            ))
+    except Exception:  # noqa: BLE001
+        pass
     return export, evidence
 
 

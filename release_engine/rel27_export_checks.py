@@ -256,7 +256,15 @@ def parse_flat_professional_kpi_cards(section: str) -> List[Dict[str, str]]:
                 break
             name, typ = lines[i + 1], lines[i + 2]
             target = lines[i + 3] if i + 3 < len(lines) else ''
-            if name and name not in ('#', 'المؤشر', 'النوع', 'القيمة المستهدفة'):
+            if name and name not in (
+                    '#', 'المؤشر', 'النوع', 'القيمة المستهدفة',
+                    'KPI Description', 'Type', 'Target Value',
+                    'Calculation Formula', 'Source', 'Frequency',
+                    'Owner', 'Indicator', 'Data Source', 'Step', 'Action'):
+                if typ.upper() not in (
+                        'KPI', 'KRI', 'مؤشر', 'KPI/KRI'):
+                    i += 1
+                    continue
                 rows.append({
                     'num': lines[i],
                     'name': name,

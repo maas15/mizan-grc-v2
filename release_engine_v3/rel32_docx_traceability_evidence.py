@@ -7,24 +7,34 @@ from typing import Any, Dict, List, Tuple
 
 from release_engine.traceability_substance_model import (
     TRACE_CANONICAL_REGISTRY,
+    TRACE_CANONICAL_REGISTRY_EN,
     _bad_mapping,
     _cap_col_idx,
     _gap_col_idx,
+    _gap_matches_expected,
     _parse_trace_rows,
     is_diagnostic_gap_label,
     pdf_trace_extract_artifact,
     resolve_traceability_canonical_family,
 )
 
-_GAP_GAP_PREFIXES = ('ضعف ', 'غياب ', 'قصور ', 'عدم ')
-_INIT_TABLE_MARKERS = frozenset({'المبادرة', 'المؤشر', 'المخاطر'})
+_GAP_GAP_PREFIXES = (
+    'ضعف ', 'غياب ', 'قصور ', 'عدم ',
+    'Weak ', 'Absence ', 'Missing ',
+)
+_INIT_TABLE_MARKERS = frozenset({
+    'المبادرة', 'المؤشر', 'المخاطر',
+    'Initiative', 'Metric', 'Risk',
+})
 _CANON_BY_CAPABILITY = {
     spec['capability']: fam
-    for fam, spec in TRACE_CANONICAL_REGISTRY.items()
+    for registry in (TRACE_CANONICAL_REGISTRY, TRACE_CANONICAL_REGISTRY_EN)
+    for fam, spec in registry.items()
 }
 _CANON_BY_GAP = {
     spec['expected_gap']: fam
-    for fam, spec in TRACE_CANONICAL_REGISTRY.items()
+    for registry in (TRACE_CANONICAL_REGISTRY, TRACE_CANONICAL_REGISTRY_EN)
+    for fam, spec in registry.items()
 }
 
 
@@ -90,6 +100,14 @@ def extract_docx_flat_traceability_rows(blob: str) -> List[Dict[str, str]]:
                 and i + 2 < len(lines)
                 and lines[i + 1] == 'مجال القدرة'
                 and 'الفجوة' in lines[i + 2]):
+            mode = 'gap_table'
+            i += 3
+            continue
+        if (
+                ln in ('Reference Framework', 'Framework')
+                and i + 2 < len(lines)
+                and lines[i + 1] in ('Capability / Control', 'Capability')
+                and 'Gap' in lines[i + 2]):
             mode = 'gap_table'
             i += 3
             continue
@@ -202,7 +220,7 @@ def traceability_defects_from_extracted_rows(
         if not fam:
             continue
         expected = TRACE_CANONICAL_REGISTRY[fam]['expected_gap']
-        if expected in gap or gap == expected:
+        if _gap_matches_expected(fam, gap) or expected in gap or gap == expected:
             continue
         if pdf_trace_extract_artifact(cap) or pdf_trace_extract_artifact(gap):
             continue
@@ -236,7 +254,8 @@ def validate_frozen_traceability_not_mutated(
         return True, []
     expected_caps = {
         spec['capability']: spec['expected_gap']
-        for spec in TRACE_CANONICAL_REGISTRY.values()
+        for registry in (TRACE_CANONICAL_REGISTRY, TRACE_CANONICAL_REGISTRY_EN)
+        for spec in registry.values()
     }
     by_cap = {
         str(r.get('capability') or '').strip(): str(r.get('gap') or '').strip()

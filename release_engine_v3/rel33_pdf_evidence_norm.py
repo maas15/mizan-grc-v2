@@ -80,6 +80,14 @@ def any_token_present(haystack: str, tokens: Iterable[str]) -> bool:
 # release_engine.roadmap_model._FAMILY_TOKENS; these extend detection for
 # returned-PDF Arabic text where the base token may not survive extraction.
 ROADMAP_FAMILY_ALIASES: Dict[str, Tuple[str, ...]] = {
+    'data_classification': (
+        'data classification',
+        'classify',
+        'classified',
+        'classification register',
+        'classification coverage',
+        'classification policy',
+    ),
     'awareness_training': (
         'التوعية الأمنية',
         'برنامج التوعية الأمنية',
