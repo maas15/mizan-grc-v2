@@ -52,6 +52,13 @@ from release_engine_v3.rel36_dcc_traceability_en_repair import (
     inventory_dcc_rows,
     repair_english_dcc_traceability_sections,
 )
+from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+    REL36_2_ALLOWED_OWNERS,
+    evaluate_rel36_2_en_cyber_export_evidence,
+    infer_english_cyber_owner,
+    inventory_english_cyber_pillar_rows,
+    repair_english_cyber_export_evidence_sections,
+)
 from release_engine.traceability_substance_model import (
     TRACE_CANONICAL_REGISTRY_EN,
 )
@@ -143,6 +150,51 @@ def _cyber_en_sections() -> dict:
             '| NCA ECC | Governance | CISO committee | Weak governance |\n'
         ),
     }
+
+
+def _cyber_en_live_pillar_sections() -> dict:
+    """English Cyber ECC+DCC pillars as generated on staging: 3-col, no Owner."""
+    secs = dict(_cyber_en_sections())
+    secs['pillars'] = (
+        '### Pillar 1: Cybersecurity Governance & Policy Framework\n'
+        '| المبادرة | الوصف | المخرج المتوقع |\n'
+        '|---|---|---|\n'
+        '| 1 | CISO Framework Establishment | Design and ratify a '
+        'cybersecurity governance framework aligned to NCA ECC. | '
+        'Approved governance charter |\n'
+        '| 2 | Cybersecurity Policy Suite Development | Publish the policy '
+        'library mapped to NCA ECC control domains. | Ratified policy suite |\n'
+        '### Pillar 2: Security Operations, Threat Detection & Incident Response\n'
+        '| # | Initiative | Description | Expected Deliverable |\n'
+        '|---|---|---|---|\n'
+        '| 1 | SOC Establishment & SIEM Deployment | Stand up SOC/SIEM for '
+        'NCA ECC monitoring. | Operational SOC with SIEM |\n'
+        '| 2 | CSIRT & Incident Response Capability Build | Establish CSIRT '
+        'and incident playbooks. | Ratified IR plan |\n'
+        '| 3 | Vulnerability Management Program | Continuous vulnerability '
+        'scanning and patching. | Vulnerability policy |\n'
+        '### Pillar 3: Identity Security, Data Protection & Security Awareness\n'
+        '| Initiative | Description | Expected Deliverable |\n'
+        '|---|---|---|\n'
+        '| Identity & Privileged Access Management (IAM/PAM) Program | '
+        'Deploy IAM/PAM/MFA. | IAM platform operational |\n'
+        '| Encryption, DLP & Data Protection Controls Deployment | '
+        'Implement DLP and encryption for NCA DCC. | Operational DLP platform |\n'
+        '| Security Awareness & Anti-Phishing Training Program | '
+        'Mandatory awareness and phishing simulations. | Training completion |\n'
+    )
+    return secs
+
+
+def _prepare_en_cyber_export_sections() -> dict:
+    secs = dict(_cyber_en_live_pillar_sections())
+    secs, _ = repair_english_dcc_traceability_sections(
+        secs, lang='en', domain='cyber',
+        selected_frameworks=['NCA ECC', 'NCA DCC'])
+    secs, _ = repair_english_cyber_export_evidence_sections(
+        secs, lang='en', domain='cyber',
+        selected_frameworks=['NCA ECC', 'NCA DCC'])
+    return secs
 
 
 def _dt_dga_sections() -> dict:
@@ -558,6 +610,194 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
             result.get('diag', {}).get(
                 'traceability_dcc_mapping_valid_in_final_artifact', True)
             or 'prcy69_final_artifact_traceability_dcc_invalid' not in blockers)
+
+    def test_25_english_live_pillars_docx_no_pillar_owner_missing(self):
+        before = inventory_english_cyber_pillar_rows(
+            _cyber_en_live_pillar_sections()['pillars'])
+        self.assertTrue(before['missing_owner_rows'] or before['row_count'] >= 3)
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertNotIn('pillar_owner_missing', joined)
+        self.assertNotIn('rel3_export_evidence_failed:docx:pillar_owner_missing', joined)
+
+    def test_26_english_live_pillars_pdf_evidence_passes(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        self.assertNotIn('pillar_owner_missing', joined)
+        self.assertNotIn('actual PDF evidence validation failed', joined)
+
+    def test_27_english_live_pillar_rows_have_non_empty_owners(self):
+        secs, diag = repair_english_cyber_export_evidence_sections(
+            _cyber_en_live_pillar_sections(), lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        inv = inventory_english_cyber_pillar_rows(secs.get('pillars') or '')
+        self.assertGreaterEqual(inv['row_count'], 6)
+        self.assertEqual(inv['missing_owner_rows'], [])
+        for owner in inv['owner_values']:
+            self.assertTrue(owner.strip())
+            self.assertIn(owner, REL36_2_ALLOWED_OWNERS)
+        self.assertTrue(diag['repaired'])
+        self.assertTrue(diag['passed'])
+
+    def test_28_english_live_pillar_owner_header_is_owner(self):
+        secs, _ = repair_english_cyber_export_evidence_sections(
+            _cyber_en_live_pillar_sections(), lang='en', domain='cyber')
+        blob = secs.get('pillars') or ''
+        self.assertIn('| Initiative | Description | Expected Deliverable | Owner |', blob)
+        self.assertNotIn('| المسؤول |', blob.split('Owner', 1)[0] if 'Owner' in blob else blob)
+        ev = evaluate_rel36_2_en_cyber_export_evidence(
+            secs, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertTrue(ev['owner_header_detected'])
+        self.assertEqual(ev['owner_alias_used'], 'Owner')
+
+    def test_29_english_live_pillars_still_pass_prcy69_dcc(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        secs = _prepare_en_cyber_export_sections()
+        validation = app._prcy69_validate_final_artifact(
+            '', secs, ['NCA ECC', 'NCA DCC'], 'en', 'cyber',
+            strict=True, metadata={'domain': 'cyber'})
+        dcc_blockers = [
+            b for b in (validation.get('blockers') or [])
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        self.assertEqual(dcc_blockers, [], validation.get('blockers'))
+        inv = inventory_dcc_rows(secs.get('traceability') or '')
+        self.assertEqual(inv['missing'], [])
+        self.assertEqual(inv['invalid'], [])
+
+    def test_30_english_live_pillars_docx_no_bypass(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(out['docx_ev'].export_return_allowed)
+        self.assertNotIn('rel32_docx_export_bypass_detected', joined)
+        self.assertNotIn('_build_docx_bytes', joined)
+
+    def test_31_english_live_pillars_pdf_no_professional_quality_failure(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertTrue(out['pdf_ev'].export_return_allowed)
+        self.assertNotIn('docmodel_professional_quality', joined)
+        self.assertNotIn('pdf_render_failed:docmodel_professional_quality', joined)
+
+    def test_32_english_live_pillars_kpi_headers_english(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        text = extract_docx_visible_text(out['docx_export'].docx_bytes or b'')
+        self.assertIn('KPI Description', text)
+        self.assertIn('Source', text)
+        self.assertFalse(english_visible_has_arabic_kpi_headers(text))
+        self.assertNotIn('| مصدر |', secs['kpis'])
+        self.assertIn('Source', secs['kpis'])
+
+    def test_33_english_live_pillars_no_family_markers(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        preview = sanitize_visible_preview_text(
+            '\n'.join(str(v) for v in secs.values()), 'en')
+        docx_text = extract_docx_visible_text(out['docx_export'].docx_bytes or b'')
+        self.assertFalse(visible_text_has_internal_markers(preview))
+        self.assertFalse(visible_text_has_internal_markers(docx_text))
+        self.assertNotIn('family:', preview)
+        self.assertNotIn('family:', docx_text)
+
+    def test_34_arabic_cyber_ecc_dcc_docx_pdf_still_pass(self):
+        out = _export_pair(_cyber_ar_sections(), lang='ar')
+        self.assertTrue(out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertTrue(out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        ar, diag = repair_english_cyber_export_evidence_sections(
+            _cyber_ar_sections(), lang='ar', domain='cyber')
+        self.assertFalse(diag['repaired'])
+        self.assertEqual(ar['pillars'], _cyber_ar_sections()['pillars'])
+
+    def test_35_data_fidelity_still_passes(self):
+        repaired, _ = repair_sections_for_fidelity(
+            _data_sections(), domain='data', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('NDMO', blob)
+        self.assertIn('PDPL', blob)
+        self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('NCA DCC', blob)
+        self.assertNotIn('CISO', blob)
+        self.assertNotIn('SIEM', blob)
+        self.assertNotIn('CSIRT', blob)
+
+    def test_36_ai_fidelity_still_passes(self):
+        leaked = dict(_ai_sections())
+        leaked['environment'] = (
+            leaked.get('environment') or '') + '\nNIST AI RMF NCA ECC CISO SIEM'
+        repaired, _ = repair_sections_for_fidelity(
+            leaked, domain='ai', document_type='strategy',
+            selected_frameworks=['SDAIA'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('SDAIA', blob)
+        self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('NIST AI RMF', blob)
+        self.assertNotIn('CISO', blob)
+        self.assertNotIn('SIEM', blob)
+        self.assertNotIn('IAM', blob)
+        self.assertNotIn('PAM', blob)
+        self.assertNotIn('MFA', blob)
+        self.assertNotIn('CSIRT', blob)
+
+    def test_37_dt_dga_interoperability_still_passes(self):
+        repaired, _ = repair_dga_interoperability_sections(
+            _dt_dga_sections(), lang='ar')
+        self.assertTrue(dga_interoperability_covered(repaired))
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertNotIn(
+            'selected_framework_coverage_missing:DGA:interoperability', blob)
+
+    def test_38_owner_inference_and_empty_owners_not_aliased_through(self):
+        self.assertEqual(
+            infer_english_cyber_owner('SOC Establishment & SIEM Deployment'),
+            'SOC Manager')
+        self.assertEqual(
+            infer_english_cyber_owner('CSIRT & Incident Response'),
+            'CSIRT Lead')
+        self.assertEqual(
+            infer_english_cyber_owner('IAM/PAM Program'),
+            'IAM/PAM Manager')
+        dirty = {
+            'pillars': (
+                '### Pillar 1: Governance\n'
+                '| Initiative | Description | Expected Deliverable | Owner |\n'
+                '|---|---|---|---|\n'
+                '| Policy suite | NCA ECC governance policy | Charter | — |\n'
+            )
+        }
+        secs, diag = repair_english_cyber_export_evidence_sections(
+            dirty, lang='en', domain='cyber')
+        inv = inventory_english_cyber_pillar_rows(secs['pillars'])
+        self.assertEqual(inv['missing_owner_rows'], [])
+        self.assertNotIn('—', inv['owner_values'])
+        self.assertTrue(diag['repaired'])
+        ev = evaluate_rel36_2_en_cyber_export_evidence(
+            dirty, lang='en', domain='cyber',
+            docx_evidence_before=['pillar_owner_missing'],
+            docx_evidence_after=[],
+            pdf_evidence_before=['pillar_owner_missing'],
+            pdf_evidence_after=[])
+        self.assertIn('REL36.2-EN-CYBER-EXPORT-EVIDENCE-REPAIR', ev['tag'])
 
 
 if __name__ == '__main__':

@@ -974,6 +974,31 @@ def repair_canonical_before_freeze(
         default='')
     if domain:
         backend['domain'] = domain
+    # REL36.2 — English cyber pillar owners before freeze/export evidence.
+    try:
+        from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+            emit_rel36_2_en_cyber_export_evidence_repair,
+            repair_english_cyber_export_evidence_sections,
+        )
+        sections, _rel36_2_pre = repair_english_cyber_export_evidence_sections(
+            sections,
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                art.get('document_type')
+                or (art.get('contract_meta') or {}).get('document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (art.get('contract_meta') or {}).get('selected_frameworks')
+                or art.get('selected_frameworks') or []),
+            strategy_id=art.get('strategy_id') or art.get('id'),
+            export_type='pre_freeze',
+        )
+        if _rel36_2_pre.get('repaired'):
+            repairs.append('rel36.2:english_cyber_pillar_owners')
+        emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_pre)
+    except Exception:  # noqa: BLE001
+        pass
     flags = backend.get('flags') or {}
     document_type = (
         str(
@@ -1275,6 +1300,39 @@ def rel3_export_authoritative(
             is_rel3_authoritative(domain=domain, lang=lang, flags=flags)
             or _rel36_export_ok):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
+
+    # REL36.2 — fill English cyber pillar owners before export evidence.
+    # Does not weaken pillar_owner_missing or bypass evidence.
+    try:
+        from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+            emit_rel36_2_en_cyber_export_evidence_repair,
+            repair_english_cyber_export_evidence_sections,
+        )
+        _rel36_2_secs, _rel36_2_diag = repair_english_cyber_export_evidence_sections(
+            dict(artifact_dict.get('sections') or {}),
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                artifact_dict.get('document_type')
+                or (artifact_dict.get('contract_meta') or {}).get(
+                    'document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (artifact_dict.get('contract_meta') or {}).get(
+                    'selected_frameworks')
+                or artifact_dict.get('selected_frameworks')
+                or (export_kwargs or {}).get('selected_frameworks')
+                or []),
+            strategy_id=artifact_dict.get('strategy_id') or artifact_dict.get(
+                'id'),
+            export_type=route_n,
+        )
+        if _rel36_2_diag.get('repaired'):
+            artifact_dict = dict(artifact_dict)
+            artifact_dict['sections'] = _rel36_2_secs
+        emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_diag)
+    except Exception:  # noqa: BLE001
+        pass
 
     from release_engine_v3.rel32_frozen_export_lock import (
         emit_rel32_frozen_artifact_export_lock,

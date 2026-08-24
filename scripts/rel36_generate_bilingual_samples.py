@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from tests.test_rel36_bilingual_preview_export_authority import (
     _ai_sections,
     _cyber_ar_sections,
+    _cyber_en_live_pillar_sections,
     _cyber_en_sections,
     _data_sections,
     _dt_dga_sections,
@@ -29,6 +30,9 @@ from release_engine_v3.rel36_bilingual_preview_export_authority import (
 from release_engine_v3.rel36_dcc_traceability_en_repair import (
     repair_english_dcc_traceability_sections,
 )
+from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+    repair_english_cyber_export_evidence_sections,
+)
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -42,7 +46,7 @@ def main() -> int:
     report = {}
     for key, secs, lang, domain, fws in (
         ('cyber_ar', _cyber_ar_sections(), 'ar', 'cyber', ['NCA ECC', 'NCA DCC']),
-        ('cyber_en', _cyber_en_sections(), 'en', 'cyber', ['NCA ECC', 'NCA DCC']),
+        ('cyber_en', _cyber_en_live_pillar_sections(), 'en', 'cyber', ['NCA ECC', 'NCA DCC']),
         ('data_ar', _data_sections(), 'ar', 'data', ['NDMO', 'PDPL']),
         ('ai_ar', _ai_sections(), 'ar', 'ai', ['SDAIA']),
         ('dt_dga', _dt_dga_sections(), 'ar', 'dt', ['DGA']),
@@ -57,6 +61,9 @@ def main() -> int:
             repaired, _ = repair_english_dcc_traceability_sections(
                 repaired, lang=lang, domain=domain,
                 selected_frameworks=fws)
+            repaired, _ = repair_english_cyber_export_evidence_sections(
+                repaired, lang=lang, domain=domain,
+                selected_frameworks=fws, export_type='sample')
         exp = _export_pair(repaired, lang=lang, domain=domain)
         docx = exp['docx_export'].docx_bytes or b''
         pdf = exp['pdf_export'].pdf_bytes or b''
