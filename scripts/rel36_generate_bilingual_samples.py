@@ -26,6 +26,9 @@ from release_engine_v3.rel35_domain_framework_fidelity import (
 from release_engine_v3.rel36_bilingual_preview_export_authority import (
     sanitize_visible_preview_text,
 )
+from release_engine_v3.rel36_dcc_traceability_en_repair import (
+    repair_english_dcc_traceability_sections,
+)
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -50,6 +53,10 @@ def main() -> int:
         if domain == 'dt':
             repaired, _ = repair_dga_interoperability_sections(
                 repaired, lang=lang)
+        if domain == 'cyber' and lang == 'en':
+            repaired, _ = repair_english_dcc_traceability_sections(
+                repaired, lang=lang, domain=domain,
+                selected_frameworks=fws)
         exp = _export_pair(repaired, lang=lang, domain=domain)
         docx = exp['docx_export'].docx_bytes or b''
         pdf = exp['pdf_export'].pdf_bytes or b''

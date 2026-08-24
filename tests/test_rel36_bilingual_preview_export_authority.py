@@ -46,6 +46,15 @@ from release_engine_v3.rel36_bilingual_preview_export_authority import (
     kpi_main_headers,
     sanitize_visible_preview_text,
 )
+from release_engine_v3.rel36_dcc_traceability_en_repair import (
+    evaluate_rel36_dcc_traceability_en,
+    expected_dcc_capabilities,
+    inventory_dcc_rows,
+    repair_english_dcc_traceability_sections,
+)
+from release_engine.traceability_substance_model import (
+    TRACE_CANONICAL_REGISTRY_EN,
+)
 from tests.test_rel35_domain_framework_fidelity import (
     _ai_sections,
     _data_sections,
@@ -365,7 +374,13 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
         self.assertIn('SDAIA', fw)
         self.assertNotIn('NCA ECC', fw)
         self.assertNotIn('NIST AI RMF', blob)
+        self.assertNotIn('NIST', blob)
+        self.assertNotIn('CISO', blob)
         self.assertNotIn('SIEM', blob)
+        self.assertNotIn('IAM', blob)
+        self.assertNotIn('PAM', blob)
+        self.assertNotIn('MFA', blob)
+        self.assertNotIn('CSIRT', blob)
 
     def test_16_dt_dga_interoperability(self):
         secs, _repaired = repair_dga_interoperability_sections(
@@ -392,6 +407,157 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
         missing = bind_saved_preview_payload({}, expected_domain='cyber')
         self.assertFalse(missing['success'])
         self.assertIn('saved_preview_content_missing', missing['error'])
+
+    def test_18_english_ecc_dcc_prcy69_traceability_passes(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        old_gap = 'Weak data-loss-prevention controls'
+        self.assertFalse(any(
+            tok in old_gap for tok in ('تسرب', 'DLP', 'dlp', 'فقدان', 'leak')))
+        new_gap = TRACE_CANONICAL_REGISTRY_EN['dlp']['expected_gap']
+        self.assertTrue(any(
+            tok in new_gap for tok in ('DLP', 'dlp', 'leak')))
+        fws = ['NCA ECC', 'NCA DCC']
+        self.assertTrue(app._prcy68_validate_traceability_dcc_mapping(
+            _cyber_en_sections(), fws, 'en'))
+        self.assertEqual(
+            app._prcy70_traceability_invalid_cells(
+                _cyber_en_sections(), fws, 'en'),
+            [])
+        validation = app._prcy69_validate_final_artifact(
+            '', _cyber_en_sections(), fws, 'en', 'cyber',
+            strict=True, metadata={'domain': 'cyber'})
+        dcc_blockers = [
+            b for b in (validation.get('blockers') or [])
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        self.assertEqual(dcc_blockers, [], validation.get('blockers'))
+
+    def test_19_english_ecc_dcc_repair_inserts_required_rows(self):
+        dirty = dict(_cyber_en_sections())
+        dirty['traceability'] = (
+            '| Framework | Capability / Control | Related Gap | '
+            'Initiative / Activity | Metric | Related Risk |\n'
+            '|---|---|---|---|---|---|\n'
+            '| NCA ECC | Governance | Weak CISO office | Establish CISO | '
+            'Compliance rate | Governance risk |\n'
+            '| NCA DCC | DLP / data leakage prevention | '
+            'Weak data-loss-prevention controls | Enable DLP | '
+            'DLP coverage | Leakage risk |\n'
+        )
+        repaired, diag = repair_english_dcc_traceability_sections(
+            dirty, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertTrue(diag['dcc_selected'])
+        inv = inventory_dcc_rows(repaired.get('traceability') or '')
+        self.assertEqual(sorted(inv['detected']), sorted(expected_dcc_capabilities()))
+        self.assertEqual(inv['missing'], [])
+        self.assertEqual(inv['invalid'], [])
+        blob = repaired.get('traceability') or ''
+        self.assertIn('Data classification', blob)
+        self.assertIn('Encryption', blob)
+        self.assertIn('DLP', blob)
+        self.assertIn('Sensitive data handling', blob)
+        self.assertIn('transit', blob.lower())
+        self.assertIn('NCA DCC', blob)
+        ev = evaluate_rel36_dcc_traceability_en(
+            repaired, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'],
+            prcy69_gate_passed=True)
+        self.assertTrue(ev['passed'])
+        self.assertIn('REL36-DCC-TRACEABILITY-EN-REPAIR', ev['tag'])
+
+    def test_20_english_ecc_dcc_docx_no_bypass(self):
+        secs, _ = repair_english_dcc_traceability_sections(
+            _cyber_en_sections(), lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertNotIn('rel32_docx_export_bypass_detected', joined)
+        self.assertGreater(len(out['docx_export'].docx_bytes or b''), 1000)
+
+    def test_21_english_ecc_dcc_pdf_no_professional_quality_failure(self):
+        secs, _ = repair_english_dcc_traceability_sections(
+            _cyber_en_sections(), lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertTrue(out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        self.assertNotIn('pdf_render_failed:docmodel_professional_quality', joined)
+        self.assertNotIn('docmodel_professional_quality', joined)
+
+    def test_22_english_ecc_only_still_passes(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        secs, diag = repair_english_dcc_traceability_sections(
+            _cyber_en_sections(), lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC'])
+        self.assertFalse(diag['dcc_selected'])
+        self.assertFalse(diag['repaired'])
+        self.assertTrue(app._prcy68_validate_traceability_dcc_mapping(
+            secs, ['NCA ECC'], 'en'))
+        validation = app._prcy69_validate_final_artifact(
+            '', secs, ['NCA ECC'], 'en', 'cyber',
+            strict=True, metadata={'domain': 'cyber'})
+        dcc_blockers = [
+            b for b in (validation.get('blockers') or [])
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        self.assertEqual(dcc_blockers, [])
+
+    def test_23_arabic_ecc_dcc_still_passes(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        secs, diag = repair_english_dcc_traceability_sections(
+            _cyber_ar_sections(), lang='ar', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertFalse(diag['repaired'])
+        self.assertTrue(app._prcy68_validate_traceability_dcc_mapping(
+            secs, ['NCA ECC', 'NCA DCC'], 'ar'))
+        self.assertEqual(
+            app._prcy70_traceability_invalid_cells(
+                secs, ['NCA ECC', 'NCA DCC'], 'ar'),
+            [])
+        out = _export_pair(secs, lang='ar')
+        self.assertTrue(out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertTrue(out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+
+    def test_24_english_generation_contract_no_dcc_invalid(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        secs, _ = repair_english_dcc_traceability_sections(
+            _cyber_en_sections(), lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        md = app._prcy65_rebuild_content_from_sections(secs, None)
+        result = app._cyber_final_export_contract(
+            md,
+            metadata={'domain': 'cyber', 'language': 'en'},
+            selected_frameworks=['NCA ECC', 'NCA DCC'],
+            lang='en',
+            domain='cyber',
+            output_type='generation',
+        )
+        blockers = ' '.join(str(b) for b in (result.get('blocking_errors') or []))
+        self.assertNotIn('prcy69_final_artifact_traceability_dcc_invalid', blockers)
+        self.assertTrue(
+            result.get('diag', {}).get(
+                'traceability_dcc_mapping_valid_in_final_artifact', True)
+            or 'prcy69_final_artifact_traceability_dcc_invalid' not in blockers)
 
 
 if __name__ == '__main__':

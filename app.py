@@ -49939,9 +49939,51 @@ def _prcy69_enforce_final_artifact_parity(
             _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
         except Exception:  # noqa: BLE001
             pass
+    # REL36.1 — repair English DCC traceability before PRCY69. Does not
+    # weaken the gate; it only inserts validator-recognizable English
+    # DCC rows when NCA DCC is selected.
+    _rel36_dcc_diag = {}
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_dcc_traceability_en_repair import (
+                repair_english_dcc_traceability_sections,
+            )
+            sections, _rel36_dcc_diag = repair_english_dcc_traceability_sections(
+                sections, lang=lang_n, domain=dcode,
+                selected_frameworks=selected_frameworks)
+            if _rel36_dcc_diag.get('repaired'):
+                repair_actions.append('rel36:english_dcc_traceability_repaired')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as _rel36_dcc_err:  # noqa: BLE001
+            _rel36_dcc_diag = {
+                'tag': 'REL36-DCC-TRACEABILITY-EN-REPAIR',
+                'repaired': False,
+                'blocking_errors': [f'rel36_dcc_repair_failed:{_rel36_dcc_err}'],
+            }
     _validation = _prcy69_validate_final_artifact(
         _md, sections, selected_frameworks, lang_n, dcode,
         strict=True, metadata=metadata)
+    if _rel36_dcc_diag:
+        _v_blockers = list(_validation.get('blockers') or [])
+        _dcc_blockers = [
+            b for b in _v_blockers
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        _rel36_dcc_diag['prcy69_gate_passed'] = not _dcc_blockers
+        _rel36_dcc_diag['blocking_errors'] = list(
+            _rel36_dcc_diag.get('blocking_errors') or []) + _dcc_blockers
+        _rel36_dcc_diag['passed'] = bool(
+            _rel36_dcc_diag.get('prcy69_gate_passed')
+            and not _rel36_dcc_diag.get('missing_dcc_capabilities'))
+        try:
+            from release_engine_v3.rel36_dcc_traceability_en_repair import (
+                emit_rel36_dcc_traceability_en_repair,
+            )
+            emit_rel36_dcc_traceability_en_repair(_rel36_dcc_diag)
+        except Exception:  # noqa: BLE001
+            pass
     _artifact_hash = _prcy25_compute_content_hash(_md or '')
     _, _dcc_on72 = _prcy69_nca_frameworks_selected(selected_frameworks)
     _dcc_cnt72, _ = _prcy68_count_roadmap_framework_rows(
