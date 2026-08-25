@@ -997,6 +997,27 @@ def repair_canonical_before_freeze(
         if _rel36_2_pre.get('repaired'):
             repairs.append('rel36.2:english_cyber_pillar_owners')
         emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_pre)
+        from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+            repair_english_cyber_dcc_classification_evidence_sections,
+        )
+        sections, _rel36_3_pre = repair_english_cyber_dcc_classification_evidence_sections(
+            sections,
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                art.get('document_type')
+                or (art.get('contract_meta') or {}).get('document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (art.get('contract_meta') or {}).get('selected_frameworks')
+                or art.get('selected_frameworks') or []),
+            strategy_id=art.get('strategy_id') or art.get('id'),
+            export_type='pre_freeze',
+        )
+        if _rel36_3_pre.get('repaired'):
+            repairs.append('rel36.3:english_cyber_dcc_classification')
+        emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_pre)
     except Exception:  # noqa: BLE001
         pass
     flags = backend.get('flags') or {}
@@ -1331,6 +1352,33 @@ def rel3_export_authoritative(
             artifact_dict = dict(artifact_dict)
             artifact_dict['sections'] = _rel36_2_secs
         emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_diag)
+        from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+            repair_english_cyber_dcc_classification_evidence_sections,
+        )
+        _rel36_3_secs, _rel36_3_diag = repair_english_cyber_dcc_classification_evidence_sections(
+            dict(artifact_dict.get('sections') or {}),
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                artifact_dict.get('document_type')
+                or (artifact_dict.get('contract_meta') or {}).get(
+                    'document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (artifact_dict.get('contract_meta') or {}).get(
+                    'selected_frameworks')
+                or artifact_dict.get('selected_frameworks')
+                or (export_kwargs or {}).get('selected_frameworks')
+                or []),
+            strategy_id=artifact_dict.get('strategy_id') or artifact_dict.get(
+                'id'),
+            export_type=route_n,
+        )
+        if _rel36_3_diag.get('repaired'):
+            artifact_dict = dict(artifact_dict)
+            artifact_dict['sections'] = _rel36_3_secs
+        emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_diag)
     except Exception:  # noqa: BLE001
         pass
 

@@ -59,6 +59,11 @@ from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
     inventory_english_cyber_pillar_rows,
     repair_english_cyber_export_evidence_sections,
 )
+from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+    REL36_3_CLASSIFICATION_TOKENS,
+    evaluate_rel36_3_en_cyber_dcc_classification_evidence,
+    repair_english_cyber_dcc_classification_evidence_sections,
+)
 from release_engine.traceability_substance_model import (
     TRACE_CANONICAL_REGISTRY_EN,
 )
@@ -186,12 +191,26 @@ def _cyber_en_live_pillar_sections() -> dict:
     return secs
 
 
+def _cyber_en_arabic_catalog_injected_sections() -> dict:
+    """Live freeze path: English DCC rows + Arabic pillar catalog overwrite."""
+    from release_engine.pillar_model import _build_canonical_pillars
+    secs = dict(_cyber_en_sections())
+    secs['pillars'] = _build_canonical_pillars('ar')
+    secs, _ = repair_english_dcc_traceability_sections(
+        secs, lang='en', domain='cyber',
+        selected_frameworks=['NCA ECC', 'NCA DCC'])
+    return secs
+
+
 def _prepare_en_cyber_export_sections() -> dict:
     secs = dict(_cyber_en_live_pillar_sections())
     secs, _ = repair_english_dcc_traceability_sections(
         secs, lang='en', domain='cyber',
         selected_frameworks=['NCA ECC', 'NCA DCC'])
     secs, _ = repair_english_cyber_export_evidence_sections(
+        secs, lang='en', domain='cyber',
+        selected_frameworks=['NCA ECC', 'NCA DCC'])
+    secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
         secs, lang='en', domain='cyber',
         selected_frameworks=['NCA ECC', 'NCA DCC'])
     return secs
@@ -798,6 +817,172 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
             pdf_evidence_before=['pillar_owner_missing'],
             pdf_evidence_after=[])
         self.assertIn('REL36.2-EN-CYBER-EXPORT-EVIDENCE-REPAIR', ev['tag'])
+
+    def test_39_english_catalog_inject_docx_no_classification_invalid(self):
+        dirty = _cyber_en_arabic_catalog_injected_sections()
+        self.assertIn('تصنيف البيانات', dirty['pillars'])
+        secs, diag = repair_english_cyber_dcc_classification_evidence_sections(
+            dirty, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertTrue(diag['repaired'])
+        self.assertNotIn('تصنيف البيانات', secs['pillars'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertNotIn('traceability_dcc_classification_invalid', joined)
+
+    def test_40_english_catalog_inject_pdf_evidence_passes(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        self.assertNotIn('traceability_dcc_classification_invalid', joined)
+        self.assertNotIn('actual PDF evidence validation failed', joined)
+
+    def test_41_english_export_blob_has_dcc_classification_row(self):
+        secs = _prepare_en_cyber_export_sections()
+        out = _export_pair(secs, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        blob = (
+            str(secs.get('traceability') or '')
+            + '\n'
+            + (extract_docx_visible_text(out['docx_export'].docx_bytes or b'') or '')
+        )
+        for tok in REL36_3_CLASSIFICATION_TOKENS:
+            self.assertIn(tok, blob, tok)
+
+    def test_42_english_visible_pillar_header_is_english_owner(self):
+        dirty = _cyber_en_arabic_catalog_injected_sections()
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            dirty, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        blob = secs.get('pillars') or ''
+        self.assertIn(
+            '| Initiative | Description | Expected Deliverable | Owner |', blob)
+        self.assertNotIn('| المبادرة | الوصف | المخرج المتوقع |', blob)
+
+    def test_43_english_catalog_inject_has_non_empty_owners(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        inv = inventory_english_cyber_pillar_rows(secs.get('pillars') or '')
+        self.assertGreaterEqual(inv['row_count'], 8)
+        self.assertEqual(inv['missing_owner_rows'], [])
+        for owner in inv['owner_values']:
+            self.assertTrue(owner.strip())
+            self.assertIn(owner, REL36_2_ALLOWED_OWNERS)
+
+    def test_44_english_catalog_inject_still_passes_prcy69_dcc(self):
+        from release_engine_v3.rel33_quality_matrix import (
+            _load_app_module,
+            ensure_test_env,
+        )
+        ensure_test_env()
+        app = _load_app_module()
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        validation = app._prcy69_validate_final_artifact(
+            '', secs, ['NCA ECC', 'NCA DCC'], 'en', 'cyber',
+            strict=True, metadata={'domain': 'cyber'})
+        dcc_blockers = [
+            b for b in (validation.get('blockers') or [])
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        self.assertEqual(dcc_blockers, [], validation.get('blockers'))
+        inv = inventory_dcc_rows(secs.get('traceability') or '')
+        self.assertEqual(inv['missing'], [])
+        self.assertEqual(inv['invalid'], [])
+
+    def test_45_english_catalog_inject_no_pillar_owner_missing(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(out['docx_ev'].export_return_allowed)
+        self.assertNotIn('pillar_owner_missing', joined)
+
+    def test_46_english_catalog_inject_docx_no_bypass(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertTrue(out['docx_ev'].export_return_allowed)
+        self.assertNotIn('rel32_docx_export_bypass_detected', joined)
+
+    def test_47_english_catalog_inject_pdf_no_professional_quality_failure(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertTrue(out['pdf_ev'].export_return_allowed)
+        self.assertNotIn('docmodel_professional_quality', joined)
+
+    def test_48_english_catalog_inject_kpi_headers_english(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        text = extract_docx_visible_text(out['docx_export'].docx_bytes or b'')
+        self.assertIn('KPI Description', text)
+        self.assertIn('Source', text)
+        self.assertFalse(english_visible_has_arabic_kpi_headers(text))
+
+    def test_49_english_catalog_inject_no_family_markers(self):
+        secs, _ = repair_english_cyber_dcc_classification_evidence_sections(
+            _cyber_en_arabic_catalog_injected_sections(),
+            lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        out = _export_pair(secs, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        preview = sanitize_visible_preview_text(
+            '\n'.join(str(v) for v in secs.values()), 'en')
+        docx_text = extract_docx_visible_text(out['docx_export'].docx_bytes or b'')
+        self.assertFalse(visible_text_has_internal_markers(preview))
+        self.assertFalse(visible_text_has_internal_markers(docx_text))
+        self.assertNotIn('family:', preview)
+        self.assertNotIn('family:', docx_text)
+
+    def test_50_rel36_3_diagnostic_fields_and_predicate(self):
+        dirty = _cyber_en_arabic_catalog_injected_sections()
+        ev = evaluate_rel36_3_en_cyber_dcc_classification_evidence(
+            dirty, lang='en', domain='cyber',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertEqual(
+            ev['tag'], 'REL36.3-EN-CYBER-DCC-CLASSIFICATION-EVIDENCE-REPAIR')
+        for key in (
+                'classification_row_before', 'classification_row_after',
+                'classification_tokens_before', 'classification_tokens_after',
+                'export_blob_contains_data_classification',
+                'export_blob_contains_sensitive_data_classification',
+                'export_blob_contains_classify_and_inventory',
+                'validator_predicate_before', 'validator_predicate_after',
+                'pillar_header_before', 'pillar_header_after',
+                'repaired', 'blocking_errors', 'passed'):
+            self.assertIn(key, ev)
+        self.assertTrue(ev['repaired'])
+        self.assertTrue(ev['passed'])
+        self.assertEqual(ev['validator_predicate_after'], [])
 
 
 if __name__ == '__main__':

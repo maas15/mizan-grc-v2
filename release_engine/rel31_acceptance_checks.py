@@ -972,4 +972,32 @@ def repair_rel31_canonical_sections(
     except Exception:  # noqa: BLE001
         pass
 
+    # REL36.3 — English cyber DCC classification export evidence. Runs
+    # after Arabic catalog overwrite so English labels/owners survive.
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            normalize_rel36_lang,
+        )
+        if (
+                normalize_rel36_lang(lang) == 'en'
+                and dcode == 'cyber'):
+            from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+                emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+                repair_english_cyber_dcc_classification_evidence_sections,
+            )
+            out, _rel36_3 = repair_english_cyber_dcc_classification_evidence_sections(
+                out, lang=lang, domain=dcode, document_type='strategy',
+                selected_frameworks=(
+                    backend.get('selected_frameworks')
+                    or (backend.get('contract_meta') or {}).get(
+                        'selected_frameworks')
+                    or []),
+                export_type='rel31_canonical_sections',
+            )
+            if _rel36_3.get('repaired'):
+                repairs.append('rel36.3:english_cyber_dcc_classification')
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3)
+    except Exception:  # noqa: BLE001
+        pass
+
     return out, list(dict.fromkeys(repairs))

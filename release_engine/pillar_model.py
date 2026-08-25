@@ -13,6 +13,65 @@ CYBER_PILLAR_FAMILIES = (
     'resilience_continuity',
 )
 
+_PILLAR_CATALOG_EN: Tuple[Tuple[str, Tuple[Tuple[str, str, str, str], ...]], ...] = (
+    ('### Cybersecurity Governance & Operating Model', (
+        ('Governance policy suite',
+         'Adopt and refresh cybersecurity governance policies aligned to NCA ECC',
+         'Approved governance platform with policy library',
+         'CISO'),
+        ('Cybersecurity governance committee',
+         'Ratify a cybersecurity governance committee charter with quarterly meetings',
+         'Active governance committee with charter and minutes',
+         'CISO'),
+        ('RACI accountability matrix',
+         'Assign cybersecurity RACI across departments aligned to NCA ECC',
+         'Approved cybersecurity RACI matrix',
+         'CISO'),
+    )),
+    ('### Protection, Detection & Response — NCA ECC', (
+        ('SOC/SIEM operations',
+         'Operate SOC with SIEM use cases and response aligned to NCA ECC',
+         '24x7 SOC with SIEM for critical assets',
+         'SOC Manager'),
+        ('CSIRT capability',
+         'Establish CSIRT with approved and tested incident response plans',
+         'Ready CSIRT with annual tabletop exercises',
+         'CSIRT Lead'),
+        ('Continuous monitoring',
+         'Operate SIEM rules and continuous monitoring of critical assets',
+         'SIEM coverage of critical assets',
+         'CISO'),
+    )),
+    ('### Identity & Data Protection — NCA DCC', (
+        ('IAM/PAM/MFA controls',
+         'Enforce IAM/PAM/MFA for privileged and critical accounts aligned to NCA DCC',
+         'MFA coverage for privileged accounts',
+         'IAM/PAM Manager'),
+        ('Data classification',
+         'Classify and inventory sensitive data and keep the classification register current under NCA DCC',
+         'Approved classified data register with sensitive-data inventory',
+         'Data Protection Officer'),
+        ('DLP controls',
+         'Enable DLP and continuous monitoring of sensitive data leakage',
+         'Operational DLP platform with leakage-prevention rules',
+         'Data Protection Officer'),
+    )),
+    ('### Resilience & Business Continuity — NCA ECC', (
+        ('Backup validation',
+         'Test backups and recovery of critical data periodically under NCA ECC',
+         'Approved backup plan with successful restore tests',
+         'Business Continuity Manager'),
+        ('Disaster recovery',
+         'Test disaster-recovery plans and system continuity under NCA ECC',
+         'Tested DR plan with approved RTO/RPO',
+         'Business Continuity Manager'),
+        ('Business continuity',
+         'Approve and periodically test BCP for critical operations under NCA ECC',
+         'Approved BCP for critical operations',
+         'Business Continuity Manager'),
+    )),
+)
+
 _PILLAR_CATALOG_AR: Tuple[Tuple[str, Tuple[Tuple[str, str, str], ...]], ...] = (
     ('### حوكمة ونموذج التشغيل', (
         ('سياسات الحوكمة السيبرانية',
@@ -110,8 +169,28 @@ def _pillar_families_present(text: str) -> Dict[str, bool]:
     }
 
 
+def _pillar_lang(lang: str) -> str:
+    raw = str(lang or '').strip().lower()
+    if raw.startswith('en'):
+        return 'en'
+    return 'ar'
+
+
 def _build_canonical_pillars(lang: str) -> str:
     from release_engine.pillar_substance_model import _ENRICHED_OUTPUTS
+
+    if _pillar_lang(lang) == 'en':
+        parts = ['## 2. Strategic Pillars', '']
+        for heading, rows in _PILLAR_CATALOG_EN:
+            parts.append(heading)
+            parts.append('')
+            parts.append(
+                '| Initiative | Description | Expected Deliverable | Owner |\n'
+                '|---|---|---|---|')
+            for init, desc, output, owner in rows:
+                parts.append(f'| {init} | {desc} | {output} | {owner} |')
+            parts.append('')
+        return '\n'.join(parts).rstrip() + '\n'
 
     _owners = {}
     for _heading, _rows in _PILLAR_CATALOG_AR:
@@ -130,8 +209,7 @@ def _build_canonical_pillars(lang: str) -> str:
                 _owners[init] = 'مدير SOC'
             else:
                 _owners[init] = 'CISO'
-    is_ar = str(lang or '').lower() != 'en'
-    title = '## 2. الركائز الاستراتيجية' if is_ar else '## 2. Strategic Pillars'
+    title = '## 2. الركائز الاستراتيجية'
     parts = [title, '']
     for heading, rows in _PILLAR_CATALOG_AR:
         parts.append(heading)

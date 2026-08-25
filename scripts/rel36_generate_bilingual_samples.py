@@ -33,6 +33,9 @@ from release_engine_v3.rel36_dcc_traceability_en_repair import (
 from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
     repair_english_cyber_export_evidence_sections,
 )
+from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+    repair_english_cyber_dcc_classification_evidence_sections,
+)
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -62,6 +65,9 @@ def main() -> int:
                 repaired, lang=lang, domain=domain,
                 selected_frameworks=fws)
             repaired, _ = repair_english_cyber_export_evidence_sections(
+                repaired, lang=lang, domain=domain,
+                selected_frameworks=fws, export_type='sample')
+            repaired, _ = repair_english_cyber_dcc_classification_evidence_sections(
                 repaired, lang=lang, domain=domain,
                 selected_frameworks=fws, export_type='sample')
         exp = _export_pair(repaired, lang=lang, domain=domain)

@@ -153,10 +153,11 @@ def _enrich_pillar_text(text: str) -> Tuple[str, List[str], List[str], List[str]
             body_lines.append(narrative)
             body_lines.append('')
         elif title.startswith('###') and not narrative:
-            body_lines.append(
-                'ركيزة استراتيجية تدعم تنفيذ القدرات السيبرانية المطلوبة '
-                'وفق إطار NCA ECC/DCC.')
-            body_lines.append('')
+            if any('\u0600' <= ch <= '\u06FF' for ch in title):
+                body_lines.append(
+                    'ركيزة استراتيجية تدعم تنفيذ القدرات السيبرانية المطلوبة '
+                    'وفق إطار NCA ECC/DCC.')
+                body_lines.append('')
         has_table = False
         for ln in lines[1:]:
             if ln.strip().startswith('|') and '---' not in ln:

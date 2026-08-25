@@ -49987,6 +49987,30 @@ def _prcy69_enforce_final_artifact_parity(
             emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_diag)
         except Exception:  # noqa: BLE001
             pass
+    # REL36.3 — English DCC classification export evidence after owner
+    # repair. Does not weaken classification_invalid.
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+                emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+                repair_english_cyber_dcc_classification_evidence_sections,
+            )
+            sections, _rel36_3_diag = repair_english_cyber_dcc_classification_evidence_sections(
+                sections, lang=lang_n, domain=dcode,
+                document_type='strategy',
+                selected_frameworks=selected_frameworks,
+                strategy_id=(metadata or {}).get('strategy_id'),
+                export_type=f'prcy69_{output_type}',
+            )
+            if _rel36_3_diag.get('repaired'):
+                repair_actions.append('rel36.3:english_cyber_dcc_classification')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_diag)
+        except Exception:  # noqa: BLE001
+            pass
     _validation = _prcy69_validate_final_artifact(
         _md, sections, selected_frameworks, lang_n, dcode,
         strict=True, metadata=metadata)
