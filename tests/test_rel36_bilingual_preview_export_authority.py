@@ -1318,8 +1318,12 @@ class Rel364LiveEnCyberExportPathTests(unittest.TestCase):
         inv = inventory_dcc_rows(repaired.get('traceability') or '')
         self.assertEqual(inv['missing'], [])
         self.assertEqual(inv['invalid'], [])
-        for cap in expected_dcc_capabilities():
-            self.assertIn(cap.split()[0], repaired.get('traceability') or '')
+        blob = repaired.get('traceability') or ''
+        self.assertIn('Data classification', blob)
+        self.assertIn('Encryption', blob)
+        self.assertIn('DLP', blob)
+        self.assertIn('Sensitive data handling', blob)
+        self.assertIn('transit', blob.lower())
 
     def test_61_live_docx_no_bypass(self):
         out = _export_pair_live(_cyber_en_live_saved_export_sections(), lang='en')

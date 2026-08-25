@@ -208,10 +208,11 @@ def repair_live_english_cyber_export_text(text: str) -> str:
             in_pillar = False
             out.append(ln)
             continue
-        if _is_arabic_pillar_header(cells) or _is_english_three_col_pillar_header(cells):
-            if out and out[-1] == _EN_PILLAR_HDR:
-                pass
-            else:
+        if (
+                _is_arabic_pillar_header(cells)
+                or _is_english_three_col_pillar_header(cells)
+                or _is_pillar_header(cells)):
+            if not (out and out[-1] == _EN_PILLAR_HDR):
                 out.append(_EN_PILLAR_HDR)
             in_pillar = True
             continue
@@ -222,9 +223,6 @@ def repair_live_english_cyber_export_text(text: str) -> str:
             in_pillar = False
             out.append(ln)
             continue
-        if in_pillar and _is_pillar_header(cells):
-            out.append(_EN_PILLAR_HDR)
-            continue
         if in_pillar and cells and not _is_sep_cells(cells):
             padded = _pad_owner_row(cells)
             out.append(_render_row(padded))
@@ -234,18 +232,50 @@ def repair_live_english_cyber_export_text(text: str) -> str:
 
 
 def _inventory_from_blob(text: str) -> Dict[str, Any]:
-    inv = inventory_english_cyber_pillar_rows(text)
-    header = list(inv.get('header') or [])
+    """Inventory only initiative tables, not KPI/gap/SO/roadmap."""
+    header: List[str] = []
+    owner_rows: List[str] = []
+    missing: List[str] = []
+    in_pillar = False
+    for ln, cells in _iter_logical_rows(text):
+        if not cells:
+            in_pillar = False
+            continue
+        if (
+                _is_arabic_pillar_header(cells)
+                or _is_english_three_col_pillar_header(cells)
+                or (
+                    'Initiative' in ' '.join(cells)
+                    and 'Expected Deliverable' in ' '.join(cells)
+                    and 'Description' in ' '.join(cells)
+                )):
+            in_pillar = True
+            if not header:
+                header = list(cells)
+            continue
+        if in_pillar and _is_sep_cells(cells):
+            continue
+        if in_pillar and _is_other_table_header(cells):
+            in_pillar = False
+            continue
+        if in_pillar and cells:
+            vals = [str(c).strip() for c in cells]
+            if vals and re.fullmatch(r'\d+', vals[0] or ''):
+                vals = vals[1:]
+            init = vals[0] if vals else ''
+            owner = vals[3] if len(vals) >= 4 else ''
+            if not init:
+                continue
+            owner_rows.append(owner)
+            if not owner.strip() or owner.strip() in _EMPTY_OWNERS:
+                missing.append(init)
     if not header:
-        for ln in str(text or '').splitlines():
-            if 'المبادرة' in ln or (
-                    'Initiative' in ln and 'Expected Deliverable' in ln):
-                header = [c.strip() for c in ln.strip().strip('|').split('|')]
-                break
+        inv = inventory_english_cyber_pillar_rows(text)
+        header = list(inv.get('header') or [])
     return {
         'header': header,
-        'owner_rows': list(inv.get('owner_values') or []),
-        'missing': list(inv.get('missing_owner_rows') or []),
+        'owner_rows': owner_rows,
+        'missing': missing,
         'family_markers': _FAMILY_RE.findall(str(text or '')),
     }
 
