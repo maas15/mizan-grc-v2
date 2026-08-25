@@ -1178,6 +1178,28 @@ def repair_canonical_before_freeze(
         except Exception:  # noqa: BLE001
             pass
     art['sections'] = sections
+    # REL36.4 — last rewrite after freeze-path rebuilds so mashed English
+    # Cyber Arabic 3-col pillars / family:* cannot survive into evidence.
+    try:
+        from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+            apply_rel36_4_to_artifact,
+            emit_rel36_4_live_en_cyber_export_path_repair,
+        )
+        art, _rel36_4_pre = apply_rel36_4_to_artifact(
+            art,
+            lang=lang,
+            domain=domain,
+            export_type='pre_freeze',
+            route='repair_canonical_before_freeze',
+            repair_ran_at='repair_canonical_before_freeze',
+        )
+        sections = dict(art.get('sections') or sections)
+        if _rel36_4_pre.get('repaired'):
+            repairs.append('rel36.4:live_en_cyber_export_path')
+        emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_pre)
+    except Exception:  # noqa: BLE001
+        pass
+    art['sections'] = sections
     return art, list(dict.fromkeys(repairs))
 
 
@@ -1379,6 +1401,19 @@ def rel3_export_authoritative(
             artifact_dict = dict(artifact_dict)
             artifact_dict['sections'] = _rel36_3_secs
         emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_diag)
+        from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+            apply_rel36_4_to_artifact,
+            emit_rel36_4_live_en_cyber_export_path_repair,
+        )
+        artifact_dict, _rel36_4_diag = apply_rel36_4_to_artifact(
+            artifact_dict,
+            lang=lang,
+            domain=domain,
+            export_type=route_n,
+            route=f'rel3_export_authoritative:{route_n}',
+            repair_ran_at='rel3_export_authoritative_pre_freeze',
+        )
+        emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_diag)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1502,6 +1537,22 @@ def rel3_export_authoritative(
     if frozen_pre is not None:
         frozen = frozen_pre
         backend['_rel32_export_artifact_dict'] = art
+        try:
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                apply_rel36_4_to_frozen,
+                emit_rel36_4_live_en_cyber_export_path_repair,
+            )
+            _rel36_4_fr = apply_rel36_4_to_frozen(
+                frozen,
+                lang=lang,
+                domain=domain,
+                export_type=route_n,
+                route=f'rel3_export_authoritative:{route_n}',
+                repair_ran_at='rel3_export_with_evidence_frozen_pre',
+            )
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_fr)
+        except Exception:  # noqa: BLE001
+            pass
         with rel31_export_adapter_context():
             export, evidence = rel3_export_with_evidence(
                 route_n,
@@ -1511,6 +1562,22 @@ def rel3_export_authoritative(
             )
     else:
         art, _pre_rep = repair_canonical_before_freeze(art, backend=backend)
+        try:
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                apply_rel36_4_to_artifact,
+                emit_rel36_4_live_en_cyber_export_path_repair,
+            )
+            art, _rel36_4_frz = apply_rel36_4_to_artifact(
+                art,
+                lang=lang,
+                domain=domain,
+                export_type=route_n,
+                route=f'rel3_export_authoritative:{route_n}',
+                repair_ran_at='rel3_export_authoritative_before_freeze',
+            )
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_frz)
+        except Exception:  # noqa: BLE001
+            pass
         _bind_backend_sections(backend, art)
         bind_blockers = _verify_rel31_section_binding(backend, art, route_n)
         if bind_blockers:
@@ -1541,6 +1608,22 @@ def rel3_export_authoritative(
             ), ev
         with rel31_export_adapter_context():
             frozen = rel3_freeze_artifact(art)
+            try:
+                from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                    apply_rel36_4_to_frozen,
+                    emit_rel36_4_live_en_cyber_export_path_repair,
+                )
+                _rel36_4_ev = apply_rel36_4_to_frozen(
+                    frozen,
+                    lang=lang,
+                    domain=domain,
+                    export_type=route_n,
+                    route=f'rel3_export_authoritative:{route_n}',
+                    repair_ran_at='rel3_export_with_evidence',
+                )
+                emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_ev)
+            except Exception:  # noqa: BLE001
+                pass
             if frozen.blocking_errors and route_n != 'preview':
                 blockers = normalize_rel3_export_blockers(
                     list(frozen.blocking_errors), route=route_n)

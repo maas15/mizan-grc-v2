@@ -216,6 +216,45 @@ def bind_saved_preview_payload(
         if exp_l and lang and exp_l != lang:
             blocking.append(
                 f'rel36_saved_preview_lang_mismatch:{lang}:{exp_l}')
+    # REL36.4 — repair mashed English Cyber pillars / family:* on the
+    # exact bound preview payload before visible sanitizer.
+    try:
+        from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+            emit_rel36_4_live_en_cyber_export_path_repair,
+            repair_live_english_cyber_export_sections,
+        )
+        _md = ''
+        if isinstance(src.get('content'), str):
+            _md = src.get('content') or ''
+        elif isinstance(content_json, dict):
+            _md = str(content_json.get('content') or content_json.get(
+                'final_markdown') or '')
+        sections, _md_rep, _rel36_4 = repair_live_english_cyber_export_sections(
+            sections,
+            lang=lang,
+            domain=domain,
+            document_type=document_type,
+            selected_frameworks=(
+                src.get('selected_frameworks')
+                or (content_json or {}).get('selected_frameworks')
+                or []),
+            strategy_id=sid,
+            export_type='preview',
+            route='bind_saved_preview_payload',
+            final_markdown=_md,
+            repair_ran_at='saved_preview_binding',
+        )
+        emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4)
+        if isinstance(content_json, dict) and _md_rep:
+            content_json = dict(content_json)
+            if content_json.get('content') is not None:
+                content_json['content'] = _md_rep
+            if content_json.get('final_markdown') is not None:
+                content_json['final_markdown'] = _md_rep
+            if isinstance(content_json.get('sections'), dict):
+                content_json['sections'] = dict(sections)
+    except Exception:  # noqa: BLE001
+        pass
     visible_sections = sanitize_visible_preview_sections(sections, lang)
     bound = {
         'success': not blocking,

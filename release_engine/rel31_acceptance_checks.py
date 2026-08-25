@@ -997,6 +997,24 @@ def repair_rel31_canonical_sections(
             if _rel36_3.get('repaired'):
                 repairs.append('rel36.3:english_cyber_dcc_classification')
             emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3)
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                emit_rel36_4_live_en_cyber_export_path_repair,
+                repair_live_english_cyber_export_sections,
+            )
+            out, _md36_4, _rel36_4 = repair_live_english_cyber_export_sections(
+                out, lang=lang, domain=dcode, document_type='strategy',
+                selected_frameworks=(
+                    backend.get('selected_frameworks')
+                    or (backend.get('contract_meta') or {}).get(
+                        'selected_frameworks')
+                    or []),
+                export_type='rel31_canonical_sections',
+                route='repair_rel31_canonical_sections',
+                repair_ran_at='repair_rel31_canonical_sections',
+            )
+            if _rel36_4.get('repaired'):
+                repairs.append('rel36.4:live_en_cyber_export_path')
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4)
     except Exception:  # noqa: BLE001
         pass
 
