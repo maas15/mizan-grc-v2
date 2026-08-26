@@ -52006,8 +52006,8 @@ def _rel26_gate_export_bytes(
         preview_text or '',
         docx_text,
         pdf_text,
-        domain='cyber',
-        lang='ar',
+        domain=domain,
+        lang=lang,
         document_type=document_type,
         pdf_text_extraction_unreliable=pdf_unreliable,
         pdf_bytes_had=bool(pdf_bytes),
@@ -52059,7 +52059,7 @@ def _rel26_gate_preview_sections(sections, *, domain, lang, preview_html=''):
             if isinstance(v, str) and v.strip())
     gate = validate_actual_export_evidence(
         preview_text, '', '',
-        domain='cyber', lang='ar', document_type='strategy',
+        domain=domain, lang=lang, document_type='strategy',
         route_name='preview',
     )
     allowed, errors = block_export_if_evidence_fails(gate)

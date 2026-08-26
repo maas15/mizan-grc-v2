@@ -182,6 +182,8 @@ def validate_returned_export_bytes(
         docx_bytes=docx_bytes if route_n == 'docx' else b'',
         canonical_sections=parity_sections,
         final_hash=artifact.canonical_hash,
+        selected_frameworks=getattr(artifact, 'selected_frameworks', None),
+        strategy_id=getattr(artifact, 'strategy_id', None),
     )
     if dtype == 'strategy':
         try:

@@ -71,6 +71,14 @@ from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
     repair_live_english_cyber_export_sections,
     repair_live_english_cyber_export_text,
 )
+from release_engine_v3.rel36_5_actual_server_export_evidence_hook import (
+    REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG,
+    _DOCX_EVIDENCE_CALL_SITE,
+    _PDF_EVIDENCE_CALL_SITE,
+    apply_rel36_5_to_evidence_blob,
+    emit_rel36_5_actual_server_export_evidence_hook,
+    rel36_5_should_apply,
+)
 from release_engine.traceability_substance_model import (
     TRACE_CANONICAL_REGISTRY_EN,
 )
@@ -1414,6 +1422,294 @@ class Rel364LiveEnCyberExportPathTests(unittest.TestCase):
             self.assertTrue(owner.strip())
             self.assertNotEqual(owner, '—')
             self.assertIn(owner, REL36_2_ALLOWED_OWNERS)
+
+
+def _ownerless_en_cyber_evidence_blob() -> str:
+    """Extracted-export-shaped English Cyber blob that still fails the gate."""
+    return (
+        'NCA ECC and NCA DCC strategy\n'
+        '### Pillar 1: Cybersecurity Governance\n'
+        '| المبادرة | الوصف | المخرج المتوقع | المسؤول |\n'
+        '|---|---|---|---|\n'
+        '| CISO Framework Establishment | Ratify NCA ECC governance. | '
+        'Charter | — |\n'
+        '| Policy Suite | Publish ECC/DCC policy library. | Policies | — |\n'
+        '| SOC Establishment & SIEM Deployment | Stand up monitoring. | '
+        'Live SOC |  |\n'
+        'family:governance_ciso family:soc_siem\n'
+        '| Initiative | Description | Expected Deliverable |\n'
+        '|---|---|---|\n'
+        '| Identity & Privileged Access Management | Deploy IAM/PAM. | '
+        'IAM platform |\n'
+    )
+
+
+def _rel36_5_diags_from_log(log: str) -> list:
+    import json as _json
+    diags = []
+    for line in (log or '').splitlines():
+        if REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG not in line:
+            continue
+        raw = line.split(REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG, 1)[-1]
+        try:
+            diags.append(_json.loads(raw.strip()))
+        except Exception:
+            continue
+    return diags
+
+
+class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
+    """Last-mile hook: exact DOCX/PDF evidence input, not preview replay."""
+
+    def test_69_docx_evidence_function_receives_repaired_blob(self):
+        import release_engine.rel31_content_substance_checks as substance
+        seen = []
+        orig = substance.run_rel31_content_substance_checks
+
+        def _spy(blob, **kwargs):
+            seen.append(blob)
+            return orig(blob, **kwargs)
+
+        substance.run_rel31_content_substance_checks = _spy
+        try:
+            from release_engine.export_evidence_validator import (
+                validate_actual_export_evidence,
+            )
+            dirty = _ownerless_en_cyber_evidence_blob()
+            gate = validate_actual_export_evidence(
+                '', dirty, '',
+                domain='cyber', lang='en', document_type='strategy',
+                route_name='docx',
+                selected_frameworks=['NCA ECC', 'NCA DCC'])
+        finally:
+            substance.run_rel31_content_substance_checks = orig
+        nonempty = [b for b in seen if str(b or '').strip()]
+        self.assertTrue(nonempty, 'DOCX evidence function was not called')
+        blob = nonempty[0]
+        self.assertIn(
+            '| Initiative | Description | Expected Deliverable | Owner |', blob)
+        self.assertNotIn('| المبادرة | الوصف | المخرج المتوقع |', blob)
+        self.assertNotIn('family:', blob)
+        self.assertNotIn('pillar_owner_missing', ' '.join(
+            str(b) for b in (gate.get('blocking_errors') or [])))
+
+    def test_70_pdf_evidence_function_receives_repaired_blob(self):
+        import release_engine.rel31_content_substance_checks as substance
+        seen = []
+        orig = substance.run_rel31_content_substance_checks
+
+        def _spy(blob, **kwargs):
+            seen.append(blob)
+            return orig(blob, **kwargs)
+
+        substance.run_rel31_content_substance_checks = _spy
+        try:
+            from release_engine.export_evidence_validator import (
+                validate_actual_export_evidence,
+            )
+            dirty = _ownerless_en_cyber_evidence_blob()
+            gate = validate_actual_export_evidence(
+                '', '', dirty,
+                domain='cyber', lang='en', document_type='strategy',
+                route_name='pdf', pdf_bytes_had=True,
+                selected_frameworks=['NCA ECC', 'NCA DCC'])
+        finally:
+            substance.run_rel31_content_substance_checks = orig
+        nonempty = [b for b in seen if str(b or '').strip()]
+        self.assertTrue(nonempty, 'PDF evidence function was not called')
+        blob = nonempty[0]
+        self.assertIn('Owner', blob)
+        self.assertNotIn('family:', blob)
+        self.assertNotIn('pillar_owner_missing', ' '.join(
+            str(b) for b in (gate.get('blocking_errors') or [])))
+
+    def test_71_docx_diagnostic_evidence_input_matches_repaired(self):
+        from release_engine.export_evidence_validator import (
+            validate_actual_export_evidence,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            gate = validate_actual_export_evidence(
+                '', _ownerless_en_cyber_evidence_blob(), '',
+                domain='cyber', lang='en', document_type='strategy',
+                route_name='docx')
+        diags = _rel36_5_diags_from_log(buf.getvalue())
+        self.assertTrue(diags)
+        docx = next(d for d in diags if d.get('export_type') == 'docx')
+        self.assertTrue(docx['evidence_input_matches_repaired'], docx)
+        self.assertEqual(docx['missing_owner_rows_after'], [])
+        self.assertEqual(docx['family_markers_after'], [])
+        self.assertIn(_DOCX_EVIDENCE_CALL_SITE, docx['evidence_call_site'])
+        self.assertTrue(
+            gate.get('rel36_5_actual_server_export_evidence_hook', {}).get('docx'))
+
+    def test_72_pdf_diagnostic_evidence_input_matches_repaired(self):
+        from release_engine.export_evidence_validator import (
+            validate_actual_export_evidence,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            gate = validate_actual_export_evidence(
+                '', '', _ownerless_en_cyber_evidence_blob(),
+                domain='cyber', lang='en', document_type='strategy',
+                route_name='pdf', pdf_bytes_had=True)
+        diags = _rel36_5_diags_from_log(buf.getvalue())
+        pdf = next(d for d in diags if d.get('export_type') == 'pdf')
+        self.assertTrue(pdf['evidence_input_matches_repaired'], pdf)
+        self.assertEqual(pdf['missing_owner_rows_after'], [])
+        self.assertEqual(pdf['family_markers_after'], [])
+        self.assertIn(_PDF_EVIDENCE_CALL_SITE, pdf['evidence_call_site'])
+        self.assertTrue(
+            gate.get('rel36_5_actual_server_export_evidence_hook', {}).get('pdf'))
+
+    def test_73_docx_blockers_after_empty(self):
+        repaired, diag = apply_rel36_5_to_evidence_blob(
+            _ownerless_en_cyber_evidence_blob(),
+            lang='en', domain='cyber', document_type='strategy',
+            selected_frameworks=['NCA ECC', 'NCA DCC'],
+            export_type='docx', route='docx')
+        self.assertEqual(diag['blockers_after'], [])
+        self.assertTrue(diag['passed'])
+        self.assertIn('Owner', repaired)
+
+    def test_74_pdf_blockers_after_empty(self):
+        repaired, diag = apply_rel36_5_to_evidence_blob(
+            _ownerless_en_cyber_evidence_blob(),
+            lang='en', domain='cyber', document_type='strategy',
+            selected_frameworks=['NCA ECC', 'NCA DCC'],
+            export_type='pdf', route='pdf')
+        self.assertEqual(diag['blockers_after'], [])
+        self.assertTrue(diag['passed'])
+
+    def test_75_saved_export_docx_passes(self):
+        out = _export_pair_live(_cyber_en_live_saved_export_sections(), lang='en')
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        joined = ' '.join(str(b) for b in (out['docx_ev'].blocking_errors or []))
+        self.assertNotIn('pillar_owner_missing', joined)
+        self.assertIn(REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG, out['log'])
+
+    def test_76_saved_export_pdf_passes(self):
+        out = _export_pair_live(_cyber_en_live_saved_export_sections(), lang='en')
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        joined = ' '.join(str(b) for b in (out['pdf_ev'].blocking_errors or []))
+        self.assertNotIn('pillar_owner_missing', joined)
+        self.assertNotIn('actual PDF evidence validation failed', joined)
+
+    def test_77_unrepaired_blob_still_fails_pillar_owner_missing(self):
+        from release_engine.rel31_content_substance_checks import (
+            check_pillar_owner_missing,
+            evaluate_content_substance,
+        )
+        dirty = _ownerless_en_cyber_evidence_blob()
+        self.assertTrue(check_pillar_owner_missing(dirty))
+        substance = evaluate_content_substance(dirty, route='docx', domain='cyber')
+        self.assertIn('pillar_owner_missing', substance.get('blocking_errors') or [])
+        self.assertFalse(substance.get('content_substance_passed'))
+
+    def test_78_repaired_blob_passes_gate(self):
+        from release_engine.export_evidence_validator import (
+            validate_actual_export_evidence,
+        )
+        from release_engine.rel31_content_substance_checks import (
+            check_pillar_owner_missing,
+        )
+        dirty = _ownerless_en_cyber_evidence_blob()
+        repaired, diag = apply_rel36_5_to_evidence_blob(
+            dirty, lang='en', domain='cyber', export_type='docx',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertFalse(check_pillar_owner_missing(repaired))
+        gate = validate_actual_export_evidence(
+            '', dirty, '',
+            domain='cyber', lang='en', document_type='strategy',
+            route_name='docx')
+        self.assertTrue(diag['passed'])
+        self.assertNotIn('pillar_owner_missing', ' '.join(
+            str(b) for b in (gate.get('blocking_errors') or [])))
+
+    def test_79_no_family_markers_in_preview_docx_pdf(self):
+        dirty = _cyber_en_live_saved_export_sections()
+        bound = bind_saved_preview_payload(
+            {
+                'id': 365,
+                'sections': dirty,
+                'domain': 'cyber',
+                'language': 'en',
+                'selected_frameworks': ['NCA ECC', 'NCA DCC'],
+            },
+            expected_domain='cyber',
+            expected_lang='en',
+        )
+        preview = '\n'.join(str(v) for v in (bound.get('sections') or {}).values())
+        self.assertNotIn('family:', preview)
+        out = _export_pair_live(dirty, lang='en')
+        from release_engine_v3.evidence.docx_text_extractor import (
+            extract_docx_visible_text,
+        )
+        docx_text = extract_docx_visible_text(out['docx_export'].docx_bytes or b'')
+        self.assertNotIn('family:', docx_text)
+
+    def test_80_english_pillar_header_is_owner_bearing(self):
+        repaired, _ = apply_rel36_5_to_evidence_blob(
+            _ownerless_en_cyber_evidence_blob(),
+            lang='en', domain='cyber', export_type='docx',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertIn(
+            '| Initiative | Description | Expected Deliverable | Owner |',
+            repaired)
+        inv = inventory_english_cyber_pillar_rows(repaired)
+        self.assertGreaterEqual(inv['row_count'], 1)
+        self.assertEqual(inv['missing_owner_rows'], [])
+
+    def test_81_arabic_cyber_docx_pdf_still_pass(self):
+        out = _export_pair(_cyber_ar_sections(), lang='ar')
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+
+    def test_82_data_fidelity_still_passes(self):
+        repaired, _ = repair_sections_for_fidelity(
+            _data_sections(), domain='data', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('NDMO', blob)
+        self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('CISO', blob)
+        self.assertNotIn('SIEM', blob)
+        self.assertNotIn('CSIRT', blob)
+
+    def test_83_ai_fidelity_still_passes(self):
+        leaked = dict(_ai_sections())
+        leaked['environment'] = (
+            str(leaked.get('environment') or '')
+            + ' NCA ECC NIST AI RMF CISO SIEM IAM PAM MFA CSIRT'
+        )
+        repaired, _ = repair_sections_for_fidelity(
+            leaked, domain='ai', document_type='strategy',
+            selected_frameworks=['SDAIA'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('SDAIA', blob)
+        self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('NIST AI RMF', blob)
+        self.assertNotIn('CISO', blob)
+        self.assertNotIn('SIEM', blob)
+
+    def test_84_dt_dga_still_passes(self):
+        repaired, _ = repair_dga_interoperability_sections(
+            _dt_dga_sections(), lang='ar')
+        self.assertTrue(dga_interoperability_covered(repaired))
+
+    def test_85_hook_skips_arabic_and_non_cyber(self):
+        ar = '| المبادرة | الوصف | المخرج المتوقع |\n|---|---|---|\n| تأسيس CISO | حوكمة | ميثاق |\n'
+        self.assertFalse(rel36_5_should_apply(
+            lang='ar', domain='cyber', document_type='strategy',
+            selected_frameworks=['NCA ECC', 'NCA DCC'], blob=ar))
+        self.assertFalse(rel36_5_should_apply(
+            lang='en', domain='data', document_type='strategy',
+            selected_frameworks=['NDMO'], blob='NDMO PDPL'))
+        emit_rel36_5_actual_server_export_evidence_hook({'tag': 'probe'})
 
 
 if __name__ == '__main__':

@@ -516,8 +516,48 @@ def validate_actual_export_evidence(
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
         hash_fn=None,
+        selected_frameworks: Optional[Any] = None,
+        strategy_id: Any = None,
 ) -> Dict[str, Any]:
     """Validate visible text from actual export surfaces (not render model only)."""
+    # REL36.5 — last-mile repair of the exact extracted evidence strings
+    # before _channel_defects / check_pillar_owner_missing. Does not skip
+    # or weaken the validator.
+    _rel36_5_hooks: Dict[str, Any] = {}
+    try:
+        from release_engine_v3.rel36_5_actual_server_export_evidence_hook import (
+            apply_rel36_5_to_evidence_blob,
+            emit_rel36_5_actual_server_export_evidence_hook,
+        )
+        _rel36_5_kwargs = {
+            'lang': lang,
+            'domain': domain,
+            'document_type': document_type,
+            'selected_frameworks': selected_frameworks,
+            'strategy_id': strategy_id,
+        }
+        if preview_text:
+            preview_text, _rel36_5_hooks['preview'] = (
+                apply_rel36_5_to_evidence_blob(
+                    preview_text, route='preview', export_type='preview',
+                    **_rel36_5_kwargs))
+            emit_rel36_5_actual_server_export_evidence_hook(
+                _rel36_5_hooks['preview'])
+        if docx_text:
+            docx_text, _rel36_5_hooks['docx'] = apply_rel36_5_to_evidence_blob(
+                docx_text, route='docx', export_type='docx',
+                **_rel36_5_kwargs)
+            emit_rel36_5_actual_server_export_evidence_hook(
+                _rel36_5_hooks['docx'])
+        if pdf_text:
+            pdf_text, _rel36_5_hooks['pdf'] = apply_rel36_5_to_evidence_blob(
+                pdf_text, route='pdf', export_type='pdf',
+                **_rel36_5_kwargs)
+            emit_rel36_5_actual_server_export_evidence_hook(
+                _rel36_5_hooks['pdf'])
+    except Exception:  # noqa: BLE001
+        _rel36_5_hooks = _rel36_5_hooks or {}
+
     internal_roadmap_row_count = None
     if canonical_sections:
         try:
@@ -762,6 +802,7 @@ def validate_actual_export_evidence(
         'actual_export_evidence_passed': export_passed,
         'route_bound_evidence_valid': export_passed,
         'content_substance_evidence': substance_diag,
+        'rel36_5_actual_server_export_evidence_hook': _rel36_5_hooks,
         'exported_kpi_canonical_valid': bool(
             docx_kpi.get('exported_kpi_canonical_valid', True)
             and (pdf_kpi.get('exported_kpi_canonical_valid', True)

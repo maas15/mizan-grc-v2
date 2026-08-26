@@ -120,13 +120,31 @@ def _is_pillar_header(cells: Sequence[str]) -> bool:
 
 
 def _is_other_table_header(cells: Sequence[str]) -> bool:
-    blob = ' '.join(cells).lower()
-    return any(tok in blob for tok in (
-        'phase', 'period', 'kpi description', 'framework',
-        'linked framework', 'calculation formula',
-        'المرحلة', 'الفترة', 'وصف المؤشر', 'الإطار',
-        'strategic objective', 'الهدف الاستراتيجي',
-    ))
+    """True only for KPI/roadmap/SO headers — not pillar initiative names.
+
+    A bare ``framework`` token used to match ``CISO Framework Establishment``
+    and abort owner padding mid-table. Match header cells / header phrases.
+    """
+    blob = ' '.join(str(c) for c in cells).lower()
+    if any(tok in blob for tok in (
+            'kpi description',
+            'linked framework',
+            'calculation formula',
+            'وصف المؤشر',
+            'الهدف الاستراتيجي',
+            'strategic objective',
+    )):
+        return True
+    first = str(cells[0] if cells else '').strip().lower()
+    return first in (
+        'phase',
+        'period',
+        'framework',
+        'المرحلة',
+        'الفترة',
+        'الإطار',
+        '#',
+    )
 
 
 def _pad_owner_row(cells: Sequence[str]) -> List[str]:
