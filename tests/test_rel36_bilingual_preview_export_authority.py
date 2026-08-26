@@ -596,7 +596,12 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
         blob = ' '.join(str(v) for v in secs.values())
         fw = detect_visible_frameworks(blob)
         self.assertIn('NDMO', fw)
+        self.assertIn('PDPL', blob)
         self.assertNotIn('NCA ECC', fw)
+        self.assertNotIn('NIST CSF', fw)
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
+        self.assertNotIn('NIST AI RMF', blob)
         self.assertNotIn('CISO', blob)
         self.assertNotIn('SIEM', blob)
         self.assertNotIn('CSIRT', blob)
@@ -609,6 +614,9 @@ class Rel36AuthorityAndPreviewTests(unittest.TestCase):
         fw = detect_visible_frameworks(blob)
         self.assertIn('SDAIA', fw)
         self.assertNotIn('NCA ECC', fw)
+        self.assertNotIn('NIST CSF', fw)
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
         self.assertNotIn('NIST AI RMF', blob)
         self.assertNotIn('NIST', blob)
         self.assertNotIn('CISO', blob)
@@ -1675,7 +1683,11 @@ class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
             selected_frameworks=['NDMO', 'PDPL'], lang='ar')
         blob = '\n'.join(str(v) for v in repaired.values())
         self.assertIn('NDMO', blob)
+        self.assertIn('PDPL', blob)
         self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
+        self.assertNotIn('NIST AI RMF', blob)
         self.assertNotIn('CISO', blob)
         self.assertNotIn('SIEM', blob)
         self.assertNotIn('CSIRT', blob)
@@ -1684,7 +1696,8 @@ class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
         leaked = dict(_ai_sections())
         leaked['environment'] = (
             str(leaked.get('environment') or '')
-            + ' NCA ECC NIST AI RMF CISO SIEM IAM PAM MFA CSIRT'
+            + ' NCA ECC NIST CSF NIST Cybersecurity Framework NIST AI RMF '
+            + 'CISO SIEM IAM PAM MFA CSIRT'
         )
         repaired, _ = repair_sections_for_fidelity(
             leaked, domain='ai', document_type='strategy',
@@ -1692,6 +1705,8 @@ class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
         blob = '\n'.join(str(v) for v in repaired.values())
         self.assertIn('SDAIA', blob)
         self.assertNotIn('NCA ECC', blob)
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
         self.assertNotIn('NIST AI RMF', blob)
         self.assertNotIn('CISO', blob)
         self.assertNotIn('SIEM', blob)
@@ -1803,6 +1818,46 @@ class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
         self.assertTrue(docx_diag['evidence_input_matches_repaired'], docx_diag)
         self.assertEqual(docx_diag['missing_owner_rows_after'], [])
         self.assertEqual(docx_diag['blockers_after'], [])
+
+    def test_91_data_ndmo_pdpl_has_no_nist_csf(self):
+        leaked = dict(_data_sections())
+        leaked['environment'] = (
+            str(leaked.get('environment') or '')
+            + ' NIST Cybersecurity Framework (NIST CSF)'
+        )
+        repaired, _ = repair_sections_for_fidelity(
+            leaked, domain='data', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('NDMO', blob)
+        self.assertIn('PDPL', blob)
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
+
+    def test_92_erm_risk_docx_pdf_still_allowed(self):
+        from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
+        from release_engine_v3.contracts import RenderTree
+        from release_engine_v3.exporters.docx_exporter import export_docx
+        from release_engine_v3.exporters.pdf_exporter import export_pdf
+        tree = RenderTree(
+            artifact_id='risk-rel36-6', canonical_hash='c' * 16,
+            render_tree_hash='r' * 16, nodes=[], markdown_view=_CLEAN_RISK_MD)
+        docx = export_docx(
+            tree,
+            backend={'build_docx_bytes': lambda *a, **k: b'PK-docx',
+                     'split_sections': lambda _c: {},
+                     'document_type': 'risk'},
+            domain='erm', document_type='risk')
+        pdf = export_pdf(
+            tree,
+            backend={'build_pdf_bytes': lambda *a, **k: b'%PDF-bytes',
+                     'split_sections': lambda _c: {},
+                     'document_type': 'risk'},
+            domain='erm', document_type='risk')
+        self.assertTrue(docx.bytes_data)
+        self.assertTrue(pdf.bytes_data)
+        self.assertEqual(docx.blocking_errors, [])
+        self.assertEqual(pdf.blocking_errors, [])
 
 
 def _flattened_live_en_cyber_extract_blob() -> str:

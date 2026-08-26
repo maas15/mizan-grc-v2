@@ -26,6 +26,14 @@ CYBER_TERM_TOKENS = (
 NIST_AI_TOKENS = (
     'NIST AI RMF', 'NIST_AI_RMF', 'NIST AI Risk Management',
 )
+NIST_CSF_TOKENS = (
+    'NIST Cybersecurity Framework (NIST CSF)',
+    'NIST Cybersecurity Framework',
+    'NIST CSF 2.0',
+    'NIST CSF',
+    'NIST_CSF',
+    'إطار نيست للأمن السيبراني',
+)
 DGA_INTEROP_AR = (
     'التشغيل البيني',
     'التكامل الحكومي',
@@ -141,6 +149,8 @@ DT_ROADMAP: Tuple[Tuple[str, str, str, str, str, str], ...] = (
 _FW_DETECT = (
     ('NCA ECC', re.compile(r'\bNCA\s*ECC\b', re.I)),
     ('NCA DCC', re.compile(r'\bNCA\s*DCC\b', re.I)),
+    ('NIST CSF', re.compile(
+        r'\bNIST\s*CSF\b|\bNIST\s+Cybersecurity\s+Framework\b', re.I)),
     ('NIST AI RMF', re.compile(r'\bNIST\s*AI\s*(RMF|Risk Management)\b', re.I)),
     ('SDAIA', re.compile(r'\bSDAIA\b', re.I)),
     ('NDMO', re.compile(r'\bNDMO\b', re.I)),
@@ -185,6 +195,8 @@ def normalize_selected_frameworks(raw: Optional[Iterable[Any]]) -> List[str]:
             label = 'NCA DCC'
         elif 'NIST' in up and 'AI' in up:
             label = 'NIST AI RMF'
+        elif 'NIST' in up and 'CSF' in up:
+            label = 'NIST CSF'
         elif 'SDAIA' in up:
             label = 'SDAIA'
         elif 'NDMO' in up:
@@ -212,7 +224,9 @@ def detect_visible_frameworks(text: str) -> List[str]:
 def detect_forbidden_domain_terms(text: str) -> List[str]:
     blob = str(text or '')
     found: List[str] = []
-    for tok in CYBER_TERM_TOKENS + CYBER_FRAMEWORK_TOKENS + NIST_AI_TOKENS:
+    for tok in (
+            CYBER_TERM_TOKENS + CYBER_FRAMEWORK_TOKENS
+            + NIST_AI_TOKENS + NIST_CSF_TOKENS):
         if tok in blob and tok not in found:
             found.append(tok)
     return found
@@ -493,6 +507,10 @@ def repair_sections_for_fidelity(
                 'فريق الأمن السيبراني', 'CISO', 'SIEM', 'SOAR', 'CSIRT',
                 'SOC/SIEM', 'IAM/PAM/MFA',
             ])
+        if 'NIST CSF' not in allowed:
+            strip.extend(NIST_CSF_TOKENS)
+        if 'NIST AI RMF' not in allowed:
+            strip.extend(NIST_AI_TOKENS)
     if dcode == 'ai' and not is_cyber_strategy(dcode, dtype):
         if 'NCA ECC' not in allowed:
             strip.extend(CYBER_FRAMEWORK_TOKENS)
@@ -502,6 +520,8 @@ def repair_sections_for_fidelity(
             ])
         if 'NIST AI RMF' not in allowed:
             strip.extend(NIST_AI_TOKENS)
+        if 'NIST CSF' not in allowed:
+            strip.extend(NIST_CSF_TOKENS)
 
     if strip:
         for key, val in list(out.items()):
@@ -526,7 +546,8 @@ def repair_sections_for_fidelity(
         forbidden = [
             t for t in detect_forbidden_domain_terms(blob)
             if t in CYBER_TERM_TOKENS or t in CYBER_FRAMEWORK_TOKENS
-            or (dcode == 'ai' and t in NIST_AI_TOKENS and 'NIST AI RMF' not in allowed)
+            or (t in NIST_AI_TOKENS and 'NIST AI RMF' not in allowed)
+            or (t in NIST_CSF_TOKENS and 'NIST CSF' not in allowed)
         ]
     blocking: List[str] = []
     if unexpected and dcode in ('data', 'ai'):
@@ -572,7 +593,8 @@ def _scrub_table_cells(
                 new_cells = []
                 for c in cells:
                     had_fw = any(tok in str(c) for tok in (
-                        'NCA ECC', 'NCA DCC', 'NIST AI RMF'))
+                        'NCA ECC', 'NCA DCC', 'NIST AI RMF', 'NIST CSF',
+                        'NIST Cybersecurity Framework'))
                     had_owner = any(
                         tok in str(c) for tok in (
                             'CISO', 'SOC', 'CSIRT', 'فريق الأمن السيبراني'))
@@ -619,6 +641,10 @@ def apply_fidelity_to_blocks(
             'فريق الأمن السيبراني', 'CISO', 'SIEM', 'SOAR', 'CSIRT',
             'SOC/SIEM', 'IAM/PAM/MFA',
         ]
+        if 'NIST CSF' not in allowed:
+            strip.extend(NIST_CSF_TOKENS)
+        if 'NIST AI RMF' not in allowed:
+            strip.extend(NIST_AI_TOKENS)
         replacement_owner = 'مدير حوكمة البيانات'
     elif dcode == 'ai' and 'NCA ECC' not in allowed:
         strip = list(CYBER_FRAMEWORK_TOKENS) + list(NIST_AI_TOKENS) + [
@@ -627,6 +653,8 @@ def apply_fidelity_to_blocks(
         ]
         if 'NIST AI RMF' in allowed:
             strip = [t for t in strip if t not in NIST_AI_TOKENS]
+        if 'NIST CSF' not in allowed:
+            strip.extend(NIST_CSF_TOKENS)
         replacement_owner = 'رئيس حوكمة الذكاء الاصطناعي'
     elif dcode == 'dt' and 'NCA ECC' not in allowed:
         strip = [
@@ -660,6 +688,10 @@ def apply_fidelity_to_blocks(
                         drop_unselected = (
                             (dcode == 'ai' and 'NIST AI RMF' not in allowed
                              and any(tok in orig_blob for tok in NIST_AI_TOKENS))
+                            or (dcode in ('data', 'ai')
+                                and 'NIST CSF' not in allowed
+                                and any(tok in orig_blob
+                                        for tok in NIST_CSF_TOKENS))
                             or (dcode in ('data', 'ai')
                                 and any(tok in orig_blob
                                         for tok in CYBER_FRAMEWORK_TOKENS)

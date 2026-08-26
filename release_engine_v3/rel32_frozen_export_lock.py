@@ -252,8 +252,15 @@ def prepare_rel32_export_artifact_dict(
     document_type = str(
         art.get('document_type')
         or (art.get('contract_meta') or {}).get('document_type')
+        or art.get('artifact_type')
         or 'strategy').strip().lower()
-    if not is_rel32_compiler_first(domain=domain, lang=lang, flags=flags):
+    # REL36.6 — ERM risk must never overlay a frozen strategy artifact
+    # keyed by the same numeric id (risk_id colliding with strategy_id).
+    if document_type in ('risk', 'risk_assessment'):
+        return art
+    if not is_rel32_compiler_first(
+            domain=domain, lang=lang, flags=flags,
+            document_type=document_type):
         return art
     lookup_keys = _rel32_lookup_keys(art, backend=backend)
     if not lookup_keys:

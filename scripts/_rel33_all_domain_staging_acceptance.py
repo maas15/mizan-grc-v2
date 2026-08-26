@@ -70,6 +70,24 @@ DOC_TYPE_LABELS = {
     'gap_assessment': 'Gap Assessment',
 }
 
+# REL36.6 — P1 selected frameworks are domain-correct. Data/AI must not
+# select NIST CSF (that was the live leakage source). Cyber keeps NCA ECC+DCC.
+P1_SELECTED_FRAMEWORKS = {
+    'cyber': [
+        'NCA ECC (Essential Cybersecurity Controls)',
+        'NCA DCC (Data Cybersecurity Controls)',
+    ],
+    'data': ['NDMO', 'PDPL'],
+    'ai': ['SDAIA'],
+    'dt': ['DGA'],
+    'erm': ['ISO 31000', 'COSO ERM'],
+    'global': ['ISO 27001'],
+}
+
+
+def _selected_frameworks_for_domain(domain: str) -> List[str]:
+    return list(P1_SELECTED_FRAMEWORKS.get(domain, ['ISO 27001']))
+
 P1_ROUTES: List[Dict[str, str]] = [
     {'domain': 'cyber', 'document_type': 'strategy', 'lang': 'ar',
      'doc_subtype': 'technical'},
@@ -277,11 +295,7 @@ def _base_payload(case: Dict[str, str]) -> Dict[str, Any]:
         'sector': 'Government',
         'size': '500-1000',
         'budget': '2M SAR',
-        'frameworks': (
-            ['NCA ECC (Essential Cybersecurity Controls)',
-             'NCA DCC (Data Cybersecurity Controls)']
-            if domain == 'cyber'
-            else ['ISO 27001', 'NIST CSF']),
+        'frameworks': _selected_frameworks_for_domain(domain),
         'org_structure': org_structure,
         'technologies': technologies,
         'additional_tech': '',
@@ -339,11 +353,7 @@ def _export_live(
         'doc_type': DOC_TYPE_LABELS.get(
             case['document_type'], 'Strategy Document'),
         'domain': DOMAIN_LABELS.get(case['domain'], case['domain']),
-        'selected_frameworks': (
-            ['NCA ECC (Essential Cybersecurity Controls)',
-             'NCA DCC (Data Cybersecurity Controls)']
-            if case['domain'] == 'cyber'
-            else ['ISO 27001']),
+        'selected_frameworks': _selected_frameworks_for_domain(case['domain']),
         'artifact_type': case['document_type'],
         'document_type': case['document_type'],
         'generation_mode': os.environ.get('STAGING_GENERATION_MODE', 'drafting'),
@@ -500,7 +510,7 @@ def _local_hash_lock(
             'filename': f"{case['domain']}.docx",
             'lang': 'ar',
             'domain': DOMAIN_LABELS.get(case['domain'], case['domain']),
-            'selected_frameworks': ['NCA ECC', 'NCA DCC'],
+            'selected_frameworks': _selected_frameworks_for_domain(case['domain']),
             'doc_type': DOC_TYPE_LABELS.get(
                 case['document_type'], 'Strategy Document'),
         }

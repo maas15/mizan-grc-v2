@@ -274,6 +274,18 @@ class TestRel35DataFidelity(unittest.TestCase):
         self.assertIn('NDMO', blob)
         self.assertIn('PDPL', blob)
 
+    def test_data_has_no_unselected_nist_csf(self):
+        leaked = dict(_data_sections())
+        leaked['environment'] += (
+            '\nإطار NIST Cybersecurity Framework (NIST CSF).')
+        repaired, _ = repair_sections_for_fidelity(
+            leaked, domain='data', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
+        self.assertNotIn('NIST AI RMF', blob)
+
     def test_data_roadmap_is_data_privacy_only(self):
         road = _table_blob((self.blocks.get('roadmap') or {}).get('tables'))
         self.assertTrue(any(tok in road for tok in ('NDMO', 'PDPL', 'بيانات', 'CDO')))
@@ -298,7 +310,9 @@ class TestRel35AiFidelity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         leaked = _ai_sections()
-        leaked['environment'] += '\nNIST AI RMF and NCA ECC / NCA DCC SOC/SIEM.'
+        leaked['environment'] += (
+            '\nNIST AI RMF and NIST CSF and NIST Cybersecurity Framework '
+            'and NCA ECC / NCA DCC SOC/SIEM.')
         leaked['roadmap'] += (
             '\n| المرحلة 2 | 7-18 شهر | تشغيل SOC/SIEM | CISO | مركز SOC | NCA ECC |')
         repaired, cls.diag = repair_sections_for_fidelity(
@@ -315,6 +329,8 @@ class TestRel35AiFidelity(unittest.TestCase):
     def test_ai_sdaia_only_has_no_nist_unless_selected(self):
         self.assertNotIn('NIST AI RMF', self.visible)
         self.assertNotIn('NIST_AI_RMF', self.visible)
+        self.assertNotIn('NIST CSF', self.visible)
+        self.assertNotIn('NIST Cybersecurity Framework', self.visible)
 
     def test_ai_roadmap_is_ai_governance_only(self):
         road = _table_blob((self.blocks.get('roadmap') or {}).get('tables'))

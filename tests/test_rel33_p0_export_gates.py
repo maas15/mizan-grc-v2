@@ -571,6 +571,12 @@ class Rel33AcceptanceScriptRiskTests(unittest.TestCase):
             payload['strategy_id'] = artifact_id
         self.assertEqual(payload.get('risk_id'), 42)
         self.assertNotIn('strategy_id', payload)
+        data_fw = mod._selected_frameworks_for_domain('data')
+        ai_fw = mod._selected_frameworks_for_domain('ai')
+        self.assertEqual(data_fw, ['NDMO', 'PDPL'])
+        self.assertEqual(ai_fw, ['SDAIA'])
+        self.assertNotIn('NIST CSF', data_fw)
+        self.assertNotIn('NIST CSF', ai_fw)
 
 
 class Rel33DomainGuardGapTests(unittest.TestCase):
