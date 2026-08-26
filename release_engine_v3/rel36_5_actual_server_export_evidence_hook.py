@@ -31,6 +31,7 @@ from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
     _inventory_from_blob,
     repair_live_english_cyber_export_sections,
     repair_live_english_cyber_export_text,
+    rewrite_english_cyber_mash_residues,
 )
 from release_engine_v3.rel36_bilingual_preview_export_authority import (
     normalize_rel36_lang,
@@ -69,7 +70,12 @@ def _frameworks_ok(selected: List[str], blob: str) -> bool:
     has_ecc = 'ECC' in upper
     if selected:
         return has_dcc or (has_ecc and has_dcc)
-    return has_dcc or has_ecc or 'NCA' in upper or 'المبادرة' in (blob or '')
+    text = str(blob or '')
+    if 'Initiative' in text and 'Expected Deliverable' in text:
+        return True
+    if 'المبادرة' in text or 'المخرج المتوقع' in text:
+        return True
+    return has_dcc or has_ecc or 'NCA' in upper
 
 
 def _english_cyber_evidence_signal(blob: str, lang: str) -> bool:
@@ -172,6 +178,7 @@ def apply_rel36_5_to_evidence_blob(
         blob=source,
     )
     repaired = source
+    repair_error = ''
     if apply and source.strip() and not getattr(_HOOK_GUARD, 'active', False):
         _HOOK_GUARD.active = True
         try:
@@ -195,6 +202,13 @@ def apply_rel36_5_to_evidence_blob(
                 or text_repaired
                 or source
             )
+        except Exception as exc:  # noqa: BLE001
+            repair_error = repr(exc)[:300]
+            try:
+                repaired = repair_live_english_cyber_export_text(source)
+            except Exception as inner:  # noqa: BLE001
+                repair_error = f'{repair_error}; fallback={repr(inner)[:160]}'
+                repaired = rewrite_english_cyber_mash_residues(source)
         finally:
             _HOOK_GUARD.active = False
     after_inv = _inventory_from_blob(repaired)
@@ -230,6 +244,7 @@ def apply_rel36_5_to_evidence_blob(
         'blockers_before': blockers_before,
         'blockers_after': blockers_after,
         'passed': not blockers_after,
+        'repair_error': repair_error,
     }
     return repaired, diag
 

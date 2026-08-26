@@ -44,6 +44,52 @@ _AR_PILLAR_HDR_OWNER = '| المبادرة | الوصف | المخرج المت�
 _EN_PILLAR_HDR = '| Initiative | Description | Expected Deliverable | Owner |'
 _EN_PILLAR_SEP = '|---|---|---|---|'
 _FAMILY_RE = re.compile(r'\s*family:[a-z][a-z0-9_]{1,48}\b', re.I)
+_GLUED_HEADING_TABLE_RE = re.compile(
+    r'(###[^\n|]+?)\s+(\|\s*(?:Initiative|المبادرة)\s*\|[^\n]*)',
+    re.I,
+)
+_MASH_RESIDUES = (
+    ('مسؤول الأمن السيبرانيe', 'Cybersecurity Governance'),
+    ('المسؤول أمن السيبرانيe', 'Cybersecurity Governance'),
+    ('المسؤول أمن السيبرانيLead', 'Cybersecurity Governance Lead'),
+    ('المسؤولأمن', 'Cybersecurity Officer'),
+    ('المسؤول أمن السيبراني', 'Cybersecurity Governance'),
+    ('مسؤول الأمن السيبراني', 'Cybersecurity Governance'),
+)
+_AR_ROADMAP_HDR = (
+    '| المرحلة | الفترة | المبادرة | المسؤول | المخرج المتوقع | الإطار |'
+)
+_EN_ROADMAP_HDR = (
+    '| Phase | Period | Initiative | Owner | Expected Deliverable | '
+    'Linked Framework |'
+)
+_FLAT_PILLAR_HEADERS = (
+    ('Initiative', 'Description', 'Expected Deliverable', 'Owner'),
+    ('Initiative', 'Description', 'Expected Deliverable'),
+    ('المبادرة', 'الوصف', 'المخرج المتوقع', 'المسؤول'),
+    ('المبادرة', 'الوصف', 'المخرج المتوقع', 'المالك'),
+    ('المبادرة', 'الوصف', 'المخرج المتوقع'),
+)
+_FLAT_STOP_HEADERS = (
+    ('Phase', 'Period', 'Initiative'),
+    ('المرحلة', 'الفترة', 'المبادرة'),
+    ('KPI Description',),
+    ('وصف المؤشر',),
+    ('#', 'KPI Description'),
+    ('#', 'وصف المؤشر'),
+    ('Framework', 'Capability', 'Gap'),
+    ('Framework', 'Initiative', 'Metric'),
+    ('Framework', 'Control', 'Objective'),
+    ('Framework', 'Control', 'Objective', 'Gap'),
+    ('الإطار', 'الضابط'),
+    ('Reference Framework',),
+)
+_FLAT_STOP_LINES = frozenset({
+    'framework', 'capability', 'gap', 'metric', 'risk',
+    'الإطار', 'الضابط', 'الفجوة', 'المؤشر',
+    'phase', 'period', 'المرحلة', 'الفترة',
+    'kpi description', 'وصف المؤشر',
+})
 _SNAKE_INTERNAL_RE = re.compile(
     r'\b(?:governance_ciso|governance_committee|soc_siem|'
     r'iam_pam_mfa|encryption_key_management|awareness_training|'
@@ -175,6 +221,183 @@ def _strip_visible_family(text: str) -> str:
     return src
 
 
+def _apply_concat_fixes(text: str) -> str:
+    src = str(text or '')
+    try:
+        from professional_strategy_render import PRCY41_AR_CONCAT_FIXES
+        for bad, good in PRCY41_AR_CONCAT_FIXES:
+            if bad in src:
+                src = src.replace(bad, good)
+    except Exception:  # noqa: BLE001
+        src = src.replace('المسؤولأمن', 'المسؤول أمن')
+    return src
+
+
+def rewrite_english_cyber_mash_residues(text: str) -> str:
+    """Rewrite live mashed Arabic leftovers in English Cyber exports."""
+    src = _apply_concat_fixes(str(text or ''))
+    for bad, good in _MASH_RESIDUES:
+        if bad in src:
+            src = src.replace(bad, good)
+    src = src.replace(_AR_ROADMAP_HDR, _EN_ROADMAP_HDR)
+    src = src.replace(
+        '| المرحلة | الفترة | المبادرة |',
+        '| Phase | Period | Initiative |')
+    src = _GLUED_HEADING_TABLE_RE.sub(r'\1\n\2', src)
+    return src
+
+
+def _lines_match(lines: Sequence[str], start: int, header: Sequence[str]) -> bool:
+    if start < 0 or start + len(header) > len(lines):
+        return False
+    return all(
+        str(lines[start + i] or '').strip() == token
+        for i, token in enumerate(header)
+    )
+
+
+def _is_flat_stop(lines: Sequence[str], start: int) -> bool:
+    if start >= len(lines):
+        return True
+    raw = str(lines[start] or '').strip()
+    if not raw:
+        return True
+    if raw.startswith('#') or raw.startswith('Pillar ') or raw.startswith('##'):
+        return True
+    if raw.lower() in _FLAT_STOP_LINES:
+        return True
+    for hdr in _FLAT_PILLAR_HEADERS + _FLAT_STOP_HEADERS:
+        if _lines_match(lines, start, hdr):
+            return True
+    return False
+
+
+def _has_flattened_pillar_header(text: str) -> bool:
+    lines = [str(ln or '').strip() for ln in str(text or '').splitlines()]
+    for i in range(len(lines)):
+        for hdr in _FLAT_PILLAR_HEADERS:
+            if _lines_match(lines, i, hdr):
+                return True
+    return False
+
+
+def _should_rebuild_flattened_pipes(text: str) -> bool:
+    """Avoid rebuilding pipes in full-document extracts.
+
+    Professional PDF/DOCX extracts include a TOC line containing
+    ``traceability``. Rebuilt pillar pipes after that line are misread
+    as blank traceability-gap rows by REL27.
+    """
+    blob = str(text or '')
+    if not _has_flattened_pillar_header(blob):
+        return False
+    low = blob.lower()
+    if 'traceability' in low or 'مصفوفة تتبع' in blob:
+        return False
+    return True
+
+
+def _rewrite_flat_arabic_headers(text: str) -> str:
+    mapping = {
+        'المبادرة': 'Initiative',
+        'الوصف': 'Description',
+        'المخرج المتوقع': 'Expected Deliverable',
+        'المسؤول': 'Owner',
+        'المالك': 'Owner',
+    }
+    out: List[str] = []
+    for ln in str(text or '').splitlines():
+        raw = ln.strip()
+        out.append(mapping.get(raw, ln))
+    return '\n'.join(out)
+
+
+def _fill_flattened_pillar_owners(text: str) -> str:
+    """Replace empty 4th cells after a flattened English/Arabic pillar header."""
+    lines = str(text or '').splitlines()
+    if not lines:
+        return str(text or '')
+    i = 0
+    n = len(lines)
+    out: List[str] = []
+    while i < n:
+        matched: Optional[Sequence[str]] = None
+        for hdr in _FLAT_PILLAR_HEADERS:
+            if _lines_match(lines, i, hdr):
+                matched = hdr
+                break
+        if matched is None:
+            out.append(lines[i])
+            i += 1
+            continue
+        col_n = 4 if len(matched) >= 4 or matched[-1] in (
+            'Owner', 'المسؤول', 'المالك') else 3
+        for tok in matched:
+            out.append('Owner' if tok in ('المسؤول', 'المالك') else (
+                'Initiative' if tok == 'المبادرة' else (
+                    'Description' if tok == 'الوصف' else (
+                        'Expected Deliverable' if tok == 'المخرج المتوقع'
+                        else tok))))
+        i += len(matched)
+        while i < n and not _is_flat_stop(lines, i):
+            chunk: List[str] = []
+            for _ in range(col_n):
+                if i >= n or _is_flat_stop(lines, i):
+                    break
+                chunk.append(str(lines[i] or '').strip())
+                i += 1
+            if len(chunk) < 3:
+                out.extend(chunk)
+                break
+            padded = _pad_owner_row(chunk if col_n >= 4 else chunk[:3])
+            out.extend(padded)
+        # keep the stop line for the outer loop
+    return '\n'.join(out)
+
+
+def reconstruct_flattened_english_cyber_tables(text: str) -> str:
+    """Rebuild pipe tables from cell-per-line DOCX/PDF extraction."""
+    lines = str(text or '').splitlines()
+    if not lines:
+        return str(text or '')
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        matched: Optional[Sequence[str]] = None
+        for hdr in _FLAT_PILLAR_HEADERS:
+            if _lines_match(lines, i, hdr):
+                matched = hdr
+                break
+        if matched is None:
+            out.append(lines[i])
+            i += 1
+            continue
+        col_n = len(matched)
+        i += col_n
+        while i < n and set(str(lines[i] or '').strip()) <= set('-: ') and str(
+                lines[i] or '').strip():
+            i += 1
+        rows: List[List[str]] = []
+        while i < n and not _is_flat_stop(lines, i):
+            chunk: List[str] = []
+            for _ in range(col_n):
+                if i >= n or _is_flat_stop(lines, i):
+                    break
+                chunk.append(str(lines[i] or '').strip())
+                i += 1
+            if len(chunk) >= 3:
+                rows.append(chunk)
+            elif chunk:
+                out.extend(chunk)
+                break
+        out.append(_EN_PILLAR_HDR)
+        out.append(_EN_PILLAR_SEP)
+        for chunk in rows:
+            out.append(_render_row(_pad_owner_row(chunk)))
+    return '\n'.join(out)
+
+
 def _iter_logical_rows(text: str) -> List[Tuple[str, List[str]]]:
     """Yield (raw_line, cells) including mashed single-line tables."""
     out: List[Tuple[str, List[str]]] = []
@@ -214,6 +437,11 @@ def _render_row(cells: Sequence[str]) -> str:
 def repair_live_english_cyber_export_text(text: str) -> str:
     """Rewrite Arabic/3-col pillar tables and strip visible family:*."""
     src = _strip_visible_family(str(text or ''))
+    src = rewrite_english_cyber_mash_residues(src)
+    src = _rewrite_flat_arabic_headers(src)
+    src = _fill_flattened_pillar_owners(src)
+    if _should_rebuild_flattened_pipes(src):
+        src = reconstruct_flattened_english_cyber_tables(src)
     src = src.replace(_AR_PILLAR_HDR_OWNER, _EN_PILLAR_HDR)
     src = src.replace(_AR_PILLAR_HDR, _EN_PILLAR_HDR)
     src = src.replace(

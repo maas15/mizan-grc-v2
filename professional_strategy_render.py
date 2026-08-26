@@ -447,12 +447,36 @@ def apply_final_arabic_cleanup_to_value(val: Any, lang: str = 'ar') -> Any:
     return val
 
 
+def _apply_concat_fixes_to_value(val: Any) -> Any:
+    """Replace smashed Arabic tokens only — do not run full Arabic prep."""
+    if isinstance(val, str):
+        out = val
+        for bad, good in PRCY41_AR_CONCAT_FIXES:
+            if bad in out:
+                out = out.replace(bad, good)
+        return out
+    if isinstance(val, list):
+        return [_apply_concat_fixes_to_value(v) for v in val]
+    if isinstance(val, tuple):
+        return tuple(_apply_concat_fixes_to_value(v) for v in val)
+    if isinstance(val, dict):
+        return {k: _apply_concat_fixes_to_value(v) for k, v in val.items()}
+    return val
+
+
 def apply_final_arabic_cleanup_to_blocks(
         blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
-    """PR-CY59 — walk all professional block text before quality gates."""
-    if lang != 'ar':
-        return blocks
-    return apply_final_arabic_cleanup_to_value(deepcopy(blocks), lang)
+    """PR-CY59 — walk all professional block text before quality gates.
+
+    English exports still replace smashed Arabic leftovers
+    (``المسؤولأمن``). Full Arabic ``prepare_final_render_text`` stays
+    Arabic-only so English traceability/KPI cells are not rewritten.
+    """
+    if lang == 'ar':
+        return apply_final_arabic_cleanup_to_value(deepcopy(blocks), lang)
+    if find_arabic_concat_issues(str(blocks or {})):
+        return _apply_concat_fixes_to_value(deepcopy(blocks))
+    return blocks
 
 
 def build_arabic_final_cleanup_diag(
@@ -2998,7 +3022,7 @@ def _finalize_professional_blocks(
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
     out = _normalize_kpi_tables_semantics(out, lang, domain=domain)
-    if lang == 'ar':
+    if lang == 'ar' or find_arabic_concat_issues(str(out)):
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
     try:
         from release_engine_v3.rel32_table_schema_binding import (

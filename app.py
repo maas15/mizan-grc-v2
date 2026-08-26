@@ -39475,9 +39475,19 @@ def _prcy86_strip_user_visible_trace(text):
     return '\n'.join(out)
 
 
-def _prcy86_apply_ar_spacing_and_truncation(text):
+def _prcy86_apply_ar_spacing_and_truncation(text, lang='ar'):
     s = text or ''
+    lang_n = str(lang or 'ar').strip().lower()
     for bad, good in _PRCY86_AR_SPACING_FIXES:
+        # English exports must not map truncated English tokens to Arabic
+        # (Cybersecurity Governanc → مسؤول الأمن السيبراني), which then
+        # smash into المسؤولأمن during PDF cell compaction.
+        if (
+            lang_n.startswith('en')
+            and _ts_re.search(r'[A-Za-z]', bad)
+            and _ts_re.search(r'[\u0600-\u06FF]', good)
+        ):
+            continue
         s = s.replace(bad, good)
     s = _ts_re.sub(r'(\S)\s+ال\s*$', r'\1', s, flags=_ts_re.MULTILINE)
     return s
@@ -39561,7 +39571,7 @@ def _prcy86_polish_section_body(key, body, lang='ar'):
     text = body or ''
     trace_before = _prcy86_count_trace_residue(text)
     text = _prcy86_strip_user_visible_trace(text)
-    text = _prcy86_apply_ar_spacing_and_truncation(text)
+    text = _prcy86_apply_ar_spacing_and_truncation(text, lang)
     kpi_fixed = 0
     so_fixed = 0
     if key in ('kpis', 'kpi', 'performance'):
@@ -51982,6 +51992,8 @@ def _rel26_gate_export_bytes(
         route='docx',
         final_hash='',
         canonical_sections=None,
+        selected_frameworks=None,
+        strategy_id=None,
 ):
     """Validate actual export bytes; return (allowed, blocking_errors, gate)."""
     from release_engine.export_evidence_validator import (
@@ -52015,6 +52027,8 @@ def _rel26_gate_export_bytes(
         final_hash=final_hash or '',
         canonical_sections=canonical_sections,
         hash_fn=_hash_fn,
+        selected_frameworks=selected_frameworks,
+        strategy_id=strategy_id,
     )
     if route == 'docx' and docx_bytes and not docx_text:
         gate['export_evidence_passed'] = False
@@ -82552,6 +82566,8 @@ def api_generate_docx():
                     route='docx',
                     final_hash=_export_hash,
                     canonical_sections=_export_sections,
+                    selected_frameworks=_selected_fws_sync,
+                    strategy_id=_resolved_docx_sid or _art_id,
                 )
                 if _rel26_ok:
                     break
@@ -88089,6 +88105,7 @@ def api_generate_pdf():
                 route='pdf',
                 final_hash=_pdf_hash,
                 canonical_sections=_pdf_sections,
+                selected_frameworks=locals().get('_selected_fws_pdf') or [],
             )
             if not _rel26_ok:
                 print(

@@ -1711,6 +1711,188 @@ class Rel365ActualServerExportEvidenceHookTests(unittest.TestCase):
             selected_frameworks=['NDMO'], blob='NDMO PDPL'))
         emit_rel36_5_actual_server_export_evidence_hook({'tag': 'probe'})
 
+    def test_86_flattened_extracted_docx_blob_is_repaired(self):
+        from release_engine.rel31_content_substance_checks import (
+            check_pillar_owner_missing,
+        )
+        dirty = _flattened_live_en_cyber_extract_blob()
+        self.assertTrue(check_pillar_owner_missing(dirty))
+        repaired, diag = apply_rel36_5_to_evidence_blob(
+            dirty, lang='en', domain='cyber', export_type='docx',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertFalse(check_pillar_owner_missing(repaired), repaired[:800])
+        self.assertIn(
+            '| Initiative | Description | Expected Deliverable | Owner |',
+            repaired)
+        self.assertNotIn('المبادرة', repaired)
+        self.assertNotIn('المسؤولأمن', repaired)
+        self.assertNotIn('مسؤول الأمن السيبرانيe', repaired)
+        self.assertNotIn('family:', repaired)
+        self.assertEqual(diag['missing_owner_rows_after'], [])
+        self.assertEqual(diag['blockers_after'], [])
+        self.assertTrue(diag['passed'])
+
+    def test_87_glued_heading_and_arabic_roadmap_are_unstuck(self):
+        dirty = _live_mashed_preview_evidence_blob()
+        repaired, diag = apply_rel36_5_to_evidence_blob(
+            dirty, lang='en', domain='cyber', export_type='docx',
+            selected_frameworks=['NCA ECC', 'NCA DCC'])
+        self.assertIn('### Pillar 1: Cybersecurity Governance', repaired)
+        self.assertIn(
+            '| Initiative | Description | Expected Deliverable | Owner |',
+            repaired)
+        self.assertNotIn('المبادرة', repaired)
+        self.assertNotIn('مسؤول الأمن السيبرانيe', repaired)
+        self.assertEqual(diag['blockers_after'], [])
+
+    def test_88_hook_emits_even_when_inner_repair_raises(self):
+        from release_engine.export_evidence_validator import (
+            validate_actual_export_evidence,
+        )
+        import release_engine_v3.rel36_5_actual_server_export_evidence_hook as hook
+        orig = hook.repair_live_english_cyber_export_text
+
+        def _boom(text):
+            raise RuntimeError('forced-rel36-5-failure')
+
+        hook.repair_live_english_cyber_export_text = _boom
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                validate_actual_export_evidence(
+                    '', _ownerless_en_cyber_evidence_blob(), '',
+                    domain='cyber', lang='en', document_type='strategy',
+                    route_name='docx',
+                    selected_frameworks=['NCA ECC', 'NCA DCC'])
+        finally:
+            hook.repair_live_english_cyber_export_text = orig
+        self.assertIn(REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG, buf.getvalue())
+
+    def test_89_english_pdf_concat_cleanup_removes_smashed_arabic(self):
+        from professional_strategy_render import (
+            apply_final_arabic_cleanup_to_blocks,
+            find_arabic_concat_issues,
+        )
+        blocks = {
+            'pillars': {
+                'title': 'Cybersecurity Governance',
+                'tables': [{'rows': [['المسؤولأمن', 'CISO']]}],
+            }
+        }
+        self.assertTrue(find_arabic_concat_issues(str(blocks)))
+        cleaned = apply_final_arabic_cleanup_to_blocks(blocks, 'en')
+        self.assertFalse(find_arabic_concat_issues(str(cleaned)), cleaned)
+        self.assertNotIn('المسؤولأمن', str(cleaned))
+
+    def test_90_live_mashed_saved_export_docx_pdf_pass(self):
+        secs = _cyber_en_live_mashed_saved_export_sections()
+        out = _export_pair_live(secs, lang='en')
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        joined = ' '.join(
+            str(b) for b in (out['docx_ev'].blocking_errors or [])
+            + (out['pdf_ev'].blocking_errors or []))
+        self.assertNotIn('pillar_owner_missing', joined)
+        self.assertNotIn('docmodel_professional_quality', joined)
+        self.assertIn(REL36_5_ACTUAL_SERVER_EXPORT_EVIDENCE_HOOK_TAG, out['log'])
+        docx_diag = next(
+            d for d in _rel36_5_diags_from_log(out['log'])
+            if d.get('export_type') == 'docx')
+        self.assertTrue(docx_diag['evidence_input_matches_repaired'], docx_diag)
+        self.assertEqual(docx_diag['missing_owner_rows_after'], [])
+        self.assertEqual(docx_diag['blockers_after'], [])
+
+
+def _flattened_live_en_cyber_extract_blob() -> str:
+    """Cell-per-line extracted DOCX text as python-docx emits it."""
+    dashes = '\n'.join(['—'] * 6)
+    return (
+        'NCA ECC and NCA DCC strategy\n'
+        'Pillar 1: مسؤول الأمن السيبرانيe & Policy Enablement\n'
+        'Initiative\n'
+        'Description\n'
+        'Expected Deliverable\n'
+        'Owner\n'
+        'CISO Framework Establishment\n'
+        'Ratify NCA ECC governance.\n'
+        'Charter\n'
+        '—\n'
+        'Policy Suite\n'
+        'Publish ECC/DCC policy library.\n'
+        'Policies\n'
+        '—\n'
+        'SOC Establishment & SIEM Deployment\n'
+        'Stand up monitoring.\n'
+        'Live SOC\n'
+        '\n'
+        'المبادرة\n'
+        'الوصف\n'
+        'المخرج المتوقع\n'
+        'المسؤول\n'
+        'Identity & Privileged Access Management\n'
+        'Deploy IAM/PAM.\n'
+        'IAM platform\n'
+        '—\n'
+        f'{dashes}\n'
+        'المسؤولأمن\n'
+        'family:governance_ciso\n'
+    )
+
+
+def _live_mashed_preview_evidence_blob() -> str:
+    return (
+        'NCA ECC and NCA DCC strategy\n'
+        '### Pillar 1: مسؤول الأمن السيبرانيe & Policy Enablement | '
+        'Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| Policy suite | NCA ECC governance policy | Charter | — |\n'
+        '| SOC Establishment | SIEM monitoring | Live SOC |  |\n'
+        '| المرحلة | الفترة | المبادرة | المسؤول | المخرج المتوقع | الإطار |\n'
+        '| المرحلة 1 | 1-6 أشهر | تأسيس CISO | — | لجنة | NCA ECC |\n'
+        'family:governance_ciso\n'
+    )
+
+
+def _cyber_en_live_mashed_saved_export_sections() -> dict:
+    secs = dict(_cyber_en_live_saved_export_sections())
+    secs['pillars'] = (
+        '### Pillar 1: مسؤول الأمن السيبرانيe & Policy Enablement | '
+        'Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| CISO Framework Establishment | Ratify NCA ECC governance. | '
+        'Charter | — |\n'
+        '| Policy Suite | Publish ECC/DCC policy library. | Policies | — |\n'
+        '| SOC Establishment & SIEM Deployment | Stand up monitoring. | '
+        'Live SOC |  |\n'
+        '### Pillar 2: Threat Detection\n'
+        '| المبادرة | الوصف | المخرج المتوقع | المسؤول |\n'
+        '|---|---|---|---|\n'
+        '| CSIRT Establishment | Formal incident response. | IR plan | — |\n'
+        '| Vulnerability Management | Continuous scanning. | Vuln policy | — |\n'
+        '| Backup & DR | Off-site backups. | DR plan | — |\n'
+        '### Pillar 3: Identity and Data\n'
+        '| Initiative | Description | Expected Deliverable |\n'
+        '|---|---|---|\n'
+        '| Identity & Privileged Access Management | Deploy IAM/PAM. | '
+        'IAM platform |\n'
+        '| Encryption & Data Protection | Encrypt classified data. | '
+        'Encryption controls |\n'
+        '| DLP Programme | Block sensitive exfil. | Operational DLP |\n'
+    )
+    secs['roadmap'] = (
+        '| المرحلة | الفترة | المبادرة | المسؤول | المخرج المتوقع | الإطار |\n'
+        '|---|---|---|---|---|---|\n'
+        '| Phase 1 | 1-6 months | Establish CISO office | CISO | '
+        'Approved committee | NCA ECC |\n'
+        '| Phase 1 | 1-6 months | Enable SIEM | SOC Manager | Live SOC | '
+        'NCA ECC |\n'
+        '| Phase 2 | 7-12 months | Encrypt key material | '
+        'Data Protection Officer | Key inventory | NCA DCC |\n'
+    )
+    return secs
+
 
 if __name__ == '__main__':
     unittest.main()

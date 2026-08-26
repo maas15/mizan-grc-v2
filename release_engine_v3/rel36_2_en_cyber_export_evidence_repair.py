@@ -85,6 +85,22 @@ def _is_header_row(cells: Sequence[str]) -> bool:
     ))
 
 
+def _is_non_pillar_table_header(cells: Sequence[str]) -> bool:
+    """Roadmap / KPI headers must not be inventoried as pillar rows."""
+    blob = ' '.join(str(c) for c in cells).lower()
+    first = str(cells[0] if cells else '').strip().lower()
+    if first in ('phase', 'period', 'المرحلة', 'الفترة'):
+        return True
+    return any(tok in blob for tok in (
+        'linked framework',
+        'kpi description',
+        'وصف المؤشر',
+        'calculation formula',
+        'الهدف الاستراتيجي',
+        'strategic objective',
+    ))
+
+
 def _is_sep_row(cells: Sequence[str]) -> bool:
     if not cells:
         return False
@@ -134,8 +150,13 @@ def _extract_pillar_data_rows(text: str) -> List[Dict[str, str]]:
     for cells in _iter_table_rows(text):
         if _is_sep_row(cells):
             continue
+        if _is_non_pillar_table_header(cells):
+            header = []
+            continue
         if _is_header_row(cells):
             header = cells
+            continue
+        if not header:
             continue
         parsed = _cells_to_row(cells, header)
         if parsed.get('initiative'):
