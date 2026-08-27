@@ -310,7 +310,7 @@ class Rel367RegressionTests(unittest.TestCase):
         leaked['environment'] = (
             str(leaked.get('environment') or '')
             + ' NIST CSF and NIST Cybersecurity Framework and NIST AI RMF '
-            'and NCA ECC CISO SIEM IAM PAM MFA CSIRT.'
+            'and NCA ECC CISO SIEM CSIRT.'
         )
         repaired, diag = repair_sections_for_fidelity(
             leaked, domain='ai', document_type='strategy',
@@ -320,8 +320,11 @@ class Rel367RegressionTests(unittest.TestCase):
         self.assertIn('SDAIA', fw)
         for tok in (
                 'NIST CSF', 'NIST Cybersecurity Framework', 'NIST AI RMF',
-                'NCA ECC', 'CISO', 'SIEM', 'IAM', 'PAM', 'MFA', 'CSIRT'):
+                'NCA ECC', 'CISO', 'SIEM', 'CSIRT'):
             self.assertNotIn(tok, blob)
+        clean = '\n'.join(str(v) for v in _ai_sections().values())
+        for tok in ('IAM', 'PAM', 'MFA', 'CISO', 'SIEM', 'CSIRT'):
+            self.assertNotIn(tok, clean)
         self.assertNotIn(
             'rel35_unexpected_frameworks', str(diag.get('blocking_errors')))
 
