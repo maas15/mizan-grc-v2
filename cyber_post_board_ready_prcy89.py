@@ -44,13 +44,14 @@ _KPI_FORMULA_HDR_AR = (
     '|---|---|---|\n'
 )
 _KPI_MAIN_HDR_EN = (
-    '| # | Metric | Target | Formula | Data source | Frequency |\n'
-    '|---|---|---|---|---|\n'
+    '| # | KPI Description | Type | Target Value | Calculation Formula | '
+    'Source | Frequency | Owner |\n'
+    '|---|---|---|---|---|---|---|---|\n'
 )
 _KPI_FORMULA_HDR_EN = (
     '\n### Calculation formulas\n\n'
-    '| # | Formula | Data source |\n'
-    '|---|---|---|\n'
+    '| # | Indicator | Calculation Formula | Data Source |\n'
+    '|---|---|---|---|\n'
 )
 
 
@@ -372,6 +373,14 @@ def _row_from_cells(cells: List[str], kind: str) -> Optional[dict]:
         return None
     if kind == 'formula' and len(cells) >= 3:
         num_s = cells[0]
+        if len(cells) >= 4:
+            return {
+                'num': int(num_s) if num_s.isdigit() else 0,
+                'name': cells[1],
+                'formula': cells[2],
+                'source': cells[3],
+                'kind': 'formula_only',
+            }
         return {
             'num': int(num_s) if num_s.isdigit() else 0,
             'formula': cells[1] if len(cells) > 1 else '',
@@ -518,13 +527,16 @@ def canonicalize_kpi_final_row_model(
             _normalize_kpi_name(r.get('name', '')),
         ))
 
+    is_ar = str(lang or '').lower() != 'en'
     present_fams = {r.get('family') for r in rows}
-    for fam in PRCY88_KPI_FAMILIES:
-        if fam not in present_fams:
-            ins = _row_from_catalog(fam, 0, lang)
-            if ins:
-                rows.append(ins)
-                present_fams.add(fam)
+    # English must keep REL32 headers; do not inject Arabic catalog rows.
+    if is_ar:
+        for fam in PRCY88_KPI_FAMILIES:
+            if fam not in present_fams:
+                ins = _row_from_catalog(fam, 0, lang)
+                if ins:
+                    rows.append(ins)
+                    present_fams.add(fam)
 
     rows.sort(
         key=lambda r: (
@@ -534,7 +546,6 @@ def canonicalize_kpi_final_row_model(
             _normalize_kpi_name(r.get('name', '')),
         ))
 
-    is_ar = str(lang or '').lower() != 'en'
     for i, row in enumerate(rows, 1):
         row['num'] = i
         if not (row.get('formula') or '').strip() or row.get('formula') in (
@@ -576,19 +587,39 @@ def canonicalize_kpi_final_row_model(
     out = [title, '']
     out.append(_KPI_MAIN_HDR_AR if is_ar else _KPI_MAIN_HDR_EN)
     for row in rows:
-        out.append(
-            '| {num} | {name} | {target} | {formula} | {source} | {freq} |'.format(
-                num=row['num'],
-                name=row.get('name', ''),
-                target=row.get('target', '—'),
-                formula=row.get('formula', '—'),
-                source=row.get('source', '—'),
-                freq=row.get('frequency', 'شهري' if is_ar else 'Monthly'),
-            ))
+        freq = row.get('frequency', 'شهري' if is_ar else 'Monthly')
+        if is_ar:
+            out.append(
+                '| {num} | {name} | {target} | {formula} | {source} | {freq} |'.format(
+                    num=row['num'],
+                    name=row.get('name', ''),
+                    target=row.get('target', '—'),
+                    formula=row.get('formula', '—'),
+                    source=row.get('source', '—'),
+                    freq=freq,
+                ))
+        else:
+            out.append(
+                '| {num} | {name} | {ktype} | {target} | {formula} | '
+                '{source} | {freq} | {owner} |'.format(
+                    num=row['num'],
+                    name=row.get('name', ''),
+                    ktype=row.get('kpi_type', 'KPI'),
+                    target=row.get('target', '—'),
+                    formula=row.get('formula', '—'),
+                    source=row.get('source', '—'),
+                    freq=freq,
+                    owner=row.get('owner', 'CISO'),
+                ))
     out.append(_KPI_FORMULA_HDR_AR if is_ar else _KPI_FORMULA_HDR_EN)
     for row in rows:
-        out.append(
-            f'| {row["num"]} | {row.get("formula", "—")} | {row.get("source", "—")} |')
+        if is_ar:
+            out.append(
+                f'| {row["num"]} | {row.get("formula", "—")} | {row.get("source", "—")} |')
+        else:
+            out.append(
+                f'| {row["num"]} | {row.get("name", "—")} | '
+                f'{row.get("formula", "—")} | {row.get("source", "—")} |')
 
     new_text = _strip_kri_appendix_from_kpis('\n'.join(out))
     for old, new in (('معدل نجح', 'معدل نجاح'),):

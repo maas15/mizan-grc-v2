@@ -93,6 +93,8 @@ def validate_export_text(
         docx_bytes: bytes = b'',
         canonical_sections: Optional[Dict[str, str]] = None,
         final_hash: str = '',
+        selected_frameworks: Optional[Any] = None,
+        strategy_id: Any = None,
 ) -> Dict[str, Any]:
     """Route-bound evidence on actual extracted text."""
     gate = validate_actual_export_evidence(
@@ -109,6 +111,8 @@ def validate_export_text(
         route_name=route,
         final_hash=final_hash,
         canonical_sections=canonical_sections,
+        selected_frameworks=selected_frameworks,
+        strategy_id=strategy_id,
     )
     # Prefix blockers with rel3 namespace for export routes
     rel3_blockers: List[str] = []

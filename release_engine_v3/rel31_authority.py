@@ -954,7 +954,13 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
-    lang = backend.get('lang', 'ar')
+    lang = str(
+        backend.get('lang')
+        or (art.get('contract_meta') or {}).get('lang')
+        or art.get('lang')
+        or art.get('language')
+        or 'ar')
+    backend['lang'] = lang
     # REL3.3 P0 — never rebrand a blank-domain artifact as Cyber; resolve
     # from artifact, contract_meta, then backend, else keep '' so the
     # downstream roadmap validator fails closed (rel33_export_domain_missing).
@@ -968,6 +974,52 @@ def repair_canonical_before_freeze(
         default='')
     if domain:
         backend['domain'] = domain
+    # REL36.2 — English cyber pillar owners before freeze/export evidence.
+    try:
+        from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+            emit_rel36_2_en_cyber_export_evidence_repair,
+            repair_english_cyber_export_evidence_sections,
+        )
+        sections, _rel36_2_pre = repair_english_cyber_export_evidence_sections(
+            sections,
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                art.get('document_type')
+                or (art.get('contract_meta') or {}).get('document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (art.get('contract_meta') or {}).get('selected_frameworks')
+                or art.get('selected_frameworks') or []),
+            strategy_id=art.get('strategy_id') or art.get('id'),
+            export_type='pre_freeze',
+        )
+        if _rel36_2_pre.get('repaired'):
+            repairs.append('rel36.2:english_cyber_pillar_owners')
+        emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_pre)
+        from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+            repair_english_cyber_dcc_classification_evidence_sections,
+        )
+        sections, _rel36_3_pre = repair_english_cyber_dcc_classification_evidence_sections(
+            sections,
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                art.get('document_type')
+                or (art.get('contract_meta') or {}).get('document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (art.get('contract_meta') or {}).get('selected_frameworks')
+                or art.get('selected_frameworks') or []),
+            strategy_id=art.get('strategy_id') or art.get('id'),
+            export_type='pre_freeze',
+        )
+        if _rel36_3_pre.get('repaired'):
+            repairs.append('rel36.3:english_cyber_dcc_classification')
+        emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_pre)
+    except Exception:  # noqa: BLE001
+        pass
     flags = backend.get('flags') or {}
     document_type = (
         str(
@@ -1126,6 +1178,28 @@ def repair_canonical_before_freeze(
         except Exception:  # noqa: BLE001
             pass
     art['sections'] = sections
+    # REL36.4 — last rewrite after freeze-path rebuilds so mashed English
+    # Cyber Arabic 3-col pillars / family:* cannot survive into evidence.
+    try:
+        from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+            apply_rel36_4_to_artifact,
+            emit_rel36_4_live_en_cyber_export_path_repair,
+        )
+        art, _rel36_4_pre = apply_rel36_4_to_artifact(
+            art,
+            lang=lang,
+            domain=domain,
+            export_type='pre_freeze',
+            route='repair_canonical_before_freeze',
+            repair_ran_at='repair_canonical_before_freeze',
+        )
+        sections = dict(art.get('sections') or sections)
+        if _rel36_4_pre.get('repaired'):
+            repairs.append('rel36.4:live_en_cyber_export_path')
+        emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_pre)
+    except Exception:  # noqa: BLE001
+        pass
+    art['sections'] = sections
     return art, list(dict.fromkeys(repairs))
 
 
@@ -1244,12 +1318,104 @@ def rel3_export_authoritative(
         or (artifact_dict.get('contract_meta') or {}).get('domain')
         or '')
     domain = normalize_domain_code(_raw_domain, default='')
-    lang = str((artifact_dict.get('contract_meta') or {}).get('lang') or 'ar')
+    lang = str(
+        (artifact_dict.get('contract_meta') or {}).get('lang')
+        or artifact_dict.get('lang')
+        or artifact_dict.get('language')
+        or (export_kwargs or {}).get('lang')
+        or 'ar')
     route_n = (route or 'preview').lower()
     if not domain:
         raise ValueError(f'rel33_export_domain_missing:{route_n}')
-    if not is_rel3_authoritative(domain=domain, lang=lang, flags=flags):
+    from release_engine_v3.rel36_bilingual_preview_export_authority import (
+        is_rel36_bilingual_export_authoritative,
+    )
+    _rel36_export_ok = is_rel36_bilingual_export_authoritative(
+        domain=domain,
+        lang=lang,
+        document_type=str(
+            artifact_dict.get('document_type')
+            or (artifact_dict.get('contract_meta') or {}).get('document_type')
+            or 'strategy'),
+        flags=flags,
+    )
+    if not (
+            is_rel3_authoritative(domain=domain, lang=lang, flags=flags)
+            or _rel36_export_ok):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
+
+    # REL36.2 — fill English cyber pillar owners before export evidence.
+    # Does not weaken pillar_owner_missing or bypass evidence.
+    try:
+        from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+            emit_rel36_2_en_cyber_export_evidence_repair,
+            repair_english_cyber_export_evidence_sections,
+        )
+        _rel36_2_secs, _rel36_2_diag = repair_english_cyber_export_evidence_sections(
+            dict(artifact_dict.get('sections') or {}),
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                artifact_dict.get('document_type')
+                or (artifact_dict.get('contract_meta') or {}).get(
+                    'document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (artifact_dict.get('contract_meta') or {}).get(
+                    'selected_frameworks')
+                or artifact_dict.get('selected_frameworks')
+                or (export_kwargs or {}).get('selected_frameworks')
+                or []),
+            strategy_id=artifact_dict.get('strategy_id') or artifact_dict.get(
+                'id'),
+            export_type=route_n,
+        )
+        if _rel36_2_diag.get('repaired'):
+            artifact_dict = dict(artifact_dict)
+            artifact_dict['sections'] = _rel36_2_secs
+        emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_diag)
+        from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+            repair_english_cyber_dcc_classification_evidence_sections,
+        )
+        _rel36_3_secs, _rel36_3_diag = repair_english_cyber_dcc_classification_evidence_sections(
+            dict(artifact_dict.get('sections') or {}),
+            lang=lang,
+            domain=domain,
+            document_type=str(
+                artifact_dict.get('document_type')
+                or (artifact_dict.get('contract_meta') or {}).get(
+                    'document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (artifact_dict.get('contract_meta') or {}).get(
+                    'selected_frameworks')
+                or artifact_dict.get('selected_frameworks')
+                or (export_kwargs or {}).get('selected_frameworks')
+                or []),
+            strategy_id=artifact_dict.get('strategy_id') or artifact_dict.get(
+                'id'),
+            export_type=route_n,
+        )
+        if _rel36_3_diag.get('repaired'):
+            artifact_dict = dict(artifact_dict)
+            artifact_dict['sections'] = _rel36_3_secs
+        emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_diag)
+        from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+            apply_rel36_4_to_artifact,
+            emit_rel36_4_live_en_cyber_export_path_repair,
+        )
+        artifact_dict, _rel36_4_diag = apply_rel36_4_to_artifact(
+            artifact_dict,
+            lang=lang,
+            domain=domain,
+            export_type=route_n,
+            route=f'rel3_export_authoritative:{route_n}',
+            repair_ran_at='rel3_export_authoritative_pre_freeze',
+        )
+        emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_diag)
+    except Exception:  # noqa: BLE001
+        pass
 
     from release_engine_v3.rel32_frozen_export_lock import (
         emit_rel32_frozen_artifact_export_lock,
@@ -1262,6 +1428,7 @@ def rel3_export_authoritative(
     art['domain'] = domain
     backend.setdefault('flags', flags)
     backend['domain'] = domain
+    backend['lang'] = lang
 
     frozen_pre, lock_meta = resolve_frozen_artifact_for_export(
         art, backend=backend, route=route_n, flags=flags)
@@ -1370,6 +1537,22 @@ def rel3_export_authoritative(
     if frozen_pre is not None:
         frozen = frozen_pre
         backend['_rel32_export_artifact_dict'] = art
+        try:
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                apply_rel36_4_to_frozen,
+                emit_rel36_4_live_en_cyber_export_path_repair,
+            )
+            _rel36_4_fr = apply_rel36_4_to_frozen(
+                frozen,
+                lang=lang,
+                domain=domain,
+                export_type=route_n,
+                route=f'rel3_export_authoritative:{route_n}',
+                repair_ran_at='rel3_export_with_evidence_frozen_pre',
+            )
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_fr)
+        except Exception:  # noqa: BLE001
+            pass
         with rel31_export_adapter_context():
             export, evidence = rel3_export_with_evidence(
                 route_n,
@@ -1379,6 +1562,22 @@ def rel3_export_authoritative(
             )
     else:
         art, _pre_rep = repair_canonical_before_freeze(art, backend=backend)
+        try:
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                apply_rel36_4_to_artifact,
+                emit_rel36_4_live_en_cyber_export_path_repair,
+            )
+            art, _rel36_4_frz = apply_rel36_4_to_artifact(
+                art,
+                lang=lang,
+                domain=domain,
+                export_type=route_n,
+                route=f'rel3_export_authoritative:{route_n}',
+                repair_ran_at='rel3_export_authoritative_before_freeze',
+            )
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_frz)
+        except Exception:  # noqa: BLE001
+            pass
         _bind_backend_sections(backend, art)
         bind_blockers = _verify_rel31_section_binding(backend, art, route_n)
         if bind_blockers:
@@ -1409,6 +1608,22 @@ def rel3_export_authoritative(
             ), ev
         with rel31_export_adapter_context():
             frozen = rel3_freeze_artifact(art)
+            try:
+                from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                    apply_rel36_4_to_frozen,
+                    emit_rel36_4_live_en_cyber_export_path_repair,
+                )
+                _rel36_4_ev = apply_rel36_4_to_frozen(
+                    frozen,
+                    lang=lang,
+                    domain=domain,
+                    export_type=route_n,
+                    route=f'rel3_export_authoritative:{route_n}',
+                    repair_ran_at='rel3_export_with_evidence',
+                )
+                emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_ev)
+            except Exception:  # noqa: BLE001
+                pass
             if frozen.blocking_errors and route_n != 'preview':
                 blockers = normalize_rel3_export_blockers(
                     list(frozen.blocking_errors), route=route_n)
@@ -1530,6 +1745,27 @@ def rel3_export_authoritative(
     track_rel32_export_route_state(_sid, route_n, lock_meta)
     emit_rel32_frozen_artifact_export_lock(
         _sid, route=route_n, lock_meta=lock_meta)
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            emit_rel36_bilingual_export_authority,
+            evaluate_rel36_bilingual_export_authority,
+        )
+        emit_rel36_bilingual_export_authority(
+            evaluate_rel36_bilingual_export_authority(
+                route=route_n,
+                lang=lang,
+                domain=domain,
+                document_type=document_type,
+                output_type=route_n,
+                selected_exporter='rel3_export_authoritative',
+                authoritative_path_used=True,
+                legacy_builder_attempted=False,
+                docx_bypass_detected=False,
+                pdf_professional_renderer_used=(route_n == 'pdf'),
+                blocking_errors=list(getattr(evidence, 'blocking_errors', None) or []),
+            ))
+    except Exception:  # noqa: BLE001
+        pass
     return export, evidence
 
 

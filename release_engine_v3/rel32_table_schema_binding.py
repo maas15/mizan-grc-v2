@@ -102,14 +102,18 @@ REL32_TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
         'columns': (
             {'key': 'row_num', 'label_ar': '#', 'label_en': '#',
              'keywords': ('#', 'م')},
-            {'key': 'indicator', 'label_ar': 'وصف المؤشر', 'label_en': 'Indicator',
-             'keywords': ('وصف المؤشر', 'المؤشر', 'indicator', 'kpi', 'metric')},
+            {'key': 'indicator', 'label_ar': 'وصف المؤشر',
+             'label_en': 'KPI Description',
+             'keywords': ('وصف المؤشر', 'المؤشر', 'indicator',
+                          'kpi description', 'kpi', 'metric')},
             {'key': 'type', 'label_ar': 'النوع', 'label_en': 'Type',
              'keywords': ('النوع', 'type', 'kpi/kri')},
-            {'key': 'target', 'label_ar': 'القيمة المستهدفة', 'label_en': 'Target',
-             'keywords': ('مستهدف', 'target', 'القيمة')},
-            {'key': 'formula', 'label_ar': 'صيغة الاحتساب', 'label_en': 'Formula',
-             'keywords': ('صيغة', 'formula', 'احتساب')},
+            {'key': 'target', 'label_ar': 'القيمة المستهدفة',
+             'label_en': 'Target Value',
+             'keywords': ('مستهدف', 'target value', 'target', 'القيمة')},
+            {'key': 'formula', 'label_ar': 'صيغة الاحتساب',
+             'label_en': 'Calculation Formula',
+             'keywords': ('صيغة', 'calculation formula', 'formula', 'احتساب')},
             {'key': 'source', 'label_ar': 'مصدر', 'label_en': 'Source',
              'keywords': ('مصدر', 'source', 'البيانات')},
             {'key': 'frequency', 'label_ar': 'التكرار', 'label_en': 'Frequency',
@@ -126,10 +130,11 @@ REL32_TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
              'keywords': ('#', 'م')},
             {'key': 'indicator', 'label_ar': 'المؤشر', 'label_en': 'Indicator',
              'keywords': ('المؤشر', 'indicator', 'kpi')},
-            {'key': 'formula', 'label_ar': 'صيغة الاحتساب', 'label_en': 'Formula',
-             'keywords': ('صيغة', 'formula')},
+            {'key': 'formula', 'label_ar': 'صيغة الاحتساب',
+             'label_en': 'Calculation Formula',
+             'keywords': ('صيغة', 'calculation formula', 'formula')},
             {'key': 'source', 'label_ar': 'مصدر البيانات', 'label_en': 'Data Source',
-             'keywords': ('مصدر', 'source')},
+             'keywords': ('مصدر البيانات', 'مصدر', 'source')},
         ),
     },
     'kpi_assessment': {
@@ -254,6 +259,10 @@ _SCHEMA_ALIASES = {
 REL32_KPI_MAIN_EXPECTED_SCHEMA_AR: Tuple[str, ...] = (
     '#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
     'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك',
+)
+REL32_KPI_MAIN_EXPECTED_SCHEMA_EN: Tuple[str, ...] = (
+    '#', 'KPI Description', 'Type', 'Target Value',
+    'Calculation Formula', 'Source', 'Frequency', 'Owner',
 )
 REL32_KPI_MAIN_SCHEMA_KEYS: Tuple[str, ...] = (
     'row_num', 'indicator', 'type', 'target', 'formula',
@@ -774,8 +783,11 @@ def evaluate_kpi_main_schema_consistency(
         h for h in headers if h in REL32_KPI_MAIN_FORBIDDEN_COLUMNS]
     owner_values_in_frequency: List[str] = []
     row_count = len(rows or [])
-    formula_column_present = 'صيغة الاحتساب' in headers
-    source_column_present = 'مصدر' in headers
+    formula_column_present = any(
+        h in headers for h in (
+            'صيغة الاحتساب', 'Calculation Formula', 'Formula'))
+    source_column_present = any(
+        h in headers for h in ('مصدر', 'Source', 'Data Source'))
     blocking_errors: List[str] = []
     if headers != expected:
         blocking_errors.append('rel32_kpi_main_schema_header_mismatch')

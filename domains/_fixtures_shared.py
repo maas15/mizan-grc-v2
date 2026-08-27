@@ -25,7 +25,7 @@ AI_SECTIONS = {
         '| 2 | Model risk | 100% inventoried | Risk | 12 months |\n'
     ),
     'pillars': '## 2. Pillars\n\nAI governance framework.\n',
-    'environment': '## 3. Environment\n\nNIST AI RMF.\n',
+    'environment': '## 3. Environment\n\nSDAIA AI governance requirements.\n',
     'gaps': '## 4. Gaps\n\n| # | Gap | Severity |\n|---|---|\n| 1 | No AI governance | High |\n',
     'roadmap': '## 5. Roadmap\n\n| Phase | Initiative | Months |\n|---|---|\n| Short | AI inventory | 0-6 months |\n',
     'kpis': '## 6. KPIs\n\n| # | Metric | Target |\n|---|---|\n| 1 | Model inventory | 100% |\n',
@@ -40,11 +40,31 @@ DT_SECTIONS = {
         '| 1 | Digitise services | 80% online | UX | 12 months |\n'
         '| 2 | Integration APIs | 100% integrated | Interop | 18 months |\n'
     ),
-    'pillars': '## 2. Pillars\n\nDGA-aligned transformation.\n',
-    'environment': '## 3. Environment\n\nDGA digital requirements.\n',
-    'gaps': '## 4. Gaps\n\n| # | Gap | Severity |\n|---|---|\n| 1 | Low digitisation | High |\n',
-    'roadmap': '## 5. Roadmap\n\n| Phase | Initiative | Months |\n|---|---|\n| Short | Service digitisation | 0-6 months |\n',
-    'kpis': '## 6. KPIs\n\n| # | Metric | Target |\n|---|---|\n| 1 | Online services | 80% |\n',
+    'pillars': (
+        '## 2. Pillars\n\n'
+        'DGA-aligned transformation covering government integration and '
+        'interoperability.\n'
+    ),
+    'environment': (
+        '## 3. Environment\n\n'
+        'DGA digital requirements for interoperability and government '
+        'integration.\n'
+    ),
+    'gaps': (
+        '## 4. Gaps\n\n'
+        '| # | Gap | Severity |\n|---|---|\n'
+        '| 1 | Weak interoperability / government integration | High |\n'
+    ),
+    'roadmap': (
+        '## 5. Roadmap\n\n'
+        '| Phase | Initiative | Months |\n|---|---|\n'
+        '| Short | Government integration and interoperability | 0-6 months |\n'
+    ),
+    'kpis': (
+        '## 6. KPIs\n\n'
+        '| # | Metric | Target |\n|---|---|\n'
+        '| 1 | Interoperability maturity | 80% |\n'
+    ),
     'confidence': '## 7. Confidence\n\n**Confidence score:** 75%\n**Justification:** Adoption risk.\n',
 }
 

@@ -416,18 +416,26 @@ def _apply_arabic_registry_repairs(text: str) -> str:
     return out
 
 
-def _build_environment_section(narrative: str, *, domain: str = '') -> str:
+def _build_environment_section(
+        narrative: str, *, domain: str = '', lang: str = 'ar') -> str:
     from release_engine.rendered_evidence_validator import _repair_arabic_blob
     from release_engine_v3.rel33_domain_substance import (
         require_rel33_substance_domain,
     )
     dcode = require_rel33_substance_domain(domain, 'environment_section')
     if dcode == 'cyber':
-        default = (
-            'تشمل البيئة التنظيمية متطلبات NCA ECC وNCA DCC '
-            'وضوابط حماية البيانات الوطنية، مع سياق تهديدات التصيد '
-            'والبرمجيات الخبيثة وتسرب البيانات ومخاطر سلسلة التوريد '
-            'والتشغيل على الأنظمة الحرجة.')
+        if str(lang or 'ar').lower().startswith('en'):
+            default = (
+                'The regulatory environment includes NCA ECC and NCA DCC '
+                'requirements and national data-protection controls, with a '
+                'threat context of phishing, malware, data leakage, '
+                'supply-chain risk, and operational impact on critical systems.')
+        else:
+            default = (
+                'تشمل البيئة التنظيمية متطلبات NCA ECC وNCA DCC '
+                'وضوابط حماية البيانات الوطنية، مع سياق تهديدات التصيد '
+                'والبرمجيات الخبيثة وتسرب البيانات ومخاطر سلسلة التوريد '
+                'والتشغيل على الأنظمة الحرجة.')
     else:
         from release_engine_v3.rel32_registries import resolve_environment_default
         default = resolve_environment_default(dcode)
@@ -786,7 +794,7 @@ def _document_from_sections(
         lang=lang, domain=domain)
     env_text = _build_environment_section(
         _extract_narrative_from_blob(sections.get('environment', '')),
-        domain=domain)
+        domain=domain, lang=lang)
     gaps_text, gaps, treatments = _build_gaps_section(
         sections.get('gaps', ''), domain=domain)
     roadmap_text, roadmap = _build_roadmap_section(

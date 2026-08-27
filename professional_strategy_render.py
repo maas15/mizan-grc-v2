@@ -101,6 +101,9 @@ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
     ('NCA DCCو', 'NCA DCC و'),
     ('NCA ECCو', 'NCA ECC و'),
     ('المتوقع المخرج', 'المخرج المتوقع'),
+    ('المسؤولإشراف البشري', 'مسؤول الإشراف البشري'),
+    ('المسؤولوصفية', 'مدير البيانات الوصفية'),
+    ('سجلمعالجة', 'سجل\u00a0معالجة'),
 )
 
 # PR-CY52 — max rendered roadmap cell length (PDF/DOCX density gate).
@@ -163,7 +166,7 @@ PDF_TABLE_LAYOUT_PROFILES: Dict[str, Dict[str, Any]] = {
     'kpi_main': {
         # REL3.3 — denser safe table layout (never cards): smaller font/padding,
         # wider formula/source wrap budget so forced table lock produces bytes.
-        'col_weights': [0.06, 0.16, 0.07, 0.14, 0.20, 0.13, 0.08, 0.16],
+        'col_weights': [0.05, 0.15, 0.07, 0.13, 0.19, 0.12, 0.13, 0.16],
         'font_size': 7, 'header_font_size': 7, 'padding': 3,
         'max_cell_len': 96, 'render_mode': 'table',
         'allow_page_break_inside': True,
@@ -252,6 +255,9 @@ SCHEMA_GAP_MAIN_AR = (
 )
 SCHEMA_GAP_ACTION_AR = (
     'الخطوة', 'الإجراء', 'المسؤول', 'الإطار الزمني', 'الناتج',
+)
+SCHEMA_GAP_ACTION_EN = (
+    'Step', 'Action', 'Owner', 'Timeframe', 'Output',
 )
 SCHEMA_ROADMAP_AR = (
     'المرحلة', 'الفترة', 'المبادرة', 'المسؤول',
@@ -441,12 +447,36 @@ def apply_final_arabic_cleanup_to_value(val: Any, lang: str = 'ar') -> Any:
     return val
 
 
+def _apply_concat_fixes_to_value(val: Any) -> Any:
+    """Replace smashed Arabic tokens only — do not run full Arabic prep."""
+    if isinstance(val, str):
+        out = val
+        for bad, good in PRCY41_AR_CONCAT_FIXES:
+            if bad in out:
+                out = out.replace(bad, good)
+        return out
+    if isinstance(val, list):
+        return [_apply_concat_fixes_to_value(v) for v in val]
+    if isinstance(val, tuple):
+        return tuple(_apply_concat_fixes_to_value(v) for v in val)
+    if isinstance(val, dict):
+        return {k: _apply_concat_fixes_to_value(v) for k, v in val.items()}
+    return val
+
+
 def apply_final_arabic_cleanup_to_blocks(
         blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
-    """PR-CY59 — walk all professional block text before quality gates."""
-    if lang != 'ar':
-        return blocks
-    return apply_final_arabic_cleanup_to_value(deepcopy(blocks), lang)
+    """PR-CY59 — walk all professional block text before quality gates.
+
+    English exports still replace smashed Arabic leftovers
+    (``المسؤولأمن``). Full Arabic ``prepare_final_render_text`` stays
+    Arabic-only so English traceability/KPI cells are not rewritten.
+    """
+    if lang == 'ar':
+        return apply_final_arabic_cleanup_to_value(deepcopy(blocks), lang)
+    if find_arabic_concat_issues(str(blocks or {})):
+        return _apply_concat_fixes_to_value(deepcopy(blocks))
+    return blocks
 
 
 def build_arabic_final_cleanup_diag(
@@ -668,7 +698,7 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
     if schema == 'roadmap' and ncols == 6:
         return [0.14, 0.12, 0.28, 0.12, 0.20, 0.14]
     if schema == 'kpi_main' and ncols == 8:
-        return [0.04, 0.18, 0.07, 0.12, 0.20, 0.14, 0.08, 0.17]
+        return [0.04, 0.17, 0.07, 0.12, 0.19, 0.13, 0.12, 0.16]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.06, 0.28, 0.36, 0.30]
     if schema == 'strategic_objectives' and ncols == 5:
@@ -1928,7 +1958,10 @@ def _to_short_framework_label(label: str) -> str:
     return s
 
 
-def concise_framework_labels_from_keys(keys: Optional[List[str]]) -> List[str]:
+def concise_framework_labels_from_keys(
+        keys: Optional[List[str]],
+        domain: str = '',
+) -> List[str]:
     """Concise framework labels for executive summary and table cells."""
     out: List[str] = []
     for key in keys or []:
@@ -1936,7 +1969,10 @@ def concise_framework_labels_from_keys(keys: Optional[List[str]]) -> List[str]:
         if short and short not in out:
             out.append(short)
     if not out:
-        return list(FRAMEWORK_ORDER)
+        from release_engine_v3.rel35_domain_framework_fidelity import (
+            is_cyber_strategy,
+        )
+        return list(FRAMEWORK_ORDER) if is_cyber_strategy(domain) else []
     ordered = [f for f in FRAMEWORK_ORDER if f in out]
     ordered += [f for f in out if f not in FRAMEWORK_ORDER]
     return ordered
@@ -1978,7 +2014,12 @@ def _clean_framework_labels(labels: List[str]) -> List[str]:
             cleaned.append(s)
     ordered = [f for f in FRAMEWORK_ORDER if f in cleaned]
     ordered += [f for f in cleaned if f not in FRAMEWORK_ORDER]
-    return ordered or list(FRAMEWORK_ORDER)
+    if ordered:
+        return ordered
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    return list(FRAMEWORK_ORDER) if is_cyber_strategy('') else []
 
 
 def _normalize_gap_header(cell: str) -> str:
@@ -2269,8 +2310,14 @@ def _infer_capability_family(
 
 def collect_roadmap_framework_violations(
         rows: List[List[str]], lang: str = 'ar',
-        row_meta: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, str]]:
+        row_meta: Optional[List[Dict[str, Any]]] = None,
+        domain: str = '') -> List[Dict[str, str]]:
     """PR-CY55/58 — roadmap rows that fail framework/output mapping rules."""
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, 'strategy'):
+        return []
     violations: List[Dict[str, str]] = []
     meta_list = row_meta or [{} for _ in rows]
     for r, meta in zip(rows or [], meta_list):
@@ -2327,7 +2374,8 @@ def build_roadmap_framework_mapping_diag(
     """PR-CY58 — [ROADMAP-FRAMEWORK-MAPPING-DIAG] payload."""
     rows = get_roadmap_spec_rows(model)
     meta = get_roadmap_row_meta(model)
-    violations = collect_roadmap_framework_violations(rows, lang, meta)
+    violations = collect_roadmap_framework_violations(
+        rows, lang, meta, domain=str((model or {}).get('domain') or ''))
     by_family: Dict[str, int] = {}
     for m in meta:
         fam = str(m.get('capability_family') or 'unknown')
@@ -2592,8 +2640,15 @@ def roadmap_generic_rows_absent(rows: List[List[str]]) -> bool:
 
 
 def _fill_roadmap_row(
-        row: List[str], lang: str = 'ar') -> Tuple[List[str], Dict[str, Any]]:
+        row: List[str], lang: str = 'ar',
+        domain: str = 'cyber') -> Tuple[List[str], Dict[str, Any]]:
     """Ensure a roadmap row has meaningful owner/output/framework defaults."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
+    dcode = normalize_domain_code(domain or '', default='')
     cells = list(row) + ['—'] * (6 - len(row))
     raw_init = str(cells[2] or '').strip()
     raw_out = str(cells[4] or '').strip()
@@ -2606,18 +2661,30 @@ def _fill_roadmap_row(
         raw_init if not _is_dash_cell(raw_init) else '',
         raw_out if not _is_dash_cell(raw_out) else '',
         raw_fw, phase_num, lang)
-    spec = _roadmap_spec_for_family(family, lang)
+    if is_cyber_strategy(dcode or domain):
+        spec = _roadmap_spec_for_family(family, lang)
+    else:
+        spec = roadmap_spec_for_domain(dcode or domain, phase=phase_num)
     init = (raw_init if not _is_generic_roadmap_init(raw_init)
             and _roadmap_has_concrete_capability(raw_init, raw_fw)
             else spec['init'])
     out = (raw_out if not _is_generic_roadmap_output(raw_out)
            and _roadmap_output_matches_initiative(raw_out, init, lang)
            else spec['output'])
-    fw = spec['fw']
-    owner = spec['owner']
-    if not _is_dash_cell(cells[3]) and not _roadmap_owner_mismatches_initiative(
-            cells[3], init):
-        owner = cells[3]
+    if is_cyber_strategy(dcode or domain):
+        fw = spec['fw']
+        owner = spec['owner']
+        if not _is_dash_cell(cells[3]) and not _roadmap_owner_mismatches_initiative(
+                cells[3], init):
+            owner = cells[3]
+    else:
+        fw = raw_fw if raw_fw and 'NCA' not in raw_fw.upper() else spec['fw']
+        raw_owner = str(cells[3] or '')
+        cyber_owner = any(
+            tok in raw_owner.upper()
+            for tok in ('CISO', 'CSIRT', 'SOC', 'فريق الأمن السيبراني'))
+        owner = (cells[3] if not _is_dash_cell(cells[3]) and not cyber_owner
+                 else spec['owner'])
     display = _compact_roadmap_row([
         cells[0] if not _is_dash_cell(cells[0]) else _phase_for_months(period, lang),
         period,
@@ -2656,18 +2723,27 @@ def _phase_label(phase_num: int, lang: str = 'ar') -> str:
 def _synth_phase_row(
         phase_num: int, lang: str = 'ar', domain: str = 'cyber') -> List[str]:
     from release_engine_v3.domain_codes import normalize_domain_code
-    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
-    if dcode == 'data' and lang == 'ar':
-        data_synth = {
-            1: ('1-6 أشهر', 'تأسيس حوكمة البيانات المؤسسية', 'CDO',
-                'إطار حوكمة NDMO معتمد', 'NDMO'),
-            2: ('7-18 شهر', 'تفعيل برنامج الامتثال لنظام PDPL',
-                'مسؤول حماية البيانات',
-                'سجل معالجة وضوابط خصوصية', 'PDPL'),
-            3: ('19-24 شهر', 'توثيق سلسلة البيانات end-to-end',
-                'مهندس بيانات', 'Lineage حرج موثق', 'NDMO'),
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
+    dcode = normalize_domain_code(domain or '', default='')
+    if dcode and dcode != 'cyber':
+        spec = roadmap_spec_for_domain(dcode, phase=phase_num)
+        return [
+            _phase_label(phase_num, lang), spec['period'], spec['init'],
+            spec['owner'], spec['output'], spec['fw'],
+        ]
+    if not is_cyber_strategy(dcode or domain):
+        generic = {
+            1: ('1-6 أشهر', 'تأسيس الحوكمة المؤسسية', 'مالك المبادرة',
+                'إطار حوكمة معتمد', ''),
+            2: ('7-18 شهر', 'تشغيل القدرات الأساسية', 'مالك المبادرة',
+                'قدرات تشغيلية موثقة', ''),
+            3: ('19-24 شهر', 'تحسين واستدامة البرنامج', 'مالك المبادرة',
+                'تقارير نضج دورية', ''),
         }
-        period, init, owner, out, fw = data_synth.get(phase_num, data_synth[2])
+        period, init, owner, out, fw = generic.get(phase_num, generic[2])
         return [_phase_label(phase_num, lang), period, init, owner, out, fw]
     synth = {
         1: ('1-6 أشهر', 'تأسيس حوكمة الأمن السيبراني وتعيين CISO',
@@ -2689,20 +2765,29 @@ def build_roadmap_render_spec(
             List[List[str]], List[Dict[str, Any]]]:
     """PR-CY48/58 — build meaningful roadmap rows grouped by phase coverage."""
     from release_engine_v3.domain_codes import normalize_domain_code
-    dcode = normalize_domain_code(domain or 'cyber', default='cyber')
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
+    dcode = normalize_domain_code(domain or '', default='')
     buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]] = {
         1: [], 2: [], 3: []}
     seen_inits: set = set()
     for r in rows or []:
         if _is_dash_heavy_row(r):
             continue
-        filled, meta = _fill_roadmap_row(r, lang)
+        filled, meta = _fill_roadmap_row(r, lang, domain=dcode or domain)
         if _is_generic_roadmap_row(filled):
             phase_num = _phase_bucket(filled[1] or filled[0])
-            family, inference_source = _infer_capability_family(
-                meta.get('raw_initiative', ''), meta.get('raw_output', ''),
-                meta.get('raw_framework', ''), phase_num, lang)
-            spec = _roadmap_spec_for_family(family, lang)
+            if is_cyber_strategy(dcode or domain):
+                family, inference_source = _infer_capability_family(
+                    meta.get('raw_initiative', ''), meta.get('raw_output', ''),
+                    meta.get('raw_framework', ''), phase_num, lang)
+                spec = _roadmap_spec_for_family(family, lang)
+            else:
+                family, inference_source = 'domain_catalog', 'rel35'
+                spec = roadmap_spec_for_domain(
+                    dcode or domain, phase=phase_num)
             filled[2] = spec['init']
             filled[4] = spec['output']
             filled[3] = spec['owner']
@@ -2711,7 +2796,7 @@ def build_roadmap_render_spec(
                 'capability_family': family,
                 'inference_source': inference_source,
                 'assigned_framework': spec['fw'],
-                'expected_framework': _framework_for_capability_family(family),
+                'expected_framework': spec['fw'],
                 'display_initiative': filled[2],
                 'display_output': filled[4],
             })
@@ -2731,10 +2816,12 @@ def build_roadmap_render_spec(
                 result_meta.append(meta)
         else:
             filled, meta = _fill_roadmap_row(
-                _synth_phase_row(phase_num, lang, domain=dcode), lang)
+                _synth_phase_row(phase_num, lang, domain=dcode or domain),
+                lang, domain=dcode or domain)
             result.append(filled)
             result_meta.append(meta)
-    _rel33_readd_dropped_roadmap_families(result, result_meta, buckets)
+    _rel33_readd_dropped_roadmap_families(
+        result, result_meta, buckets, domain=dcode or domain)
     return result, result_meta
 
 
@@ -2755,7 +2842,8 @@ def _rel33_readd_dropped_roadmap_families(
         result: List[List[str]],
         result_meta: List[Dict[str, Any]],
         buckets: Dict[int, List[Tuple[List[str], Dict[str, Any]]]],
-        *, max_rows: int = 14) -> None:
+        *, max_rows: int = 14,
+        domain: str = '') -> None:
     """REL3.3 — re-append required roadmap families dropped by the 3-per-phase cap.
 
     ``build_roadmap_render_spec`` keeps at most 3 rows per phase, which can drop a
@@ -2764,7 +2852,14 @@ def _rel33_readd_dropped_roadmap_families(
     rendered roadmap cards genuinely lack that family's row. This restores only
     rows that were already in the input and that uniquely cover a not-yet-covered
     required family; it never fabricates a family absent from the source roadmap.
+
+    Cyber-only: the restored families come from the cyber ROADMAP_FAMILIES catalog.
     """
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, 'strategy'):
+        return
     try:
         from release_engine.roadmap_model import ROADMAP_FAMILIES
     except Exception:  # noqa: BLE001
@@ -2862,7 +2957,8 @@ def _sanitize_table_spec(
 
 
 def _finalize_professional_blocks(
-        blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
+        blocks: Dict[str, Any], lang: str = 'ar',
+        domain: str = '') -> Dict[str, Any]:
     """PR-CY48 — last pass over all blocks before PDF/DOCX render."""
     out = deepcopy(blocks)
     for kind, blk in out.items():
@@ -2925,8 +3021,8 @@ def _finalize_professional_blocks(
                      str(fw.get('description') or ''), lang)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
-    out = _normalize_kpi_tables_semantics(out, lang)
-    if lang == 'ar':
+    out = _normalize_kpi_tables_semantics(out, lang, domain=domain)
+    if lang == 'ar' or find_arabic_concat_issues(str(out)):
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
     try:
         from release_engine_v3.rel32_table_schema_binding import (
@@ -3141,8 +3237,17 @@ def _prcy78_period_is_invalid(period: str) -> bool:
 
 
 def _prcy78_normalize_framework_cell(
-        fw: str, init: str = '', output: str = '') -> str:
+        fw: str, init: str = '', output: str = '',
+        domain: str = '') -> str:
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
     s = _prcy77_strip_truncation_artifacts(fw)
+    if not is_cyber_strategy(domain, 'strategy'):
+        if 'NCA' in s.upper():
+            return roadmap_spec_for_domain(domain).get('fw') or s
+        return s
     if '(' in s and not s.rstrip().endswith(')'):
         s = re.sub(r'\s*\([^)]*$', '', s).strip()
     if re.search(r'essential\s*cyber', s, flags=re.IGNORECASE):
@@ -3241,7 +3346,8 @@ def _prcy78_synth_phase3_rows(
 
 
 def _prcy78_normalize_roadmap_row(
-        row: List[str], lang: str = 'ar') -> Tuple[List[str], Dict[str, bool]]:
+        row: List[str], lang: str = 'ar',
+        domain: str = '') -> Tuple[List[str], Dict[str, bool]]:
     """Normalize one roadmap row for phase label, period, and framework."""
     flags = {
         'period_repaired': False,
@@ -3264,7 +3370,7 @@ def _prcy78_normalize_roadmap_row(
         flags['period_repaired'] = True
     fw_before = str(cells[5] or '')
     cells[5] = _prcy78_normalize_framework_cell(
-        cells[5], cells[2], cells[4])
+        cells[5], cells[2], cells[4], domain=domain)
     if cells[5] != fw_before:
         flags['framework_repaired'] = True
     return cells[:6], flags
@@ -3312,7 +3418,8 @@ def repair_roadmap_table_rows(
         period_raw = str((list(r) + [''] * 6)[1] or '')
         if _prcy78_period_is_invalid(period_raw):
             diag['invalid_period_cells_before'] += 1
-        repaired, flags = _prcy78_normalize_roadmap_row(r, lang_n)
+        repaired, flags = _prcy78_normalize_roadmap_row(
+            r, lang_n, domain=domain)
         if flags.get('period_repaired'):
             diag['invalid_period_cells_repaired'] += 1
         if flags.get('framework_repaired'):
@@ -3331,7 +3438,23 @@ def repair_roadmap_table_rows(
     diag['phase_2_present'] = flags['phase_2']
     diag['phase_3_present'] = flags['phase_3']
 
-    if not flags['phase_3']:
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
+    if not flags['phase_3'] and not is_cyber_strategy(domain, 'strategy'):
+        spec = roadmap_spec_for_domain(domain, phase=3)
+        ins = [
+            _phase_label(3, lang_n), spec['period'], spec['init'],
+            spec['owner'], spec['output'], spec['fw'],
+        ]
+        key = (ins[2] or '').strip()[:80]
+        if key not in seen_init:
+            seen_init.add(key)
+            out_rows.append(ins)
+            diag['rows_inserted'] += 1
+            diag['inserted_phase_rows'].append(ins[0])
+    elif not flags['phase_3'] and is_cyber_strategy(domain, 'strategy'):
         for ins in _prcy78_synth_phase3_rows(lang_n, dcc_on):
             key = (ins[2] or '').strip()[:80]
             if key in seen_init:
@@ -3341,7 +3464,7 @@ def repair_roadmap_table_rows(
             diag['rows_inserted'] += 1
             diag['inserted_phase_rows'].append(ins[0])
 
-    if dcc_on:
+    if dcc_on and is_cyber_strategy(domain, 'strategy'):
         missing = sorted(
             set(PRCY78_DCC_FAMILY_ROWS_AR) - _prcy78_present_dcc_families(out_rows))
         diag['missing_dcc_families_before'] = list(missing)
@@ -3519,7 +3642,7 @@ def apply_prcy78_roadmap_phase_coverage_to_model(
         tbl.get('rows') or [],
         lang,
         selected_frameworks or model.get('selected_frameworks'),
-        domain=str((model.get('domain') or diag_kw.get('domain') or 'cyber')),
+        domain=str((model.get('domain') or diag_kw.get('domain') or '')),
         **diag_kw)
     tbl['rows'] = repaired
     tbl['header'] = list(
@@ -3674,6 +3797,151 @@ def normalize_strategic_objectives_table(
     return best
 
 
+def _rel35_default_owner(domain: str = '') -> str:
+    try:
+        from release_engine_v3.rel35_domain_framework_fidelity import (
+            default_owner_for_domain,
+        )
+        return default_owner_for_domain(domain)
+    except Exception:  # noqa: BLE001
+        return 'مالك المبادرة'
+
+
+def _rel36_default_risk_owner(domain: str = '', lang: str = 'ar') -> str:
+    """Language-aware register owner. Never inject CISO into non-cyber domains."""
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if str(lang or 'ar').lower().startswith('en'):
+        return {
+            'data': 'Data Governance Manager',
+            'ai': 'AI Governance Lead',
+            'dt': 'Digital Transformation Manager',
+            'cyber': 'CISO',
+            'erm': 'Risk Management Head',
+            'global': 'Initiative Owner',
+        }.get(dcode, 'Initiative Owner')
+    return _rel35_default_owner(domain)
+
+
+def _default_risk_register_rows(
+        lang: str = 'ar', domain: str = '') -> List[List[str]]:
+    """Separate risk-register rows when source text has none.
+
+    PR-CY47 requires ``risk_register_separate`` whenever a confidence-factor
+    table exists. English strategy sections often omit a parseable register.
+    Catalogs stay domain-aware so Data/AI never receive CISO/SIEM/CSIRT.
+    """
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    owner = _rel36_default_risk_owner(domain, lang)
+    en = str(lang or 'ar').lower().startswith('en')
+    catalogs = {
+        'cyber': (
+            (
+                ['1', 'ضعف حوكمة الأمن السيبراني', 'متوسطة', 'عالٍ',
+                 'تفعيل لجنة CISO واعتماد السياسات التشغيلية', 'CISO'],
+                ['2', 'تأخر الكشف عن الحوادث', 'متوسطة', 'عالٍ',
+                 'تشغيل SOC/SIEM وتحسين زمن الكشف MTTD', 'CISO'],
+                ['3', 'ضعف إدارة الهوية والوصول', 'متوسطة', 'عالٍ',
+                 'تطبيق IAM وPAM وMFA على الحسابات الحرجة', 'CISO'],
+            ),
+            (
+                ['1', 'Weak cybersecurity governance', 'Medium', 'High',
+                 'Activate the CISO committee and approve operating policies',
+                 'CISO'],
+                ['2', 'Delayed incident detection', 'Medium', 'High',
+                 'Operate SOC/SIEM and improve MTTD', 'CISO'],
+                ['3', 'Weak identity and access control', 'Medium', 'High',
+                 'Implement IAM, PAM, and MFA on privileged accounts',
+                 'CISO'],
+            ),
+        ),
+        'data': (
+            (
+                ['1', 'ضعف تصنيف البيانات', 'متوسطة', 'عالٍ',
+                 'اعتماد تصنيف البيانات ومراقبة الالتزام', owner],
+                ['2', 'فجوات حماية البيانات الشخصية', 'متوسطة', 'عالٍ',
+                 'تطبيق ضوابط الخصوصية ومراجعة معالجة البيانات', owner],
+                ['3', 'ضعف جودة البيانات التشغيلية', 'منخفضة', 'متوسط',
+                 'تشغيل مقاييس الجودة ومعالجة السجلات الناقصة', owner],
+            ),
+            (
+                ['1', 'Weak data classification', 'Medium', 'High',
+                 'Approve classification and monitor adherence', owner],
+                ['2', 'Personal-data protection gaps', 'Medium', 'High',
+                 'Apply privacy controls and review processing', owner],
+                ['3', 'Weak operational data quality', 'Low', 'Medium',
+                 'Run quality metrics and remediate incomplete records',
+                 owner],
+            ),
+        ),
+        'ai': (
+            (
+                ['1', 'ضعف حوكمة نماذج الذكاء الاصطناعي', 'متوسطة', 'عالٍ',
+                 'اعتماد سياسة استخدام النماذج ومساءلة المالك', owner],
+                ['2', 'مخاطر التحيز والشفافية', 'متوسطة', 'عالٍ',
+                 'مراجعة العدالة وتوثيق قرارات النماذج', owner],
+                ['3', 'ضعف ضوابط بيانات التدريب', 'متوسطة', 'متوسط',
+                 'تقييد مصادر البيانات وتتبع استخدامها', owner],
+            ),
+            (
+                ['1', 'Weak AI model governance', 'Medium', 'High',
+                 'Approve model-use policy and owner accountability', owner],
+                ['2', 'Bias and transparency risk', 'Medium', 'High',
+                 'Review fairness and document model decisions', owner],
+                ['3', 'Weak training-data controls', 'Medium', 'Medium',
+                 'Restrict data sources and trace their use', owner],
+            ),
+        ),
+        'dt': (
+            (
+                ['1', 'ضعف قابلية التشغيل البيني', 'متوسطة', 'عالٍ',
+                 'تفعيل واجهات التكامل ومعايير التبادل', owner],
+                ['2', 'فجوات تكامل الخدمات الحكومية', 'متوسطة', 'عالٍ',
+                 'ربط القنوات الحرجة عبر منصة تكامل معتمدة', owner],
+                ['3', 'ضعف نضج القنوات الرقمية', 'منخفضة', 'متوسط',
+                 'تحسين تجربة الخدمة ومراقبة الاعتماد', owner],
+            ),
+            (
+                ['1', 'Weak interoperability', 'Medium', 'High',
+                 'Enable integration APIs and exchange standards', owner],
+                ['2', 'Government service integration gaps', 'Medium', 'High',
+                 'Connect critical channels through an approved platform',
+                 owner],
+                ['3', 'Weak digital-channel maturity', 'Low', 'Medium',
+                 'Improve service experience and monitor adoption', owner],
+            ),
+        ),
+    }
+    generic = (
+        (
+            ['1', 'ضعف ملكية التنفيذ', 'متوسطة', 'عالٍ',
+             'تعيين مالك معتمد وخطة معالجة خلال 90 يوماً', owner],
+            ['2', 'تأخر إغلاق الفجوات', 'متوسطة', 'عالٍ',
+             'تتبع المعالجة شهرياً ورفع التصعيد عند الانحراف', owner],
+            ['3', 'ضعف قياس الأثر', 'منخفضة', 'متوسط',
+             'ربط المؤشرات بالمخاطر ومراجعة الانحراف', owner],
+        ),
+        (
+            ['1', 'Weak execution ownership', 'Medium', 'High',
+             'Assign an approved owner and a 90-day treatment plan', owner],
+            ['2', 'Delayed gap closure', 'Medium', 'High',
+             'Track treatment monthly and escalate variance', owner],
+            ['3', 'Weak impact measurement', 'Low', 'Medium',
+             'Link indicators to risks and review variance', owner],
+        ),
+    )
+    pair = catalogs.get(dcode, (generic, generic))
+    rows = pair[1] if en else pair[0]
+    return [list(r) for r in rows]
+
+
 def normalize_roadmap_table(
         section_text: str, lang: str = 'ar',
         domain: str = 'cyber') -> Optional[Dict[str, Any]]:
@@ -3720,7 +3988,7 @@ def normalize_roadmap_table(
         i_phase = _col_index(hdr, ('المرحلة', 'phase'))
         for r in tbl[1:]:
             init = _cell(r, i_init if i_init >= 0 else 1)
-            owner = _cell(r, i_owner, 'CISO')
+            owner = _cell(r, i_owner, _rel35_default_owner(domain))
             period = _cell(r, i_period)
             deliver = _cell(r, i_deliver)
             fw = _cell(r, i_fw)
@@ -3735,17 +4003,18 @@ def normalize_roadmap_table(
         phase_re = re.compile(
             r'(?:^|\n)(?:#{1,4}\s+)?(?:المرحلة|Phase)\s*(\d+)[^\n]*\n'
             r'([^\n#|]+(?:\n[^\n#|]+)*)', re.MULTILINE | re.IGNORECASE)
+        _phase_owner = _rel35_default_owner(domain)
         for m in phase_re.finditer(section_text or ''):
             ph = m.group(0).split('\n')[0].strip().lstrip('#').strip()
             body = (m.group(2) or '').strip()
             if body:
                 rows_out.append(_normalize_row(
-                    [ph, '—', body[:120], 'CISO', '—', '—'], len(schema)))
+                    [ph, '—', body[:120], _phase_owner, '—', '—'], len(schema)))
     if not rows_out:
         return None
     rows_out, row_meta = build_roadmap_render_spec(rows_out, lang, domain=domain)
     rows_out, _p78 = repair_roadmap_table_rows(
-        rows_out, lang, None)
+        rows_out, lang, None, domain=domain or '')
     if _p78.get('action_taken') == 'repair_applied':
         row_meta = row_meta + [{}] * max(
             0, len(rows_out) - len(row_meta))
@@ -4052,20 +4321,46 @@ def _derive_kpi_formula(name: str, lang: str = 'ar') -> str:
             else '(Items completed ÷ planned items) × 100')
 
 
-def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
+def _rel35_default_kpi_source(domain: str = '', lang: str = 'ar') -> str:
+    """Domain-scoped KPI source fallback — CISO/SIEM only for cyber."""
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    ar = lang == 'ar'
+    if dcode == 'cyber':
+        return 'مكتب CISO / نظام الحوكمة' if ar else 'CISO office / GRC'
+    if dcode == 'data':
+        return 'كتالوج البيانات / نظام الحوكمة' if ar else 'Data catalog / GRC'
+    if dcode == 'ai':
+        return 'سجل النماذج / نظام الحوكمة' if ar else 'Model registry / GRC'
+    if dcode == 'dt':
+        return 'كتالوج خدمات رقمية / نظام الحوكمة' if ar else (
+            'Digital service catalog / GRC')
+    return 'نظام الحوكمة' if ar else 'GRC'
+
+
+def _derive_kpi_source(name: str, lang: str = 'ar', domain: str = '') -> str:
     """Professional fallback data source/tool derived from a metric name."""
     n = (name or '').strip()
     nu = n.lower()
-    if _is_soc_detection_metric(n):
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    cyber = dcode == 'cyber'
+    if cyber and _is_soc_detection_metric(n):
         return 'SIEM / SOC / SOAR'
-    if _is_incident_response_metric(n):
+    if cyber and _is_incident_response_metric(n):
         return 'ITSM / SOAR / SIEM'
-    if _is_time_based_metric(n):
+    if cyber and _is_time_based_metric(n):
         return 'ITSM / SOAR / SIEM'
-    if any(k in nu for k in ('mfa', 'مصادقة')):
+    if cyber and any(k in nu for k in ('mfa', 'مصادقة')):
         return ('منصة إدارة الهويات IAM' if lang == 'ar'
                 else 'IAM / IdP platform')
-    if any(k in nu for k in ('ثغر', 'vulnerability', 'vuln')):
+    if cyber and any(k in nu for k in ('ثغر', 'vulnerability', 'vuln')):
         return ('منصة إدارة الثغرات' if lang == 'ar'
                 else 'Vulnerability Management platform')
     if any(k in nu for k in ('نسخ', 'backup', 'dr', 'تعاف')):
@@ -4078,23 +4373,34 @@ def _derive_kpi_source(name: str, lang: str = 'ar') -> str:
     if any(k in nu for k in ('تصنيف', 'classification', 'بيانات')):
         return ('منصة تصنيف البيانات' if lang == 'ar'
                 else 'Data classification platform')
-    table = (
-        ('SOC', 'SIEM / SOC / SOAR'), ('SIEM', 'SIEM / SOC / SOAR'),
-        ('IAM', 'IAM / PAM'), ('PAM', 'PAM'),
-        ('توعية', 'LMS / HR'), ('تدريب', 'LMS / HR'),
-        ('phishing', 'Phishing platform'), ('تصيد', 'Phishing platform'),
-    )
-    for key, tool in table:
-        if key in n or key.lower() in nu:
-            return tool
-    return 'مكتب CISO / نظام الحوكمة' if lang == 'ar' else 'CISO office / GRC'
+    if cyber:
+        table = (
+            ('SOC', 'SIEM / SOC / SOAR'), ('SIEM', 'SIEM / SOC / SOAR'),
+            ('IAM', 'IAM / PAM'), ('PAM', 'PAM'),
+            ('توعية', 'LMS / HR'), ('تدريب', 'LMS / HR'),
+            ('phishing', 'Phishing platform'), ('تصيد', 'Phishing platform'),
+        )
+        for key, tool in table:
+            if key in n or key.lower() in nu:
+                return tool
+    return _rel35_default_kpi_source(domain, lang)
 
 
 def _align_kpi_source_with_metric(
-        name: str, formula: str, source: str, lang: str = 'ar') -> str:
+        name: str, formula: str, source: str, lang: str = 'ar',
+        domain: str = '') -> str:
     """PR-CY57 — align KPI data source with metric semantics."""
-    derived = _derive_kpi_source(name, lang)
+    derived = _derive_kpi_source(name, lang, domain=domain)
     s = str(source or '').strip()
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
+    if dcode and dcode != 'cyber' and any(
+            tok in s for tok in (
+                'CISO', 'SIEM', 'SOAR', 'SOC', 'CSIRT', 'IAM', 'PAM')):
+        return derived
     if s in ('—', '-', '--', ''):
         return derived
     if _is_freq_or_timeframe(s):
@@ -4102,14 +4408,16 @@ def _align_kpi_source_with_metric(
     sl = s.lower()
     n = (name or '').lower()
     f = (formula or '').lower()
-    if _is_soc_detection_metric(name):
+    if dcode == 'cyber' and _is_soc_detection_metric(name):
         if not any(k in sl for k in ('siem', 'soc', 'soar')):
             return derived
-    if _is_incident_response_metric(name):
+    if dcode == 'cyber' and _is_incident_response_metric(name):
         if not any(k in sl for k in ('itsm', 'soar', 'siem')):
             return derived
-    if _is_time_based_metric(name) or any(
-            k in f for k in ('حادث', 'incident', 'response', 'استجاب', 'زمن')):
+    if dcode == 'cyber' and (
+            _is_time_based_metric(name) or any(
+                k in f for k in (
+                    'حادث', 'incident', 'response', 'استجاب', 'زمن'))):
         if any(k in sl for k in ('grc', 'حوكمة', 'ciso office', 'lms', 'hr')):
             return derived
     if any(k in n for k in ('ثغر', 'vulnerability', 'vuln')):
@@ -4357,11 +4665,23 @@ def _apply_kpi_metric_family_spec(
 
 def _normalize_kpi_semantic_row(
         name: str, kpi_type: str, target: str, formula: str,
-        source: str, lang: str = 'ar') -> Tuple[
+        source: str, lang: str = 'ar', domain: str = '') -> Tuple[
             str, str, str, str, str, str]:
     """PR-CY61 — align KPI name/type/target/formula/source to one family."""
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        dcode = normalize_domain_code(str(domain or ''), default='')
+    except Exception:  # noqa: BLE001
+        dcode = str(domain or '').strip().lower()
     family = _detect_kpi_metric_family(
         name, target, formula, kpi_type, lang)
+    _cyber_only_families = {
+        'incident_response_sla', 'incident_response_time',
+        'incident_detection_time', 'iam_pam_coverage', 'mfa_coverage',
+        'vulnerability_sla', 'phishing_failure_kri', 'compliance_ecc_dcc',
+    }
+    if dcode and dcode != 'cyber' and family in _cyber_only_families:
+        family = 'generic'
     if family in (
             'incident_response_sla', 'incident_response_time',
             'incident_detection_time',
@@ -4371,6 +4691,9 @@ def _normalize_kpi_semantic_row(
     ):
         name, kpi_type, target, formula, source = _apply_kpi_metric_family_spec(
             family, name, kpi_type, target, formula, source, lang)
+        if dcode and dcode != 'cyber':
+            source = _align_kpi_source_with_metric(
+                name, formula, source, lang, domain=domain)
     else:
         name = _normalize_kpi_name(name, lang)
         try:
@@ -4398,9 +4721,10 @@ def _normalize_kpi_semantic_row(
                 or _is_formula_echo(formula, name)):
             formula = _derive_kpi_formula(name, lang)
         name = _align_kpi_name_with_formula(name, formula, lang)
-        source = _align_kpi_source_with_metric(name, formula, source, lang)
+        source = _align_kpi_source_with_metric(
+            name, formula, source, lang, domain=domain)
         if source == '—' or _is_freq_or_timeframe(source):
-            source = _derive_kpi_source(name, lang)
+            source = _derive_kpi_source(name, lang, domain=domain)
         kpi_type = _derive_kpi_type(name, kpi_type, lang)
     return name, kpi_type, target, formula, source, family
 
@@ -4446,7 +4770,7 @@ def _kpi_metric_semantics_row_issue(
     if not reason:
         return None
     nn, nt, ntar, nform, nsrc, _ = _normalize_kpi_semantic_row(
-        name, kpi_type, target, formula, source, lang)
+        name, kpi_type, target, formula, source, lang, domain='')
     return {
         'row_index': row_index,
         'metric_name': name,
@@ -4555,8 +4879,11 @@ def emit_kpi_metric_semantics_diag(
 
 
 def _normalize_kpi_tables_semantics(
-        blocks: Dict[str, Any], lang: str = 'ar') -> Dict[str, Any]:
+        blocks: Dict[str, Any], lang: str = 'ar',
+        domain: str = '') -> Dict[str, Any]:
     """PR-CY61 — repair KPI main + formula tables before quality gates."""
+    domain = domain or str(
+        (blocks.get('domain') if isinstance(blocks, dict) else '') or '')
     kpi_blk = blocks.get('kpi_kri_framework') or {}
     tables = kpi_blk.get('tables') or []
     main_tbl = formula_tbl = None
@@ -4583,12 +4910,14 @@ def _normalize_kpi_tables_semantics(
         source = fr[3] if len(fr) > 3 else ''
         name, kpi_type, target, formula, source, _fam = (
             _normalize_kpi_semantic_row(
-                name, kpi_type, target, formula, source, lang))
+                name, kpi_type, target, formula, source, lang, domain=domain))
         tail = list(mr[4:]) if len(mr) > 4 else []
         if len(mr) >= 8:
             formula = mr[4]
             source = mr[5]
             tail = list(mr[6:])
+            source = _align_kpi_source_with_metric(
+                name, formula, source, lang, domain=domain)
         new_main.append([idx, name, kpi_type, target, formula, source] + tail)
         new_formula.append([idx, name, formula, source])
     main_tbl['rows'] = new_main
@@ -4596,7 +4925,7 @@ def _normalize_kpi_tables_semantics(
         formula_tbl['rows'] = new_formula
     elif new_formula:
         hdr = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
-            '#', 'Indicator', 'Formula', 'Data Source'))
+            '#', 'Indicator', 'Calculation Formula', 'Data Source'))
         tables.append({
             'schema': 'kpi_formula', 'header': hdr, 'rows': new_formula})
     kpi_blk['tables'] = tables
@@ -4632,7 +4961,8 @@ def _is_freq_or_timeframe(val: str) -> bool:
 
 
 def split_kpi_tables(
-        section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
+        section_text: str, lang: str = 'ar',
+        domain: str = '') -> List[Dict[str, Any]]:
     """PR-CY47 — header-aware KPI/KRI normalization into a summary table and a
     formula/source detail table built from a structured spec (not raw column
     order), so the formula column never holds a frequency and the source
@@ -4640,14 +4970,14 @@ def split_kpi_tables(
     tables = parse_markdown_tables(section_text)
     out: List[Dict[str, Any]] = []
     main_schema = list(SCHEMA_KPI_MAIN_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
-        'Frequency', 'Owner'))
+        '#', 'KPI Description', 'Type', 'Target Value',
+        'Calculation Formula', 'Source', 'Frequency', 'Owner'))
     formula_schema = list(SCHEMA_KPI_FORMULA_AR if lang == 'ar' else (
-        '#', 'Indicator', 'Formula', 'Data Source'))
+        '#', 'Indicator', 'Calculation Formula', 'Data Source'))
     _canonical_main_hdr_ar = list(SCHEMA_KPI_MAIN_AR)
     _canonical_main_hdr_en = [
-        '#', 'Indicator', 'Type', 'Target', 'Formula', 'Source',
-        'Frequency', 'Owner']
+        '#', 'KPI Description', 'Type', 'Target Value',
+        'Calculation Formula', 'Source', 'Frequency', 'Owner']
     for tbl in tables:
         if len(tbl) < 1:
             continue
@@ -4685,11 +5015,12 @@ def split_kpi_tables(
             source = _cell(r, i_source) if i_source >= 0 else '—'
             name, kpi_type, target, formula, source, _fam = (
                 _normalize_kpi_semantic_row(
-                    name, kpi_type, target, formula, source, lang))
+                    name, kpi_type, target, formula, source, lang,
+                    domain=domain))
             main_rows.append([
                 idx, name, kpi_type, target, formula, source,
                 _cell(r, i_freq),
-                _cell(r, i_owner, 'CISO'),
+                _cell(r, i_owner, _rel35_default_owner(domain)),
             ])
             formula_rows.append([idx, name, formula, source])
         if not main_rows:
@@ -5104,7 +5435,8 @@ def build_docmodel_professional_failure_diag(
             violations = collect_roadmap_framework_violations(
                 get_roadmap_spec_rows(model),
                 (model or {}).get('lang') or 'ar',
-                get_roadmap_row_meta(model))
+                get_roadmap_row_meta(model),
+                domain=str((model or {}).get('domain') or ''))
             if violations:
                 payload['roadmap_framework_violations'] = violations
         except Exception:
@@ -5258,14 +5590,34 @@ def _phase_for_months(period_text: str, lang: str = 'ar') -> str:
 
 
 def _ensure_roadmap_phase_coverage(
-        rows: List[List[str]], lang: str = 'ar') -> List[List[str]]:
+        rows: List[List[str]], lang: str = 'ar',
+        domain: str = '') -> List[List[str]]:
     """PR-CY47 Part E — guarantee a professional 1–6 / 7–18 / 19–24 phase view.
 
     Rendering-only: when the saved roadmap rows do not span all phases, append
-    synthetic visual phase rows derived from the mandatory cyber capabilities
-    (governance/CISO, SOC, IAM/PAM/MFA, DLP/classification, incident response/
-    CSIRT, vulnerability management). Does NOT change saved content.
+    synthetic visual phase rows. Cyber capabilities (CISO/SOC/CSIRT) are used
+    only for cyber strategy. Does NOT change saved content.
     """
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+        roadmap_spec_for_domain,
+    )
+    if not is_cyber_strategy(domain, 'strategy'):
+        present = {1: False, 2: False, 3: False}
+        for r in rows:
+            ph = (r[0] if r else '') or ''
+            present[_phase_bucket(ph)] = True
+        extra = []
+        for phase_num in (1, 2, 3):
+            if present.get(phase_num):
+                continue
+            spec = roadmap_spec_for_domain(domain, phase=phase_num)
+            extra.append([
+                _phase_for_months(str(phase_num), lang),
+                spec['period'], spec['init'], spec['owner'],
+                spec['output'], spec['fw'],
+            ])
+        return rows + extra
     present = {1: False, 2: False, 3: False}
     for r in rows:
         ph = (r[0] if r else '') or ''
@@ -5390,7 +5742,8 @@ def _impact_to_priority(impact: str, lang: str = 'ar') -> str:
 
 
 def normalize_confidence_risk(
-        section_text: str, lang: str = 'ar') -> Dict[str, Any]:
+        section_text: str, lang: str = 'ar',
+        domain: str = '') -> Dict[str, Any]:
     """PR-CY48 — confidence score card + canonical factor table + separate
     risk register. Never mixes critical-success-factor tables with the
     confidence factor assessment or repeats the score in every contribution."""
@@ -5463,8 +5816,11 @@ def normalize_confidence_risk(
         'confidence_score': conf_score,
         'factor_table': {'schema': 'conf_factor', 'header': factor_schema,
                          'rows': factor_rows},
-        'risk_table': ({'schema': 'risk_register', 'header': risk_schema,
-                        'rows': risk_rows} if risk_rows else None),
+        'risk_table': {
+            'schema': 'risk_register',
+            'header': risk_schema,
+            'rows': risk_rows or _default_risk_register_rows(lang, domain),
+        },
     }
 
 
@@ -5472,6 +5828,7 @@ def ensure_gap_action_table_min_rows(
         table_spec: Optional[Dict[str, Any]],
         lang: str = 'ar',
         min_rows: int = GAP_ACTION_GUIDE_MIN_ROWS,
+        domain: str = '',
 ) -> Optional[Dict[str, Any]]:
     """Pad shallow gap implementation guides to executive-grade depth."""
     if not table_spec or table_spec.get('schema') != 'gap_action':
@@ -5479,22 +5836,44 @@ def ensure_gap_action_table_min_rows(
     rows = [list(r) for r in (table_spec.get('rows') or [])]
     if len(rows) >= min_rows:
         return table_spec
-    pads_ar = (
-        ('تنسيق تنفيذ الإجراءات مع أصحاب المصلحة المعنيين',
-         'CISO', '1-2 شهر', 'خطة عمل معتمدة'),
-        ('تنفيذ الضوابط ومراقبة مؤشرات التقدم',
-         'فريق الأمن السيبراني', '2-4 أشهر', 'مخرجات تنفيذية موثقة'),
-        ('مراجعة الفاعلية والتحقق من إغلاق الفجوة',
-         'CISO', 'شهري', 'تقرير إغلاق الفجوة'),
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
     )
-    pads_en = (
-        ('Align actions with accountable owners and control owners',
-         'CISO', 'Month 1-2', 'Approved action plan'),
-        ('Implement controls and track progress indicators',
-         'Cybersecurity team', 'Months 2-4', 'Documented deliverables'),
-        ('Review effectiveness and formally close the gap',
-         'CISO', 'Monthly', 'Gap closure report'),
-    )
+    owner = _rel35_default_owner(domain)
+    if is_cyber_strategy(domain, 'strategy'):
+        pads_ar = (
+            ('تنسيق تنفيذ الإجراءات مع أصحاب المصلحة المعنيين',
+             'CISO', '1-2 شهر', 'خطة عمل معتمدة'),
+            ('تنفيذ الضوابط ومراقبة مؤشرات التقدم',
+             'فريق الأمن السيبراني', '2-4 أشهر', 'مخرجات تنفيذية موثقة'),
+            ('مراجعة الفاعلية والتحقق من إغلاق الفجوة',
+             'CISO', 'شهري', 'تقرير إغلاق الفجوة'),
+        )
+        pads_en = (
+            ('Align actions with accountable owners and control owners',
+             'CISO', 'Month 1-2', 'Approved action plan'),
+            ('Implement controls and track progress indicators',
+             'Cybersecurity team', 'Months 2-4', 'Documented deliverables'),
+            ('Review effectiveness and formally close the gap',
+             'CISO', 'Monthly', 'Gap closure report'),
+        )
+    else:
+        pads_ar = (
+            ('تنسيق تنفيذ الإجراءات مع أصحاب المصلحة المعنيين',
+             owner, '1-2 شهر', 'خطة عمل معتمدة'),
+            ('تنفيذ الضوابط ومراقبة مؤشرات التقدم',
+             owner, '2-4 أشهر', 'مخرجات تنفيذية موثقة'),
+            ('مراجعة الفاعلية والتحقق من إغلاق الفجوة',
+             owner, 'شهري', 'تقرير إغلاق الفجوة'),
+        )
+        pads_en = (
+            ('Align actions with accountable owners and control owners',
+             owner, 'Month 1-2', 'Approved action plan'),
+            ('Implement controls and track progress indicators',
+             owner, 'Months 2-4', 'Documented deliverables'),
+            ('Review effectiveness and formally close the gap',
+             owner, 'Monthly', 'Gap closure report'),
+        )
     pads = pads_ar if lang == 'ar' else pads_en
     pad_i = 0
     while len(rows) < min_rows:
@@ -5509,7 +5888,8 @@ def ensure_gap_action_table_min_rows(
 
 
 def normalize_gap_action_guides(
-        section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
+        section_text: str, lang: str = 'ar',
+        domain: str = '') -> List[Dict[str, Any]]:
     """Normalize per-gap implementation guides (``#### دليل تطبيق الفجوة …``,
     typically numbered lists) into ``الخطوة | الإجراء | المسؤول | الإطار
     الزمني | الناتج`` tables — each with a clear guide title."""
@@ -5532,7 +5912,7 @@ def normalize_gap_action_guides(
             if sm:
                 step = sm.group(1)
                 action = prcy47_fix_ar_fragments(sm.group(2).strip())
-                rows.append([step, action, 'CISO',
+                rows.append([step, action, _rel35_default_owner(domain),
                              ('حسب الخطة' if lang == 'ar' else 'Per plan'),
                              ('مكتمل' if lang == 'ar' else 'Completed')])
         if rows:
@@ -5543,7 +5923,8 @@ def normalize_gap_action_guides(
                          for r in rows],
                 'title': title,
             }
-            out.append(ensure_gap_action_table_min_rows(spec_tbl, lang))
+            out.append(ensure_gap_action_table_min_rows(
+                spec_tbl, lang, domain=domain))
     return out
 
 
@@ -5635,6 +6016,80 @@ def _prcy73_sanitize_exec_priority_label(label: str, max_len: int = 80) -> str:
     return s
 
 
+def _domain_exec_priority_defaults(domain: str, lang: str = 'ar') -> Tuple[str, ...]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    if is_cyber_strategy(dcode, 'strategy'):
+        return (CANONICAL_CYBER_EXEC_PRIORITIES_AR if lang == 'ar'
+                else CANONICAL_CYBER_EXEC_PRIORITIES_EN)
+    catalogs = {
+        'data': (
+            ('حوكمة البيانات', 'جودة البيانات', 'حماية البيانات الشخصية'),
+            ('Data governance', 'Data quality', 'Personal data protection'),
+        ),
+        'ai': (
+            ('حوكمة الذكاء الاصطناعي', 'مخاطر النماذج', 'الإشراف البشري'),
+            ('AI governance', 'Model risk', 'Human oversight'),
+        ),
+        'dt': (
+            ('تكامل الخدمات الحكومية', 'تجربة المستفيد', 'التشغيل البيني'),
+            ('Government service integration', 'Citizen experience',
+             'Interoperability'),
+        ),
+    }.get(dcode)
+    if not catalogs:
+        return (
+            ('حوكمة مؤسسية', 'امتثال تنظيمي', 'تشغيل مستدام')
+            if lang == 'ar'
+            else ('Institutional governance', 'Regulatory compliance',
+                  'Sustainable operations')
+        )
+    return catalogs[0] if lang == 'ar' else catalogs[1]
+
+
+def _domain_exec_risk_defaults(domain: str, lang: str = 'ar') -> Tuple[str, ...]:
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    if is_cyber_strategy(dcode, 'strategy'):
+        return (CANONICAL_CYBER_EXEC_RISKS_AR if lang == 'ar'
+                else CANONICAL_CYBER_EXEC_RISKS_EN)
+    catalogs = {
+        'data': (
+            ('ضعف جودة البيانات الحرجة', 'عدم امتثال PDPL',
+             'فجوات سجل المعالجة'),
+            ('Critical data-quality weakness', 'PDPL non-compliance',
+             'RoPA register gaps'),
+        ),
+        'ai': (
+            ('مخاطر قرارات آلية دون إشراف', 'انحياز النماذج',
+             'ضعف حوكمة الذكاء الاصطناعي'),
+            ('Unaudited automated decisions', 'Model bias',
+             'Weak AI governance'),
+        ),
+        'dt': (
+            ('ضعف التشغيل البيني', 'تشتت القنوات الرقمية',
+             'فجوة التكامل الحكومي'),
+            ('Weak interoperability', 'Fragmented digital channels',
+             'Government integration gap'),
+        ),
+    }.get(dcode)
+    if not catalogs:
+        return (
+            ('فشل الامتثال التنظيمي', 'تعطل الخدمات الحيوية',
+             'ضعف الحوكمة')
+            if lang == 'ar'
+            else ('Regulatory non-compliance', 'Critical service outage',
+                  'Weak governance')
+        )
+    return catalogs[0] if lang == 'ar' else catalogs[1]
+
+
 def _derive_executive_priorities(
         content_sections: Dict[str, str],
         metadata: Dict[str, Any],
@@ -5677,8 +6132,8 @@ def _derive_executive_priorities(
                     continue
                 seen.add(label)
                 out.append(label)
-    defaults = (CANONICAL_CYBER_EXEC_PRIORITIES_AR if lang == 'ar'
-                else CANONICAL_CYBER_EXEC_PRIORITIES_EN)
+    defaults = _domain_exec_priority_defaults(
+        str((metadata or {}).get('domain') or ''), lang)
     if len(out) < 3:
         for d in defaults:
             if d not in seen and len(out) < 5:
@@ -5687,7 +6142,8 @@ def _derive_executive_priorities(
     return out[:5]
 
 
-def _derive_executive_risks(conf_text: str, lang: str = 'ar') -> List[str]:
+def _derive_executive_risks(
+        conf_text: str, lang: str = 'ar', domain: str = '') -> List[str]:
     """PR-CY57 — extract risk register rows for executive summary."""
     risks: List[str] = []
     for tbl in parse_markdown_tables(conf_text or ''):
@@ -5716,8 +6172,7 @@ def _derive_executive_risks(conf_text: str, lang: str = 'ar') -> List[str]:
             if candidate and candidate not in _RISK_HEADER_TOKENS:
                 risks.append(prcy47_fix_ar_fragments(candidate)[:80])
     if not risks:
-        defaults = (CANONICAL_CYBER_EXEC_RISKS_AR if lang == 'ar'
-                    else CANONICAL_CYBER_EXEC_RISKS_EN)
+        defaults = _domain_exec_risk_defaults(domain, lang)
         risks = list(defaults)
     return [r for r in risks if r][:5]
 
@@ -5731,6 +6186,13 @@ def enhance_executive_summary(
 ) -> Dict[str, Any]:
     """Professional one-page executive summary grid."""
     lang_n = 'ar' if lang == 'ar' else 'en'
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    _exec_domain = str(
+        (metadata or {}).get('domain')
+        or exec_block.get('domain')
+        or '')
     # PR-CY47 — executive summary must be built from clean prose only; never
     # carry raw markdown tables, implementation guides, or pipe residue.
     paras = []
@@ -5756,7 +6218,9 @@ def enhance_executive_summary(
     conf_m = re.search(r'(\d{1,3})\s*%', fix_confidence_display(conf_text))
     conf_score = conf_m.group(1) + '%' if conf_m else '—'
     fw_labels = []
-    for fw in (fws_keys or ['ECC', 'DCC']):
+    _fw_src = fws_keys or (
+        ['ECC', 'DCC'] if is_cyber_strategy(_exec_domain) else [])
+    for fw in _fw_src:
         spec_key = str(fw).upper()
         if 'ECC' in spec_key:
             fw_labels.append(FRAMEWORK_ORDER[0])
@@ -5764,10 +6228,11 @@ def enhance_executive_summary(
             fw_labels.append(FRAMEWORK_ORDER[1])
         else:
             fw_labels.append(str(fw))
-    if not fw_labels:
+    if not fw_labels and is_cyber_strategy(_exec_domain):
         fw_labels = list(FRAMEWORK_ORDER)
     fw_labels = _clean_framework_labels(fw_labels)
-    key_risks = _derive_executive_risks(conf_text, lang_n)
+    key_risks = _derive_executive_risks(
+        conf_text, lang_n, domain=_exec_domain)
     priorities = _derive_executive_priorities(
         content_sections, metadata, lang_n)
     priorities = [
@@ -5803,7 +6268,16 @@ def enrich_professional_blocks(
         model.get('domain')
         or (metadata or {}).get('domain')
         or '')
-    domain_n = _domain_signal or 'cyber'
+    try:
+        from release_engine_v3.domain_codes import normalize_domain_code
+        domain_n = (
+            normalize_domain_code(str(_domain_signal), default='')
+            or str(_domain_signal or ''))
+    except Exception:  # noqa: BLE001
+        domain_n = str(_domain_signal or '')
+    if not model.get('selected_frameworks'):
+        model['selected_frameworks'] = list(
+            (metadata or {}).get('selected_frameworks') or [])
     # REL3.3 P0 — stamp the resolved domain into the render model so every
     # downstream consumer (roadmap/KPI table builders, exporters, guards)
     # sees the same domain instead of re-deriving (and defaulting) it.
@@ -5904,16 +6378,18 @@ def enrich_professional_blocks(
     # Gaps — main gap table + per-guide action tables (الخطوة | الإجراء | …).
     gaps = _sec('gap_analysis')
     gap_tables = normalize_gap_tables(gaps, lang_n)
-    gap_tables += normalize_gap_action_guides(gaps, lang_n)
+    gap_tables += normalize_gap_action_guides(gaps, lang_n, domain=domain_n)
     gap_tables = [
-        ensure_gap_action_table_min_rows(t, lang_n) for t in gap_tables
+        ensure_gap_action_table_min_rows(t, lang_n, domain=domain_n)
+        for t in gap_tables
     ]
     try:
         from release_engine_v3.rel34_visible_output_quality import (
             ensure_cyber_gap_action_plans,
         )
         gap_tables = ensure_cyber_gap_action_plans(
-            gap_tables, lang_n, domain=domain_n)
+            gap_tables, lang_n, domain=domain_n,
+            document_type=str(model.get('document_type') or 'strategy'))
     except Exception:  # noqa: BLE001
         pass
     blocks['gap_analysis'] = {
@@ -5950,7 +6426,8 @@ def enrich_professional_blocks(
         )
         _expanded = ensure_cyber_roadmap_coverage(
             list((road_tbl or {}).get('rows') or []),
-            lang_n, domain=domain_n)
+            lang_n, domain=domain_n,
+            document_type=str(model.get('document_type') or 'strategy'))
         if _expanded:
             road_tbl = dict(road_tbl or {})
             road_tbl['schema'] = 'roadmap'
@@ -5982,7 +6459,7 @@ def enrich_professional_blocks(
     except Exception:  # noqa: BLE001
         pass
     kpis = _sec('kpi_kri_framework')
-    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n)
+    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n, domain=domain_n)
     kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
     _main_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_main']
     _formula_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_formula']
@@ -5997,7 +6474,8 @@ def enrich_professional_blocks(
         'paragraphs': kpi_guides.get('paragraphs', []),
     }
     blocks = _normalize_kpi_tables_semantics(
-        {'blocks': blocks}, lang_n)['blocks']
+        {'blocks': blocks, 'domain': domain_n}, lang_n,
+        domain=domain_n)['blocks']
     try:
         from release_engine_v3.rel34_visible_output_quality import (
             structure_kpi_section_block,
@@ -6009,7 +6487,7 @@ def enrich_professional_blocks(
 
     # Confidence — score card paragraph + factor table + risk register.
     conf = _sec('confidence_risk_register')
-    conf_norm = normalize_confidence_risk(conf, lang_n)
+    conf_norm = normalize_confidence_risk(conf, lang_n, domain=domain_n)
     conf_tables = [conf_norm['factor_table']]
     if conf_norm.get('risk_table'):
         conf_tables.append(conf_norm['risk_table'])
@@ -6029,8 +6507,10 @@ def enrich_professional_blocks(
 
     # Executive summary grid
     exec_blk = blocks.get('executive_summary') or {}
+    _exec_meta = dict(metadata or {})
+    _exec_meta.setdefault('domain', domain_n)
     blocks['executive_summary'] = enhance_executive_summary(
-        exec_blk, content_sections, metadata,
+        exec_blk, content_sections, _exec_meta,
         model.get('selected_frameworks') or [], lang_n)
 
     # Governance schema hint
@@ -6083,7 +6563,21 @@ def enrich_professional_blocks(
             'split_tables': split_tables,
         }
 
-    blocks = _finalize_professional_blocks(blocks, lang_n)
+    blocks = _finalize_professional_blocks(
+        blocks, lang_n, domain=domain_n)
+    try:
+        from release_engine_v3.rel35_domain_framework_fidelity import (
+            apply_fidelity_to_blocks,
+        )
+        blocks = apply_fidelity_to_blocks(
+            blocks,
+            domain=domain_n,
+            document_type=str(model.get('document_type') or 'strategy'),
+            selected_frameworks=model.get('selected_frameworks') or [],
+            lang=lang_n,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     blocks = sync_professional_toc_entries(blocks, lang_n)
     model['blocks'] = blocks
     model['render_layer'] = 'prcy41_professional'
@@ -6126,7 +6620,8 @@ def ensure_strategy_professional_model(
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
-        blocks = _finalize_professional_blocks(blocks, lang_n)
+        blocks = _finalize_professional_blocks(
+            blocks, lang_n, domain=str(model.get('domain') or domain or ''))
         return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
@@ -6291,10 +6786,10 @@ def pdf_gap_headers_clean(gap_tables: List[Dict[str, Any]]) -> bool:
                    if t.get('schema') == 'gap_action']
     if not action_tbls:
         return True
-    canon = list(SCHEMA_GAP_ACTION_AR)
+    canons = (list(SCHEMA_GAP_ACTION_AR), list(SCHEMA_GAP_ACTION_EN))
     for tbl in action_tbls:
         hdr = tbl.get('header') or []
-        if list(hdr) != canon:
+        if list(hdr) not in canons:
             return False
         for r in (tbl.get('rows') or []):
             for c in r:
@@ -6408,8 +6903,10 @@ def prcy47_docmodel_professional_checks(
         1 for bad, _ in PRCY41_AR_CONCAT_FIXES
         if bad in str(blocks))
     arabic_spacing_final_passed = arabic_concat_remaining == 0
+    _gap_first = (
+        'الخطوة' if str(lang or 'ar').lower().startswith('ar') else 'Step')
     gap_guide_headers_clean = all(
-        (tbl.get('header') or [''])[0] == 'الخطوة'
+        (tbl.get('header') or [''])[0] in ('الخطوة', 'Step', _gap_first)
         for tbl in _gap_actions
     ) if _gap_actions else True
     roadmap_rows_meaningful = bool(road_rows) and not any(
@@ -6457,7 +6954,8 @@ def prcy47_docmodel_professional_checks(
     final_table_cell_arabic_cleanup_passed = not any(
         bad in str(blocks) for bad, _ in PRCY41_AR_CONCAT_FIXES)
     _roadmap_violations = collect_roadmap_framework_violations(
-        road_rows, lang, get_roadmap_row_meta(model))
+        road_rows, lang, get_roadmap_row_meta(model),
+        domain=str((model or {}).get('domain') or ''))
     roadmap_framework_mapping_valid = not _roadmap_violations
 
     kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)

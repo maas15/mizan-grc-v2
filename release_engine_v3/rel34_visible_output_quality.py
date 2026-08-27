@@ -40,6 +40,9 @@ REL34_AR_LITERAL_FIXES: Tuple[Tuple[str, str], ...] = (
     ('NCA ECCو', 'NCA ECC و'),
     ('المتوقع المخرج', 'المخرج المتوقع'),
     ('المرتبط الإطار', 'الإطار المرتبط'),
+    ('المسؤولإشراف البشري', 'مسؤول الإشراف البشري'),
+    ('المسؤولوصفية', 'مدير البيانات الوصفية'),
+    ('سجلمعالجة', 'سجل\u00a0معالجة'),
 )
 
 GAP_ACTION_APPENDIX_TITLE_AR = 'ملحق ج — خطط معالجة الفجوات التفصيلية'
@@ -153,6 +156,79 @@ _PHASE_LABELS_AR = {
     '2': 'المرحلة 2: تمكين وتشغيل (7-18 شهر)',
     '3': 'المرحلة 3: تحسين (19-24 شهر)',
 }
+
+CYBER_ROADMAP_CATALOG_EN: Tuple[Dict[str, str], ...] = (
+    {
+        'family': 'governance', 'phase': '1', 'period': '1-6 months',
+        'init': 'Establish cybersecurity governance and appoint a CISO',
+        'owner': 'CISO', 'output': 'Approved CISO structure and governance committee',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'iam', 'phase': '1', 'period': '1-6 months',
+        'init': 'Implement IAM/PAM/MFA controls',
+        'owner': 'IAM/PAM Manager', 'output': 'IAM/PAM platform with mandatory MFA',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'data_classification', 'phase': '1', 'period': '1-6 months',
+        'init': 'Classify and inventory sensitive data',
+        'owner': 'Data Protection Officer',
+        'output': 'Approved classification policy and data asset register',
+        'fw': 'NCA DCC',
+    },
+    {
+        'family': 'soc', 'phase': '2', 'period': '7-18 months',
+        'init': 'Operate a SOC and SIEM platform',
+        'owner': 'SOC Manager', 'output': 'Operational SOC with SIEM coverage',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'csirt', 'phase': '2', 'period': '7-18 months',
+        'init': 'Establish CSIRT and incident response plans',
+        'owner': 'CSIRT Lead', 'output': 'CSIRT team and approved response plan',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'vulnerability', 'phase': '2', 'period': '7-18 months',
+        'init': 'Operate a vulnerability management program',
+        'owner': 'Vulnerability Manager',
+        'output': 'Periodic scanning and documented remediation SLA',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'dlp', 'phase': '2', 'period': '7-18 months',
+        'init': 'Enable DLP and data-leakage monitoring',
+        'owner': 'Data Protection Officer',
+        'output': 'DLP platform with active monitoring rules',
+        'fw': 'NCA DCC',
+    },
+    {
+        'family': 'awareness', 'phase': '2', 'period': '7-18 months',
+        'init': 'Run a security awareness program',
+        'owner': 'Awareness Manager',
+        'output': 'Annual awareness plan and completion reports',
+        'fw': 'NCA ECC',
+    },
+    {
+        'family': 'encryption', 'phase': '3', 'period': '19-24 months',
+        'init': 'Implement encryption and key management',
+        'owner': 'Data Protection Officer',
+        'output': 'Documented encryption and key-management controls',
+        'fw': 'NCA DCC',
+    },
+    {
+        'family': 'backup_dr', 'phase': '3', 'period': '19-24 months',
+        'init': 'Test backups and DR/BCP plans',
+        'owner': 'Business Continuity Manager',
+        'output': 'DR plan and a successful restore test',
+        'fw': 'NCA ECC',
+    },
+)
+
+
+def _cyber_roadmap_catalog(lang: str) -> Tuple[Dict[str, str], ...]:
+    return CYBER_ROADMAP_CATALOG if str(lang or 'ar').lower().startswith('ar') else CYBER_ROADMAP_CATALOG_EN
 
 CYBER_GAP_ACTION_CATALOG: Tuple[Dict[str, Any], ...] = (
     {
@@ -287,6 +363,147 @@ CYBER_GAP_ACTION_CATALOG: Tuple[Dict[str, Any], ...] = (
     },
 )
 
+CYBER_GAP_ACTION_CATALOG_EN: Tuple[Dict[str, Any], ...] = (
+    {
+        'key': 'ciso_governance',
+        'title': 'Gap action guide — CISO governance',
+        'tokens': ('ciso', 'governance', 'committee'),
+        'steps': (
+            ('Approve the CISO charter and security committee and escalate to the board',
+             'CISO', '1-2 months', 'Approved governance charter'),
+            ('Appoint deputies and control owners and bind them to RACI',
+             'CISO', '2-3 months', 'Updated RACI matrix'),
+            ('Quarterly review of governance effectiveness and gap closure',
+             'Security Committee', 'Quarterly', 'Review minutes and closure'),
+        ),
+    },
+    {
+        'key': 'iam_pam_mfa',
+        'title': 'Gap action guide — IAM/PAM/MFA',
+        'tokens': ('iam', 'pam', 'mfa', 'identity'),
+        'steps': (
+            ('Inventory privileged accounts and disable shared access',
+             'IAM/PAM Manager', '1 month', 'Privileged account register'),
+            ('Enforce MFA on administrative and remote access',
+             'IAM/PAM Manager', '2-3 months', 'Applied MFA policy'),
+            ('Operate PAM for periodic session review',
+             'IAM/PAM Manager', '3-4 months', 'PAM session reports'),
+        ),
+    },
+    {
+        'key': 'soc_siem',
+        'title': 'Gap action guide — SOC/SIEM',
+        'tokens': ('soc', 'siem', 'monitor'),
+        'steps': (
+            ('Identify priority log sources and connect them to SIEM',
+             'SOC Manager', '1-2 months', 'Enabled source list'),
+            ('Build alert use-cases and 24x7 coverage',
+             'SOC Manager', '2-4 months', 'Use-case catalog'),
+            ('Measure MTTD/MTTR monthly and tune rules',
+             'SOC Manager', 'Monthly', 'SOC performance report'),
+        ),
+    },
+    {
+        'key': 'csirt',
+        'title': 'Gap action guide — CSIRT',
+        'tokens': ('csirt', 'incident', 'response'),
+        'steps': (
+            ('Approve the response plan and appoint a CSIRT lead',
+             'CSIRT Lead', '1 month', 'Approved response plan'),
+            ('Run a tabletop exercise for a critical incident',
+             'CSIRT Lead', '2-3 months', 'Exercise report and lessons'),
+            ('Refresh escalation channels with SOC and the committee',
+             'CSIRT Lead', 'Quarterly', 'Updated escalation path'),
+        ),
+    },
+    {
+        'key': 'vulnerability',
+        'title': 'Gap action guide — vulnerability management',
+        'tokens': ('vulnerability', 'scan', 'patch'),
+        'steps': (
+            ('Run periodic scans of critical assets',
+             'Vulnerability Manager', '1 month', 'Approved scan schedule'),
+            ('Apply severity-based remediation SLA',
+             'Vulnerability Manager', '2-3 months', 'SLA dashboard'),
+            ('Verify closure and rescan',
+             'Vulnerability Manager', 'Monthly', 'Closure report'),
+        ),
+    },
+    {
+        'key': 'dlp',
+        'title': 'Gap action guide — DLP',
+        'tokens': ('dlp', 'leak', 'exfiltrat'),
+        'steps': (
+            ('Identify priority leakage channels',
+             'Data Protection Officer', '1 month', 'DLP channel map'),
+            ('Enable block/alert rules on sensitive data',
+             'Data Protection Officer', '2-3 months', 'Active DLP rules'),
+            ('Review weekly incidents and improve rules',
+             'Data Protection Officer', 'Weekly', 'DLP incident report'),
+        ),
+    },
+    {
+        'key': 'data_classification',
+        'title': 'Gap action guide — data classification',
+        'tokens': ('classification', 'label', 'inventory'),
+        'steps': (
+            ('Approve classification levels and labeling policy',
+             'Data Protection Officer', '1 month', 'Approved classification policy'),
+            ('Inventory assets and label sensitive data',
+             'Data Protection Officer', '2-3 months', 'Classification register'),
+            ('Review classification compliance with data owners',
+             'CISO', 'Quarterly', 'Classification compliance report'),
+        ),
+    },
+    {
+        'key': 'encryption',
+        'title': 'Gap action guide — encryption and key management',
+        'tokens': ('encryption', 'key'),
+        'steps': (
+            ('Inventory unencrypted stored and transmitted data',
+             'Data Protection Officer', '1 month', 'Encryption gap register'),
+            ('Apply encryption and key lifecycle management',
+             'Data Protection Officer', '2-4 months', 'Documented key controls'),
+            ('Test recovery from encrypted backups',
+             'Business Continuity Manager', 'Quarterly', 'Key-test minutes'),
+        ),
+    },
+    {
+        'key': 'sensitive_data',
+        'title': 'Gap action guide — sensitive-data handling',
+        'tokens': ('sensitive', 'handling'),
+        'steps': (
+            ('Identify sensitive-data processing activities and owners',
+             'Data Protection Officer', '1 month', 'Processing activity register'),
+            ('Enforce least privilege and logging',
+             'IAM/PAM Manager', '2-3 months', 'Documented access controls'),
+            ('Review retention and destruction against policy',
+             'Data Protection Officer', 'Quarterly', 'Retention and destruction report'),
+        ),
+    },
+    {
+        'key': 'transit_rest',
+        'title': 'Gap action guide — data in transit and at rest',
+        'tokens': ('transit', 'at rest', 'tls'),
+        'steps': (
+            ('Enforce TLS on critical external and internal channels',
+             'SOC Manager', '1-2 months', 'Encrypted channel list'),
+            ('Encrypt stored data in critical systems',
+             'Data Protection Officer', '2-4 months', 'Documented encrypted storage'),
+            ('Review certificates and keys before expiry',
+             'Data Protection Officer', 'Monthly', 'Valid certificate register'),
+        ),
+    },
+)
+
+
+def _cyber_gap_action_catalog(lang: str) -> Tuple[Dict[str, Any], ...]:
+    return (
+        CYBER_GAP_ACTION_CATALOG
+        if str(lang or 'ar').lower().startswith('ar')
+        else CYBER_GAP_ACTION_CATALOG_EN
+    )
+
 _TABLE_FORCE_SCHEMAS = (
     'strategic_objectives', 'pillar_initiatives',
     'gap_main', 'gap_action', 'gap_table',
@@ -399,19 +616,23 @@ def ensure_cyber_roadmap_coverage(
         lang: str = 'ar',
         *,
         domain: str = 'cyber',
+        document_type: str = 'strategy',
         min_rows: int = 8,
 ) -> List[List[str]]:
     """Deterministic cyber-only top-up to 8–10 roadmap initiatives."""
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    if d not in ('cyber', 'cyber_security', 'cybersecurity', ''):
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, document_type):
         return list(rows or [])
     out = [list(r) for r in (rows or []) if any(str(c or '').strip() for c in r)]
-    for spec in CYBER_ROADMAP_CATALOG:
+    catalog = _cyber_roadmap_catalog(lang)
+    for spec in catalog:
         if any(_row_covers_family(r, spec['family']) for r in out):
             continue
         out.append([
             _phase_label(spec['phase'], lang),
-            spec['period'] if lang == 'ar' else spec['period'],
+            spec['period'],
             spec['init'],
             spec['owner'],
             spec['output'],
@@ -420,7 +641,7 @@ def ensure_cyber_roadmap_coverage(
         if len(out) >= 10:
             break
     if len(out) < min_rows:
-        for spec in CYBER_ROADMAP_CATALOG:
+        for spec in catalog:
             init = spec['init']
             if any(init in ' '.join(str(c) for c in r) for r in out):
                 continue
@@ -483,10 +704,13 @@ def ensure_cyber_gap_action_plans(
         lang: str = 'ar',
         *,
         domain: str = 'cyber',
+        document_type: str = 'strategy',
 ) -> List[Dict[str, Any]]:
     """Ensure each of the 10 major cyber gaps has a non-empty action plan."""
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    if d not in ('cyber', 'cyber_security', 'cybersecurity', ''):
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
+    )
+    if not is_cyber_strategy(domain, document_type):
         return list(tables or [])
     out = [dict(t) for t in (tables or [])]
     existing_actions = [
@@ -495,7 +719,7 @@ def ensure_cyber_gap_action_plans(
     # extra titles that can drift traceability gap labels.
     if len(existing_actions) >= 8:
         return out
-    for entry in CYBER_GAP_ACTION_CATALOG:
+    for entry in _cyber_gap_action_catalog(lang):
         if any(
                 t.get('schema') == 'gap_action'
                 and _gap_table_matches(t, entry)
@@ -512,13 +736,19 @@ def ensure_cyber_gap_action_plans(
             if not str(cells[0]).strip():
                 cells[0] = str(i)
             if not str(cells[1]).strip() or str(cells[1]).strip() in ('—', '-'):
-                cells[1] = 'تنفيذ الضابط المطلوب وتوثيق الدليل'
+                cells[1] = (
+                    'تنفيذ الضابط المطلوب وتوثيق الدليل'
+                    if lang == 'ar'
+                    else 'Implement the required control and document evidence')
             if not str(cells[2]).strip() or str(cells[2]).strip() in ('—', '-'):
                 cells[2] = 'CISO'
             if not str(cells[3]).strip() or str(cells[3]).strip() in ('—', '-'):
-                cells[3] = '1-3 أشهر'
+                cells[3] = '1-3 أشهر' if lang == 'ar' else '1-3 months'
             if not str(cells[4]).strip() or str(cells[4]).strip() in ('—', '-'):
-                cells[4] = 'مخرج موثق قابل للتحقق'
+                cells[4] = (
+                    'مخرج موثق قابل للتحقق'
+                    if lang == 'ar'
+                    else 'Verifiable documented deliverable')
             rows.append(cells[:5])
         t['rows'] = rows
     return out
@@ -635,10 +865,10 @@ def kpi_section_has_required_subheads(text: str) -> bool:
 
 
 def _is_cyber_domain(domain: str = '') -> bool:
-    d = str(domain or '').strip().lower().replace(' ', '_')
-    return d in (
-        'cyber', 'cyber_security', 'cybersecurity', 'cybersec',
+    from release_engine_v3.rel35_domain_framework_fidelity import (
+        is_cyber_strategy,
     )
+    return is_cyber_strategy(domain, 'strategy')
 
 
 def prefer_professional_tables(

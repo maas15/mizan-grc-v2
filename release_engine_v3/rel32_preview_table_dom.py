@@ -24,13 +24,15 @@ def render_preview_table_html(
         *,
         schema_id: str,
         is_rtl: bool = True,
+        lang: str = 'ar',
 ) -> str:
     """Render preview HTML using schema-key binding (mirrors rel32-preview-table-schema.js)."""
+    nlang = 'ar' if str(lang or 'ar').lower().startswith('ar') else 'en'
     spec = rebind_table_spec(
         {'schema': schema_id, 'header': list(headers), 'rows': [list(r) for r in rows]},
-        lang='ar',
+        lang=nlang,
     )
-    labels = schema_header_labels(schema_id, lang='ar')
+    labels = schema_header_labels(schema_id, lang=nlang)
     bound_rows = (spec or {}).get('bound_rows') or []
     css = {
         'kpi_main': 'kpi-summary',
@@ -47,11 +49,17 @@ def render_preview_table_html(
     for lbl in labels:
         parts.append(f'<th style="text-align:{align}">{_esc(lbl)}</th>')
     parts.append('</tr></thead><tbody>')
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            sanitize_visible_preview_text,
+        )
+    except Exception:  # noqa: BLE001
+        sanitize_visible_preview_text = lambda t, _l='ar': t  # noqa: E731
     for row_dict in bound_rows:
         cells = row_dict_to_cells(row_dict, schema_id)
         parts.append('<tr>')
         for cell in cells:
-            val = (cell or '').strip()
+            val = sanitize_visible_preview_text((cell or '').strip(), nlang)
             if not val or val == '—':
                 parts.append('<td class="cell-missing">—</td>')
             else:
@@ -169,66 +177,98 @@ def _is_valid_source_cell(v: str) -> bool:
     return len(s) >= 3
 
 
+def _header_eq(got: str, expected: str, lang: str) -> bool:
+    g = ' '.join(str(got or '').split()).lower()
+    e = ' '.join(str(expected or '').split()).lower()
+    if g == e:
+        return True
+    if lang != 'en':
+        return False
+    aliases = {
+        'kpi description': ('indicator', 'وصف المؤشر'),
+        'target value': ('target', 'القيمة المستهدفة'),
+        'calculation formula': ('formula', 'صيغة الاحتساب'),
+        'source': ('مصدر',),
+        'frequency': ('التكرار',),
+        'owner': ('المالك',),
+    }
+    return g in aliases.get(e, ())
+
+
 def validate_kpi_main_by_dom_index(
-        headers: Sequence[str], cells: Sequence[str]) -> List[str]:
-    schema_labels = schema_header_labels('kpi_main', lang='ar')
+        headers: Sequence[str], cells: Sequence[str],
+        lang: str = 'ar') -> List[str]:
+    nlang = 'ar' if str(lang or 'ar').lower().startswith('ar') else 'en'
+    schema_labels = schema_header_labels('kpi_main', lang=nlang)
     errors: List[str] = []
     for i, lbl in enumerate(schema_labels):
-        if i >= len(headers) or headers[i] != lbl:
+        if i >= len(headers) or not _header_eq(headers[i], lbl, nlang):
             errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
         cell = cells[i] if i < len(cells) else ''
-        if lbl == 'التكرار' and cell and (not _is_freq(cell) or _pure_source_token(cell)):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:التكرار')
-        if lbl == 'مصدر' and cell and not _is_valid_source_cell(cell):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:مصدر')
-        if lbl == 'المالك' and cell and (_is_freq(cell) or _pure_source_token(cell) or _is_type(cell)):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:المالك')
-        if lbl == 'النوع' and cell and not _is_type(cell) and 'kri' not in cell.lower():
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:النوع')
-        if lbl == 'صيغة الاحتساب' and cell and _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_main:صيغة الاحتساب')
+        key_lbl = lbl
+        if key_lbl in ('التكرار', 'Frequency') and cell and (
+                not _is_freq(cell) or _pure_source_token(cell)):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
+        if key_lbl in ('مصدر', 'Source') and cell and not _is_valid_source_cell(cell):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
+        if key_lbl in ('المالك', 'Owner') and cell and (
+                _is_freq(cell) or _pure_source_token(cell) or _is_type(cell)):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
+        if key_lbl in ('النوع', 'Type') and cell and not _is_type(cell) and 'kri' not in cell.lower():
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
+        if key_lbl in ('صيغة الاحتساب', 'Calculation Formula', 'Formula') and cell and (
+                _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell)):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_main:{lbl}')
     return errors
 
 
 def validate_kpi_formula_by_dom_index(
-        headers: Sequence[str], cells: Sequence[str]) -> List[str]:
-    schema_labels = schema_header_labels('kpi_formula', lang='ar')
+        headers: Sequence[str], cells: Sequence[str],
+        lang: str = 'ar') -> List[str]:
+    nlang = 'ar' if str(lang or 'ar').lower().startswith('ar') else 'en'
+    schema_labels = schema_header_labels('kpi_formula', lang=nlang)
     errors: List[str] = []
     for i, lbl in enumerate(schema_labels):
-        if i >= len(headers) or headers[i] != lbl:
+        if i >= len(headers) or not _header_eq(headers[i], lbl, nlang):
             errors.append(f'rel32_preview_table_header_value_mismatch:kpi_formula:{lbl}')
         cell = cells[i] if i < len(cells) else ''
-        if lbl == 'المؤشر' and (not cell or _TARGET_RE.search(cell or '')):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:المؤشر')
-        if lbl == 'صيغة الاحتساب' and cell and _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:صيغة الاحتساب')
-        if lbl == 'مصدر البيانات' and cell and _FORMULA_RE.search(cell) and not _SOURCE_RE.search(cell):
-            errors.append('rel32_preview_table_header_value_mismatch:kpi_formula:مصدر البيانات')
+        if lbl in ('المؤشر', 'Indicator') and (not cell or _TARGET_RE.search(cell or '')):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_formula:{lbl}')
+        if lbl in ('صيغة الاحتساب', 'Calculation Formula', 'Formula') and cell and (
+                _TARGET_RE.search(cell) and not _FORMULA_RE.search(cell)):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_formula:{lbl}')
+        if lbl in ('مصدر البيانات', 'Data Source') and cell and (
+                _FORMULA_RE.search(cell) and not _SOURCE_RE.search(cell)):
+            errors.append(f'rel32_preview_table_header_value_mismatch:kpi_formula:{lbl}')
     return errors
 
 
 def evaluate_preview_dom_binding_check(
         html_text: str,
         schema_id: str,
+        lang: str = 'ar',
 ) -> Dict[str, Any]:
-    schema_labels = schema_header_labels(schema_id, lang='ar')
+    nlang = 'ar' if str(lang or 'ar').lower().startswith('ar') else 'en'
+    schema_labels = schema_header_labels(schema_id, lang=nlang)
     dom = extract_table_dom_binding(html_text)
     headers = dom['header_labels_from_dom']
     cells = dom['first_row_cells']
     mismatched: List[str] = []
     blocking: List[str] = []
-    if headers != schema_labels:
+    if not all(
+            _header_eq(headers[i] if i < len(headers) else '', lbl, nlang)
+            for i, lbl in enumerate(schema_labels)) or len(headers) != len(schema_labels):
         mismatched.append('header_order')
         for i, lbl in enumerate(schema_labels):
             got = headers[i] if i < len(headers) else ''
-            if got != lbl:
+            if not _header_eq(got, lbl, nlang):
                 mismatched.append(f'header:{lbl}:expected_index_{i}')
     if not dom.get('schema_binder_applied'):
         blocking.append(f'rel32_preview_table_schema_binder_not_applied:{schema_id}')
     if schema_id == 'kpi_main':
-        blocking.extend(validate_kpi_main_by_dom_index(headers, cells))
+        blocking.extend(validate_kpi_main_by_dom_index(headers, cells, nlang))
     if schema_id == 'kpi_formula':
-        blocking.extend(validate_kpi_formula_by_dom_index(headers, cells))
+        blocking.extend(validate_kpi_formula_by_dom_index(headers, cells, nlang))
     return {
         'table_id': schema_id,
         'schema_labels': schema_labels,

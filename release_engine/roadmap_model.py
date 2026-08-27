@@ -118,7 +118,9 @@ _FAMILY_TOKENS = {
     'awareness_training': (
         'توعية', 'تدريب', 'phishing', 'برنامج التوعية', 'توعية أمنية', 'تصيد'),
     'backup_dr_resilience': ('نسخ', 'backup', 'تعافي', 'dr', 'استمرارية'),
-    'data_classification': ('تصنيف', 'جرد'),
+    'data_classification': (
+        'تصنيف', 'جرد', 'data classification', 'classify', 'classified',
+    ),
     'encryption_key_management': ('تشفير', 'مفاتيح', 'encryption'),
     'dlp': ('dlp', 'تسرب'),
     'sensitive_data_handling': ('معالجة البيانات', 'sensitive data', 'حساسة'),

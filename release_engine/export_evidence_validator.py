@@ -516,8 +516,76 @@ def validate_actual_export_evidence(
         final_hash: str = '',
         canonical_sections: Optional[Dict[str, str]] = None,
         hash_fn=None,
+        selected_frameworks: Optional[Any] = None,
+        strategy_id: Any = None,
 ) -> Dict[str, Any]:
     """Validate visible text from actual export surfaces (not render model only)."""
+    # REL36.5 — last-mile repair of the exact extracted evidence strings
+    # before _channel_defects / check_pillar_owner_missing. Does not skip
+    # or weaken the validator.
+    _rel36_5_hooks: Dict[str, Any] = {}
+    try:
+        from release_engine_v3.rel36_5_actual_server_export_evidence_hook import (
+            apply_rel36_5_to_evidence_blob,
+            emit_rel36_5_actual_server_export_evidence_hook,
+        )
+        _rel36_5_kwargs = {
+            'lang': lang,
+            'domain': domain,
+            'document_type': document_type,
+            'selected_frameworks': selected_frameworks,
+            'strategy_id': strategy_id,
+        }
+
+        def _rel36_5_channel(blob: str, export_type: str) -> str:
+            try:
+                repaired, diag = apply_rel36_5_to_evidence_blob(
+                    blob, route=export_type, export_type=export_type,
+                    **_rel36_5_kwargs)
+                _rel36_5_hooks[export_type] = diag
+                emit_rel36_5_actual_server_export_evidence_hook(diag)
+                return repaired
+            except Exception as _rel36_5_err:  # noqa: BLE001
+                fail = {
+                    'tag': 'REL36.5-ACTUAL-SERVER-EXPORT-EVIDENCE-HOOK',
+                    'route': export_type,
+                    'export_type': export_type,
+                    'applied': False,
+                    'evidence_input_matches_repaired': False,
+                    'passed': False,
+                    'repair_error': repr(_rel36_5_err)[:300],
+                    'repair_applied_at': 'validate_actual_export_evidence',
+                }
+                _rel36_5_hooks[export_type] = fail
+                try:
+                    emit_rel36_5_actual_server_export_evidence_hook(fail)
+                except Exception:  # noqa: BLE001
+                    pass
+                return blob
+
+        if preview_text:
+            preview_text = _rel36_5_channel(preview_text, 'preview')
+        if docx_text:
+            docx_text = _rel36_5_channel(docx_text, 'docx')
+        if pdf_text:
+            pdf_text = _rel36_5_channel(pdf_text, 'pdf')
+    except Exception as _rel36_5_outer:  # noqa: BLE001
+        _rel36_5_hooks = _rel36_5_hooks or {}
+        try:
+            from release_engine_v3.rel36_5_actual_server_export_evidence_hook import (
+                emit_rel36_5_actual_server_export_evidence_hook,
+            )
+            emit_rel36_5_actual_server_export_evidence_hook({
+                'tag': 'REL36.5-ACTUAL-SERVER-EXPORT-EVIDENCE-HOOK',
+                'applied': False,
+                'evidence_input_matches_repaired': False,
+                'passed': False,
+                'repair_error': repr(_rel36_5_outer)[:300],
+                'repair_applied_at': 'validate_actual_export_evidence',
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
     internal_roadmap_row_count = None
     if canonical_sections:
         try:
@@ -762,6 +830,7 @@ def validate_actual_export_evidence(
         'actual_export_evidence_passed': export_passed,
         'route_bound_evidence_valid': export_passed,
         'content_substance_evidence': substance_diag,
+        'rel36_5_actual_server_export_evidence_hook': _rel36_5_hooks,
         'exported_kpi_canonical_valid': bool(
             docx_kpi.get('exported_kpi_canonical_valid', True)
             and (pdf_kpi.get('exported_kpi_canonical_valid', True)

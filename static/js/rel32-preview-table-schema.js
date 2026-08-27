@@ -28,19 +28,46 @@
     return -1;
   }
 
+  function previewLang(){
+    var htmlLang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
+    if (htmlLang.indexOf('en') === 0) return 'en';
+    if (htmlLang.indexOf('ar') === 0) return 'ar';
+    if ((document.documentElement.getAttribute('dir') || '').toLowerCase() === 'ltr') return 'en';
+    return 'ar';
+  }
+  function colLabel(col){
+    return previewLang() === 'en'
+      ? (col.label_en || col.label_ar)
+      : (col.label_ar || col.label_en);
+  }
+  function headerEq(got, expected){
+    var g = String(got || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    var e = String(expected || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (g === e) return true;
+    var aliases = {
+      'kpi description': ['indicator', 'وصف المؤشر'],
+      'target value': ['target', 'القيمة المستهدفة'],
+      'calculation formula': ['formula', 'صيغة الاحتساب'],
+      'source': ['مصدر'],
+      'frequency': ['التكرار'],
+      'owner': ['المالك']
+    };
+    return (aliases[e] || []).indexOf(g) !== -1;
+  }
+
   var REL32_PREVIEW_TABLE_SCHEMAS = {
     kpi_main: {
       table_id: 'kpi_main',
       css_schema: 'kpi-summary',
       columns: [
-        { key: 'row_num', label_ar: '#', keywords: ['#', 'م', 'no'] },
-        { key: 'indicator', label_ar: 'وصف المؤشر', keywords: ['وصف المؤشر', 'المؤشر', 'indicator', 'kpi', 'metric'] },
-        { key: 'type', label_ar: 'النوع', keywords: ['النوع', 'type', 'kpi/kri'] },
-        { key: 'target', label_ar: 'القيمة المستهدفة', keywords: ['القيمة المستهدفة', 'مستهدف', 'target', 'القيمة'] },
-        { key: 'formula', label_ar: 'صيغة الاحتساب', keywords: ['صيغة الاحتساب', 'صيغة', 'formula', 'احتساب'] },
-        { key: 'source', label_ar: 'مصدر', keywords: ['مصدر', 'source', 'البيانات'] },
-        { key: 'frequency', label_ar: 'التكرار', keywords: ['التكرار', 'تكرار', 'frequency', 'تواتر', 'دورية'] },
-        { key: 'owner', label_ar: 'المالك', keywords: ['المالك', 'owner', 'مسؤول'] }
+        { key: 'row_num', label_ar: '#', label_en: '#', keywords: ['#', 'م', 'no'] },
+        { key: 'indicator', label_ar: 'وصف المؤشر', label_en: 'KPI Description', keywords: ['وصف المؤشر', 'المؤشر', 'indicator', 'kpi description', 'kpi', 'metric'] },
+        { key: 'type', label_ar: 'النوع', label_en: 'Type', keywords: ['النوع', 'type', 'kpi/kri'] },
+        { key: 'target', label_ar: 'القيمة المستهدفة', label_en: 'Target Value', keywords: ['القيمة المستهدفة', 'مستهدف', 'target value', 'target', 'القيمة'] },
+        { key: 'formula', label_ar: 'صيغة الاحتساب', label_en: 'Calculation Formula', keywords: ['صيغة الاحتساب', 'صيغة', 'calculation formula', 'formula', 'احتساب'] },
+        { key: 'source', label_ar: 'مصدر', label_en: 'Source', keywords: ['مصدر', 'source', 'البيانات'] },
+        { key: 'frequency', label_ar: 'التكرار', label_en: 'Frequency', keywords: ['التكرار', 'تكرار', 'frequency', 'تواتر', 'دورية'] },
+        { key: 'owner', label_ar: 'المالك', label_en: 'Owner', keywords: ['المالك', 'owner', 'مسؤول'] }
       ]
     },
     kpi_formula: {
@@ -135,11 +162,11 @@
   }
 
   function headersMatchSchemaLabels(headers, schema){
-    var labels = (schema.columns || []).map(function(c){ return norm(c.label_ar); });
+    var labels = (schema.columns || []).map(function(c){ return norm(colLabel(c)); });
     var hdrs = (headers || []).map(norm);
     if (hdrs.length !== labels.length) return false;
     for (var i = 0; i < labels.length; i++) {
-      if (hdrs[i] !== labels[i]) return false;
+      if (hdrs[i] !== labels[i] && !headerEq(hdrs[i], labels[i])) return false;
     }
     return true;
   }
@@ -151,7 +178,7 @@
     var idxMap = (schema.columns || []).map(function(){ return -1; });
 
     (schema.columns || []).forEach(function(col, ci){
-      var label = norm(col.label_ar);
+      var label = norm(colLabel(col));
       for (var i = 0; i < hdrNorm.length; i++) {
         if (used[i]) continue;
         if (hdrNorm[i] === label) { idxMap[ci] = i; used[i] = true; return; }
@@ -224,7 +251,7 @@
     return {
       table_id: schemaId,
       schema: schema,
-      schema_labels: schema.columns.map(function(c){ return c.label_ar; }),
+      schema_labels: schema.columns.map(function(c){ return colLabel(c); }),
       bound_rows: bound
     };
   }
@@ -242,13 +269,13 @@
     var html = '<div class="table-wrapper" data-schema="'+schema.css_schema+'" data-table-id="'+schemaId+'"'+dir+'>'
       + '<table class="schema-'+schema.css_schema+'"><thead><tr>';
     schema.columns.forEach(function(col){
-      html += '<th style="text-align:'+align+'">'+esc(col.label_ar)+'</th>';
+      html += '<th style="text-align:'+align+'">'+esc(colLabel(col))+'</th>';
     });
     html += '</tr></thead><tbody>';
     bound.bound_rows.forEach(function(row){
       html += '<tr>';
       schema.columns.forEach(function(col){
-        var val = row[col.key];
+        var val = String(row[col.key] || '').replace(/\s*family:[a-z][a-z0-9_]{1,48}\b/gi, ' ').trim();
         if (!val || val === '—') {
           html += '<td class="cell-missing">—</td>';
         } else {
@@ -462,11 +489,20 @@
     var schema = REL32_PREVIEW_TABLE_SCHEMAS.kpi_main;
     var errors = [];
     (schema.columns || []).forEach(function(col, i){
-      if ((headers[i] || '') !== col.label_ar) {
-        errors.push('rel32_preview_table_header_value_mismatch:kpi_main:' + col.label_ar);
+      var expected = colLabel(col);
+      if (!headerEq(headers[i] || '', expected)) {
+        errors.push('rel32_preview_table_header_value_mismatch:kpi_main:' + expected);
       }
       validateKpiCellForKey(col.key, cells[i] || '').forEach(function(hdr){
-        errors.push('rel32_preview_table_header_value_mismatch:kpi_main:' + hdr);
+        var mapped = hdr;
+        if (previewLang() === 'en') {
+          if (hdr === 'مصدر') mapped = 'Source';
+          if (hdr === 'المالك') mapped = 'Owner';
+          if (hdr === 'التكرار') mapped = 'Frequency';
+          if (hdr === 'النوع') mapped = 'Type';
+          if (hdr === 'صيغة الاحتساب') mapped = 'Calculation Formula';
+        }
+        errors.push('rel32_preview_table_header_value_mismatch:kpi_main:' + mapped);
       });
     });
     return errors;
@@ -476,8 +512,8 @@
     var schema = REL32_PREVIEW_TABLE_SCHEMAS.kpi_formula;
     var errors = [];
     (schema.columns || []).forEach(function(col, i){
-      if ((headers[i] || '') !== col.label_ar) {
-        errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:' + col.label_ar);
+      if (!headerEq(headers[i] || '', colLabel(col))) {
+        errors.push('rel32_preview_table_header_value_mismatch:kpi_formula:' + colLabel(col));
       }
       var v = String(cells[i] || '').trim();
       if (col.key === 'indicator' && !v) {
@@ -506,8 +542,8 @@
       return validateKpiMainByDomIndex(headers, cells);
     }
     return validateKpiMainByDomIndex(
-      REL32_PREVIEW_TABLE_SCHEMAS.kpi_main.columns.map(function(c){ return c.label_ar; }),
-      REL32_PREVIEW_TABLE_SCHEMAS.kpi_main.columns.map(function(c){ return byHeader[c.label_ar] || ''; })
+      REL32_PREVIEW_TABLE_SCHEMAS.kpi_main.columns.map(function(c){ return colLabel(c); }),
+      REL32_PREVIEW_TABLE_SCHEMAS.kpi_main.columns.map(function(c){ return byHeader[colLabel(c)] || byHeader[c.label_ar] || byHeader[c.label_en] || ''; })
     );
   }
 
@@ -523,7 +559,7 @@
 
   function evaluatePreviewDomBindingLive(domInfo, schemaId){
     var schema = REL32_PREVIEW_TABLE_SCHEMAS[schemaId || ''];
-    var schemaLabels = schema ? schema.columns.map(function(c){ return c.label_ar; }) : [];
+    var schemaLabels = schema ? schema.columns.map(function(c){ return colLabel(c); }) : [];
     var mismatched = [];
     var blocking = [];
     var headers = domInfo.header_labels_from_dom || [];

@@ -22,6 +22,59 @@ def emit_rel33_risk_artifact_load(diag: Dict[str, Any]) -> None:
         pass
 
 
+def _emit_rel36_6_from_resolve(
+        diag: Dict[str, Any],
+        out: Dict[str, Any],
+        *,
+        route: str = '',
+        domain: str = '',
+        risk_id='',
+        strategy_id='',
+        source_artifact_type: str = '',
+        loaded_artifact_type: str = '',
+        loaded_domain: str = '',
+        loaded_document_type: str = '',
+        content: str = '',
+        sections: Optional[Dict[str, Any]] = None,
+        repair_applied: bool = False,
+        extra_blockers: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Emit [REL36.6-ERM-RISK-DOMAIN-ISOLATION] and attach it to the result."""
+    try:
+        from release_engine_v3.rel36_6_erm_risk_domain_isolation import (
+            evaluate_rel36_6_erm_risk_domain_isolation,
+            emit_rel36_6_erm_risk_domain_isolation,
+            risk_cache_key,
+        )
+        iso = evaluate_rel36_6_erm_risk_domain_isolation(
+            route=route,
+            domain=domain or 'erm',
+            document_type='risk',
+            lang=str((out.get('diag') or {}).get('lang') or 'ar'),
+            risk_id=risk_id,
+            strategy_id=strategy_id if not str(risk_id or '').strip() else '',
+            cache_key=risk_cache_key(risk_id, domain=domain or 'erm'),
+            source_artifact_type=source_artifact_type,
+            loaded_artifact_type=loaded_artifact_type,
+            loaded_domain=loaded_domain,
+            loaded_document_type=loaded_document_type,
+            content=content,
+            sections=sections,
+            contamination_before=list(diag.get('blocking_errors') or []),
+            contamination_after=list(extra_blockers or []),
+            repair_applied=repair_applied,
+            blocking_errors=list(diag.get('blocking_errors') or []) + list(
+                extra_blockers or []),
+        )
+        emit_rel36_6_erm_risk_domain_isolation(iso)
+        out['rel36_6'] = iso
+        diag['rel36_6_passed'] = bool(iso.get('passed'))
+        diag['rel36_6_cache_key'] = iso.get('cache_key')
+        return iso
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def normalize_risk_export_sections(sections: Dict[str, str]) -> Dict[str, str]:
     """Map strategy-shaped ERM keys to canonical risk register/treatment."""
     out = dict(sections or {})
@@ -104,43 +157,94 @@ def resolve_rel33_risk_export_artifact(
 
     row = None
     rid = risk_id or artifact_id
+    colliding_strategy = None
     if rid:
         row = load_risk_row(rid, user_id)
         if row:
             diag['source_table_or_store'] = 'risks'
             diag['loaded_from_risk_id'] = str(row.get('id') or rid)
+            try:
+                row_code = normalize_domain_fn(str(row.get('domain') or ''))
+            except Exception:  # noqa: BLE001
+                row_code = str(row.get('domain') or '').strip().lower()
+            if (req_domain == 'erm' and row_code == 'cyber'):
+                diag['artifact_id_collision_detected'] = True
+                diag['blocking_errors'] = [
+                    'artifact_id_collision:cyber_strategy_on_erm_risk_export']
+                _emit_rel36_6_from_resolve(
+                    diag, out, route=route, domain=domain,
+                    risk_id=rid, strategy_id=artifact_id or '',
+                    source_artifact_type='risk',
+                    loaded_artifact_type='risk',
+                    loaded_domain=row_code,
+                    loaded_document_type='risk',
+                    content='',
+                )
+                emit_rel33_risk_artifact_load(diag)
+                return out
 
-    if not row and (artifact_id or risk_id):
-        row = load_strategy_risk_row(artifact_id or risk_id, user_id, domain=domain)
-        if row:
-            diag['source_table_or_store'] = 'strategies'
-            diag['loaded_from_strategy_id'] = str(row.get('id') or artifact_id or '')
-            row_domain = str(row.get('domain') or '')
+    # REL36.6 — probe strategies table only to detect id collision.
+    # Never use a strategy row as ERM risk content authority.
+    if artifact_id or risk_id:
+        colliding_strategy = load_strategy_risk_row(
+            artifact_id or risk_id, user_id, domain=domain)
+        if colliding_strategy:
+            _sid = str(colliding_strategy.get('id') or artifact_id or '')
+            if row:
+                diag['overlapping_strategy_id'] = _sid
+            else:
+                diag['loaded_from_strategy_id'] = _sid
+            row_domain = str(colliding_strategy.get('domain') or '')
             try:
                 row_code = normalize_domain_fn(row_domain)
             except Exception:  # noqa: BLE001
                 row_code = row_domain.strip().lower()
-            if req_domain and row_code and row_code not in ('erm', req_domain):
-                if row_code == 'cyber' and req_domain == 'erm':
-                    diag['artifact_id_collision_detected'] = True
+            dtype = str(
+                colliding_strategy.get('document_type')
+                or (colliding_strategy.get('sections') or {}).get('_document_type')
+                or '').strip().lower()
+            # REL36.6 — any strategies-table hit is a fallback, never content.
+            is_collision = True
+            if is_collision and not row:
+                diag['source_table_or_store'] = 'strategies'
+                diag['artifact_id_collision_detected'] = True
+                if req_domain == 'erm' and row_code == 'cyber':
                     diag['blocking_errors'] = [
                         'artifact_id_collision:cyber_strategy_on_erm_risk_export']
-                    emit_rel33_risk_artifact_load(diag)
-                    return out
-            dtype = str(
-                row.get('document_type')
-                or (row.get('sections') or {}).get('_document_type')
-                or '').strip().lower()
-            if dtype and dtype not in ('risk', 'risk_assessment'):
-                diag['artifact_id_collision_detected'] = True
-                diag['blocking_errors'] = [
-                    f'artifact_type_mismatch:{dtype}']
+                elif dtype and dtype not in ('risk', 'risk_assessment'):
+                    diag['blocking_errors'] = [f'artifact_type_mismatch:{dtype}']
+                else:
+                    diag['blocking_errors'] = [
+                        'strategy_id_fallback_blocked']
+                _emit_rel36_6_from_resolve(
+                    diag, out, route=route, domain=domain,
+                    risk_id=rid, strategy_id=colliding_strategy.get('id'),
+                    source_artifact_type='strategy',
+                    loaded_artifact_type='strategy',
+                    loaded_domain=row_code,
+                    loaded_document_type=dtype or 'strategy',
+                    content=str(
+                        colliding_strategy.get('content')
+                        or colliding_strategy.get('analysis') or ''),
+                    sections=dict(colliding_strategy.get('sections') or {}),
+                )
                 emit_rel33_risk_artifact_load(diag)
                 return out
+            # Risk row remains the authority; overlapping strategy id is
+            # recorded but not used and is not a blocking collision.
 
     if not row:
         if (client_content or '').strip():
             diag['blocking_errors'] = ['risk_artifact_not_found']
+        _emit_rel36_6_from_resolve(
+            diag, out, route=route, domain=domain,
+            risk_id=rid, strategy_id='',
+            source_artifact_type='none',
+            loaded_artifact_type='none',
+            loaded_domain='',
+            loaded_document_type='',
+            content=client_content or '',
+        )
         emit_rel33_risk_artifact_load(diag)
         return out
 
@@ -238,5 +342,27 @@ def resolve_rel33_risk_export_artifact(
         'sections': sections,
         'skip_client_authority': bool(content.strip()),
     })
+    iso = _emit_rel36_6_from_resolve(
+        diag, out, route=route, domain=domain,
+        risk_id=diag.get('loaded_from_risk_id') or rid,
+        strategy_id='',
+        source_artifact_type='risk',
+        loaded_artifact_type='risk',
+        loaded_domain=str(row.get('domain') or domain or ''),
+        loaded_document_type='risk',
+        content=content,
+        sections=sections,
+        repair_applied=bool(out.get('export_prep_contract_passed')),
+    )
+    if iso and iso.get('passed') is False:
+        _iso_blk = list(iso.get('blocking_errors') or [])
+        diag['blocking_errors'] = list(dict.fromkeys(
+            (diag.get('blocking_errors') or []) + _iso_blk))
+        out.update({
+            'content': '',
+            'sections': {},
+            'skip_client_authority': False,
+            'blocking_errors': _iso_blk,
+        })
     emit_rel33_risk_artifact_load(diag)
     return out

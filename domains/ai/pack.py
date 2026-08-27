@@ -20,4 +20,4 @@ class _FixturesAr:
 
 pack = _pack('ai', 'Artificial Intelligence', 'الذكاء الاصطناعي',
               fixtures_ar=_FixturesAr, fixtures_en=_Fixtures,
-              frameworks=['nist_ai_rmf'])
+              frameworks=['sdaia'])

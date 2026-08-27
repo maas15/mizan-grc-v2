@@ -506,11 +506,16 @@ def check_mixed_metric_formulas(
         return list(dict.fromkeys(mixed))
     cards = parse_flat_professional_kpi_cards(section)
     if cards:
-        data_names = [
-            c.get('name') or '' for c in cards
-            if any(k in (c.get('name') or '') for k in ('DLP', 'تشفير', 'تصنيف', 'تسرب'))]
-        if len(data_names) >= 3:
-            mixed.append('dlp_encryption_classification_metric_mix')
+        for card in cards:
+            name = card.get('name') or ''
+            hits = sum(
+                1 for k in (
+                    'DLP', 'تشفير', 'تصنيف', 'تسرب',
+                    'encryption', 'classification')
+                if k.lower() in name.lower())
+            if hits >= 2:
+                mixed.append('dlp_encryption_classification_metric_mix')
+                break
     for ln in section.splitlines():
         low = ln.lower()
         if ('dlp' in low or 'تسرب' in ln) and (
@@ -1663,7 +1668,7 @@ def repair_document_quality_sections(
             repairs.append('dqs:kpi_canonical_repair_blocked')
         else:
             repairs.append('dqs:kpi_canonical_families_repaired')
-        out, _ = _apply_inline_kpi_repairs(out)
+        out, _ = _apply_inline_kpi_repairs(out, lang=lang)
         repairs.append('dqs:kpi_percent_formula_repaired')
     except Exception:  # noqa: BLE001
         pass

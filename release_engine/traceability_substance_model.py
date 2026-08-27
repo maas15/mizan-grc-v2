@@ -93,14 +93,122 @@ TRACE_CANONICAL_REGISTRY: Dict[str, Dict[str, str]] = {
     },
 }
 
+TRACE_CANONICAL_REGISTRY_EN: Dict[str, Dict[str, str]] = {
+    'data_classification': {
+        'framework': 'NCA DCC',
+        'capability': 'Data classification',
+        'expected_gap': 'Weak sensitive data classification and inventory',
+        'initiative': 'Classify and inventory sensitive data',
+        'metric': 'Sensitive data classification coverage',
+        'risk': 'Unclassified sensitive data risk',
+    },
+    'encryption': {
+        'framework': 'NCA DCC',
+        'capability': 'Encryption / key management',
+        'expected_gap': 'Weak encryption and key-management controls',
+        'initiative': 'Implement encryption and key management',
+        'metric': 'Encryption coverage',
+        'risk': 'Encryption risk',
+    },
+    'dlp': {
+        'framework': 'NCA DCC',
+        'capability': 'DLP / data leakage prevention',
+        'expected_gap': 'Weak DLP and data-leakage prevention controls',
+        'initiative': 'Enable DLP controls',
+        'metric': 'DLP coverage',
+        'risk': 'Sensitive data leakage risk',
+    },
+    'sensitive_handling': {
+        'framework': 'NCA DCC',
+        'capability': 'Sensitive data handling',
+        'expected_gap': 'Weak handling of sensitive data',
+        'initiative': 'Apply sensitive-data handling procedures',
+        'metric': 'Sensitive-data handling compliance',
+        'risk': 'Sensitive-data handling risk',
+    },
+    'data_protection': {
+        'framework': 'NCA DCC',
+        'capability': 'Data in transit / at rest protection',
+        'expected_gap': 'Weak data protection in transit and at rest',
+        'initiative': 'Protect data in transit and at rest',
+        'metric': 'Data protection coverage',
+        'risk': 'Data-in-transit and at-rest risk',
+    },
+    'ecc_governance': {
+        'framework': 'NCA ECC',
+        'capability': 'Cybersecurity governance',
+        'expected_gap': (
+            'Absence of a CISO function and cybersecurity governance structure'),
+        'initiative': 'Establish CISO governance',
+        'metric': 'Compliance rate',
+        'risk': 'Governance risk',
+    },
+    'ecc_iam': {
+        'framework': 'NCA ECC',
+        'capability': 'Identity and access management',
+        'expected_gap': 'Weak identity and access management IAM/PAM/MFA',
+        'initiative': 'Enable IAM/PAM/MFA',
+        'metric': 'Coverage rate',
+        'risk': 'Access risk',
+    },
+    'ecc_soc': {
+        'framework': 'NCA ECC',
+        'capability': 'Security monitoring SOC/SIEM',
+        'expected_gap': 'Absence of a security operations center SOC and SIEM platform',
+        'initiative': 'Establish SOC/SIEM',
+        'metric': 'MTTD',
+        'risk': 'Detection risk',
+    },
+    'ecc_incident_response': {
+        'framework': 'NCA ECC',
+        'capability': 'Incident response',
+        'expected_gap': (
+            'Absence of a CSIRT team and incident-response plans'),
+        'initiative': 'Establish CSIRT',
+        'metric': 'MTTR',
+        'risk': 'Incident risk',
+    },
+    'ecc_vulnerability': {
+        'framework': 'NCA ECC',
+        'capability': 'Vulnerability management',
+        'expected_gap': (
+            'Weak vulnerability management and periodic patching program'),
+        'initiative': 'Vulnerability management program',
+        'metric': 'Remediation rate',
+        'risk': 'Vulnerability risk',
+    },
+}
+
+
+def _normalize_trace_lang(lang: str) -> str:
+    raw = str(lang or 'ar').strip().lower()
+    if raw.startswith('en'):
+        return 'en'
+    return 'ar'
+
+
+def canonical_trace_registry(lang: str = 'ar') -> Dict[str, Dict[str, str]]:
+    return (
+        TRACE_CANONICAL_REGISTRY_EN
+        if _normalize_trace_lang(lang) == 'en'
+        else TRACE_CANONICAL_REGISTRY
+    )
+
+
 _EXPECTED_GAPS = {
     fam: spec['expected_gap'] for fam, spec in TRACE_CANONICAL_REGISTRY.items()
+}
+_EXPECTED_GAPS_EN = {
+    fam: spec['expected_gap'] for fam, spec in TRACE_CANONICAL_REGISTRY_EN.items()
 }
 
 _FAMILY_DETECT = {
     'dlp': ('dlp', 'تسرب', 'منع تسرب'),
     'data_classification': ('تصنيف البيانات', 'تصنيف', 'جرد', 'classification'),
-    'data_protection': ('حماية البيانات', 'نقل', 'تخزين', 'data protection'),
+    'data_protection': (
+        'حماية البيانات', 'نقل', 'تخزين', 'data protection',
+        'transit', 'at rest',
+    ),
     'encryption': ('تشفير', 'مفاتيح', 'encryption'),
     'sensitive_handling': ('معالجة البيانات', 'حساسة', 'sensitive'),
     'ecc_governance': ('حوكمة الأمن', 'ciso', 'حوكمة'),
@@ -244,7 +352,24 @@ def _incident_gap_valid(gap: str) -> bool:
     g = (gap or '').lower()
     return (
         'csirt' in g
-        and ('خطط' in gap or 'خطة' in gap or 'فريق' in gap))
+        and (
+            'خطط' in gap or 'خطة' in gap or 'فريق' in gap
+            or 'plan' in g or 'team' in g))
+
+
+def _family_expected_gaps(family: str) -> Tuple[str, ...]:
+    gaps = []
+    ar = _EXPECTED_GAPS.get(family, '')
+    en = _EXPECTED_GAPS_EN.get(family, '')
+    if ar:
+        gaps.append(ar)
+    if en:
+        gaps.append(en)
+    return tuple(gaps)
+
+
+def _gap_matches_expected(family: str, gap: str) -> bool:
+    return any(exp and exp in (gap or '') for exp in _family_expected_gaps(family))
 
 
 def _bad_mapping(family: str, gap: str) -> bool:
@@ -252,7 +377,7 @@ def _bad_mapping(family: str, gap: str) -> bool:
         return False
     g = (gap or '').lower()
     expected = _EXPECTED_GAPS.get(family, '')
-    if expected and expected in gap:
+    if _gap_matches_expected(family, gap):
         return False
     if family == 'ecc_incident_response':
         if _incident_gap_valid(gap):
@@ -266,34 +391,36 @@ def _bad_mapping(family: str, gap: str) -> bool:
             return True
         return not _incident_gap_valid(gap) and bool(gap)
     if family == 'ecc_vulnerability':
-        if expected and expected in gap:
+        if _gap_matches_expected(family, gap):
             return False
         if any(m in g for m in ('dlp', 'تسرب', 'remote', 'بعيد', 'وصول')):
             return True
         if 'ثغر' not in g and 'vulnerability' not in g:
             return True
-        return bool(gap) and expected not in gap
+        return bool(gap) and not _gap_matches_expected(family, gap)
     if family == 'data_protection' and gap:
-        if expected in gap or ('حماية' in gap and 'نقل' in gap):
+        if _gap_matches_expected(family, gap) or (
+                'حماية' in gap and 'نقل' in gap) or (
+                'transit' in g and 'rest' in g):
             return False
-        if 'dlp' in g and 'حماية' not in gap:
+        if 'dlp' in g and 'حماية' not in gap and 'protection' not in g:
             return True
-        if expected and expected not in gap:
+        if not _gap_matches_expected(family, gap):
             return True
     if family == 'data_classification' and gap:
-        if expected in gap:
+        if _gap_matches_expected(family, gap):
             return False
         if any(m in g for m in ('iam', 'pam', 'مميزة', 'حسابات', 'privileged')):
             return True
         if any(m in g for m in (
                 'حوكمة', 'إطار تنظيمي', 'سياسة عامة', 'ecc-1-1')):
             return True
-        if 'وجرد' in gap or 'ضعف تصنيف' in gap:
+        if 'وجرد' in gap or 'ضعف تصنيف' in gap or 'inventory' in g:
             return False
-        return expected not in gap
+        return not _gap_matches_expected(family, gap)
     if family == 'dlp' and _is_blank_gap(gap):
         return True
-    if family in _EXPECTED_GAPS and gap and expected not in gap:
+    if family in _EXPECTED_GAPS and gap and not _gap_matches_expected(family, gap):
         if family == 'data_classification' and 'تصنيف' in gap:
             if 'وجرد' in gap or 'ضعف' in gap:
                 return False
@@ -361,7 +488,7 @@ def build_traceability_matrix_rows_from_registry(
     dcode = _resolve_trace_domain(domain, backend)
     if dcode == 'cyber':
         order = _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
-        registry = TRACE_CANONICAL_REGISTRY
+        registry = canonical_trace_registry(lang)
         source = 'trace_canonical_registry'
     else:
         from release_engine_v3.rel32_registries import resolve_trace_registry
@@ -409,18 +536,24 @@ def build_canonical_traceability_from_registry(
         backend: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build full traceability matrix from the domain family registry."""
-    _ = lang
     dcode = _resolve_trace_domain(domain, backend)
     if dcode == 'cyber':
         order = _DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER
-        registry = TRACE_CANONICAL_REGISTRY
+        registry = canonical_trace_registry(lang)
     else:
         from release_engine_v3.rel32_registries import resolve_trace_registry
         order, registry = resolve_trace_registry(dcode)
 
-    header = (
-        '| الإطار المرجعي | مجال القدرة / الضابط | الفجوة المرتبطة | '
-        'المبادرة / النشاط | المؤشر | الخطر المرتبط |')
+    if _normalize_trace_lang(lang) == 'en':
+        title = '## Traceability Matrix'
+        header = (
+            '| Reference Framework | Capability / Control | Related Gap | '
+            'Initiative / Activity | Metric | Related Risk |')
+    else:
+        title = '## مصفوفة التتبع'
+        header = (
+            '| الإطار المرجعي | مجال القدرة / الضابط | الفجوة المرتبطة | '
+            'المبادرة / النشاط | المؤشر | الخطر المرتبط |')
     sep = '|' + '---|' * 6
     rows: List[str] = []
     for fam in order:
@@ -435,7 +568,7 @@ def build_canonical_traceability_from_registry(
                 risk=spec['risk'],
             ))
     return (
-        '## مصفوفة التتبع\n\n'
+        title + '\n\n'
         + header + '\n'
         + sep + '\n'
         + '\n'.join(rows) + '\n'
@@ -497,7 +630,7 @@ def repair_traceability_canonical_families(
 
     if dcode == 'cyber':
         order = list(_DCC_REGISTRY_ORDER + _ECC_REGISTRY_ORDER)
-        registry = TRACE_CANONICAL_REGISTRY
+        registry = canonical_trace_registry(lang)
     else:
         from release_engine_v3.rel32_registries import resolve_trace_registry
         order_t, registry = resolve_trace_registry(dcode)

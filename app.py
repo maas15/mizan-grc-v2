@@ -786,7 +786,8 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
 
 
 def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
-                                        retry_delay_seconds=1.0):
+                                        retry_delay_seconds=1.0,
+                                        language=None):
     """Look up the most recently saved strategy for user+domain with a
     small retry loop to absorb DB-commit races.
 
@@ -803,6 +804,14 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
     """
     import time as _time_lsr
     target_code = _strategy_domain_canonical(domain)
+    want_lang = ''
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            normalize_rel36_lang,
+        )
+        want_lang = normalize_rel36_lang(language) if language else ''
+    except Exception:  # noqa: BLE001
+        want_lang = str(language or '').strip().lower()[:2]
     last_row = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -834,9 +843,20 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                     for cand in candidates:
                         cd = (cand['domain']
                               if hasattr(cand, 'keys') else cand[4])
-                        if _strategy_domain_canonical(cd) == target_code:
-                            row = cand
-                            break
+                        if _strategy_domain_canonical(cd) != target_code:
+                            continue
+                        if want_lang:
+                            cl = (cand['language']
+                                  if hasattr(cand, 'keys') else '')
+                            cl_n = str(cl or '').strip().lower()
+                            if cl_n.startswith('ar'):
+                                cl_n = 'ar'
+                            elif cl_n.startswith('en'):
+                                cl_n = 'en'
+                            if cl_n and cl_n != want_lang:
+                                continue
+                        row = cand
+                        break
             if row:
                 print(f"[STRATEGY-ASYNC] latest_recoverable_hit "
                       f"user={user_id} domain={domain!r} attempt={attempt} "
@@ -13969,6 +13989,10 @@ def _build_appendices_block(selected_fws_keys, lang, content_sections=None,
                             rf'\b{_re_g2.escape(disp_ac)}\b', blob_raw2):
                         kept2.append((ac, ar, en))
                         continue
+                    # REL35 — unselected NIST AI RMF must not re-enter
+                    # the glossary via the Arabic expansion alone.
+                    if ac == 'NIST_AI_RMF':
+                        continue
                     if ar and ar in blob_raw2:
                         kept2.append((ac, ar, en))
                         continue
@@ -19646,11 +19670,16 @@ def api_strategy_latest():
     import json as _json_sl
     import hashlib as _hl_sl
     domain = request.args.get('domain', '')
+    _latest_lang = (
+        request.args.get('lang')
+        or request.args.get('language')
+        or '')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
     try:
         row, attempts = ensure_latest_strategy_recoverable(
-            session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5
+            session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5,
+            language=_latest_lang,
         )
         if not row:
             # PR-CY12 Part A — do NOT return "No strategy found" while the
@@ -20027,6 +20056,39 @@ def api_strategy_latest():
                   f'content_len={len(_canonical_content or "")}', flush=True)
         except Exception as _hash_e:
             print(f'[STRATEGY-LATEST] hash compute failed (non-fatal): {_hash_e}',
+                  flush=True)
+        try:
+            from release_engine_v3.rel36_bilingual_preview_export_authority import (
+                bind_saved_preview_payload,
+            )
+            _bound_latest = bind_saved_preview_payload(
+                {
+                    'success': True,
+                    'id': _row_id,
+                    'strategy_id': _row_id,
+                    'sections': _sj if isinstance(_sj, dict) else {},
+                    'content_json': _cj,
+                    'domain': _row_domain,
+                    'language': _row_language,
+                    'document_type': _row_document_type,
+                },
+                expected_domain=domain,
+                expected_lang=_latest_lang or _row_language or '',
+                expected_document_type=_row_document_type,
+            )
+            if _bound_latest.get('blocking_errors'):
+                return jsonify({
+                    'success': False,
+                    'error': _bound_latest.get('error'),
+                    'blocking_errors': _bound_latest.get('blocking_errors'),
+                    'id': _row_id,
+                    'strategy_id': _row_id,
+                    'domain': _row_domain,
+                    'language': _row_language,
+                }), 422
+            _sj = _bound_latest.get('sections') or _sj
+        except Exception as _rel36_latest_e:  # noqa: BLE001
+            print(f'[REL36] latest bind failed (non-fatal): {_rel36_latest_e}',
                   flush=True)
         return jsonify({
             'success': True,
@@ -30176,6 +30238,21 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     # given domain, this is a no-op (preserves ECC-only and non-cyber
     # behaviour).
     try:
+        try:
+            from release_engine_v3.rel35_domain_framework_fidelity import (
+                repair_sections_for_fidelity as _rel35_repair,
+            )
+            _rel35_secs, _rel35_diag = _rel35_repair(
+                sections if isinstance(sections, dict) else {},
+                domain=domain or '',
+                document_type=_dtype,
+                selected_frameworks=selected_frameworks,
+                lang=lang,
+            )
+            if isinstance(sections, dict):
+                sections.update(_rel35_secs)
+        except Exception:  # noqa: BLE001
+            pass
         if selected_frameworks:
             _fw_missing = _compute_missing_selected_framework_coverage(
                 sections, selected_frameworks, domain=domain, lang=lang,
@@ -39398,9 +39475,19 @@ def _prcy86_strip_user_visible_trace(text):
     return '\n'.join(out)
 
 
-def _prcy86_apply_ar_spacing_and_truncation(text):
+def _prcy86_apply_ar_spacing_and_truncation(text, lang='ar'):
     s = text or ''
+    lang_n = str(lang or 'ar').strip().lower()
     for bad, good in _PRCY86_AR_SPACING_FIXES:
+        # English exports must not map truncated English tokens to Arabic
+        # (Cybersecurity Governanc → مسؤول الأمن السيبراني), which then
+        # smash into المسؤولأمن during PDF cell compaction.
+        if (
+            lang_n.startswith('en')
+            and _ts_re.search(r'[A-Za-z]', bad)
+            and _ts_re.search(r'[\u0600-\u06FF]', good)
+        ):
+            continue
         s = s.replace(bad, good)
     s = _ts_re.sub(r'(\S)\s+ال\s*$', r'\1', s, flags=_ts_re.MULTILINE)
     return s
@@ -39484,7 +39571,7 @@ def _prcy86_polish_section_body(key, body, lang='ar'):
     text = body or ''
     trace_before = _prcy86_count_trace_residue(text)
     text = _prcy86_strip_user_visible_trace(text)
-    text = _prcy86_apply_ar_spacing_and_truncation(text)
+    text = _prcy86_apply_ar_spacing_and_truncation(text, lang)
     kpi_fixed = 0
     so_fixed = 0
     if key in ('kpis', 'kpi', 'performance'):
@@ -49862,9 +49949,126 @@ def _prcy69_enforce_final_artifact_parity(
             _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
         except Exception:  # noqa: BLE001
             pass
+    # REL36.1 — repair English DCC traceability before PRCY69. Does not
+    # weaken the gate; it only inserts validator-recognizable English
+    # DCC rows when NCA DCC is selected.
+    _rel36_dcc_diag = {}
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_dcc_traceability_en_repair import (
+                repair_english_dcc_traceability_sections,
+            )
+            sections, _rel36_dcc_diag = repair_english_dcc_traceability_sections(
+                sections, lang=lang_n, domain=dcode,
+                selected_frameworks=selected_frameworks)
+            if _rel36_dcc_diag.get('repaired'):
+                repair_actions.append('rel36:english_dcc_traceability_repaired')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as _rel36_dcc_err:  # noqa: BLE001
+            _rel36_dcc_diag = {
+                'tag': 'REL36-DCC-TRACEABILITY-EN-REPAIR',
+                'repaired': False,
+                'blocking_errors': [f'rel36_dcc_repair_failed:{_rel36_dcc_err}'],
+            }
+    # REL36.2 — English cyber pillar owners before final artifact /
+    # export evidence. Does not weaken pillar_owner_missing.
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
+                emit_rel36_2_en_cyber_export_evidence_repair,
+                repair_english_cyber_export_evidence_sections,
+            )
+            sections, _rel36_2_diag = repair_english_cyber_export_evidence_sections(
+                sections, lang=lang_n, domain=dcode,
+                document_type='strategy',
+                selected_frameworks=selected_frameworks,
+                strategy_id=(metadata or {}).get('strategy_id'),
+                export_type=f'prcy69_{output_type}',
+            )
+            if _rel36_2_diag.get('repaired'):
+                repair_actions.append('rel36.2:english_cyber_pillar_owners')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+            emit_rel36_2_en_cyber_export_evidence_repair(_rel36_2_diag)
+        except Exception:  # noqa: BLE001
+            pass
+    # REL36.3 — English DCC classification export evidence after owner
+    # repair. Does not weaken classification_invalid.
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_3_en_cyber_dcc_classification_evidence_repair import (
+                emit_rel36_3_en_cyber_dcc_classification_evidence_repair,
+                repair_english_cyber_dcc_classification_evidence_sections,
+            )
+            sections, _rel36_3_diag = repair_english_cyber_dcc_classification_evidence_sections(
+                sections, lang=lang_n, domain=dcode,
+                document_type='strategy',
+                selected_frameworks=selected_frameworks,
+                strategy_id=(metadata or {}).get('strategy_id'),
+                export_type=f'prcy69_{output_type}',
+            )
+            if _rel36_3_diag.get('repaired'):
+                repair_actions.append('rel36.3:english_cyber_dcc_classification')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+            emit_rel36_3_en_cyber_dcc_classification_evidence_repair(_rel36_3_diag)
+        except Exception:  # noqa: BLE001
+            pass
+    # REL36.4 — last live-path rewrite of mashed English Cyber sections /
+    # final markdown immediately before PRCY69 / export evidence.
+    if dcode == 'cyber' and lang_n == 'en':
+        try:
+            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                emit_rel36_4_live_en_cyber_export_path_repair,
+                repair_live_english_cyber_export_sections,
+            )
+            sections, _md, _rel36_4_diag = repair_live_english_cyber_export_sections(
+                sections, lang=lang_n, domain=dcode,
+                document_type='strategy',
+                selected_frameworks=selected_frameworks,
+                strategy_id=(metadata or {}).get('strategy_id'),
+                export_type=f'prcy69_{output_type}',
+                route=f'prcy69_{output_type}',
+                final_markdown=_md,
+                repair_ran_at='prcy69_enforce_final_artifact_parity',
+            )
+            if _rel36_4_diag.get('repaired'):
+                repair_actions.append('rel36.4:live_en_cyber_export_path')
+                try:
+                    _md = _prcy66_rebuild_canonical_content(sections, _md) or _md
+                except Exception:  # noqa: BLE001
+                    pass
+            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_diag)
+        except Exception:  # noqa: BLE001
+            pass
     _validation = _prcy69_validate_final_artifact(
         _md, sections, selected_frameworks, lang_n, dcode,
         strict=True, metadata=metadata)
+    if _rel36_dcc_diag:
+        _v_blockers = list(_validation.get('blockers') or [])
+        _dcc_blockers = [
+            b for b in _v_blockers
+            if 'prcy69_final_artifact_traceability_dcc_invalid' in str(b)]
+        _rel36_dcc_diag['prcy69_gate_passed'] = not _dcc_blockers
+        _rel36_dcc_diag['blocking_errors'] = list(
+            _rel36_dcc_diag.get('blocking_errors') or []) + _dcc_blockers
+        _rel36_dcc_diag['passed'] = bool(
+            _rel36_dcc_diag.get('prcy69_gate_passed')
+            and not _rel36_dcc_diag.get('missing_dcc_capabilities'))
+        try:
+            from release_engine_v3.rel36_dcc_traceability_en_repair import (
+                emit_rel36_dcc_traceability_en_repair,
+            )
+            emit_rel36_dcc_traceability_en_repair(_rel36_dcc_diag)
+        except Exception:  # noqa: BLE001
+            pass
     _artifact_hash = _prcy25_compute_content_hash(_md or '')
     _, _dcc_on72 = _prcy69_nca_frameworks_selected(selected_frameworks)
     _dcc_cnt72, _ = _prcy68_count_roadmap_framework_rows(
@@ -51507,6 +51711,24 @@ def _rel31_is_authoritative(domain, lang):
     )
 
 
+def _rel36_export_authoritative(domain, lang, document_type='strategy'):
+    """REL36 — bilingual strategy export uses the same REL3 path as Arabic."""
+    if _rel31_is_authoritative(domain, lang):
+        return True
+    try:
+        from release_engine_v3.rel36_bilingual_preview_export_authority import (
+            is_rel36_bilingual_export_authoritative,
+        )
+        return is_rel36_bilingual_export_authoritative(
+            domain=domain,
+            lang=lang,
+            document_type=document_type or 'strategy',
+            flags={'rel3': True, 'rel31': True},
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _rel31_backend_callables():
     """Backend for REL3.1 pre-freeze canonical repairs."""
     import sys as _sys
@@ -51590,7 +51812,12 @@ def _rel31_authoritative_export_route(
         backend=None,
 ):
     """PR-REL3.1 — sole approved export path when REL3 is authoritative."""
-    if not _rel31_is_authoritative(domain, lang):
+    _dtype = str(
+        (artifact_dict or {}).get('document_type')
+        or ((artifact_dict or {}).get('contract_meta') or {}).get('document_type')
+        or (export_kwargs or {}).get('doc_type')
+        or 'strategy')
+    if not _rel36_export_authoritative(domain, lang, _dtype):
         return None
     from release_engine_v3.rel31_authority import (
         normalize_rel3_export_blockers,
@@ -51765,6 +51992,8 @@ def _rel26_gate_export_bytes(
         route='docx',
         final_hash='',
         canonical_sections=None,
+        selected_frameworks=None,
+        strategy_id=None,
 ):
     """Validate actual export bytes; return (allowed, blocking_errors, gate)."""
     from release_engine.export_evidence_validator import (
@@ -51789,8 +52018,8 @@ def _rel26_gate_export_bytes(
         preview_text or '',
         docx_text,
         pdf_text,
-        domain='cyber',
-        lang='ar',
+        domain=domain,
+        lang=lang,
         document_type=document_type,
         pdf_text_extraction_unreliable=pdf_unreliable,
         pdf_bytes_had=bool(pdf_bytes),
@@ -51798,6 +52027,8 @@ def _rel26_gate_export_bytes(
         final_hash=final_hash or '',
         canonical_sections=canonical_sections,
         hash_fn=_hash_fn,
+        selected_frameworks=selected_frameworks,
+        strategy_id=strategy_id,
     )
     if route == 'docx' and docx_bytes and not docx_text:
         gate['export_evidence_passed'] = False
@@ -51842,7 +52073,7 @@ def _rel26_gate_preview_sections(sections, *, domain, lang, preview_html=''):
             if isinstance(v, str) and v.strip())
     gate = validate_actual_export_evidence(
         preview_text, '', '',
-        domain='cyber', lang='ar', document_type='strategy',
+        domain=domain, lang=lang, document_type='strategy',
         route_name='preview',
     )
     allowed, errors = block_export_if_evidence_fails(gate)
@@ -79651,7 +79882,9 @@ def api_generate_docx_async():
         try:
             print(f"ASYNC DOCX: starting build for task {_task_id[:8]}", flush=True)
             raw = b''
-            if _rel31_is_authoritative(_domain, _lang):
+            if _rel36_export_authoritative(
+                    _domain, _lang,
+                    _rel33_export_document_type(_art_type_a)):
                 _async_sections: dict = {}
                 _async_content = _content
                 try:
@@ -79788,7 +80021,49 @@ def api_generate_docx_async():
                     _async_result.docx_bytes
                     or _async_result.bytes_data
                     or b'')
+                try:
+                    from release_engine_v3.rel36_bilingual_preview_export_authority import (
+                        emit_rel36_bilingual_export_authority,
+                        evaluate_rel36_bilingual_export_authority,
+                    )
+                    emit_rel36_bilingual_export_authority(
+                        evaluate_rel36_bilingual_export_authority(
+                            route='docx-async',
+                            lang=_lang,
+                            domain=_domain,
+                            document_type=_rel33_export_document_type(
+                                _art_type_a),
+                            output_type='docx',
+                            selected_exporter='rel3_export_authoritative',
+                            authoritative_path_used=True,
+                            legacy_builder_attempted=False,
+                            docx_bypass_detected=False,
+                            blocking_errors=list(
+                                _async_evidence.blocking_errors or []),
+                        ))
+                except Exception:  # noqa: BLE001
+                    pass
             else:
+                try:
+                    from release_engine_v3.rel36_bilingual_preview_export_authority import (
+                        emit_rel36_bilingual_export_authority,
+                        evaluate_rel36_bilingual_export_authority,
+                    )
+                    emit_rel36_bilingual_export_authority(
+                        evaluate_rel36_bilingual_export_authority(
+                            route='docx-async',
+                            lang=_lang,
+                            domain=_domain,
+                            document_type=_rel33_export_document_type(
+                                _art_type_a),
+                            output_type='docx',
+                            selected_exporter='_build_docx_bytes',
+                            authoritative_path_used=False,
+                            legacy_builder_attempted=True,
+                            docx_bypass_detected=True,
+                        ))
+                except Exception:  # noqa: BLE001
+                    pass
                 raw = _build_docx_bytes(
                     _content, _filename, _lang, _org_name,
                     _sector, _doc_type, _domain,
@@ -82183,7 +82458,7 @@ def api_generate_docx():
         _rel26_gate: dict = {}
         _rel3_docx_result = None
         if (
-            _rel31_is_authoritative(domain, lang)
+            _rel36_export_authoritative(domain, lang, _art_type)
             and not _is_internal_rel_export_request(data)
             and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
         ):
@@ -82257,7 +82532,7 @@ def api_generate_docx():
                         render_tree_hash=_rel3_export.render_tree_hash,
                         canonical_hash=_rel3_export.canonical_hash,
                     )
-        if (_rel31_is_authoritative(domain, lang)
+        if (_rel36_export_authoritative(domain, lang, _art_type)
                 and _rel3_docx_result is None
                 and not _is_internal_rel_export_request(data)
                 and not (data.get('_rel26_internal')
@@ -82291,6 +82566,8 @@ def api_generate_docx():
                     route='docx',
                     final_hash=_export_hash,
                     canonical_sections=_export_sections,
+                    selected_frameworks=_selected_fws_sync,
+                    strategy_id=_resolved_docx_sid or _art_id,
                 )
                 if _rel26_ok:
                     break
@@ -82881,7 +83158,7 @@ def api_generate_pdf():
         pass
 
     if (
-        _rel31_is_authoritative(domain_pdf, lang)
+        _rel36_export_authoritative(domain_pdf, lang, _art_type_p)
         and not _is_internal_rel_export_request(data)
         and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
     ):
@@ -84888,14 +85165,16 @@ def api_generate_pdf():
                 cells = list(r) + [''] * (ncols - len(r))
                 row_cells = []
                 for c in cells[:ncols]:
-                    txt = str(c)
+                    # Sanitize before truncate so family:* markers never
+                    # survive as ASCII leftovers (English cells previously
+                    # skipped _pro_text and leaked family:gov / family:soc_siem).
+                    txt = _pro_text(str(c), 'value')
                     if prof:
                         txt = _truncate_cell_for_profile(txt, prof)
                     if str(txt).isascii():
                         row_cells.append(Paragraph(str(txt), _ascii_val_sty))
                     else:
-                        row_cells.append(
-                            Paragraph(_pro_text(txt, 'value'), _val_sty))
+                        row_cells.append(Paragraph(str(txt), _val_sty))
                 tbl_rows.append(row_cells)
             tbl = Table(
                 tbl_rows, colWidths=col_widths,
@@ -87826,6 +88105,7 @@ def api_generate_pdf():
                 route='pdf',
                 final_hash=_pdf_hash,
                 canonical_sections=_pdf_sections,
+                selected_frameworks=locals().get('_selected_fws_pdf') or [],
             )
             if not _rel26_ok:
                 print(

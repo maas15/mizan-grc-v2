@@ -111,6 +111,67 @@ _KPI_INSERTS_AR = {
     ],
 }
 
+_KPI_INSERTS_EN = {
+    'mttd': [
+        '1', 'MTTD for critical incidents', 'KPI', '< 4 hours',
+        'total detect time / incidents', 'SIEM / SOC', 'Monthly', 'SOC Manager',
+    ],
+    'mttr': [
+        '2', 'MTTR for critical incidents', 'KPI', '< 4 hours',
+        'total close time / incidents', 'ITSM / SOAR', 'Monthly', 'CSIRT Lead',
+    ],
+    'vulnerability_sla': [
+        '3', 'Critical vulnerability closure within SLA', 'KPI', '95% within 72 hours',
+        'closed critical vulns within SLA / total critical vulns × 100',
+        'Vulnerability platform', 'Monthly', 'Vulnerability Manager',
+    ],
+    'governance': [
+        '4', 'Governance committee meetings completed', 'KPI', '≥ 100%',
+        'meetings held / meetings planned × 100',
+        'Committee register', 'Quarterly', 'CISO',
+    ],
+    'compliance': [
+        '5', 'NCA ECC control compliance rate', 'KPI', '≥ 90%',
+        'implemented controls / required controls × 100',
+        'Compliance platform', 'Quarterly', 'CISO',
+    ],
+    'iam_pam_mfa': [
+        '6', 'MFA coverage of critical accounts', 'KPI', '≥ 95%',
+        'critical accounts with MFA / total critical accounts × 100',
+        'IAM platform', 'Monthly', 'IAM/PAM Manager',
+    ],
+    'awareness': [
+        '7', 'Security awareness completion rate', 'KPI', '≥ 90%',
+        'staff who completed awareness / total staff × 100',
+        'Awareness platform', 'Quarterly', 'Awareness Manager',
+    ],
+    'backup': [
+        '8', 'Successful backup restore tests', 'KPI', '≥ 95%',
+        'successful restore tests / total tests × 100',
+        'Backup platform', 'Semi-annual', 'Business Continuity Manager',
+    ],
+    'classification': [
+        '9', 'Sensitive data classification coverage', 'KPI', '≥ 90%',
+        'classified sensitive data / total sensitive data × 100',
+        'Classification register', 'Quarterly', 'Data Protection Officer',
+    ],
+    'encryption': [
+        '10', 'Sensitive data encryption coverage', 'KPI', '≥ 95%',
+        'encrypted sensitive data / total sensitive data × 100',
+        'Key-management platform', 'Quarterly', 'Data Protection Officer',
+    ],
+    'dlp': [
+        '11', 'DLP coverage of sensitive data', 'KPI', '≥ 95%',
+        'sensitive data under DLP / total sensitive data × 100',
+        'DLP platform', 'Monthly', 'Data Protection Officer',
+    ],
+    'third_party': [
+        '12', 'Third-party cyber risk score', 'KRI', '≤ 3 (Low)',
+        'average assessed supplier cyber-risk score',
+        'Vendor platform', 'Quarterly', 'CISO',
+    ],
+}
+
 _LOGIN_ANOMALY_BAD = 'نسبة محاولات الدخول الفاشلة الشاذة'
 
 
@@ -150,8 +211,12 @@ def _insert_missing_families(text: str, missing: List[str], *, lang: str = 'ar')
     lines, rows = _parse_kpi_rows(main_blob)
     if not lines:
         return text
+    catalog = (
+        _KPI_INSERTS_EN
+        if str(lang or 'ar').lower().startswith('en')
+        else _KPI_INSERTS_AR)
     for fam in missing:
-        tpl = _KPI_INSERTS_AR.get(fam)
+        tpl = catalog.get(fam)
         if tpl:
             rows.append(tpl)
     rows = _renumber_rows(rows)
@@ -215,7 +280,8 @@ def finalize_kpi_substance(
         text = _sync_kpi_formula_appendix(text, lang=lang)
         invalid_after = _detect_invalid(text)
         if GENERIC_FORMULA in text or invalid_after:
-            _repaired, text = _apply_inline_kpi_repairs({'kpis': text})
+            _repaired, text = _apply_inline_kpi_repairs(
+                {'kpis': text}, lang=lang)
             text = _repaired.get('kpis', text)
             if GENERIC_FORMULA in text:
                 text = text.replace(
@@ -269,7 +335,8 @@ def finalize_kpi_substance(
     missing_after = [f for f in REQUIRED_KPI_FAMILIES if not present_after.get(f)]
     invalid_after = _detect_invalid(text)
     if GENERIC_FORMULA in text or invalid_after:
-        _repaired, text = _apply_inline_kpi_repairs({'kpis': text})
+        _repaired, text = _apply_inline_kpi_repairs(
+            {'kpis': text}, lang=lang)
         text = _repaired.get('kpis', text)
         if GENERIC_FORMULA in text:
             text = text.replace(
