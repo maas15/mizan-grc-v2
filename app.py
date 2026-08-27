@@ -30374,8 +30374,10 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
         # Data and NDMO and/or PDPL was selected, the roadmap must
         # cover balance topics (data quality / catalog / lifecycle /
         # privacy / consent / DSR / breach) in addition to office
-        # setup. Detection only — repair is AI-first via the existing
-        # roadmap repair pathways. No deterministic content injected.
+        # setup. Detection only — this gate is not weakened. REL36.7
+        # inserts PDPL consent / DSR / breach rows on the repair path
+        # before this audit runs so first-run acceptance does not
+        # depend on AI.
         try:
             _dcode_bal = normalize_domain(domain or '')
         except Exception:  # noqa: BLE001 — defensive
@@ -31466,6 +31468,30 @@ def _splice_data_roadmap_topup_rows(original_text, new_row_lines):
         + lines[last_tbl_idx + 1:])
 
 
+def _apply_rel36_7_data_pdpl_roadmap_balance(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy'):
+    """REL36.7 — deterministic PDPL consent / DSR / breach rows.
+
+    No-op outside Data strategy + PDPL. Does not skip the balance
+    gate; it only inserts detector-visible rows so the unchanged
+    checker can pass on the first official cycle.
+    """
+    try:
+        from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
+            apply_rel36_7_data_pdpl_roadmap_balance,
+        )
+        apply_rel36_7_data_pdpl_roadmap_balance(
+            sections,
+            domain=domain,
+            document_type=document_type,
+            lang=lang,
+            selected_frameworks=selected_frameworks,
+        )
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        pass
+
+
 def _convergence_data_roadmap_balance_repair(
         sections, lang, domain, ctx, log, cycle_no):
     """PR-5B.9Z Part D — convergence-stage Data Management roadmap
@@ -31536,6 +31562,8 @@ def _convergence_data_roadmap_balance_repair(
         dcode = ''
     if dcode != 'data':
         return 0
+    _apply_rel36_7_data_pdpl_roadmap_balance(
+        sections, lang, domain, selected_fws, document_type='strategy')
     before_text = sections.get('roadmap', '') or ''
     try:
         missing = _compute_missing_data_roadmap_balance_topics(
@@ -35177,6 +35205,10 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                     sector=ctx.get('sector', 'General'),
                     org_name=ctx.get('org_name', 'The Organization'),
                 )
+                _apply_rel36_7_data_pdpl_roadmap_balance(
+                    sections, lang, domain,
+                    ctx.get('frameworks') or [],
+                    document_type=_audit_document_type or 'strategy')
                 cycle['repairs'].append('roadmap')
             except RepairError as _rre:
                 # PR-5B.5F1: see vision branch above.
@@ -35257,6 +35289,10 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
             _ow_dcode = ''
         _ow_pdpl_residual = []
         if _ow_dcode == 'data':
+            _apply_rel36_7_data_pdpl_roadmap_balance(
+                sections, lang, domain,
+                ctx.get('frameworks') or [],
+                document_type=_audit_document_type or 'strategy')
             try:
                 _ow_resolved = (
                     _resolve_selected_frameworks(
@@ -35389,6 +35425,22 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
         log['final_defects'] = [
             (s, t, c, m) for s, t, c, m in _audit()
         ]
+    try:
+        _apply_rel36_7_data_pdpl_roadmap_balance(
+            sections, lang, domain, _audit_selected_fws,
+            document_type=_audit_document_type or 'strategy')
+        if not log.get('converged'):
+            _rel367_post = _audit()
+            _synth_failed = any(
+                st == 'failed'
+                for st in (log.get('synth_status') or {}).values())
+            log['final_defects'] = [
+                (s, t, c, m) for s, t, c, m in _rel367_post]
+            if not _rel367_post and not _synth_failed:
+                log['converged'] = True
+                log['final_defects'] = []
+    except Exception:  # noqa: BLE001 — gate still runs later
+        pass
     return log
 
 
@@ -70762,6 +70814,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 _rb_dcode = ''
                             if (_rb_dcode.strip().lower() == 'data'
                                     and _frameworks_raw):
+                                _apply_rel36_7_data_pdpl_roadmap_balance(
+                                    sections, lang, domain, _frameworks_raw,
+                                    document_type=_document_type or 'strategy')
                                 _rb_before = (
                                     sections.get('roadmap', '') or '')
                                 _rb_missing = (
