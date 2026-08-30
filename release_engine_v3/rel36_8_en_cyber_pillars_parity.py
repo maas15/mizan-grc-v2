@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from release_engine.pillar_model import (
@@ -39,7 +40,6 @@ from release_engine_v3.rel31_authority import _normalize_rel31_domain_code
 from release_engine_v3.rel36_2_en_cyber_export_evidence_repair import (
     REL36_2_ALLOWED_OWNERS,
     _is_empty_owner,
-    _is_header_row,
     _is_sep_row,
     infer_english_cyber_owner,
 )
@@ -62,6 +62,20 @@ _GLUED_HEADING_RE = re.compile(
     r'^(#{3,4}\s+[^|\n]+?)\s*(\|.+)$',
     re.MULTILINE,
 )
+
+_TLS = threading.local()
+REENTRANCY_GUARD_TYPE = 'thread_local'
+
+_HEADER_LABELS = frozenset((
+    'initiative', 'description', 'expected deliverable', 'owner',
+    'program', 'outcome', 'lead',
+    'responsible owner', 'accountable owner',
+    'المبادرة', 'الوصف', 'المخرج المتوقع', 'المخرج', 'المسؤول', 'المالك',
+    '#',
+))
+_SCHEMA_POL = 'program_outcome_lead'
+_SCHEMA_PO = 'program_outcome'
+_SCHEMA_CANONICAL = 'initiative_4col'
 
 _FAMILY_TITLE_MARKERS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ('governance_operating_model', (
@@ -152,27 +166,101 @@ def _iter_pipe_rows(text: str) -> List[List[str]]:
     return rows
 
 
+def _tls_depth() -> int:
+    return int(getattr(_TLS, 'depth', 0) or 0)
+
+
+def rel36_8_thread_local_depth() -> int:
+    """Public helper for tests: current thread's repair nesting depth."""
+    return _tls_depth()
+
+
+def _cell_is_header_label(cell: str) -> bool:
+    return str(cell or '').strip().lower() in _HEADER_LABELS
+
+
+def _cell_is_long_content(cell: str) -> bool:
+    text = str(cell or '').strip()
+    if not text or _cell_is_header_label(text):
+        return False
+    words = [w for w in re.split(r'\s+', text) if w]
+    return len(words) > 5 or len(text) > 48
+
+
 def _is_source_header_row(cells: Sequence[str]) -> bool:
-    """Treat Initiative and Program|Outcome|Lead headers as non-data."""
-    if _is_header_row(cells):
-        return True
-    blob = ' '.join(str(c) for c in cells).lower()
-    if 'program' in blob and 'outcome' in blob:
-        return True
-    first = str(cells[0] if cells else '').strip().lower()
-    return first in ('program', 'lead', 'outcome')
+    """Require a pipe-shaped short header: at least two exact header labels.
+
+    Content rows that merely mention initiative / description / owner must
+    be preserved. Example that must NOT be treated as a header:
+
+        Control ownership initiative | Define accountable owners | Approved RACI | CISO
+    """
+    vals = [str(c).strip() for c in cells if str(c).strip() != '']
+    if len(vals) < 2:
+        return False
+    if any(_cell_is_long_content(v) for v in vals):
+        return False
+    label_hits = sum(1 for v in vals if _cell_is_header_label(v))
+    return label_hits >= 2
 
 
-def _row_from_cells(cells: Sequence[str]) -> Optional[Tuple[str, str, str, str]]:
+def _header_schema(cells: Sequence[str]) -> str:
+    labels = [str(c).strip().lower() for c in cells if str(c).strip()]
+    if 'program' in labels and 'outcome' in labels and 'lead' in labels:
+        return _SCHEMA_POL
+    if 'program' in labels and 'outcome' in labels:
+        return _SCHEMA_PO
+    return _SCHEMA_CANONICAL
+
+
+def _preserve_lead_owner(lead: str, initiative: str, description: str) -> str:
+    """Keep a valid Lead owner; infer only when Lead is empty or unknown."""
+    owner = str(lead or '').strip()
+    if owner in REL36_2_ALLOWED_OWNERS:
+        return owner
+    inferred = infer_english_cyber_owner(initiative, description)
+    return inferred if inferred in REL36_2_ALLOWED_OWNERS else 'CISO'
+
+
+def _row_from_cells(
+        cells: Sequence[str],
+        schema: str = _SCHEMA_CANONICAL,
+        stats: Optional[Dict[str, Any]] = None,
+) -> Optional[Tuple[str, str, str, str]]:
     vals = [str(c).strip() for c in cells if str(c).strip() != '']
     if not vals:
         return None
     if _is_source_header_row(vals):
+        if stats is not None:
+            stats['header_rows_dropped'] = int(
+                stats.get('header_rows_dropped') or 0) + 1
         return None
+    if stats is not None:
+        blob = ' '.join(vals).lower()
+        if any(tok in blob for tok in ('initiative', 'description', 'owner')):
+            stats['content_rows_preserved'] = int(
+                stats.get('content_rows_preserved') or 0) + 1
     if re.fullmatch(r'\d+', vals[0] or ''):
         vals = vals[1:]
     if len(vals) < 2:
         return None
+    pol_like = schema in (_SCHEMA_POL, _SCHEMA_PO) or (
+        len(vals) == 3 and vals[2] in REL36_2_ALLOWED_OWNERS
+    )
+    if pol_like and len(vals) == 3:
+        if stats is not None:
+            stats['lead_mapping_rows_detected'] = int(
+                stats.get('lead_mapping_rows_detected') or 0) + 1
+        initiative = vals[0]
+        description = vals[1]
+        deliverable = vals[1]
+        owner = _preserve_lead_owner(vals[2], initiative, description)
+        if stats is not None:
+            stats['lead_mapping_rows_converted'] = int(
+                stats.get('lead_mapping_rows_converted') or 0) + 1
+        if not initiative:
+            return None
+        return initiative, description, deliverable, owner
     initiative = vals[0]
     description = vals[1] if len(vals) > 1 else initiative
     deliverable = vals[2] if len(vals) > 2 else description
@@ -187,10 +275,22 @@ def _row_from_cells(cells: Sequence[str]) -> Optional[Tuple[str, str, str, str]]
     return initiative, description, deliverable, owner
 
 
-def _extract_family_rows(text: str) -> Dict[str, List[Tuple[str, str, str, str]]]:
+def _empty_extract_stats() -> Dict[str, Any]:
+    return {
+        'lead_mapping_rows_detected': 0,
+        'lead_mapping_rows_converted': 0,
+        'header_rows_dropped': 0,
+        'content_rows_preserved': 0,
+    }
+
+
+def _extract_family_rows(
+        text: str,
+) -> Tuple[Dict[str, List[Tuple[str, str, str, str]]], Dict[str, Any]]:
     grouped: Dict[str, List[Tuple[str, str, str, str]]] = {
         fam: [] for fam in CYBER_PILLAR_FAMILIES
     }
+    stats = _empty_extract_stats()
     unglued = _unglue_heading_table_lines(_strip_family_markers(text or ''))
     chunks = re.split(r'(?=^#{3,4}\s+)', unglued, flags=re.MULTILINE)
     leftover: List[Tuple[str, str, str, str]] = []
@@ -201,8 +301,14 @@ def _extract_family_rows(text: str) -> Dict[str, List[Tuple[str, str, str, str]]
         lines = chunk.splitlines()
         title = lines[0].lstrip('#').strip() if lines else ''
         fam = _family_for_blob(title + '\n' + chunk)
+        schema = _SCHEMA_CANONICAL
         for cells in _iter_pipe_rows(chunk):
-            parsed = _row_from_cells(cells)
+            if _is_source_header_row(cells):
+                schema = _header_schema(cells)
+                stats['header_rows_dropped'] = int(
+                    stats.get('header_rows_dropped') or 0) + 1
+                continue
+            parsed = _row_from_cells(cells, schema=schema, stats=stats)
             if not parsed:
                 continue
             target = fam or _family_for_blob(' '.join(parsed))
@@ -213,7 +319,7 @@ def _extract_family_rows(text: str) -> Dict[str, List[Tuple[str, str, str, str]]
     for parsed in leftover:
         fam = _family_for_blob(' '.join(parsed)) or 'governance_operating_model'
         grouped[fam].append(parsed)
-    return grouped
+    return grouped, stats
 
 
 def _canonical_rows_for_family(fam: str) -> List[Tuple[str, str, str, str]]:
@@ -246,8 +352,11 @@ def _ensure_three_rows(
 
 def render_canonical_english_cyber_pillars(
         text: str = '',
+        stats: Optional[Dict[str, Any]] = None,
 ) -> str:
-    grouped = _extract_family_rows(text)
+    grouped, extracted = _extract_family_rows(text)
+    if stats is not None:
+        stats.update(extracted)
     parts = [REL36_8_SECTION_HEADING, '']
     header = '| ' + ' | '.join(REL36_8_PILLAR_HEADER) + ' |'
     sep = '|---|---|---|---|'
@@ -306,7 +415,7 @@ def _english_pillars_need_repair(text: str) -> bool:
     header_blob = ' '.join(
         ' '.join(cells).lower()
         for cells in _iter_pipe_rows(blob)
-        if _is_header_row(cells)
+        if _is_source_header_row(cells)
     )
     if 'initiative' not in header_blob and 'مبادرة' not in header_blob:
         return True
@@ -414,6 +523,16 @@ def evaluate_rel36_8_en_cyber_pillars_parity(
         before_parity: Optional[Dict[str, Any]] = None,
         after_parity: Optional[Dict[str, Any]] = None,
         repair_applied: bool = False,
+        reentrancy_guard_type: str = REENTRANCY_GUARD_TYPE,
+        thread_id: Any = None,
+        thread_local_depth_before: int = 0,
+        thread_local_depth_after: int = 0,
+        reentrant_skipped: bool = False,
+        repair_executed: bool = False,
+        lead_mapping_rows_detected: int = 0,
+        lead_mapping_rows_converted: int = 0,
+        header_rows_dropped: int = 0,
+        content_rows_preserved: int = 0,
 ) -> Dict[str, Any]:
     before_parity = before_parity or {}
     after_parity = after_parity or {}
@@ -474,6 +593,16 @@ def evaluate_rel36_8_en_cyber_pillars_parity(
             before_parity.get('rel2_section_parity_blockers') or []),
         'rel2_section_parity_blockers_after': parity_blockers_after,
         'repair_applied': bool(repair_applied),
+        'reentrancy_guard_type': reentrancy_guard_type or REENTRANCY_GUARD_TYPE,
+        'thread_id': int(thread_id if thread_id is not None else threading.get_ident()),
+        'thread_local_depth_before': int(thread_local_depth_before or 0),
+        'thread_local_depth_after': int(thread_local_depth_after or 0),
+        'reentrant_skipped': bool(reentrant_skipped),
+        'repair_executed': bool(repair_executed),
+        'lead_mapping_rows_detected': int(lead_mapping_rows_detected or 0),
+        'lead_mapping_rows_converted': int(lead_mapping_rows_converted or 0),
+        'header_rows_dropped': int(header_rows_dropped or 0),
+        'content_rows_preserved': int(content_rows_preserved or 0),
         'passed': passed,
     }
 
@@ -489,7 +618,27 @@ def emit_rel36_8_en_cyber_pillars_parity(payload: Dict[str, Any]) -> None:
         pass
 
 
-_APPLY_DEPTH = 0
+def _skip_payload(
+        *,
+        action_taken: str,
+        depth_before: int,
+        reentrant_skipped: bool = False,
+) -> Dict[str, Any]:
+    return {
+        'passed': False,
+        'repair_applied': False,
+        'repair_executed': False,
+        'reentrant_skipped': bool(reentrant_skipped),
+        'reentrancy_guard_type': REENTRANCY_GUARD_TYPE,
+        'thread_id': threading.get_ident(),
+        'thread_local_depth_before': int(depth_before),
+        'thread_local_depth_after': int(depth_before),
+        'lead_mapping_rows_detected': 0,
+        'lead_mapping_rows_converted': 0,
+        'header_rows_dropped': 0,
+        'content_rows_preserved': 0,
+        'action_taken': action_taken,
+    }
 
 
 def apply_rel36_8_en_cyber_pillars_parity(
@@ -504,25 +653,22 @@ def apply_rel36_8_en_cyber_pillars_parity(
         repair_stage: str = 'pre_rel2_gates',
         emit: bool = True,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    global _APPLY_DEPTH
     out = dict(sections or {})
     before_text = str(out.get('pillars') or '')
+    depth_before = _tls_depth()
     if not rel36_8_should_apply(
             domain=domain, lang=lang, document_type=document_type,
             selected_frameworks=selected_frameworks,
             pillars_text=before_text):
-        return sections, {
-            'passed': False,
-            'repair_applied': False,
-            'action_taken': 'skipped',
-        }
-    if _APPLY_DEPTH > 0:
-        return sections, {
-            'passed': False,
-            'repair_applied': False,
-            'action_taken': 'reentrant',
-        }
-    _APPLY_DEPTH += 1
+        return sections, _skip_payload(
+            action_taken='skipped', depth_before=depth_before)
+    if depth_before > 0:
+        return sections, _skip_payload(
+            action_taken='reentrant',
+            depth_before=depth_before,
+            reentrant_skipped=True,
+        )
+    _TLS.depth = depth_before + 1
     try:
         # Nested professional-model builds from finalize_pillars must not
         # re-enter this repair. Snapshot uses extractor presence only.
@@ -530,8 +676,10 @@ def apply_rel36_8_en_cyber_pillars_parity(
         before_parity = _parity_snapshot(
             out, backend=snap_backend, lang='en', domain='cyber')
         repair_applied = _english_pillars_need_repair(before_text)
+        extract_stats = _empty_extract_stats()
         after_text = (
-            render_canonical_english_cyber_pillars(before_text)
+            render_canonical_english_cyber_pillars(
+                before_text, stats=extract_stats)
             if repair_applied else before_text
         )
         if repair_applied:
@@ -550,9 +698,22 @@ def apply_rel36_8_en_cyber_pillars_parity(
             before_parity=before_parity,
             after_parity=after_parity,
             repair_applied=repair_applied,
+            reentrancy_guard_type=REENTRANCY_GUARD_TYPE,
+            thread_id=threading.get_ident(),
+            thread_local_depth_before=depth_before,
+            thread_local_depth_after=_tls_depth(),
+            reentrant_skipped=False,
+            repair_executed=bool(repair_applied),
+            lead_mapping_rows_detected=extract_stats.get(
+                'lead_mapping_rows_detected') or 0,
+            lead_mapping_rows_converted=extract_stats.get(
+                'lead_mapping_rows_converted') or 0,
+            header_rows_dropped=extract_stats.get('header_rows_dropped') or 0,
+            content_rows_preserved=extract_stats.get(
+                'content_rows_preserved') or 0,
         )
         if emit:
             emit_rel36_8_en_cyber_pillars_parity(diag)
         return out, diag
     finally:
-        _APPLY_DEPTH -= 1
+        _TLS.depth = depth_before

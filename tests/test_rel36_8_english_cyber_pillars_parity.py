@@ -6,6 +6,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -49,13 +50,17 @@ from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
     missing_families,
 )
 from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+    REENTRANCY_GUARD_TYPE,
     REL36_8_EN_CYBER_PILLARS_PARITY_TAG,
     REL36_8_FAMILY_HEADINGS,
     REL36_8_PILLAR_HEADER,
     REL36_8_SECTION_HEADING,
+    _TLS,
+    _is_source_header_row,
     apply_rel36_8_en_cyber_pillars_parity,
     emit_rel36_8_en_cyber_pillars_parity,
     evaluate_rel36_8_en_cyber_pillars_parity,
+    rel36_8_thread_local_depth,
     render_canonical_english_cyber_pillars,
 )
 from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
@@ -86,6 +91,7 @@ def _malformed_en_cyber_pillars() -> str:
         '|---|---|---|\n'
         '| Policy suite | Approved library | CISO |\n'
         '| Committee charter | Active committee | CISO |\n'
+        '| Control ownership initiative | Define accountable owners | Approved RACI | CISO |\n'
         'family:governance_ciso extra residue\n'
         '### Protection, Detection & Response\n'
         '| Program | Outcome | Lead |\n'
@@ -124,6 +130,7 @@ def _backend():
 
 
 def _apply(sections=None, **kwargs):
+    _TLS.depth = 0
     secs = dict(sections or _malformed_sections())
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -234,8 +241,18 @@ class Rel368NormalizeTests(unittest.TestCase):
                 'rel2_pillars_blockers_after',
                 'rel2_section_parity_blockers_before',
                 'rel2_section_parity_blockers_after', 'repair_applied',
+                'reentrancy_guard_type', 'thread_local_depth_before',
+                'thread_local_depth_after', 'reentrant_skipped',
+                'repair_executed', 'lead_mapping_rows_detected',
+                'lead_mapping_rows_converted', 'header_rows_dropped',
+                'content_rows_preserved',
                 'passed'):
             self.assertIn(key, self.diag)
+        self.assertEqual(self.diag.get('reentrancy_guard_type'), 'thread_local')
+        self.assertFalse(self.diag.get('reentrant_skipped'), self.diag)
+        self.assertTrue(self.diag.get('repair_executed'), self.diag)
+        self.assertGreaterEqual(
+            int(self.diag.get('lead_mapping_rows_converted') or 0), 1, self.diag)
         buf = io.StringIO()
         with redirect_stdout(buf):
             emit_rel36_8_en_cyber_pillars_parity(self.diag)
@@ -443,6 +460,141 @@ class Rel368RegressionTests(unittest.TestCase):
         self.assertIn(REL36_8_SECTION_HEADING, text)
         self.assertNotIn('family:', text)
         self.assertIn('| Initiative | Description | Expected Deliverable | Owner |', text)
+
+
+def _row_for_initiative(pillars: str, title: str):
+    for ln in (pillars or '').splitlines():
+        if title not in ln or not ln.strip().startswith('|'):
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if cells and cells[0] == title:
+            return cells
+    return None
+
+
+class Rel3681CodexFixTests(unittest.TestCase):
+    def setUp(self):
+        _TLS.depth = 0
+        self.addCleanup(setattr, _TLS, 'depth', 0)
+
+    def test_16_thread_local_guard_overlapping_calls_do_not_skip(self):
+        _TLS.depth = 4
+        self.assertGreater(rel36_8_thread_local_depth(), 0)
+        self.assertEqual(REENTRANCY_GUARD_TYPE, 'thread_local')
+
+        same, same_diag = apply_rel36_8_en_cyber_pillars_parity(
+            _malformed_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, emit=False)
+        self.assertEqual(same_diag.get('action_taken'), 'reentrant', same_diag)
+        self.assertTrue(same_diag.get('reentrant_skipped'), same_diag)
+        self.assertFalse(same_diag.get('repair_executed'), same_diag)
+        self.assertEqual(
+            same_diag.get('reentrancy_guard_type'), 'thread_local', same_diag)
+        self.assertEqual(same.get('pillars'), _malformed_sections().get('pillars'))
+
+        worker_diag = {}
+
+        def other_thread_repair():
+            out, diag = apply_rel36_8_en_cyber_pillars_parity(
+                _malformed_sections(),
+                domain='cyber', lang='en', document_type='strategy',
+                selected_frameworks=_NCA_FWS,
+                backend=_backend(), emit=False)
+            worker_diag.update(diag)
+            worker_diag['_pillars'] = out.get('pillars')
+
+        worker = threading.Thread(target=other_thread_repair)
+        worker.start()
+        worker.join()
+        self.assertFalse(worker_diag.get('reentrant_skipped'), worker_diag)
+        self.assertTrue(worker_diag.get('repair_executed'), worker_diag)
+        self.assertTrue(worker_diag.get('repair_applied'), worker_diag)
+        self.assertEqual(
+            worker_diag.get('reentrancy_guard_type'), 'thread_local', worker_diag)
+        self.assertIn(REL36_8_SECTION_HEADING, worker_diag.get('_pillars') or '')
+
+        both = [None, None]
+
+        def parallel_repair(idx):
+            _out, diag = apply_rel36_8_en_cyber_pillars_parity(
+                _malformed_sections(),
+                domain='cyber', lang='en', document_type='strategy',
+                selected_frameworks=_NCA_FWS,
+                backend=_backend(), emit=False)
+            both[idx] = diag
+
+        t1 = threading.Thread(target=parallel_repair, args=(0,))
+        t2 = threading.Thread(target=parallel_repair, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        for diag in both:
+            self.assertIsNotNone(diag)
+            self.assertFalse(diag.get('reentrant_skipped'), diag)
+            self.assertTrue(diag.get('repair_executed'), diag)
+            self.assertEqual(diag.get('reentrancy_guard_type'), 'thread_local')
+
+    def test_17_diagnostic_reentrancy_guard_type_is_thread_local(self):
+        _secs, diag, _log = _apply()
+        self.assertEqual(diag.get('reentrancy_guard_type'), 'thread_local', diag)
+        self.assertEqual(REENTRANCY_GUARD_TYPE, 'thread_local')
+
+    def test_18_program_outcome_lead_maps_lead_to_owner(self):
+        secs, diag, _log = _apply()
+        pillars = secs.get('pillars') or ''
+        row = _row_for_initiative(pillars, 'Policy suite')
+        self.assertIsNotNone(row, pillars)
+        self.assertEqual(row[0], 'Policy suite')
+        self.assertEqual(row[1], 'Approved library')
+        self.assertEqual(row[2], 'Approved library')
+        self.assertEqual(row[3], 'CISO')
+        self.assertNotEqual(row[2], 'CISO')
+        self.assertGreaterEqual(
+            int(diag.get('lead_mapping_rows_converted') or 0), 1, diag)
+
+    def test_19_ciso_from_lead_is_owner_not_deliverable(self):
+        secs, _diag, _log = _apply()
+        row = _row_for_initiative(secs.get('pillars') or '', 'Policy suite')
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], 'CISO')
+        self.assertNotEqual(row[2], 'CISO')
+        self.assertEqual(row[2], 'Approved library')
+
+    def test_20_valid_lead_owners_are_preserved(self):
+        secs, _diag, _log = _apply()
+        pillars = secs.get('pillars') or ''
+        soc = _row_for_initiative(pillars, 'SOC/SIEM operations')
+        csirt = _row_for_initiative(pillars, 'CSIRT capability')
+        self.assertIsNotNone(soc, pillars)
+        self.assertIsNotNone(csirt, pillars)
+        self.assertEqual(soc[3], 'SOC Manager')
+        self.assertEqual(csirt[3], 'CSIRT Lead')
+        self.assertEqual(soc[2], '24x7 SOC')
+        self.assertEqual(csirt[2], 'Ready CSIRT')
+
+    def test_21_header_detection_does_not_drop_content_row(self):
+        content = [
+            'Control ownership initiative',
+            'Define accountable owners',
+            'Approved RACI',
+            'CISO',
+        ]
+        self.assertFalse(_is_source_header_row(content), content)
+        self.assertTrue(_is_source_header_row(
+            ['Initiative', 'Description', 'Expected Deliverable', 'Owner']))
+        self.assertTrue(_is_source_header_row(['Program', 'Outcome', 'Lead']))
+        secs, diag, _log = _apply()
+        pillars = secs.get('pillars') or ''
+        self.assertIn('Control ownership initiative', pillars)
+        row = _row_for_initiative(pillars, 'Control ownership initiative')
+        self.assertIsNotNone(row, pillars)
+        self.assertEqual(row[1], 'Define accountable owners')
+        self.assertEqual(row[2], 'Approved RACI')
+        self.assertEqual(row[3], 'CISO')
+        self.assertGreaterEqual(
+            int(diag.get('content_rows_preserved') or 0), 1, diag)
 
 
 if __name__ == '__main__':
