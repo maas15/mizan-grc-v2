@@ -36,6 +36,7 @@ from release_engine_v3.rel36_6_erm_risk_domain_isolation import (
 )
 from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
     REL36_7_DATA_PDPL_ROADMAP_BALANCE_TAG,
+    REL36_8_2_DATA_PDPL_PERSONAL_CLASSIFICATION_TAG,
     REQUIRED_PDPL_ROADMAP_FAMILIES,
     apply_rel36_7_data_pdpl_roadmap_balance,
     detect_families,
@@ -70,14 +71,40 @@ _DATA_GENERATED_ROADMAP_MISSING_THREE = (
     'تفعيل حوكمة الخصوصية | مسؤول حماية البيانات الشخصية | '
     'إطار حوكمة الخصوصية | PDPL |\n'
     '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
-    'اعتماد تصنيف البيانات الشخصية | مسؤول حماية البيانات الشخصية | '
-    'سجل تصنيف البيانات الشخصية | PDPL |\n'
+        'اعتماد تصنيف البيانات الشخصية | مسؤول حماية البيانات الشخصية | '
+        'سجل تصنيف البيانات الشخصية | PDPL |\n'
+)
+
+
+# Staging-shaped REL36.8.1 failure: NDMO + privacy_governance present,
+# personal_data_classification and the three REL36.7 families missing.
+_DATA_STAGING_MISSING_CLASSIFICATION = (
+    '| المرحلة | الفترة | المبادرة | المسؤول | المخرج المتوقع | الإطار |\n'
+    '|---|---|---|---|---|---|\n'
+    '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
+    'إطلاق برنامج إدارة جودة البيانات | مدير جودة البيانات | '
+    'مقاييس جودة البيانات معتمدة | NDMO |\n'
+    '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
+    'بناء كتالوج البيانات والبيانات الوصفية | '
+    'مدير البيانات الوصفية والكتالوج | كتالوج بيانات تشغيلي | NDMO |\n'
+    '| المرحلة 2: تمكين وتشغيل (7-18 شهر) | 7-18 شهر | '
+    'حوكمة دورة حياة البيانات والاحتفاظ | مدير دورة حياة البيانات | '
+    'سياسة الاحتفاظ وإتلاف البيانات | NDMO |\n'
+    '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
+    'تفعيل حوكمة الخصوصية | مسؤول حماية البيانات الشخصية | '
+    'إطار حوكمة الخصوصية | PDPL |\n'
 )
 
 
 def _data_generated_missing_three() -> dict:
     secs = dict(_data_sections())
     secs['roadmap'] = _DATA_GENERATED_ROADMAP_MISSING_THREE
+    return secs
+
+
+def _data_staging_missing_classification() -> dict:
+    secs = dict(_data_sections())
+    secs['roadmap'] = _DATA_STAGING_MISSING_CLASSIFICATION
     return secs
 
 
@@ -101,9 +128,15 @@ class Rel367DetectorFixtureTests(unittest.TestCase):
             'data_subject_rights',
             'breach_notification',
         }, missing)
-        self.assertEqual(
-            set(missing_families(_DATA_GENERATED_ROADMAP_MISSING_THREE)),
-            set(REQUIRED_PDPL_ROADMAP_FAMILIES))
+        self.assertEqual(set(missing_families(
+            _DATA_GENERATED_ROADMAP_MISSING_THREE)), {
+            'consent_management',
+            'data_subject_rights',
+            'breach_notification',
+        })
+        self.assertIn(
+            'personal_data_classification',
+            detect_families(_DATA_GENERATED_ROADMAP_MISSING_THREE))
 
 
 class Rel367FamilyRowTests(unittest.TestCase):
@@ -133,6 +166,10 @@ class Rel367FamilyRowTests(unittest.TestCase):
         self.assertIn('breach_notification', detect_families(self.roadmap))
         self.assertIn('الإبلاغ عن الانتهاكات', self.roadmap)
 
+    def test_03b_preserves_personal_data_classification_when_already_present(self):
+        self.assertIn('personal_data_classification', detect_families(self.roadmap))
+        self.assertIn('تصنيف البيانات الشخصية', self.roadmap)
+
     def test_04_balance_detector_passes_on_first_repaired_artifact(self):
         app = _app()
         missing = app._compute_missing_data_roadmap_balance_topics(
@@ -160,7 +197,7 @@ class Rel367FamilyRowTests(unittest.TestCase):
             roadmap_text=self.roadmap,
             repair_applied=True,
             inserted_rows=self.diag.get('inserted_rows'),
-            missing_before=REQUIRED_PDPL_ROADMAP_FAMILIES,
+            missing_before=list(REQUIRED_PDPL_ROADMAP_FAMILIES),
         )
         for key in (
                 'domain', 'document_type', 'lang', 'selected_frameworks',
@@ -348,6 +385,125 @@ class Rel367RegressionTests(unittest.TestCase):
 
     def test_erm_risk_fixture_namespace(self):
         self.assertIn('سجل المخاطر', REL33_TYPE_FIXTURES_AR['risk']['register'])
+
+
+class Rel3682PersonalClassificationTests(unittest.TestCase):
+    """REL36.8.2 — insert personal_data_classification on first official run."""
+
+    def setUp(self):
+        self.buf = io.StringIO()
+        with redirect_stdout(self.buf):
+            self.secs, self.diag = apply_rel36_7_data_pdpl_roadmap_balance(
+                _data_staging_missing_classification(),
+                domain='data',
+                document_type='strategy',
+                lang='ar',
+                selected_frameworks=['NDMO', 'PDPL'],
+            )
+        self.roadmap = str(self.secs.get('roadmap') or '')
+        self.log = self.buf.getvalue()
+        self.detected = detect_families(self.roadmap)
+
+    def test_01_inserts_personal_data_classification_deterministically(self):
+        self.assertIn('personal_data_classification', self.detected)
+        self.assertIn('تصنيف وجرد البيانات الشخصية', self.roadmap)
+        self.assertIn('تصنيف البيانات الشخصية', self.roadmap)
+        self.assertIn('جرد', self.roadmap)
+        self.assertIn('البيانات الشخصية', self.roadmap)
+        self.assertIn(
+            'personal_data_classification',
+            self.diag.get('inserted_rows') or [],
+            self.diag)
+        self.assertIn(
+            'personal_data_classification',
+            self.diag.get('detected_families_after') or [],
+            self.diag)
+
+    def test_02_still_inserts_consent_management(self):
+        self.assertIn('consent_management', self.detected)
+        self.assertIn('أتمتة إدارة الموافقات', self.roadmap)
+
+    def test_03_still_inserts_data_subject_rights(self):
+        self.assertIn('data_subject_rights', self.detected)
+        self.assertIn('طلبات أصحاب البيانات', self.roadmap)
+
+    def test_04_still_inserts_breach_notification(self):
+        self.assertIn('breach_notification', self.detected)
+        self.assertIn('الإبلاغ عن الانتهاكات', self.roadmap)
+
+    def test_05_missing_families_after_empty_and_official_detector_passes(self):
+        self.assertEqual(self.diag.get('missing_families_after'), [], self.diag)
+        self.assertEqual(missing_families(self.roadmap), [])
+        self.assertTrue(self.diag.get('roadmap_balance_passed'), self.diag)
+        self.assertTrue(self.diag.get('passed'), self.diag)
+        self.assertEqual(self.diag.get('blocking_errors'), [], self.diag)
+        self.assertIn(REL36_7_DATA_PDPL_ROADMAP_BALANCE_TAG, self.log)
+        self.assertIn(REL36_8_2_DATA_PDPL_PERSONAL_CLASSIFICATION_TAG, self.log)
+        app = _app()
+        missing = app._compute_missing_data_roadmap_balance_topics(
+            self.roadmap, ['NDMO', 'PDPL'], lang='ar')
+        self.assertEqual(missing, [], missing)
+        defects = app._final_strategy_audit(
+            dict(self.secs), 'ar', None,
+            selected_frameworks=['NDMO', 'PDPL'],
+            domain='Data Management',
+            document_type='strategy',
+        )
+        bal = [d[1] for d in defects
+               if str(d[1]).startswith('data_roadmap_balance_missing:')]
+        self.assertEqual(bal, [], bal)
+
+    def test_06_data_docx_pdf_allowed(self):
+        out = _export_pair(self.secs, lang='ar', domain='data')
+        self.assertTrue(
+            out['docx_ev'].export_return_allowed, out['docx_ev'].blocking_errors)
+        self.assertTrue(
+            out['pdf_ev'].export_return_allowed, out['pdf_ev'].blocking_errors)
+        self.assertGreater(len(out['docx_export'].docx_bytes or b''), 100)
+        self.assertGreater(len(out['pdf_export'].pdf_bytes or b''), 100)
+
+    def test_07_no_nca_ciso_siem_csirt(self):
+        blob = '\n'.join(str(v) for v in self.secs.values())
+        for tok in ('NCA ECC', 'NCA DCC', 'CISO', 'SIEM', 'CSIRT'):
+            self.assertNotIn(tok, blob)
+            self.assertNotIn(tok, self.roadmap)
+
+    def test_08_no_nist_csf_or_nist_ai_rmf(self):
+        blob = '\n'.join(str(v) for v in self.secs.values())
+        self.assertNotIn('NIST CSF', blob)
+        self.assertNotIn('NIST Cybersecurity Framework', blob)
+        self.assertNotIn('NIST AI RMF', blob)
+        fw = detect_visible_frameworks(blob)
+        self.assertIn('NDMO', fw)
+        self.assertIn('PDPL', fw)
+        self.assertNotIn('NIST CSF', fw)
+        self.assertNotIn('NIST AI RMF', fw)
+
+    def test_first_cycle_inserts_classification_without_ai(self):
+        app = _app()
+        secs = _data_staging_missing_classification()
+        before = app._compute_missing_data_roadmap_balance_topics(
+            secs['roadmap'], ['NDMO', 'PDPL'], lang='ar')
+        self.assertIn('personal_data_classification', before, before)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log = app.converge_strategy_sections(
+                secs, 'ar', 'Data Management', 'NDMO',
+                ctx={'frameworks': ['NDMO', 'PDPL'],
+                     'document_type': 'strategy',
+                     'org_structure_is_none': False},
+                doc_subtype=None, max_iter=1,
+            )
+        after = app._compute_missing_data_roadmap_balance_topics(
+            secs.get('roadmap') or '', ['NDMO', 'PDPL'], lang='ar')
+        self.assertEqual(after, [], after)
+        self.assertIn('تصنيف وجرد البيانات الشخصية', secs.get('roadmap') or '')
+        final_tags = [t for _s, t, _c, _m in (log.get('final_defects') or [])]
+        self.assertFalse(
+            any(str(t).startswith('data_roadmap_balance_missing:')
+                for t in final_tags),
+            final_tags)
+        self.assertIn(REL36_8_2_DATA_PDPL_PERSONAL_CLASSIFICATION_TAG, buf.getvalue())
 
 
 if __name__ == '__main__':
