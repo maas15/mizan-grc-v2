@@ -59,6 +59,30 @@ def apply_rel23_cyber_finalize(
     meta = artifact.get('contract_meta') or {}
     fws = meta.get('selected_frameworks') or artifact.get(
         'selected_frameworks') or []
+    backend = dict(backend or {})
+    backend.setdefault('selected_frameworks', fws)
+    backend.setdefault('document_type', 'strategy')
+    backend.setdefault('task_id', artifact.get('task_id'))
+
+    try:
+        from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+            apply_rel36_8_en_cyber_pillars_parity,
+        )
+        sections, rel368 = apply_rel36_8_en_cyber_pillars_parity(
+            sections,
+            domain=dcode,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=fws,
+            backend=backend,
+            task_id=artifact.get('task_id'),
+            repair_stage='pre_rel2_gates',
+        )
+        diags['rel36_8'] = rel368
+        if rel368.get('repair_applied'):
+            repair_actions.append('rel36_8:en_cyber_pillars_parity')
+    except Exception:  # noqa: BLE001
+        pass
 
     sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
     emit_arabic_final_language_gate(ar_diag)

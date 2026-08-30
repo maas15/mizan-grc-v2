@@ -283,6 +283,25 @@ def finalize_pillars(
             'blocking_error_if_any': '',
         }
 
+    if _pillar_lang(lang) == 'en':
+        try:
+            from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+                apply_rel36_8_en_cyber_pillars_parity,
+            )
+            sections, _rel368 = apply_rel36_8_en_cyber_pillars_parity(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type=str(
+                    backend.get('document_type') or 'strategy'),
+                selected_frameworks=backend.get('selected_frameworks') or [],
+                backend=None,
+                task_id=backend.get('task_id'),
+                repair_stage='finalize_pillars',
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     text = sections.get('pillars', '') or ''
     count_before, counts_before, empty_before = _count_pillar_blocks(text)
     families_before = _pillar_families_present(text)
