@@ -51,17 +51,23 @@ from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
 )
 from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
     REENTRANCY_GUARD_TYPE,
+    REL36_8_3_DIAGNOSTIC_STAGE,
+    REL36_8_3_EN_CYBER_FINAL_PILLAR_BINDING_TAG,
     REL36_8_EN_CYBER_PILLARS_PARITY_TAG,
     REL36_8_FAMILY_HEADINGS,
     REL36_8_PILLAR_HEADER,
     REL36_8_SECTION_HEADING,
     _TLS,
     _is_source_header_row,
+    apply_rel36_8_3_final_pillar_binding,
     apply_rel36_8_en_cyber_pillars_parity,
+    emit_rel36_8_3_final_pillar_binding,
     emit_rel36_8_en_cyber_pillars_parity,
+    evaluate_rel36_8_3_final_pillar_binding,
     evaluate_rel36_8_en_cyber_pillars_parity,
     rel36_8_thread_local_depth,
     render_canonical_english_cyber_pillars,
+    repair_final_english_cyber_pillar_owner_binding,
 )
 from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
 from tests.test_rel35_domain_framework_fidelity import (
@@ -72,6 +78,7 @@ from tests.test_rel35_domain_framework_fidelity import (
 from tests.test_rel36_7_data_roadmap_balance import (
     _DATA_GENERATED_ROADMAP_MISSING_THREE,
     _data_generated_missing_three,
+    _data_staging_missing_classification,
 )
 from tests.test_rel36_bilingual_preview_export_authority import (
     _cyber_en_sections,
@@ -595,6 +602,343 @@ class Rel3681CodexFixTests(unittest.TestCase):
         self.assertEqual(row[3], 'CISO')
         self.assertGreaterEqual(
             int(diag.get('content_rows_preserved') or 0), 1, diag)
+
+
+def _shifted_staging_pillars() -> str:
+    """Exact staging attempts 2–5 shape: Owner=— and owner in deliverable."""
+    return (
+        '## 2. Strategic Pillars\n\n'
+        '### Cybersecurity Governance & Operating Model\n\n'
+        '| Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| Adopt and refresh cybersecurity governance policies aligned to NCA ECC '
+        '| Approved library | CISO | — |\n'
+        '| Ratify a cybersecurity governance committee charter with quarterly meetings '
+        '| Active committee | CISO | — |\n'
+        '| Assign cybersecurity RACI across departments aligned to NCA ECC '
+        '| Approved RACI | CISO | — |\n\n'
+        '### Protection, Detection & Response — NCA ECC\n\n'
+        '| Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| Operationalise SOC with SIEM platform integration '
+        '| SOC operating model | SOC Manager | — |\n'
+        '| Establish CSIRT with approved and tested incident response plans '
+        '| Ready CSIRT | CSIRT Lead | — |\n'
+        '| Operate SIEM rules and continuous monitoring of critical assets '
+        '| SIEM coverage | CISO | — |\n\n'
+        '### Identity & Data Protection — NCA DCC\n\n'
+        '| Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| Enforce IAM/PAM/MFA for privileged and critical accounts aligned to NCA DCC '
+        '| MFA coverage | IAM/PAM Manager | — |\n'
+        '| Classify and inventory sensitive data and keep the classification register current under NCA DCC '
+        '| Classified register | Data Protection Officer | — |\n'
+        '| Enable DLP and continuous monitoring of sensitive data leakage '
+        '| Operational DLP | Data Protection Officer | — |\n\n'
+        '### Resilience & Business Continuity — NCA ECC\n\n'
+        '| Initiative | Description | Expected Deliverable | Owner |\n'
+        '|---|---|---|---|\n'
+        '| Test backups and recovery of critical data periodically under NCA ECC '
+        '| Approved backup plan | Business Continuity Manager | — |\n'
+        '| Test disaster-recovery plans and system continuity under NCA ECC '
+        '| Tested DR plan | Business Continuity Manager | — |\n'
+        '| Approve and periodically test BCP for critical operations under NCA ECC '
+        '| Approved BCP | Business Continuity Manager | — |\n'
+    )
+
+
+def _shifted_sections() -> dict:
+    secs = dict(_cyber_en_sections())
+    secs['pillars'] = _shifted_staging_pillars()
+    return secs
+
+
+def _row_owner_deliverable(pillars: str, needle: str):
+    for ln in (pillars or '').splitlines():
+        if needle not in ln or not ln.strip().startswith('|'):
+            continue
+        cells = [c.strip() for c in ln.strip('|').split('|')]
+        if len(cells) >= 4 and needle in cells[0]:
+            return cells
+    return None
+
+
+class Rel3683FinalBindingTests(unittest.TestCase):
+    def setUp(self):
+        _TLS.depth = 0
+        self.addCleanup(setattr, _TLS, 'depth', 0)
+
+    def test_22_shifted_ciso_row_is_repaired(self):
+        text, stats = repair_final_english_cyber_pillar_owner_binding(
+            _shifted_staging_pillars())
+        row = _row_owner_deliverable(
+            text, 'Adopt and refresh cybersecurity governance policies')
+        self.assertIsNotNone(row, text)
+        self.assertEqual(row[3], 'CISO')
+        self.assertNotEqual(row[2], 'CISO')
+        self.assertEqual(row[2], 'Approved library')
+        self.assertGreater(int(stats['owner_shift_rows_repaired']), 0, stats)
+
+    def test_23_ciso_moves_from_deliverable_to_owner(self):
+        text, _stats = repair_final_english_cyber_pillar_owner_binding(
+            '| Adopt and refresh cybersecurity governance policies aligned to NCA ECC '
+            '| Approved library | CISO | — |\n')
+        row = _row_owner_deliverable(
+            text, 'Adopt and refresh cybersecurity governance policies')
+        self.assertEqual(row[3], 'CISO')
+        self.assertNotIn('CISO', row[2])
+
+    def test_24_deliverable_restored_to_non_owner_value(self):
+        text, _stats = repair_final_english_cyber_pillar_owner_binding(
+            '| Adopt and refresh cybersecurity governance policies aligned to NCA ECC '
+            '| Approved library | CISO | — |\n')
+        row = _row_owner_deliverable(
+            text, 'Adopt and refresh cybersecurity governance policies')
+        self.assertEqual(row[2], 'Approved library')
+        self.assertFalse(row[2] in (
+            'CISO', 'SOC Manager', 'CSIRT Lead', 'IAM/PAM Manager'))
+
+    def test_25_soc_csirt_iam_shifts_are_repaired(self):
+        text, stats = repair_final_english_cyber_pillar_owner_binding(
+            _shifted_staging_pillars())
+        soc = _row_owner_deliverable(text, 'Operationalise SOC')
+        csirt = _row_owner_deliverable(text, 'Establish CSIRT')
+        iam = _row_owner_deliverable(text, 'Enforce IAM/PAM/MFA')
+        self.assertEqual(soc[3], 'SOC Manager')
+        self.assertEqual(soc[2], 'SOC operating model')
+        self.assertEqual(csirt[3], 'CSIRT Lead')
+        self.assertEqual(csirt[2], 'Ready CSIRT')
+        self.assertEqual(iam[3], 'IAM/PAM Manager')
+        self.assertEqual(iam[2], 'MFA coverage')
+        self.assertGreaterEqual(int(stats['owner_shift_rows_repaired']), 3)
+
+    def test_26_final_rel2_rendered_table_valid_after_repair(self):
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertTrue(diag.get('final_rel2_rendered_table_valid'), diag)
+        _final, pil = finalize_pillars(
+            dict(out), lang='en', domain='cyber',
+            backend={**_backend(), 'selected_frameworks': _NCA_FWS})
+        self.assertTrue(pil.get('rendered_table_valid'), pil)
+        self.assertEqual(pil.get('blocking_error_if_any') or '', '')
+
+    def test_27_rel2_pillars_failed_cleared_after_final_repair(self):
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertEqual(diag.get('final_rel2_pillars_blockers_after'), [], diag)
+        art = {
+            'sections': out,
+            'final_markdown': out.get('pillars') or '',
+            'domain': 'cyber',
+            'task_id': 'rel36-8-3',
+            'contract_meta': {
+                'lang': 'en', 'domain': 'cyber',
+                'document_type': 'strategy',
+                'selected_frameworks': _NCA_FWS,
+            },
+            'selected_frameworks': _NCA_FWS,
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _merged, _repairs, diags = apply_rel23_cyber_finalize(
+                art, domain='cyber', lang='en', backend=_backend())
+        blockers = rel23_blocking_errors(diags)
+        self.assertFalse(
+            any(str(b).startswith('rel2_pillars_failed') for b in blockers),
+            blockers)
+
+    def test_28_rel2_section_parity_failed_pillars_cleared(self):
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertEqual(
+            diag.get('final_section_parity_blockers_after'), [], diag)
+        art = {
+            'sections': out,
+            'final_markdown': out.get('pillars') or '',
+            'domain': 'cyber',
+            'contract_meta': {
+                'lang': 'en', 'domain': 'cyber',
+                'selected_frameworks': _NCA_FWS,
+            },
+        }
+        parity = evaluate_section_parity(art, _backend(), lang='en')
+        self.assertNotEqual(
+            parity.get('blocking_error_if_any'),
+            'rel2_section_parity_failed:pillars', parity)
+
+    def test_29_diag_not_passed_when_owner_still_dash(self):
+        payload = evaluate_rel36_8_3_final_pillar_binding(
+            repair_applied=True,
+            final_rows_checked=1,
+            owner_shift_rows_detected=1,
+            owner_shift_rows_repaired=1,
+            owner_cells_empty_after=['Adopt and refresh'],
+            owner_values_in_deliverable_after=[],
+            final_rel2_rendered_table_valid=True,
+            final_rel2_pillars_blockers_after=[],
+            final_section_parity_blockers_after=[],
+        )
+        self.assertFalse(payload['passed'], payload)
+
+    def test_30_diag_not_passed_when_owner_still_in_deliverable(self):
+        payload = evaluate_rel36_8_3_final_pillar_binding(
+            repair_applied=True,
+            final_rows_checked=1,
+            owner_shift_rows_detected=1,
+            owner_shift_rows_repaired=1,
+            owner_cells_empty_after=[],
+            owner_values_in_deliverable_after=['Adopt and refresh'],
+            final_rel2_rendered_table_valid=True,
+            final_rel2_pillars_blockers_after=[],
+            final_section_parity_blockers_after=[],
+        )
+        self.assertFalse(payload['passed'], payload)
+
+    def test_31_program_outcome_lead_mapping_still_works(self):
+        secs, diag, _log = _apply()
+        row = _row_for_initiative(secs.get('pillars') or '', 'Policy suite')
+        self.assertEqual(row[3], 'CISO')
+        self.assertEqual(row[2], 'Approved library')
+        self.assertGreaterEqual(
+            int(diag.get('lead_mapping_rows_converted') or 0), 1)
+
+    def test_32_thread_local_guard_still_works(self):
+        _TLS.depth = 2
+        _out, diag = apply_rel36_8_en_cyber_pillars_parity(
+            _malformed_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, emit=False)
+        self.assertEqual(diag.get('action_taken'), 'reentrant')
+        self.assertEqual(diag.get('reentrancy_guard_type'), 'thread_local')
+        _TLS.depth = 0
+        _out2, diag2 = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertEqual(diag2.get('reentrancy_guard_type'), 'thread_local')
+
+    def test_33_english_cyber_docx_pdf_still_allowed(self):
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertTrue(diag.get('passed'), diag)
+        pair = _export_pair(out, lang='en', domain='cyber')
+        self.assertTrue(
+            pair['docx_ev'].export_return_allowed, pair['docx_ev'].blocking_errors)
+        self.assertTrue(
+            pair['pdf_ev'].export_return_allowed, pair['pdf_ev'].blocking_errors)
+        from zipfile import ZipFile
+        from xml.etree import ElementTree as ET
+        from io import BytesIO
+        w = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        raw = pair['docx_export'].docx_bytes or b''
+        root = ET.fromstring(ZipFile(BytesIO(raw)).read('word/document.xml'))
+
+        def cell_text(tc):
+            return ' '.join(
+                ''.join((t.text or '') + (t.tail or '') for t in tc.iter(w + 't'))
+                .split())
+
+        owners = []
+        for tbl in root.iter(w + 'tbl'):
+            rows = []
+            for tr in tbl.findall(w + 'tr'):
+                rows.append([cell_text(tc) for tc in tr.findall(w + 'tc')])
+            if not rows:
+                continue
+            if rows[0][:4] == [
+                    'Initiative', 'Description',
+                    'Expected Deliverable', 'Owner']:
+                for r in rows[1:]:
+                    if len(r) >= 4:
+                        owners.append(r[3])
+                        self.assertNotIn(r[2], (
+                            'CISO', 'SOC Manager', 'CSIRT Lead',
+                            'IAM/PAM Manager'))
+        self.assertTrue(owners)
+        self.assertTrue(all(o and o not in ('—', '-', '') for o in owners), owners)
+
+    def test_34_data_rel36_8_2_still_passes(self):
+        secs, diag = apply_rel36_7_data_pdpl_roadmap_balance(
+            _data_staging_missing_classification(),
+            domain='data', document_type='strategy', lang='ar',
+            selected_frameworks=['NDMO', 'PDPL'], emit=False)
+        self.assertTrue(diag.get('passed'), diag)
+        self.assertEqual(missing_families(secs.get('roadmap') or ''), [])
+        app = _app()
+        missing = app._compute_missing_data_roadmap_balance_topics(
+            secs.get('roadmap') or '', ['NDMO', 'PDPL'], lang='ar')
+        self.assertEqual(missing, [], missing)
+        blob = '\n'.join(str(v) for v in secs.values())
+        for tok in (
+                'NCA ECC', 'CISO', 'SIEM', 'CSIRT', 'NIST CSF', 'NIST AI RMF'):
+            self.assertNotIn(tok, blob)
+
+    def test_35_arabic_cyber_still_passes(self):
+        case = REL33_TYPE_FIXTURES_AR.get(
+            ('cyber', 'strategy')) or {'domain': 'cyber', 'document_type': 'strategy'}
+        ar = dict(_cyber_en_sections())
+        ar['pillars'] = (
+            '## 2. الركائز الاستراتيجية\n'
+            '### حوكمة ونموذج التشغيل\n'
+            '| المبادرة | الوصف | المخرج المتوقع | المسؤول |\n'
+            '|---|---|---|---|\n'
+            '| سياسات الحوكمة | اعتماد السياسات | منصة حوكمة | CISO |\n'
+        )
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            ar, domain='cyber', lang='ar', document_type='strategy',
+            selected_frameworks=_NCA_FWS, emit=False)
+        self.assertEqual(diag.get('action_taken'), 'skipped')
+        self.assertIn('الركائز', out.get('pillars') or '')
+        self.assertIn(case.get('domain', 'cyber'), ('cyber', 'Cyber Security'))
+
+    def test_36_erm_ai_dt_still_pass(self):
+        key = risk_cache_key(2, domain='erm', document_type='risk')
+        self.assertEqual(key, 'risk:erm:risk:2')
+        diag = evaluate_rel36_6_erm_risk_domain_isolation(
+            route='erm:risk:ar', domain='erm', document_type='risk',
+            lang='ar', risk_id=2, strategy_id='',
+            source_artifact_type='risk', loaded_artifact_type='risk',
+            loaded_domain='erm', loaded_document_type='risk',
+            content=_CLEAN_RISK_MD)
+        self.assertTrue(diag.get('passed'), diag)
+        leaked = dict(_ai_sections())
+        leaked['environment'] = (
+            str(leaked.get('environment') or '')
+            + ' NIST CSF and NIST AI RMF and NCA ECC.')
+        repaired, _ai_diag = repair_sections_for_fidelity(
+            leaked, domain='ai', document_type='strategy',
+            selected_frameworks=['SDAIA'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('SDAIA', detect_visible_frameworks(blob))
+        for tok in ('NIST CSF', 'NIST AI RMF', 'NCA ECC'):
+            self.assertNotIn(tok, blob)
+        dt, _ = repair_dga_interoperability_sections(_dt_sections(), lang='ar')
+        self.assertTrue(dga_interoperability_covered(dt))
+
+    def test_37_diag_stage_and_emit_tag(self):
+        out, diag = apply_rel36_8_3_final_pillar_binding(
+            _shifted_sections(),
+            domain='cyber', lang='en', document_type='strategy',
+            selected_frameworks=_NCA_FWS, backend=_backend(), emit=False)
+        self.assertEqual(diag.get('diagnostic_stage'), REL36_8_3_DIAGNOSTIC_STAGE)
+        self.assertTrue(diag.get('passed'), diag)
+        self.assertGreater(int(diag.get('owner_shift_rows_repaired') or 0), 0)
+        self.assertEqual(diag.get('owner_cells_empty_after'), [])
+        self.assertEqual(diag.get('owner_values_in_deliverable_after'), [])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            emit_rel36_8_3_final_pillar_binding(diag)
+        self.assertIn(REL36_8_3_EN_CYBER_FINAL_PILLAR_BINDING_TAG, buf.getvalue())
+        self.assertIn('| Initiative | Description | Expected Deliverable | Owner |',
+                      out.get('pillars') or '')
 
 
 if __name__ == '__main__':

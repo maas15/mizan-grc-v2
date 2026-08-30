@@ -250,6 +250,9 @@ SCHEMA_STRATEGIC_OBJECTIVES_AR = (
 SCHEMA_PILLAR_INITIATIVES_AR = (
     '#', 'المبادرة', 'الوصف', 'المخرج المتوقع', 'المسؤول',
 )
+SCHEMA_PILLAR_INITIATIVES_EN = (
+    'Initiative', 'Description', 'Expected Deliverable', 'Owner',
+)
 SCHEMA_GAP_MAIN_AR = (
     '#', 'الفجوة', 'الوصف', 'الأولوية', 'الحالة',
 )
@@ -5155,7 +5158,8 @@ def normalize_pillar_blocks(
         section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     if not (section_text or '').strip():
         return []
-    blocks = _parse_pillar_block_chunks(section_text or '')
+    lang_n = 'en' if str(lang or '').strip().lower().startswith('en') else 'ar'
+    blocks = _parse_pillar_block_chunks(section_text or '', lang=lang_n)
     if _pillar_blocks_export_substantive(blocks):
         return blocks
     # REL2.7.1 — when markdown lacks ### headings, rebuild from canonical
@@ -5163,7 +5167,7 @@ def normalize_pillar_blocks(
     try:
         from release_engine.pillar_model import _build_canonical_pillars
         canonical = _build_canonical_pillars(lang)
-        blocks = _parse_pillar_block_chunks(canonical)
+        blocks = _parse_pillar_block_chunks(canonical, lang=lang_n)
     except Exception:  # noqa: BLE001
         pass
     return blocks
@@ -5187,8 +5191,10 @@ def _pillar_blocks_export_substantive(blocks: List[Dict[str, Any]]) -> bool:
     return any((pb.get('table') or {}).get('rows') for pb in blocks)
 
 
-def _parse_pillar_block_chunks(section_text: str) -> List[Dict[str, Any]]:
+def _parse_pillar_block_chunks(
+        section_text: str, lang: str = 'ar') -> List[Dict[str, Any]]:
     blocks: List[Dict[str, Any]] = []
+    lang_n = 'en' if str(lang or '').strip().lower().startswith('en') else 'ar'
     chunks = re.split(
         r'(?=^#{3,4}\s+)',
         section_text or '', flags=re.MULTILINE | re.IGNORECASE)
@@ -5207,7 +5213,18 @@ def _parse_pillar_block_chunks(section_text: str) -> List[Dict[str, Any]]:
             if len(tbl) >= 2 and any(
                     k in ' '.join(tbl[0]).lower()
                     for k in ('مبادرة', 'initiative')):
-                schema = list(SCHEMA_PILLAR_INITIATIVES_AR)
+                src_header = [str(c).strip() for c in tbl[0]]
+                src_blob = ' '.join(src_header).lower()
+                if lang_n == 'en' or 'initiative' in src_blob:
+                    if (
+                            len(src_header) == 4
+                            and 'initiative' in src_blob
+                            and 'owner' in src_blob):
+                        schema = src_header
+                    else:
+                        schema = list(SCHEMA_PILLAR_INITIATIVES_EN)
+                else:
+                    schema = list(SCHEMA_PILLAR_INITIATIVES_AR)
                 init_tbl = {
                     'schema': 'pillar_initiatives',
                     'header': schema,

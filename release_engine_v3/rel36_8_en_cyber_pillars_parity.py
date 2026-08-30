@@ -50,6 +50,9 @@ from release_engine_v3.rel36_bilingual_preview_export_authority import (
 
 REL36_8_EN_CYBER_PILLARS_PARITY_TAG = (
     '[REL36.8-EN-CYBER-PILLARS-PARITY-REPAIR]')
+REL36_8_3_EN_CYBER_FINAL_PILLAR_BINDING_TAG = (
+    '[REL36.8.3-EN-CYBER-FINAL-PILLAR-BINDING-REPAIR]')
+REL36_8_3_DIAGNOSTIC_STAGE = 'post_rel2_normalization_pre_save'
 
 REL36_8_PILLAR_HEADER = (
     'Initiative', 'Description', 'Expected Deliverable', 'Owner',
@@ -265,6 +268,17 @@ def _row_from_cells(
     description = vals[1] if len(vals) > 1 else initiative
     deliverable = vals[2] if len(vals) > 2 else description
     owner = vals[3] if len(vals) > 3 else ''
+    if (
+            deliverable in REL36_2_ALLOWED_OWNERS
+            and _is_empty_owner(owner)):
+        if stats is not None:
+            stats['owner_shift_rows_detected'] = int(
+                stats.get('owner_shift_rows_detected') or 0) + 1
+        owner = deliverable
+        deliverable = description
+        if stats is not None:
+            stats['owner_shift_rows_repaired'] = int(
+                stats.get('owner_shift_rows_repaired') or 0) + 1
     if _is_empty_owner(owner):
         owner = infer_english_cyber_owner(initiative, description)
     if owner not in REL36_2_ALLOWED_OWNERS:
@@ -281,6 +295,8 @@ def _empty_extract_stats() -> Dict[str, Any]:
         'lead_mapping_rows_converted': 0,
         'header_rows_dropped': 0,
         'content_rows_preserved': 0,
+        'owner_shift_rows_detected': 0,
+        'owner_shift_rows_repaired': 0,
     }
 
 
@@ -447,6 +463,277 @@ def _rel2_pillars_blockers(text: str) -> List[str]:
     return ['rel2_pillars_failed:empty_or_invalid']
 
 
+def _is_valid_rel368_owner(value: Any) -> bool:
+    return str(value or '').strip() in REL36_2_ALLOWED_OWNERS
+
+
+def _inventory_final_pillar_rows(text: str) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for cells in _iter_pipe_rows(text):
+        if _is_source_header_row(cells):
+            continue
+        if len(cells) < 3:
+            continue
+        padded = list(cells) + [''] * max(0, 4 - len(cells))
+        rows.append({
+            'initiative': padded[0],
+            'description': padded[1],
+            'deliverable': padded[2],
+            'owner': padded[3],
+        })
+    return rows
+
+
+def _owner_binding_inventory(text: str) -> Tuple[List[str], List[str]]:
+    empty: List[str] = []
+    in_deliverable: List[str] = []
+    for row in _inventory_final_pillar_rows(text):
+        if _is_empty_owner(row['owner']):
+            empty.append(row['initiative'])
+        if _is_valid_rel368_owner(row['deliverable']):
+            in_deliverable.append(row['initiative'])
+    return empty, in_deliverable
+
+
+def repair_final_english_cyber_pillar_owner_binding(
+        text: str,
+) -> Tuple[str, Dict[str, Any]]:
+    """Move a valid owner from Expected Deliverable into Owner on 4-col rows."""
+    before_rows = _inventory_final_pillar_rows(text)
+    stats: Dict[str, Any] = {
+        'final_rows_checked': len(before_rows),
+        'owner_shift_rows_detected': 0,
+        'owner_shift_rows_repaired': 0,
+        'owner_cells_empty_before': [],
+        'owner_cells_empty_after': [],
+        'owner_values_in_deliverable_before': [],
+        'owner_values_in_deliverable_after': [],
+    }
+    for row in before_rows:
+        if _is_empty_owner(row['owner']):
+            stats['owner_cells_empty_before'].append(row['initiative'])
+        if _is_valid_rel368_owner(row['deliverable']):
+            stats['owner_values_in_deliverable_before'].append(row['initiative'])
+            if _is_empty_owner(row['owner']):
+                stats['owner_shift_rows_detected'] += 1
+
+    out_lines: List[str] = []
+    for ln in str(text or '').splitlines():
+        raw = ln.strip()
+        if (not raw.startswith('|')) or ('---' in raw):
+            out_lines.append(ln)
+            continue
+        cells = [c.strip() for c in raw.strip('|').split('|')]
+        if _is_source_header_row(cells) or len(cells) < 3:
+            out_lines.append(ln)
+            continue
+        while len(cells) < 4:
+            cells.append('—')
+        init, desc, deliverable, owner = cells[0], cells[1], cells[2], cells[3]
+        if _is_valid_rel368_owner(deliverable) and _is_empty_owner(owner):
+            owner = deliverable
+            deliverable = desc
+            stats['owner_shift_rows_repaired'] += 1
+        elif _is_empty_owner(owner):
+            inferred = infer_english_cyber_owner(init, desc)
+            owner = inferred if inferred in REL36_2_ALLOWED_OWNERS else 'CISO'
+        out_lines.append(
+            f'| {init} | {desc} | {deliverable} | {owner} |')
+
+    after_text = '\n'.join(out_lines)
+    if str(text or '').endswith('\n'):
+        after_text += '\n'
+    empty_after, in_deliv_after = _owner_binding_inventory(after_text)
+    stats['owner_cells_empty_after'] = empty_after
+    stats['owner_values_in_deliverable_after'] = in_deliv_after
+    return after_text, stats
+
+
+def evaluate_rel36_8_3_final_pillar_binding(
+        *,
+        domain: Any = 'cyber',
+        lang: Any = 'en',
+        document_type: Any = 'strategy',
+        selected_frameworks: Optional[Iterable[Any]] = None,
+        task_id: Any = None,
+        repair_applied: bool = False,
+        final_rows_checked: int = 0,
+        owner_shift_rows_detected: int = 0,
+        owner_shift_rows_repaired: int = 0,
+        owner_cells_empty_before: Optional[List[str]] = None,
+        owner_cells_empty_after: Optional[List[str]] = None,
+        owner_values_in_deliverable_before: Optional[List[str]] = None,
+        owner_values_in_deliverable_after: Optional[List[str]] = None,
+        final_rel2_rendered_table_valid: bool = False,
+        final_rel2_pillars_blockers_after: Optional[List[str]] = None,
+        final_section_parity_blockers_after: Optional[List[str]] = None,
+        diagnostic_stage: str = REL36_8_3_DIAGNOSTIC_STAGE,
+        reentrancy_guard_type: str = REENTRANCY_GUARD_TYPE,
+) -> Dict[str, Any]:
+    empty_after = list(owner_cells_empty_after or [])
+    in_deliv_after = list(owner_values_in_deliverable_after or [])
+    rel2_blockers = list(final_rel2_pillars_blockers_after or [])
+    parity_blockers = list(final_section_parity_blockers_after or [])
+    detected = int(owner_shift_rows_detected or 0)
+    repaired = int(owner_shift_rows_repaired or 0)
+    shift_ok = repaired > 0 if detected > 0 else True
+    passed = (
+        not empty_after
+        and not in_deliv_after
+        and bool(final_rel2_rendered_table_valid)
+        and not rel2_blockers
+        and not parity_blockers
+        and shift_ok
+    )
+    return {
+        'domain': _normalize_rel31_domain_code(domain) or 'cyber',
+        'lang': normalize_rel36_lang(lang) or 'en',
+        'document_type': str(document_type or 'strategy'),
+        'selected_frameworks': _selected_list(selected_frameworks),
+        'task_id': str(task_id or ''),
+        'repair_applied': bool(repair_applied),
+        'final_rows_checked': int(final_rows_checked or 0),
+        'owner_shift_rows_detected': detected,
+        'owner_shift_rows_repaired': repaired,
+        'owner_cells_empty_before': list(owner_cells_empty_before or []),
+        'owner_cells_empty_after': empty_after,
+        'owner_values_in_deliverable_before': list(
+            owner_values_in_deliverable_before or []),
+        'owner_values_in_deliverable_after': in_deliv_after,
+        'final_rel2_rendered_table_valid': bool(final_rel2_rendered_table_valid),
+        'final_rel2_pillars_blockers_after': rel2_blockers,
+        'final_section_parity_blockers_after': parity_blockers,
+        'diagnostic_stage': diagnostic_stage or REL36_8_3_DIAGNOSTIC_STAGE,
+        'reentrancy_guard_type': reentrancy_guard_type or REENTRANCY_GUARD_TYPE,
+        'passed': passed,
+    }
+
+
+def emit_rel36_8_3_final_pillar_binding(payload: Dict[str, Any]) -> None:
+    try:
+        print(
+            REL36_8_3_EN_CYBER_FINAL_PILLAR_BINDING_TAG + ' '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def apply_rel36_8_3_final_pillar_binding(
+        sections: Dict[str, str],
+        *,
+        domain: Any = 'cyber',
+        lang: Any = 'en',
+        document_type: Any = 'strategy',
+        selected_frameworks: Optional[Iterable[Any]] = None,
+        backend: Optional[Dict[str, Any]] = None,
+        task_id: Any = None,
+        artifact: Optional[Dict[str, Any]] = None,
+        emit: bool = True,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Repair owner column-shift on the post-REL2-normalization table."""
+    out = dict(sections or {})
+    before_text = str(out.get('pillars') or '')
+    if not rel36_8_should_apply(
+            domain=domain, lang=lang, document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            pillars_text=before_text):
+        return sections, {
+            'passed': False,
+            'repair_applied': False,
+            'action_taken': 'skipped',
+            'diagnostic_stage': REL36_8_3_DIAGNOSTIC_STAGE,
+        }
+
+    after_text, stats = repair_final_english_cyber_pillar_owner_binding(
+        before_text)
+    out['pillars'] = after_text
+    backend = dict(backend or {})
+    pil: Dict[str, Any] = {}
+    try:
+        from release_engine.pillar_model import finalize_pillars
+        out, pil = finalize_pillars(
+            out, lang='en', domain='cyber', backend=backend)
+        after_text = str(out.get('pillars') or after_text)
+        after_text, stats_again = repair_final_english_cyber_pillar_owner_binding(
+            after_text)
+        if int(stats_again.get('owner_shift_rows_repaired') or 0) > 0:
+            out['pillars'] = after_text
+            out, pil = finalize_pillars(
+                out, lang='en', domain='cyber', backend=backend)
+            after_text = str(out.get('pillars') or after_text)
+            stats['owner_shift_rows_repaired'] = int(
+                stats.get('owner_shift_rows_repaired') or 0) + int(
+                stats_again.get('owner_shift_rows_repaired') or 0)
+        else:
+            out['pillars'] = after_text
+    except Exception:  # noqa: BLE001
+        pil = {}
+
+    empty_after, in_deliv_after = _owner_binding_inventory(
+        out.get('pillars') or '')
+    stats['owner_cells_empty_after'] = empty_after
+    stats['owner_values_in_deliverable_after'] = in_deliv_after
+    stats['final_rows_checked'] = len(
+        _inventory_final_pillar_rows(out.get('pillars') or ''))
+
+    rel2_valid = bool(pil.get('rendered_table_valid'))
+    rel2_blockers: List[str] = []
+    err = str(pil.get('blocking_error_if_any') or '').strip()
+    if err:
+        rel2_blockers = [err]
+    elif not rel2_valid:
+        rel2_blockers = _rel2_pillars_blockers(out.get('pillars') or '')
+
+    parity_blockers: List[str] = []
+    try:
+        from release_engine.section_parity import evaluate_section_parity
+        merged = dict(artifact or {})
+        merged['sections'] = out
+        merged['final_markdown'] = out.get('pillars') or ''
+        merged.setdefault('domain', 'cyber')
+        merged.setdefault('contract_meta', {
+            'lang': 'en',
+            'domain': 'cyber',
+            'selected_frameworks': _selected_list(selected_frameworks),
+        })
+        parity = evaluate_section_parity(merged, backend, lang='en')
+        if not parity.get('parity_passed'):
+            perr = str(parity.get('blocking_error_if_any') or '')
+            if 'pillar' in perr.lower():
+                parity_blockers = [perr]
+            elif perr:
+                missing = parity.get('missing_sections') or []
+                if 'pillars' in missing or 'pillars' in perr:
+                    parity_blockers = ['rel2_section_parity_failed:pillars']
+    except Exception:  # noqa: BLE001
+        parity_blockers = []
+
+    diag = evaluate_rel36_8_3_final_pillar_binding(
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        selected_frameworks=selected_frameworks,
+        task_id=task_id,
+        repair_applied=int(stats.get('owner_shift_rows_repaired') or 0) > 0,
+        final_rows_checked=stats.get('final_rows_checked') or 0,
+        owner_shift_rows_detected=stats.get('owner_shift_rows_detected') or 0,
+        owner_shift_rows_repaired=stats.get('owner_shift_rows_repaired') or 0,
+        owner_cells_empty_before=stats.get('owner_cells_empty_before') or [],
+        owner_cells_empty_after=empty_after,
+        owner_values_in_deliverable_before=stats.get(
+            'owner_values_in_deliverable_before') or [],
+        owner_values_in_deliverable_after=in_deliv_after,
+        final_rel2_rendered_table_valid=rel2_valid and not rel2_blockers,
+        final_rel2_pillars_blockers_after=rel2_blockers,
+        final_section_parity_blockers_after=parity_blockers,
+    )
+    if emit:
+        emit_rel36_8_3_final_pillar_binding(diag)
+    return out, diag
+
+
 def _parity_snapshot(
         sections: Dict[str, str],
         *,
@@ -540,6 +827,7 @@ def evaluate_rel36_8_en_cyber_pillars_parity(
     pillars_blockers_after = _rel2_pillars_blockers(after_text)
     parity_blockers_after = list(
         after_parity.get('rel2_section_parity_blockers') or [])
+    empty_after, in_deliv_after = _owner_binding_inventory(after_text)
     passed = (
         bool(after_parity.get('pillars_present_docx'))
         and bool(after_parity.get('pillars_present_pdf'))
@@ -547,6 +835,8 @@ def evaluate_rel36_8_en_cyber_pillars_parity(
         and not list(after_parity.get('missing_sections_pdf') or [])
         and not pillars_blockers_after
         and not parity_blockers_after
+        and not empty_after
+        and not in_deliv_after
     )
     return {
         'domain': _normalize_rel31_domain_code(domain) or 'cyber',
@@ -682,7 +972,17 @@ def apply_rel36_8_en_cyber_pillars_parity(
                 before_text, stats=extract_stats)
             if repair_applied else before_text
         )
-        if repair_applied:
+        after_text, bind_stats = repair_final_english_cyber_pillar_owner_binding(
+            after_text)
+        if int(bind_stats.get('owner_shift_rows_repaired') or 0) > 0:
+            repair_applied = True
+            extract_stats['owner_shift_rows_detected'] = int(
+                extract_stats.get('owner_shift_rows_detected') or 0) + int(
+                bind_stats.get('owner_shift_rows_detected') or 0)
+            extract_stats['owner_shift_rows_repaired'] = int(
+                extract_stats.get('owner_shift_rows_repaired') or 0) + int(
+                bind_stats.get('owner_shift_rows_repaired') or 0)
+        if repair_applied or after_text != before_text:
             out['pillars'] = after_text
         after_parity = _parity_snapshot(
             out, backend=snap_backend, lang='en', domain='cyber')
