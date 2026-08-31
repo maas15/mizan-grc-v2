@@ -65,7 +65,6 @@ from release_engine_v3.validators import validate_canonical_quality
 from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
 from tests.test_rel35_domain_framework_fidelity import (
     _ai_sections,
-    _data_sections,
     _dt_sections,
 )
 from tests.test_rel36_7_data_roadmap_balance import _data_generated_missing_three
