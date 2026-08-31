@@ -400,24 +400,86 @@ def check_kpi_canonical(blob: str) -> Dict[str, Any]:
     return payload
 
 
+def _is_roadmap_heading(line: str) -> bool:
+    """True for Arabic or English roadmap section headings.
+
+    English Cyber generation often emits ``## Roadmap`` or
+    ``## 5. Roadmap`` instead of ``Implementation Roadmap``. The coverage
+    counter previously ignored those tables, producing
+    ``roadmap_visible_row_count:0`` even when source rows existed.
+    """
+    raw = str(line or '').strip()
+    if not raw:
+        return False
+    if 'خارطة الطريق' in raw:
+        return True
+    low = raw.lower()
+    if 'implementation roadmap' in low:
+        return True
+    if raw.startswith('#'):
+        title = raw.lstrip('#').strip().lower()
+        title = re.sub(r'^\d+[\.\)]\s*', '', title).strip()
+        if title in ('roadmap', 'strategic roadmap', 'implementation roadmap'):
+            return True
+        if title.endswith('roadmap') and len(title) < 80:
+            return True
+    return False
+
+
 def _roadmap_section_blob(blob: str) -> str:
     lines: List[str] = []
     in_roadmap = False
     for ln in (blob or '').splitlines():
-        if 'خارطة الطريق' in ln or 'Implementation Roadmap' in ln:
+        if _is_roadmap_heading(ln):
             in_roadmap = True
             lines = [ln]
             continue
-        if in_roadmap and ln.strip().startswith('##'):
+        if in_roadmap and ln.strip().startswith('##') and not _is_roadmap_heading(ln):
             break
         if in_roadmap:
             lines.append(ln)
     return '\n'.join(lines)
 
 
+def _parse_roadmap_rows_from_phase_tables(text: str) -> List[Dict[str, str]]:
+    """Parse pipe rows only from Phase/المرحلة tables (not pillar tables)."""
+    rows: List[Dict[str, str]] = []
+    in_table = False
+    for ln in str(text or '').splitlines():
+        raw = ln.strip()
+        if (not raw.startswith('|')) or ('---' in raw):
+            if raw and not raw.startswith('|'):
+                in_table = False
+            continue
+        cells = [c.strip() for c in raw.strip('|').split('|')]
+        hdr = ' '.join(cells).lower()
+        if (
+                any(tok in hdr for tok in ('المرحلة', 'phase'))
+                and any(tok in hdr for tok in (
+                    'مبادرة', 'initiative', 'المبادرة'))):
+            in_table = True
+            continue
+        if not in_table or len(cells) < 4:
+            continue
+        if cells[0] in ('المرحلة', 'Phase', '#'):
+            continue
+        rows.append({
+            'phase': cells[0],
+            'period': cells[1] if len(cells) > 1 else '',
+            'initiative': cells[2] if len(cells) > 2 else '',
+            'owner': cells[3] if len(cells) > 3 else '',
+            'output': cells[4] if len(cells) > 4 else '',
+            'framework': cells[5] if len(cells) > 5 else '',
+        })
+    return rows
+
+
 def _roadmap_rows_from_blob(blob: str) -> List[Dict[str, str]]:
     section = _roadmap_section_blob(blob or '')
-    return _parse_roadmap_rows(section)
+    rows = _parse_roadmap_rows(section) if section.strip() else []
+    if rows:
+        return rows
+    return _parse_roadmap_rows_from_phase_tables(blob or '')
 
 
 def _dedupe_row_key(row: Dict[str, str]) -> str:

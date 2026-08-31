@@ -237,7 +237,7 @@ def _rerender_rows(
         except Exception:  # noqa: BLE001
             pass
     header = text.split('\n')[0] if text.strip() else ''
-    return _rerender_roadmap(header, rows)
+    return _rerender_roadmap(header, rows, lang=lang)
 
 
 def _drop_redundant_row(
@@ -376,15 +376,35 @@ def _owner_for_initiative(initiative: str) -> str:
     return 'مدير الامتثال'
 
 
-def _rerender_roadmap(header: str, rows: List[Dict[str, str]]) -> str:
-    lines = [header.rstrip(), '']
-    if not header.strip():
+def _rerender_roadmap(
+        header: str,
+        rows: List[Dict[str, str]],
+        lang: str = 'ar',
+) -> str:
+    en = str(lang or '').strip().lower().startswith('en')
+    raw = (header or '').rstrip()
+    if en:
+        lines = [
+            '## Implementation Roadmap',
+            '',
+            '| Phase | Period | Initiative | Owner | Expected Deliverable | Linked Framework |',
+            '|---|---|---|---|---|---|',
+        ]
+    elif not raw.strip() or (
+            'خارطة الطريق' not in raw and 'Implementation Roadmap' not in raw):
         lines = [
             '## 5. خارطة الطريق التنفيذية',
             '',
             '| المرحلة | الفترة | المبادرة | المسؤول | المخرج | الإطار |',
             '|---|---|---|---|---|---|',
         ]
+    else:
+        lines = [raw, '']
+        if '| المرحلة |' not in raw and '| Phase |' not in raw:
+            lines.extend([
+                '| المرحلة | الفترة | المبادرة | المسؤول | المخرج | الإطار |',
+                '|---|---|---|---|---|---|',
+            ])
     for row in rows:
         lines.append('| ' + ' | '.join([
             row.get('phase', ''),
