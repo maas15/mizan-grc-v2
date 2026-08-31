@@ -150,6 +150,54 @@ def apply_rel23_cyber_finalize(
     if ar_diag.get('residues_before'):
         repair_actions.append('rel23:arabic_repaired')
 
+    try:
+        from release_engine_v3.rel36_9_en_cyber_live_stability import (
+            apply_rel36_9_en_cyber_live_stability,
+        )
+        sections, rel369 = apply_rel36_9_en_cyber_live_stability(
+            sections,
+            domain=dcode,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=fws,
+            backend=backend,
+            task_id=artifact.get('task_id'),
+            artifact=artifact,
+        )
+        diags['rel36_9'] = rel369
+        if rel369.get('roadmap_visible_row_count_after', 0) > 0:
+            repair_actions.append('rel36_9:en_cyber_live_stability')
+        try:
+            from release_engine_v3.rel36_9_1_en_cyber_vision_prompt_residue import (
+                apply_rel36_9_1_en_cyber_vision_prompt_residue,
+            )
+            sections, rel3691 = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                task_id=artifact.get('task_id'),
+            )
+            diags['rel36_9_1'] = rel3691
+            if rel3691.get('cleanup_applied') or rel3691.get('vision_rebuilt'):
+                repair_actions.append(
+                    'rel36_9_1:en_cyber_vision_prompt_residue')
+        except Exception:  # noqa: BLE001
+            pass
+        if rel369.get('rel2_pillars_after'):
+            pil_diag = dict(diags.get('pillars') or {})
+            pil_diag['rendered_table_valid'] = False
+            pil_diag['blocking_error_if_any'] = rel369['rel2_pillars_after'][0]
+            diags['pillars'] = pil_diag
+        elif rel369.get('passed'):
+            pil_diag = dict(diags.get('pillars') or {})
+            pil_diag['rendered_table_valid'] = True
+            pil_diag['blocking_error_if_any'] = ''
+            diags['pillars'] = pil_diag
+    except Exception:  # noqa: BLE001
+        pass
+
     merged = dict(artifact)
     merged['sections'] = sections
     merged['final_markdown'] = _rebuild_markdown(sections)

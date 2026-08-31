@@ -376,6 +376,8 @@ def finalize_pillars(
                 pass
         text_fixed = _build_canonical_pillars(lang)
         action = 'rebuilt_canonical_pillars'
+        text_fixed, _mm_b2, mismatched_after = _fix_mismatched_outputs(
+            text_fixed, lang=lang)
 
     count_after, counts_after, empty_after = _count_pillar_blocks(text_fixed)
     families_after = _pillar_families_present(text_fixed)
