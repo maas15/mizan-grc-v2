@@ -391,21 +391,25 @@ def apply_rel36_9_en_cyber_live_stability(
     pillars_after = _rel2_pillars_blockers(str(out.get('pillars') or ''))
     empty_owners, in_deliv = _owner_binding_inventory(out.get('pillars') or '')
     parity_after: List[str] = []
-    try:
-        merged = dict(artifact or {})
-        merged['sections'] = out
-        merged['final_markdown'] = out.get('pillars') or ''
-        merged.setdefault('domain', 'cyber')
-        merged.setdefault('contract_meta', {
-            'lang': 'en', 'domain': 'cyber',
-            'selected_frameworks': _selected_list(selected_frameworks),
-        })
-        parity = evaluate_section_parity(merged, backend or {}, lang='en')
-        perr = str(parity.get('blocking_error_if_any') or '')
-        if perr and 'pillar' in perr.lower():
-            parity_after = [perr]
-    except Exception:  # noqa: BLE001
-        parity_after = []
+    # Only evaluate export-model pillar parity when a professional-model
+    # builder exists. An empty backend returns no docx/pdf model and would
+    # invent rel2_section_parity_failed:pillars without a real probe.
+    if (backend or {}).get('build_professional_model'):
+        try:
+            merged = dict(artifact or {})
+            merged['sections'] = out
+            merged['final_markdown'] = out.get('pillars') or ''
+            merged.setdefault('domain', 'cyber')
+            merged.setdefault('contract_meta', {
+                'lang': 'en', 'domain': 'cyber',
+                'selected_frameworks': _selected_list(selected_frameworks),
+            })
+            parity = evaluate_section_parity(merged, backend, lang='en')
+            perr = str(parity.get('blocking_error_if_any') or '')
+            if perr and 'pillar' in perr.lower():
+                parity_after = [perr]
+        except Exception:  # noqa: BLE001
+            parity_after = []
 
     blockers: List[str] = []
     blockers.extend(pillars_after)

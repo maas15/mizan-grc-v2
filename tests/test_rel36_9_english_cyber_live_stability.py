@@ -624,6 +624,24 @@ class Rel369RegressionTests(unittest.TestCase):
 
 
 class Rel369HelperTests(unittest.TestCase):
+    def test_no_backend_does_not_invent_section_parity_blocker(self):
+        secs = _en_sections(
+            render_canonical_english_cyber_pillars(), _headingless_roadmap())
+        out, diag = apply_rel36_9_en_cyber_live_stability(
+            secs,
+            domain='cyber',
+            lang='en',
+            document_type='strategy',
+            selected_frameworks=_NCA_FWS,
+            backend=None,
+            attempt_id='no-backend',
+            emit=False,
+        )
+        self.assertEqual(diag.get('rel2_section_parity_after'), [])
+        self.assertTrue(diag.get('passed'), diag)
+        self.assertGreater(int(diag.get('roadmap_visible_row_count_after') or 0), 0)
+        self.assertIn('Implementation Roadmap', out['roadmap'])
+
     def test_roadmap_heading_recognition(self):
         self.assertTrue(_is_roadmap_heading('## Roadmap'))
         self.assertTrue(_is_roadmap_heading('## 5. Roadmap'))
