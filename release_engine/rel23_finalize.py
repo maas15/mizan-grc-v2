@@ -59,6 +59,30 @@ def apply_rel23_cyber_finalize(
     meta = artifact.get('contract_meta') or {}
     fws = meta.get('selected_frameworks') or artifact.get(
         'selected_frameworks') or []
+    backend = dict(backend or {})
+    backend.setdefault('selected_frameworks', fws)
+    backend.setdefault('document_type', 'strategy')
+    backend.setdefault('task_id', artifact.get('task_id'))
+
+    try:
+        from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+            apply_rel36_8_en_cyber_pillars_parity,
+        )
+        sections, rel368 = apply_rel36_8_en_cyber_pillars_parity(
+            sections,
+            domain=dcode,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=fws,
+            backend=backend,
+            task_id=artifact.get('task_id'),
+            repair_stage='pre_rel2_gates',
+        )
+        diags['rel36_8'] = rel368
+        if rel368.get('repair_applied'):
+            repair_actions.append('rel36_8:en_cyber_pillars_parity')
+    except Exception:  # noqa: BLE001
+        pass
 
     sections, ar_diag = apply_arabic_final_gate(sections, lang=lang)
     emit_arabic_final_language_gate(ar_diag)
@@ -72,6 +96,37 @@ def apply_rel23_cyber_finalize(
     diags['pillars'] = pil_diag
     if pil_diag.get('action_taken') != 'no_changes':
         repair_actions.append(f'rel23:{pil_diag.get("action_taken")}')
+
+    try:
+        from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+            apply_rel36_8_3_final_pillar_binding,
+        )
+        sections, rel3683 = apply_rel36_8_3_final_pillar_binding(
+            sections,
+            domain=dcode,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=fws,
+            backend=backend,
+            task_id=artifact.get('task_id'),
+            artifact=artifact,
+        )
+        diags['rel36_8_3'] = rel3683
+        if rel3683.get('repair_applied'):
+            repair_actions.append('rel36_8_3:final_pillar_binding')
+        if rel3683.get('final_rel2_pillars_blockers_after'):
+            pil_diag = dict(pil_diag)
+            pil_diag['rendered_table_valid'] = False
+            pil_diag['blocking_error_if_any'] = (
+                rel3683['final_rel2_pillars_blockers_after'][0])
+            diags['pillars'] = pil_diag
+        elif rel3683.get('passed'):
+            pil_diag = dict(pil_diag)
+            pil_diag['rendered_table_valid'] = True
+            pil_diag['blocking_error_if_any'] = ''
+            diags['pillars'] = pil_diag
+    except Exception:  # noqa: BLE001
+        pass
 
     sections, road_diag = finalize_roadmap(
         sections, lang=lang, domain=dcode,

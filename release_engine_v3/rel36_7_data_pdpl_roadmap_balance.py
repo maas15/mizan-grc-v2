@@ -1,18 +1,19 @@
-"""REL36.7 — deterministic Data PDPL roadmap balance top-up.
+"""REL36.7 / REL36.8.2 — deterministic Data PDPL roadmap balance top-up.
 
 When domain=data, document_type=strategy, and PDPL is selected, the
-roadmap must include consent_management, data_subject_rights, and
-breach_notification rows on the first official pass.
+roadmap must include consent_management, data_subject_rights,
+breach_notification, and personal_data_classification rows on the
+first official pass.
 
-The prior path asked the AI to splice top-up rows inside one
-convergence cycle. Official main staging failed after that single
-cycle with:
+REL36.7 inserted the first three families only. Official staging on
+REL36.8.1 then failed after one repair cycle with:
 
-    data_roadmap_balance_missing:consent_management,data_subject_rights,breach_notification
+    data_roadmap_balance_missing:personal_data_classification (roadmap) 0/1
 
-This module inserts Arabic (or English) detector-visible rows before
-the roadmap balance gate. It does not weaken the gate, skip evidence,
-or add cyber owners / NCA / NIST terms.
+because the AI omitted the classification row and REL36.7 never
+inserted it. REL36.8.2 adds that family to the same deterministic
+top-up. It does not weaken the gate, skip evidence, or add cyber
+owners / NCA / NIST terms.
 """
 
 from __future__ import annotations
@@ -23,11 +24,14 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REL36_7_DATA_PDPL_ROADMAP_BALANCE_TAG = (
     '[REL36.7-DATA-PDPL-ROADMAP-BALANCE-REPAIR]')
+REL36_8_2_DATA_PDPL_PERSONAL_CLASSIFICATION_TAG = (
+    '[REL36.8.2-DATA-PDPL-PERSONAL-CLASSIFICATION-REPAIR]')
 
 REQUIRED_PDPL_ROADMAP_FAMILIES = (
     'consent_management',
     'data_subject_rights',
     'breach_notification',
+    'personal_data_classification',
 )
 
 # Must stay aligned with app._DATA_ROADMAP_BALANCE_TOPICS so inserted
@@ -53,6 +57,16 @@ FAMILY_DETECT_TOKENS = {
         'breach notification', 'breach reporting',
         'data breach notification', 'incident notification',
     ),
+    # Must stay aligned with app._DATA_ROADMAP_BALANCE_TOPICS
+    # ['personal_data_classification'] so the unchanged official
+    # detector sees the inserted row.
+    'personal_data_classification': (
+        'تصنيف البيانات الشخصية', 'تصنيف بيانات شخصية',
+        'تصنيف البيانات', 'تصنيف الأصول البياناتية',
+        'تصنيف وجرد البيانات الشخصية',
+        'personal data classification', 'personal-data classification',
+        'pii classification', 'data classification',
+    ),
 }
 
 _AR_ROWS = {
@@ -70,6 +84,11 @@ _AR_ROWS = {
         '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
         'اعتماد إجراءات الإبلاغ عن الانتهاكات | مسؤول حماية البيانات الشخصية | '
         'خطة الإبلاغ عن الانتهاكات واختبار جاهزية خلال المهل النظامية | PDPL |'
+    ),
+    'personal_data_classification': (
+        '| المرحلة 1: تأسيس (1-6 أشهر) | 1-6 أشهر | '
+        'تصنيف وجرد البيانات الشخصية | مسؤول حماية البيانات الشخصية | '
+        'سجل تصنيف البيانات الشخصية وجرد البيانات الشخصية والحساسة | PDPL |'
     ),
 }
 
@@ -90,6 +109,12 @@ _EN_ROWS = {
         'Adopt data breach notification procedures | '
         'Personal Data Protection Officer | '
         'Breach notification plan and readiness test within statutory deadlines | PDPL |'
+    ),
+    'personal_data_classification': (
+        '| Phase 1: Foundation (1-6 months) | 1-6 months | '
+        'Classify and inventory personal data | '
+        'Personal Data Protection Officer | '
+        'Personal data classification and sensitive-data inventory register | PDPL |'
     ),
 }
 
@@ -228,6 +253,17 @@ def emit_rel36_7_data_pdpl_roadmap_balance(diag: Dict[str, Any]) -> Dict[str, An
         + json.dumps(payload, ensure_ascii=False, default=str),
         flush=True,
     )
+    inserted = set(payload.get('inserted_rows') or [])
+    missing_before = set(payload.get('missing_families_before') or [])
+    if 'personal_data_classification' in inserted or (
+            'personal_data_classification' in missing_before
+            or 'personal_data_classification' in set(
+                payload.get('detected_families_after') or [])):
+        print(
+            REL36_8_2_DATA_PDPL_PERSONAL_CLASSIFICATION_TAG + ' '
+            + json.dumps(payload, ensure_ascii=False, default=str),
+            flush=True,
+        )
     return diag
 
 

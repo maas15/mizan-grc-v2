@@ -224,11 +224,12 @@ def _build_canonical_pillars(lang: str) -> str:
         parts.append('')
     return '\n'.join(parts).rstrip() + '\n'
 
-def _fix_mismatched_outputs(text: str) -> Tuple[str, int, int]:
+def _fix_mismatched_outputs(text: str, lang: str = 'ar') -> Tuple[str, int, int]:
     mismatched_before = 0
     mismatched_after = 0
     blocks = []
     chunks = re.split(r'(?=^#{2,4}\s+)', text or '', flags=re.MULTILINE)
+    en_4col = _pillar_lang(lang) == 'en'
     for chunk in chunks:
         if not chunk.strip():
             continue
@@ -239,8 +240,14 @@ def _fix_mismatched_outputs(text: str) -> Tuple[str, int, int]:
             if ln.strip().startswith('|') and '---' not in ln:
                 cells = [c.strip() for c in ln.strip('|').split('|')]
                 if len(cells) >= 3:
-                    init = cells[0] if len(cells) == 3 else cells[1]
-                    output = cells[-1]
+                    if en_4col and len(cells) >= 4:
+                        init = cells[0]
+                        output_idx = 2
+                        output = cells[2]
+                    else:
+                        init = cells[0] if len(cells) == 3 else cells[1]
+                        output_idx = len(cells) - 1
+                        output = cells[-1]
                     blob = f'{init} {output}'.lower()
                     fixed = output
                     for init_kws, bad_kws, good_out in _PILLAR_MISMATCH_RULES:
@@ -249,7 +256,7 @@ def _fix_mismatched_outputs(text: str) -> Tuple[str, int, int]:
                             mismatched_before += 1
                             fixed = good_out
                             break
-                    cells[-1] = fixed
+                    cells[output_idx] = fixed
                     chk = f'{init} {fixed}'.lower()
                     for init_kws, bad_kws, _ in _PILLAR_MISMATCH_RULES:
                         if any(k in chk for k in init_kws) and any(
@@ -283,6 +290,38 @@ def finalize_pillars(
             'blocking_error_if_any': '',
         }
 
+    if _pillar_lang(lang) == 'en':
+        try:
+            from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+                apply_rel36_8_en_cyber_pillars_parity,
+            )
+            sections, _rel368 = apply_rel36_8_en_cyber_pillars_parity(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type=str(
+                    backend.get('document_type') or 'strategy'),
+                selected_frameworks=backend.get('selected_frameworks') or [],
+                backend=None,
+                task_id=backend.get('task_id'),
+                repair_stage='finalize_pillars',
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if _pillar_lang(lang) == 'en':
+        try:
+            from release_engine_v3.rel36_8_en_cyber_pillars_parity import (
+                repair_final_english_cyber_pillar_owner_binding,
+            )
+            _rep, _st = repair_final_english_cyber_pillar_owner_binding(
+                sections.get('pillars', '') or '')
+            if _rep != (sections.get('pillars', '') or ''):
+                sections = dict(sections)
+                sections['pillars'] = _rep
+        except Exception:  # noqa: BLE001
+            pass
+
     text = sections.get('pillars', '') or ''
     count_before, counts_before, empty_before = _count_pillar_blocks(text)
     families_before = _pillar_families_present(text)
@@ -291,7 +330,7 @@ def finalize_pillars(
 
     action = 'no_changes'
     blocking = ''
-    text_fixed, mm_b, mm_a = _fix_mismatched_outputs(text)
+    text_fixed, mm_b, mm_a = _fix_mismatched_outputs(text, lang=lang)
     mismatched_before, mismatched_after = mm_b, mm_a
 
     export_parseable = True
