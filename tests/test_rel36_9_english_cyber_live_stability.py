@@ -61,6 +61,14 @@ from release_engine_v3.rel36_9_en_cyber_live_stability import (
     apply_rel36_9_en_cyber_live_stability,
     repair_english_cyber_roadmap_table,
 )
+from release_engine_v3.rel36_9_1_en_cyber_vision_prompt_residue import (
+    CANONICAL_EN_CYBER_VISION,
+    REL36_9_1_EN_CYBER_VISION_PROMPT_RESIDUE_TAG,
+    apply_rel36_9_1_en_cyber_vision_prompt_residue,
+    collect_residue_tokens,
+    count_objective_table_rows,
+    repair_english_cyber_vision_prompt_residue,
+)
 from release_engine_v3.validators import validate_canonical_quality
 from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
 from tests.test_rel35_domain_framework_fidelity import (
@@ -144,11 +152,100 @@ def _invisible_export_roadmap() -> str:
     )
 
 
-def _en_sections(pillars: str, roadmap: str) -> dict:
+_VALID_VISION_PARAGRAPH = (
+    'Build a sustainable cybersecurity operating model for the organization '
+    'that protects critical assets, detects threats in time, and meets '
+    'NCA ECC and NCA DCC obligations across digital services.'
+)
+
+_OBJECTIVES_TABLE = (
+    '### Strategic Objectives\n\n'
+    '| # | Strategic Objective | Target Metric | Justification | Timeframe |\n'
+    '|---|---|---|---|---|\n'
+    '| 1 | Establish the CISO office and cybersecurity governance committee | Approved CISO charter | NCA ECC governance | 6 months |\n'
+    '| 2 | Classify and protect sensitive data under NCA DCC | Classified data register | NCA DCC data protection | 9 months |\n'
+    '| 3 | Operate SOC/SIEM detection for critical assets | 24x7 SOC coverage | NCA ECC detection | 12 months |\n'
+    '| 4 | Enforce IAM/PAM/MFA for privileged accounts | MFA coverage 100% | NCA ECC identity | 12 months |\n'
+    '| 5 | Test backup and disaster recovery of critical systems | Annual DR test | NCA ECC resilience | 18 months |\n'
+)
+
+
+def _valid_en_cyber_vision() -> str:
+    return (
+        '## 1. Vision and Strategic Objectives\n\n'
+        + _VALID_VISION_PARAGRAPH + '\n\n'
+        + _OBJECTIVES_TABLE
+    )
+
+
+def _residue_en_cyber_vision() -> str:
+    return (
+        '## 1. Vision and Strategic Objectives\n\n'
+        'Here is a draft of the cybersecurity strategy as requested.\n\n'
+        '<!-- Note to the model: write two paragraphs and include at least NCA ECC. -->\n'
+        'System: User asked for an English Cyber strategy.\n'
+        'As requested, I will generate the following strategy now.\n'
+        'Below is a template vision for the organization.\n\n'
+        'Ensure that the following cybersecurity outcomes are achieved while '
+        'protecting sensitive data under NCA DCC.\n\n'
+        + _VALID_VISION_PARAGRAPH + '\n\n'
+        + _OBJECTIVES_TABLE +
+        '| 6 | Please include at least NCA ECC awareness outcomes | 90% completion | NCA ECC awareness | 12 months |\n'
+    )
+
+
+def _weak_residue_only_vision() -> str:
+    return (
+        'Here is the draft.\n'
+        'Note to the model: write two paragraphs.\n'
+        '```system\nYou are a helpful assistant.\n```\n'
+        'I will now generate the following strategy.\n'
+        '### Strategic Objectives\n\n'
+        '| # | Strategic Objective | Target Metric | Justification | Timeframe |\n'
+        '|---|---|---|---|---|\n'
+        '| 1 | Establish CISO governance aligned with NCA ECC | Approved charter | NCA ECC | 6 months |\n'
+        '| 2 | Protect sensitive data under NCA DCC | Classified register | NCA DCC | 9 months |\n'
+        '| 3 | Enable SOC detection | 24x7 coverage | NCA ECC | 12 months |\n'
+        '| 4 | Enforce IAM/PAM/MFA | MFA coverage | NCA ECC | 12 months |\n'
+    )
+
+
+def _en_sections(pillars: str, roadmap: str, vision: str | None = None) -> dict:
     secs = dict(_cyber_en_sections())
     secs['pillars'] = pillars
     secs['roadmap'] = roadmap
+    if vision is not None:
+        secs['vision'] = vision
     return secs
+
+
+def _apply_3691(sections=None, task_id='local-rel36-9-1', **kwargs):
+    secs = dict(sections or _en_sections(
+        render_canonical_english_cyber_pillars(),
+        _roadmap_heading_variant(),
+        _residue_en_cyber_vision(),
+    ))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            secs,
+            domain='cyber',
+            lang='en',
+            document_type='strategy',
+            selected_frameworks=_NCA_FWS,
+            task_id=task_id,
+            emit=True,
+            **kwargs,
+        )
+    return out, diag, buf.getvalue()
+
+
+def _vision_gate(sections):
+    app = _app()
+    return [
+        t for t, _ in app.detect_arabic_prompt_residue(sections, 'en')
+        if str(t).startswith('vision_')
+    ]
 
 
 def _apply(sections=None, attempt_id='t1', **kwargs):
@@ -655,3 +752,216 @@ class Rel369HelperTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 8)
         self.assertTrue(all(r.get('initiative') for r in rows))
         self.assertFalse(any('Governance policy suite' in (r.get('initiative') or '') for r in rows))
+
+
+class Rel3691VisionPromptResidueTests(unittest.TestCase):
+    def setUp(self):
+        _TLS.depth = 0
+        self.addCleanup(setattr, _TLS, 'depth', 0)
+
+    def test_01_english_cyber_vision_residue_cleaned_before_gate(self):
+        raw = _residue_en_cyber_vision()
+        self.assertTrue(collect_residue_tokens(raw), raw)
+        self.assertTrue(_vision_gate({'vision': raw}))
+        repaired, stats = repair_english_cyber_vision_prompt_residue(raw)
+        self.assertTrue(stats['cleanup_applied'], stats)
+        self.assertEqual(collect_residue_tokens(repaired), [])
+        self.assertEqual(_vision_gate({'vision': repaired}), [])
+        self.assertNotIn('Here is a draft', repaired)
+        self.assertNotIn('Note to the model', repaired)
+        self.assertNotIn('System:', repaired)
+
+    def test_02_vision_contains_prompt_residue_cleared_after_repair(self):
+        secs, diag, log = _apply_3691()
+        self.assertIn('vision_contains_prompt_residue', diag.get('vision_gate_before') or [])
+        self.assertEqual(diag.get('vision_gate_after'), [])
+        self.assertEqual(diag.get('blocking_errors_after'), [])
+        self.assertEqual(_vision_gate(secs), [])
+        self.assertIn(REL36_9_1_EN_CYBER_VISION_PROMPT_RESIDUE_TAG, log)
+
+    def test_03_valid_strategy_vision_content_is_preserved(self):
+        secs = _en_sections(
+            render_canonical_english_cyber_pillars(),
+            _headingless_roadmap(),
+            _valid_en_cyber_vision(),
+        )
+        out, diag, _log = _apply_3691(secs, task_id='preserve-valid')
+        self.assertIn(_VALID_VISION_PARAGRAPH, out['vision'])
+        self.assertFalse(diag.get('vision_rebuilt'), diag)
+        self.assertEqual(diag.get('residue_tokens_after'), [])
+        self.assertTrue(diag.get('passed'), diag)
+
+    def test_04_weak_empty_vision_is_rebuilt_deterministically(self):
+        secs = _en_sections(
+            render_canonical_english_cyber_pillars(),
+            _headingless_roadmap(),
+            _weak_residue_only_vision(),
+        )
+        out, diag, _log = _apply_3691(secs, task_id='rebuild-weak')
+        self.assertTrue(diag.get('vision_rebuilt'), diag)
+        self.assertIn(CANONICAL_EN_CYBER_VISION, out['vision'])
+        self.assertEqual(_vision_gate(out), [])
+        self.assertTrue(diag.get('passed'), diag)
+
+    def test_05_strategic_objectives_table_is_preserved(self):
+        raw = _residue_en_cyber_vision()
+        before = count_objective_table_rows(raw)
+        out, diag, _log = _apply_3691()
+        after = count_objective_table_rows(out['vision'])
+        self.assertGreaterEqual(after, before)
+        self.assertGreaterEqual(after, 5)
+        self.assertIn('Establish the CISO office', out['vision'])
+        self.assertIn('Classify and protect sensitive data', out['vision'])
+        self.assertGreaterEqual(int(diag['objectives_rows_after']), before)
+
+    def test_06_nca_ecc_dcc_content_is_preserved(self):
+        out, diag, _log = _apply_3691()
+        self.assertIn('NCA ECC', out['vision'])
+        self.assertIn('NCA DCC', out['vision'])
+        self.assertIn('CISO', out['vision'])
+        self.assertTrue(diag.get('passed'), diag)
+
+    def test_07_diagnostic_residue_tokens_after_empty_and_passed(self):
+        _out, diag, log = _apply_3691(task_id='bac5632f-bc5a-42e4-84d4-956ea01bea3b')
+        self.assertEqual(diag.get('residue_tokens_after'), [])
+        self.assertEqual(diag.get('vision_gate_after'), [])
+        self.assertEqual(diag.get('blocking_errors_after'), [])
+        self.assertTrue(diag.get('passed'), diag)
+        self.assertEqual(diag.get('domain'), 'cyber')
+        self.assertEqual(diag.get('lang'), 'en')
+        self.assertEqual(diag.get('document_type'), 'strategy')
+        self.assertIn('bac5632f', diag.get('task_id') or '')
+        self.assertIn(REL36_9_1_EN_CYBER_VISION_PROMPT_RESIDUE_TAG, log)
+        self.assertGreaterEqual(
+            int(diag['objectives_rows_after']),
+            int(diag['objectives_rows_before']))
+
+    def test_08_rel36_9_roadmap_visible_row_count_remains_positive(self):
+        contaminated = _en_sections(
+            render_canonical_english_cyber_pillars(),
+            _invisible_export_roadmap(),
+            _residue_en_cyber_vision(),
+        )
+        cleaned, d3691, _log = _apply_3691(contaminated)
+        self.assertTrue(d3691.get('passed'), d3691)
+        secs, d369, _ = _apply(cleaned, attempt_id='after-3691')
+        self.assertGreater(int(d369['roadmap_visible_row_count_after']), 0)
+        self.assertNotIn(
+            'rel3_export_model_drift:roadmap_visible_row_count:0',
+            d369.get('blocking_errors') or [])
+        self.assertGreater(
+            int(check_roadmap_coverage(secs['roadmap'], domain='cyber').get(
+                'visible_row_count') or 0),
+            0)
+
+    def test_09_rel36_8_3_owner_binding_remains_valid(self):
+        contaminated = _en_sections(
+            _shifted_staging_pillars(),
+            _headingless_roadmap(),
+            _residue_en_cyber_vision(),
+        )
+        cleaned, d3691, _ = _apply_3691(contaminated)
+        self.assertTrue(d3691.get('passed'), d3691)
+        secs, d369, _ = _apply(cleaned, attempt_id='owners-after-3691')
+        self.assertEqual(d369.get('owner_cells_empty_after'), [])
+        self.assertEqual(d369.get('owner_values_in_deliverable_after'), [])
+        empty, in_deliv = _owner_binding_inventory(secs['pillars'])
+        self.assertEqual(empty, [])
+        self.assertEqual(in_deliv, [])
+
+    def test_10_english_cyber_docx_pdf_allowed(self):
+        cleaned, d3691, _ = _apply_3691()
+        self.assertTrue(d3691.get('passed'), d3691)
+        secs, d369, _ = _apply(cleaned, attempt_id='export-after-3691')
+        pair = _export_pair(secs, lang='en', domain='cyber')
+        self.assertTrue(
+            pair['docx_ev'].export_return_allowed, pair['docx_ev'].blocking_errors)
+        self.assertTrue(
+            pair['pdf_ev'].export_return_allowed, pair['pdf_ev'].blocking_errors)
+        self.assertTrue(d369.get('docx_allowed'), d369)
+        self.assertTrue(d369.get('pdf_allowed'), d369)
+
+    def test_11_arabic_cyber_regression(self):
+        sections = _cyber_ar_sections()
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            dict(sections),
+            domain='cyber', lang='ar', document_type='strategy',
+            selected_frameworks=_NCA_FWS, emit=False)
+        self.assertFalse(diag.get('applied'))
+        self.assertEqual(diag.get('action_taken'), 'skipped')
+        self.assertEqual(out['vision'], sections['vision'])
+        pair = _export_pair(sections, lang='ar', domain='cyber')
+        self.assertTrue(
+            pair['docx_ev'].export_return_allowed, pair['docx_ev'].blocking_errors)
+        self.assertTrue(
+            pair['pdf_ev'].export_return_allowed, pair['pdf_ev'].blocking_errors)
+
+    def test_12_data_ndmo_pdpl_regression(self):
+        sections = _data_generated_missing_three()
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            dict(sections),
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], emit=False)
+        self.assertFalse(diag.get('applied'))
+        self.assertEqual(out.get('vision'), sections.get('vision'))
+        repaired, d367 = apply_rel36_7_data_pdpl_roadmap_balance(
+            sections,
+            domain='data', document_type='strategy', lang='ar',
+            selected_frameworks=['NDMO', 'PDPL'], emit=False)
+        self.assertEqual(missing_families(repaired.get('roadmap') or ''), [])
+        self.assertTrue(d367.get('passed'), d367)
+
+    def test_13_erm_regression(self):
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            {'analysis': _CLEAN_RISK_MD, 'content': _CLEAN_RISK_MD},
+            domain='erm', lang='en', document_type='risk',
+            selected_frameworks=['ISO 31000', 'COSO ERM'], emit=False)
+        self.assertFalse(diag.get('applied'))
+        iso = evaluate_rel36_6_erm_risk_domain_isolation(
+            route='erm:risk:ar', domain='erm', document_type='risk',
+            lang='ar', risk_id=2, strategy_id='',
+            source_artifact_type='risk', loaded_artifact_type='risk',
+            loaded_domain='erm', loaded_document_type='risk',
+            content=_CLEAN_RISK_MD)
+        self.assertTrue(iso.get('passed'), iso)
+
+    def test_14_ai_sdaia_regression(self):
+        leaked = dict(_ai_sections())
+        leaked['vision'] = (
+            'Here is a draft AI strategy.\n' + str(leaked.get('vision') or ''))
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            leaked, domain='ai', lang='en', document_type='strategy',
+            selected_frameworks=['SDAIA'], emit=False)
+        self.assertFalse(diag.get('applied'))
+        self.assertIn('Here is a draft', out.get('vision') or leaked.get('vision') or '')
+        repaired, fdiag = repair_sections_for_fidelity(
+            leaked, domain='ai', document_type='strategy',
+            selected_frameworks=['SDAIA'], lang='ar')
+        blob = '\n'.join(str(v) for v in repaired.values())
+        self.assertIn('SDAIA', detect_visible_frameworks(blob))
+        self.assertNotIn(
+            'rel35_unexpected_frameworks', str(fdiag.get('blocking_errors')))
+
+    def test_15_dt_dga_regression(self):
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            dict(_dt_sections()),
+            domain='dt', lang='en', document_type='strategy',
+            selected_frameworks=['DGA Standards'], emit=False)
+        self.assertFalse(diag.get('applied'))
+        repaired, _ = repair_dga_interoperability_sections(
+            _dt_sections(), lang='ar')
+        self.assertTrue(dga_interoperability_covered(repaired))
+
+    def test_16_full_smoke_matrix_passes_with_residue_repair(self):
+        self.assertTrue(Path('scripts/smoke_document_type_matrix.py').is_file())
+        self.assertTrue(Path('scripts/smoke_all_domains_preview_docx_pdf.py').is_file())
+        cleaned, d3691, _ = _apply_3691()
+        self.assertTrue(d3691.get('passed'), d3691)
+        s369, d369, _ = _apply(cleaned, attempt_id='smoke-after-3691')
+        self.assertTrue(d369.get('passed'), d369)
+        self.assertEqual(_rel2_pillars_blockers(s369['pillars']), [])
+        self.assertGreater(
+            int(check_roadmap_coverage(s369['roadmap'], domain='cyber').get(
+                'visible_row_count') or 0),
+            0)
+        self.assertEqual(_vision_gate(s369), [])

@@ -31468,6 +31468,36 @@ def _splice_data_roadmap_topup_rows(original_text, new_row_lines):
         + lines[last_tbl_idx + 1:])
 
 
+def _apply_rel36_9_1_en_cyber_vision_prompt_residue(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id=''):
+    """REL36.9.1 — strip English Cyber vision prompt residue before the
+    unchanged ``detect_arabic_prompt_residue`` gate.
+
+    No-op outside English Cyber strategy + NCA ECC/DCC. Does not mark
+    ``vision_contains_prompt_residue`` passed; it only removes or
+    rebuilds contaminated vision prose so the live detector can pass.
+    """
+    try:
+        from release_engine_v3.rel36_9_1_en_cyber_vision_prompt_residue import (
+            apply_rel36_9_1_en_cyber_vision_prompt_residue,
+        )
+        out, diag = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -67072,6 +67102,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     _wb_flags.append((_tag, _det))
                             except Exception:
                                 pass
+                            # REL36.9.1: clean English Cyber vision residue
+                            # before the warning-bypass prompt-residue scan.
+                            try:
+                                _apply_rel36_9_1_en_cyber_vision_prompt_residue(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                )
+                            except Exception:
+                                pass
                             # PASS-14: prompt residue is also a hard blocker.
                             try:
                                 _wb_prompt = detect_arabic_prompt_residue(
@@ -74203,6 +74246,37 @@ The confidence score is based on a comprehensive assessment of the organization'
                         print(f'[STRATEGY-DIAG] residue_validator_failed: {_rse}',
                               flush=True)
                         _residue_defects = []
+                    # REL36.9.1: English Cyber ECC+DCC vision prompt-residue
+                    # repair. Runs AFTER synthesis/depth (which can
+                    # reintroduce residue) and IMMEDIATELY BEFORE the
+                    # unchanged detect_arabic_prompt_residue gate.
+                    try:
+                        _rel3691_fws = []
+                        try:
+                            _rel3691_fws = list(_frameworks_raw or [])
+                        except Exception:
+                            _rel3691_fws = []
+                        if not _rel3691_fws and fw_short:
+                            _rel3691_fws = [fw_short]
+                        _rel3691_tid = ''
+                        try:
+                            from flask import g as _rel3691_g
+                            _rel3691_tid = getattr(
+                                _rel3691_g, '_strategy_task_id', '') or ''
+                        except Exception:
+                            _rel3691_tid = ''
+                        _apply_rel36_9_1_en_cyber_vision_prompt_residue(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                        )
+                    except Exception as _rel3691_e:
+                        print(
+                            '[REL36.9.1-EN-CYBER-VISION-PROMPT-RESIDUE-REPAIR] '
+                            f'hook_failed: {_rel3691_e}',
+                            flush=True,
+                        )
                     # PASS-14: prompt-residue validator (must run AFTER
                     # sanitization so surviving patterns block save).
                     try:

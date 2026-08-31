@@ -167,6 +167,24 @@ def apply_rel23_cyber_finalize(
         diags['rel36_9'] = rel369
         if rel369.get('roadmap_visible_row_count_after', 0) > 0:
             repair_actions.append('rel36_9:en_cyber_live_stability')
+        try:
+            from release_engine_v3.rel36_9_1_en_cyber_vision_prompt_residue import (
+                apply_rel36_9_1_en_cyber_vision_prompt_residue,
+            )
+            sections, rel3691 = apply_rel36_9_1_en_cyber_vision_prompt_residue(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                task_id=artifact.get('task_id'),
+            )
+            diags['rel36_9_1'] = rel3691
+            if rel3691.get('cleanup_applied') or rel3691.get('vision_rebuilt'):
+                repair_actions.append(
+                    'rel36_9_1:en_cyber_vision_prompt_residue')
+        except Exception:  # noqa: BLE001
+            pass
         if rel369.get('rel2_pillars_after'):
             pil_diag = dict(diags.get('pillars') or {})
             pil_diag['rendered_table_valid'] = False
