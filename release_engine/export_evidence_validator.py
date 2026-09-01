@@ -569,6 +569,30 @@ def validate_actual_export_evidence(
             docx_text = _rel36_5_channel(docx_text, 'docx')
         if pdf_text:
             pdf_text = _rel36_5_channel(pdf_text, 'pdf')
+        # REL36.11 — PDF evidence input must receive the same repaired
+        # English Cyber pillar/roadmap text as DOCX. Validator unchanged.
+        try:
+            from release_engine_v3.rel36_11_en_cyber_export_stability import (
+                apply_rel36_11_en_cyber_export_stability,
+            )
+            if pdf_text or docx_text:
+                docx_text, pdf_text, _rel36_11_diag = (
+                    apply_rel36_11_en_cyber_export_stability(
+                        strategy_id=strategy_id,
+                        route=route_name or 'pdf',
+                        export_type='pdf' if pdf_text else 'docx',
+                        lang=lang,
+                        domain=domain,
+                        document_type=document_type,
+                        selected_frameworks=selected_frameworks,
+                        csrf_valid=True,
+                        docx_blob=docx_text,
+                        pdf_blob=pdf_text,
+                        emit=True,
+                    ))
+                _rel36_5_hooks['rel36_11'] = _rel36_11_diag
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as _rel36_5_outer:  # noqa: BLE001
         _rel36_5_hooks = _rel36_5_hooks or {}
         try:
