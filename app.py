@@ -31501,17 +31501,44 @@ def _apply_rel36_9_1_en_cyber_vision_prompt_residue(
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
-    """REL36.7 — deterministic PDPL consent / DSR / breach rows.
+    """REL36.7 / REL36.10 — deterministic Data roadmap balance rows.
 
-    No-op outside Data strategy + PDPL. Does not skip the balance
-    gate; it only inserts detector-visible rows so the unchanged
-    checker can pass on the first official cycle.
+    REL36.7 inserts PDPL consent / DSR / breach / classification rows.
+    REL36.10 inserts a detector-visible Arabic ``data_catalog`` row
+    when NDMO and/or PDPL is selected and the official catalog tokens
+    are absent. Neither helper skips the balance gate.
     """
     try:
         from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
             apply_rel36_7_data_pdpl_roadmap_balance,
         )
         apply_rel36_7_data_pdpl_roadmap_balance(
+            sections,
+            domain=domain,
+            document_type=document_type,
+            lang=lang,
+            selected_frameworks=selected_frameworks,
+        )
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        pass
+    _apply_rel36_10_data_catalog_roadmap_balance(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type)
+
+
+def _apply_rel36_10_data_catalog_roadmap_balance(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy'):
+    """REL36.10 — deterministic Arabic Data catalog roadmap row.
+
+    No-op outside Data Arabic strategy + NDMO/PDPL. Does not skip the
+    ``data_roadmap_balance_missing`` gate.
+    """
+    try:
+        from release_engine_v3.rel36_10_data_catalog_roadmap_balance import (
+            apply_rel36_10_data_catalog_roadmap_balance,
+        )
+        apply_rel36_10_data_catalog_roadmap_balance(
             sections,
             domain=domain,
             document_type=document_type,
