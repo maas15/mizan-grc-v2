@@ -216,6 +216,26 @@ def apply_rel23_cyber_finalize(
         diags['rel36_12'] = rel3612
         if rel3612.get('deterministic_fallback_applied'):
             repair_actions.append('rel36_12:en_cyber_presave_pillar_stability')
+        try:
+            from release_engine_v3.rel36_13_en_cyber_core_completeness import (
+                apply_rel36_13_en_cyber_core_completeness,
+            )
+            sections, rel3613 = apply_rel36_13_en_cyber_core_completeness(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_13'] = rel3613
+            if rel3613.get('repaired_sections'):
+                repair_actions.append(
+                    'rel36_13:en_cyber_core_completeness')
+        except Exception:  # noqa: BLE001
+            pass
         if rel3612.get('applied'):
             pil_diag = dict(rel3612.get('finalize_diag') or diags.get('pillars') or {})
             pil_diag['rendered_table_valid'] = bool(
