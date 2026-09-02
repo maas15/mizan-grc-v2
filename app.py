@@ -31563,6 +31563,39 @@ def _apply_rel36_13_en_cyber_core_completeness(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _apply_rel36_14_en_cyber_final_counted_structures(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.14 — counted roadmap / gap-guide / CSF table repair.
+
+    Runs immediately after REL36.13 and before the unchanged PR-CY74,
+    gap-uniqueness and CSF counters. No-op outside English Cyber
+    strategy + NCA ECC/DCC technical path. Does not mark those gates
+    passed.
+    """
+    try:
+        from release_engine_v3.rel36_14_en_cyber_final_counted_structures import (
+            apply_rel36_14_en_cyber_final_counted_structures,
+        )
+        out, diag = apply_rel36_14_en_cyber_final_counted_structures(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -67168,6 +67201,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_14_en_cyber_final_counted_structures(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                             _wb_so = count_valid_objective_rows(sections.get('vision', '') or '')
@@ -68005,6 +68051,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                             # sections before the unchanged completeness gate.
                             try:
                                 _apply_rel36_13_en_cyber_core_completeness(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_14_en_cyber_final_counted_structures(
                                     sections, lang, _dcode or domain,
                                     list(_frameworks_raw or []) or [fw_short],
                                     document_type=_document_type,
@@ -74401,6 +74460,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             task_id=_rel3691_tid,
                         )
                         _apply_rel36_13_en_cyber_core_completeness(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_14_en_cyber_final_counted_structures(
                             sections, lang, _dcode or domain,
                             _rel3691_fws,
                             document_type=_document_type,
