@@ -198,6 +198,103 @@ def apply_rel23_cyber_finalize(
     except Exception:  # noqa: BLE001
         pass
 
+    try:
+        from release_engine_v3.rel36_12_en_cyber_presave_pillar_stability import (
+            apply_rel36_12_en_cyber_presave_pillar_stability,
+        )
+        sections, rel3612 = apply_rel36_12_en_cyber_presave_pillar_stability(
+            sections,
+            domain=dcode,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=fws,
+            backend=backend,
+            task_id=artifact.get('task_id'),
+            artifact=artifact,
+            prior_pillars_diag=diags.get('pillars'),
+        )
+        diags['rel36_12'] = rel3612
+        if rel3612.get('deterministic_fallback_applied'):
+            repair_actions.append('rel36_12:en_cyber_presave_pillar_stability')
+        try:
+            from release_engine_v3.rel36_13_en_cyber_core_completeness import (
+                apply_rel36_13_en_cyber_core_completeness,
+            )
+            sections, rel3613 = apply_rel36_13_en_cyber_core_completeness(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_13'] = rel3613
+            if rel3613.get('repaired_sections'):
+                repair_actions.append(
+                    'rel36_13:en_cyber_core_completeness')
+            from release_engine_v3.rel36_14_en_cyber_final_counted_structures import (
+                apply_rel36_14_en_cyber_final_counted_structures,
+            )
+            sections, rel3614 = apply_rel36_14_en_cyber_final_counted_structures(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_14'] = rel3614
+            if rel3614.get('repaired_sections'):
+                repair_actions.append(
+                    'rel36_14:en_cyber_final_counted_structures')
+            from release_engine_v3.rel36_15_final_registry_stability import (
+                apply_rel36_15_final_registry_stability,
+            )
+            sections, rel3615 = apply_rel36_15_final_registry_stability(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_15'] = rel3615
+            if rel3615.get('repaired_sections') or rel3615.get('applied'):
+                repair_actions.append(
+                    'rel36_15:final_registry_stability')
+        except Exception:  # noqa: BLE001
+            pass
+        if rel3612.get('applied'):
+            pil_diag = dict(rel3612.get('finalize_diag') or diags.get('pillars') or {})
+            pil_diag['rendered_table_valid'] = bool(
+                rel3612.get('rendered_table_valid_after'))
+            blockers_after = list(
+                rel3612.get('final_rel2_pillars_blockers_after') or [])
+            pil_diag['blocking_error_if_any'] = (
+                blockers_after[0] if blockers_after else '')
+            if rel3612.get('pillar_count_after') is not None:
+                pil_diag['pillar_count_after'] = rel3612['pillar_count_after']
+            if rel3612.get('initiative_count_by_pillar_after') is not None:
+                pil_diag['initiative_count_by_pillar'] = rel3612[
+                    'initiative_count_by_pillar_after']
+            if rel3612.get('empty_pillars_after') is not None:
+                pil_diag['empty_pillars_after'] = rel3612['empty_pillars_after']
+            if rel3612.get('missing_pillar_families_after') is not None:
+                pil_diag['missing_pillar_families_after'] = rel3612[
+                    'missing_pillar_families_after']
+            if rel3612.get('mismatched_outputs_after') is not None:
+                pil_diag['mismatched_outputs_after'] = rel3612[
+                    'mismatched_outputs_after']
+            diags['pillars'] = pil_diag
+    except Exception:  # noqa: BLE001
+        pass
+
     merged = dict(artifact)
     merged['sections'] = sections
     merged['final_markdown'] = _rebuild_markdown(sections)
