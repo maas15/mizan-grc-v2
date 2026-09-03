@@ -251,6 +251,23 @@ def apply_rel23_cyber_finalize(
             if rel3614.get('repaired_sections'):
                 repair_actions.append(
                     'rel36_14:en_cyber_final_counted_structures')
+            from release_engine_v3.rel36_15_final_registry_stability import (
+                apply_rel36_15_final_registry_stability,
+            )
+            sections, rel3615 = apply_rel36_15_final_registry_stability(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_15'] = rel3615
+            if rel3615.get('repaired_sections') or rel3615.get('applied'):
+                repair_actions.append(
+                    'rel36_15:final_registry_stability')
         except Exception:  # noqa: BLE001
             pass
         if rel3612.get('applied'):
