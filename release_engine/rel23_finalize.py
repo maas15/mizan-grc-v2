@@ -285,6 +285,23 @@ def apply_rel23_cyber_finalize(
             if rel3616.get('applied') or rel3616.get('objective_rows_added'):
                 repair_actions.append(
                     'rel36_16:en_cyber_vision_pillars_objectives')
+            from release_engine_v3.rel36_17_en_cyber_final_save_gate_stabilizer import (
+                apply_rel36_17_en_cyber_final_save_gate_stabilizer,
+            )
+            sections, rel3617 = apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                sections,
+                domain=dcode,
+                lang=lang,
+                document_type='strategy',
+                selected_frameworks=fws,
+                backend=backend,
+                task_id=artifact.get('task_id'),
+                artifact=artifact,
+            )
+            diags['rel36_17'] = rel3617
+            if rel3617.get('applied') or rel3617.get('repaired_sections'):
+                repair_actions.append(
+                    'rel36_17:en_cyber_final_save_gate_stabilizer')
         except Exception:  # noqa: BLE001
             pass
         if rel3612.get('applied'):
