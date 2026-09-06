@@ -31531,6 +31531,167 @@ def _apply_rel36_9_1_en_cyber_vision_prompt_residue(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _apply_rel36_13_en_cyber_core_completeness(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.13 — deterministic English Cyber core-section repair.
+
+    Runs immediately before the unchanged Technical Strategy completeness
+    and warning-bypass gates. No-op outside English Cyber strategy +
+    NCA ECC/DCC technical path. Does not mark those gates passed.
+    """
+    try:
+        from release_engine_v3.rel36_13_en_cyber_core_completeness import (
+            apply_rel36_13_en_cyber_core_completeness,
+        )
+        out, diag = apply_rel36_13_en_cyber_core_completeness(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
+def _apply_rel36_14_en_cyber_final_counted_structures(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.14 — counted roadmap / gap-guide / CSF table repair.
+
+    Runs immediately after REL36.13 and before the unchanged PR-CY74,
+    gap-uniqueness and CSF counters. No-op outside English Cyber
+    strategy + NCA ECC/DCC technical path. Does not mark those gates
+    passed.
+    """
+    try:
+        from release_engine_v3.rel36_14_en_cyber_final_counted_structures import (
+            apply_rel36_14_en_cyber_final_counted_structures,
+        )
+        out, diag = apply_rel36_14_en_cyber_final_counted_structures(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
+def _apply_rel36_15_final_registry_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.15 — registry-driven Data + English Cyber final-gate repair.
+
+    Runs after REL36.10 / REL36.14 and before the unchanged Data
+    roadmap-balance, KPI synthesis and Cyber family-balance gates.
+    Does not mark those gates passed.
+    """
+    try:
+        from release_engine_v3.rel36_15_final_registry_stability import (
+            apply_rel36_15_final_registry_stability,
+        )
+        out, diag = apply_rel36_15_final_registry_stability(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
+def _apply_rel36_16_en_cyber_vision_pillars_objectives(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.16 — English Cyber vision/pillars/objective repair.
+
+    Runs after REL36.15 and before the unchanged prompt-residue,
+    strategic-objective, synthesis, and selected-framework gates.
+    Does not mark those gates passed.
+    """
+    try:
+        from release_engine_v3.rel36_16_en_cyber_vision_pillars_objectives import (
+            apply_rel36_16_en_cyber_vision_pillars_objectives,
+        )
+        out, diag = apply_rel36_16_en_cyber_vision_pillars_objectives(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
+def _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.17 — English Cyber board-ready SO and synth-gate repair.
+
+    Runs after REL36.16 and immediately before board-ready SO validation
+    and post-normalization synth validation for gaps/pillars/confidence.
+    Does not mark those gates passed.
+    """
+    try:
+        from release_engine_v3.rel36_17_en_cyber_final_save_gate_stabilizer import (
+            apply_rel36_17_en_cyber_final_save_gate_stabilizer,
+        )
+        out, diag = apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            doc_subtype=doc_subtype,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -31555,6 +31716,9 @@ def _apply_rel36_7_data_pdpl_roadmap_balance(
     except Exception:  # noqa: BLE001 — never skip the later gate
         pass
     _apply_rel36_10_data_catalog_roadmap_balance(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type)
+    _apply_rel36_15_final_registry_stability(
         sections, lang, domain, selected_frameworks,
         document_type=document_type)
 
@@ -40727,6 +40891,20 @@ def _prcy88_cyber_board_ready_quality_baseline(
     """PR-CY88 — board-ready content baseline after PR-CY87 polish."""
     if not _PRCY28_VERSION_FLAGS.get('prcy88'):
         return sections, final_markdown, {'action_taken': 'skipped'}
+    try:
+        _m = model if isinstance(model, dict) else {}
+        _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+            sections,
+            lang,
+            _m.get('domain') or 'cyber',
+            selected_frameworks,
+            document_type=_m.get('document_type') or 'strategy',
+            task_id=task_id or '',
+            generation_mode=_m.get('generation_mode') or 'drafting',
+            doc_subtype=_m.get('doc_subtype') or 'technical',
+        )
+    except Exception:
+        pass
     import sys as _sys88
     import types as _types88
     from cyber_board_ready_prcy88 import (
@@ -67120,6 +67298,76 @@ The confidence score is based on a comprehensive assessment of the organization'
                     try:
                         _wb_flags = []
                         if doc_subtype != 'board':
+                            # REL36.13: complete English Cyber core sections
+                            # before the unchanged warning-bypass counters.
+                            try:
+                                _apply_rel36_13_en_cyber_core_completeness(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_14_en_cyber_final_counted_structures(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_15_final_registry_stability(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_16_en_cyber_vision_pillars_objectives(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                            except Exception:
+                                pass
                             _wb_so = count_valid_objective_rows(sections.get('vision', '') or '')
                             if _wb_so < _RICHNESS_MIN_SO_ROWS:
                                 _wb_flags.append(('so_rows_insufficient',
@@ -67950,6 +68198,77 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     f'{_stc_early_err}',
                                     flush=True,
                                 )
+                            # REL36.13: after AI/top-up, deterministically
+                            # complete any remaining English Cyber core
+                            # sections before the unchanged completeness gate.
+                            try:
+                                _apply_rel36_13_en_cyber_core_completeness(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_14_en_cyber_final_counted_structures(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_15_final_registry_stability(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_16_en_cyber_vision_pillars_objectives(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                                _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
+                            except Exception:
+                                pass
                         _stc_secs_before_cpl = {
                             k: v for k, v in sections.items()
                             if isinstance(v, str)
@@ -68245,6 +68564,48 @@ The confidence score is based on a comprehensive assessment of the organization'
                         # PR-5B.5F1 status dict already initialized above.
                         # PR-5B.8B Section E: coarse stage beacon — final_synthesis.
                         _bump_stage('final_synthesis')
+                        try:
+                            _apply_rel36_15_final_registry_stability(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
+                            _apply_rel36_16_en_cyber_vision_pillars_objectives(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
+                            _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
+                        except Exception:
+                            pass
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
@@ -74330,6 +74691,61 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _rel3691_fws,
                             document_type=_document_type,
                             task_id=_rel3691_tid,
+                        )
+                        _apply_rel36_13_en_cyber_core_completeness(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_14_en_cyber_final_counted_structures(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_15_final_registry_stability(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_16_en_cyber_vision_pillars_objectives(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
                         )
                     except Exception as _rel3691_e:
                         print(
