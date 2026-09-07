@@ -859,15 +859,27 @@ def apply_rel36_19_to_professional_roadmap_table(
     out = dict(table)
     out['schema'] = 'roadmap'
     out['header'] = list(ROADMAP_EN)
-    cleaned_rows = ensure_english_professional_roadmap_rows(
-        out.get('rows') or [],
-        domain=dcode,
-        selected_frameworks=selected_frameworks,
-    )
-    out['rows'] = [
-        [_FAMILY_RE.sub('', str(c or '')).strip() for c in row]
-        for row in cleaned_rows
-    ]
+    if dcode in ('data', 'ai'):
+        cleaned_rows = ensure_english_professional_roadmap_rows(
+            out.get('rows') or [],
+            domain=dcode,
+            selected_frameworks=selected_frameworks,
+        )
+        out['rows'] = [
+            [_FAMILY_RE.sub('', str(c or '')).strip() for c in row]
+            for row in cleaned_rows
+        ]
+        return out
+    # English Cyber: keep professional ECC/DCC rows; translate leftover Arabic only.
+    repaired = []
+    for row in out.get('rows') or []:
+        cells = [
+            translate_generated_phrase(str(c or ''))
+            for c in (list(row) + [''] * 6)[:6]
+        ]
+        repaired.append(cells)
+    if repaired:
+        out['rows'] = repaired
     return out
 
 
@@ -923,12 +935,10 @@ def _rewrite_table_block(
         body = mapped
     out = [_join(target), _sep(len(target))]
     for i, row in enumerate(body, 1):
-        cells = list(row)[:len(target)]
+        cells = list(row)
         if target[0] == '#' and (not cells or not str(cells[0]).isdigit()):
-            if cells:
-                cells[0] = str(i)
-            else:
-                cells = [str(i)] + [''] * (len(target) - 1)
+            cells = [str(i)] + cells
+        cells = (cells + [''] * len(target))[:len(target)]
         out.append(_join(cells))
     return '\n'.join(out) + '\n'
 
@@ -1013,6 +1023,28 @@ def sanitize_visible_language_text(text: str, lang: str = 'ar') -> str:
     """
     nlang = normalize_rel36_lang(lang)
     cleaned = _FAMILY_RE.sub(' ', str(text or ''))
+    try:
+        from release_engine_v3.rel34_visible_output_quality import (
+            FAMILY_MARKER_RE,
+            INTERNAL_SNAKE_MARKER_RE,
+            KNOWN_INTERNAL_FAMILY_IDS,
+        )
+        cleaned = FAMILY_MARKER_RE.sub(' ', cleaned)
+
+        def _snake(m: re.Match[str]) -> str:
+            tok = m.group(0)
+            low = tok.lower()
+            if low in KNOWN_INTERNAL_FAMILY_IDS:
+                return ' '
+            if low.endswith('_management') or low.endswith('_governance'):
+                return ' '
+            if low.startswith('family'):
+                return ' '
+            return tok
+
+        cleaned = INTERNAL_SNAKE_MARKER_RE.sub(_snake, cleaned)
+    except Exception:
+        pass
     if nlang == 'en':
         cleaned = translate_generated_phrase(cleaned)
         cleaned = cleaned.replace('سجل\u00a0معالجة', 'processing register')
@@ -1086,12 +1118,22 @@ def repair_sections_language_parity(
 
 
 def _demote_inner_h2(text: str) -> str:
-    """Keep section-local headings at H3 so H2 rebuild/split cannot steal tables."""
+    """Demote leftover inner H2s so rebuild/split cannot steal tables.
+
+    Keep the first H2 in each section. Joined-document roadmap coverage
+    stops at the next H2; demoting every title to H3 made KPI/guide tables
+    look like extra roadmap rows (weak owner/output) on Arabic AI/Data.
+    """
     out: List[str] = []
+    seen_h2 = False
     for ln in str(text or '').splitlines():
         raw = ln.lstrip()
         if raw.startswith('## ') and not raw.startswith('###'):
-            out.append('#' + raw)
+            if seen_h2:
+                out.append('#' + raw)
+            else:
+                out.append(ln)
+                seen_h2 = True
         else:
             out.append(ln)
     return '\n'.join(out)

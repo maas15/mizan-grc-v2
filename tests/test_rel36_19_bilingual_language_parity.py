@@ -420,6 +420,23 @@ class Rel3619LanguageParityTests(unittest.TestCase):
             kpis = out.get('kpis') or ''
             for col in GUIDE_AR:
                 self.assertIn(col, kpis, (domain, kpis))
+            # First H2 in each section must remain H2 so joined-document
+            # roadmap coverage does not swallow later KPI/guide tables.
+            for key, before in secs.items():
+                if not isinstance(before, str):
+                    continue
+                had_h2 = any(
+                    ln.lstrip().startswith('## ')
+                    and not ln.lstrip().startswith('###')
+                    for ln in before.splitlines())
+                if not had_h2:
+                    continue
+                after = out.get(key) or ''
+                still_h2 = any(
+                    ln.lstrip().startswith('## ')
+                    and not ln.lstrip().startswith('###')
+                    for ln in after.splitlines())
+                self.assertTrue(still_h2, (domain, key, after[:200]))
 
     def test_11_en_data_roadmap_export_countable(self):
         out, diag, _ = _apply19(
