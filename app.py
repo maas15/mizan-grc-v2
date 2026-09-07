@@ -31692,6 +31692,36 @@ def _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _apply_rel36_18_ai_sdaia_kpi_synth(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.18 — AI SDAIA Arabic first-counted KPI table repair.
+
+    Runs after REL36.17 and immediately before unchanged
+    ``synthesize_kpi_depth``. Does not mark that gate passed.
+    """
+    try:
+        from release_engine_v3.rel36_18_ai_sdaia_kpi_synth import (
+            apply_rel36_18_ai_sdaia_kpi_synth,
+        )
+        out, diag = apply_rel36_18_ai_sdaia_kpi_synth(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            generation_mode=generation_mode,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -40894,6 +40924,19 @@ def _prcy88_cyber_board_ready_quality_baseline(
     try:
         _m = model if isinstance(model, dict) else {}
         _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+            sections,
+            lang,
+            _m.get('domain') or 'cyber',
+            selected_frameworks,
+            document_type=_m.get('document_type') or 'strategy',
+            task_id=task_id or '',
+            generation_mode=_m.get('generation_mode') or 'drafting',
+            doc_subtype=_m.get('doc_subtype') or 'technical',
+        )
+        # REL36.18.1 — this wrapper is cyber-only and often has no model.
+        # Never default a missing domain to 'ai'. Pass the real cyber
+        # domain (or an explicit model domain) so REL36.18 no-ops.
+        _apply_rel36_18_ai_sdaia_kpi_synth(
             sections,
             lang,
             _m.get('domain') or 'cyber',
@@ -67366,6 +67409,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_18_ai_sdaia_kpi_synth(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                             _wb_so = count_valid_objective_rows(sections.get('vision', '') or '')
@@ -68267,6 +68323,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_18_ai_sdaia_kpi_synth(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                         _stc_secs_before_cpl = {
@@ -68592,6 +68661,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 doc_subtype=doc_subtype,
                             )
                             _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
+                            _apply_rel36_18_ai_sdaia_kpi_synth(
                                 sections, lang, _dcode or domain,
                                 list(_frameworks_raw or []) or [fw_short],
                                 document_type=_document_type,
@@ -74737,6 +74819,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             doc_subtype=doc_subtype,
                         )
                         _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_18_ai_sdaia_kpi_synth(
                             sections, lang, _dcode or domain,
                             _rel3691_fws,
                             document_type=_document_type,
