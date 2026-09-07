@@ -273,7 +273,11 @@ def build_final_document_artifact(
             legacy_artifact.get('domain')
             or meta.get('domain')
             or '')
-    lang = meta.get('lang') or legacy_artifact.get('language') or 'ar'
+    lang = (
+        meta.get('lang')
+        or legacy_artifact.get('lang')
+        or legacy_artifact.get('language')
+        or 'ar')
     document_type = str(
         meta.get('document_type')
         or legacy_artifact.get('document_type')
@@ -337,6 +341,25 @@ def build_final_document_artifact(
     if blockers:
         release_ready = False
     aid = _artifact_id_from({**legacy_artifact, 'strategy_id': strategy_id})
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+            rel36_19_should_apply,
+        )
+        if rel36_19_should_apply(
+                domain=domain, lang=lang, document_type=document_type):
+            legacy_sections, _ = apply_rel36_19_bilingual_language_parity(
+                dict(legacy_sections),
+                domain=domain,
+                lang=lang,
+                document_type=document_type,
+                selected_frameworks=fws,
+                strategy_id=legacy_artifact.get('strategy_id') or '',
+                output_type='canonical',
+                emit=False,
+            )
+    except Exception:  # noqa: BLE001
+        pass
     legacy_join = '\n\n'.join(
         str(v).strip()
         for k, v in legacy_sections.items()

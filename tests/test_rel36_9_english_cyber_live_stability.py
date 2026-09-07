@@ -745,6 +745,8 @@ class Rel369HelperTests(unittest.TestCase):
         self.assertTrue(_is_roadmap_heading('خارطة الطريق'))
         self.assertFalse(_is_roadmap_heading('Strategic Pillars'))
         self.assertFalse(_is_roadmap_heading('## Delivery Plan'))
+        self.assertFalse(_is_roadmap_heading('9  Implementation Roadmap'))
+        self.assertFalse(_is_roadmap_heading('5  خارطة الطريق التنفيذية'))
 
     def test_phase_table_parse_ignores_pillar_tables(self):
         blob = render_canonical_english_cyber_pillars() + '\n\n' + _headingless_roadmap()

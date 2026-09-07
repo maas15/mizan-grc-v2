@@ -787,7 +787,8 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
 
 def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                         retry_delay_seconds=1.0,
-                                        language=None):
+                                        language=None,
+                                        document_type=None):
     """Look up the most recently saved strategy for user+domain with a
     small retry loop to absorb DB-commit races.
 
@@ -854,6 +855,34 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                             elif cl_n.startswith('en'):
                                 cl_n = 'en'
                             if cl_n and cl_n != want_lang:
+                                continue
+                        if document_type:
+                            want_dtype = str(document_type or '').strip().lower()
+                            if want_dtype in ('', 'strategy document'):
+                                want_dtype = 'strategy'
+                            cdtype = ''
+                            if hasattr(cand, 'keys') and 'document_type' in cand.keys():
+                                cdtype = str(cand['document_type'] or '').strip().lower()
+                            if not cdtype:
+                                try:
+                                    import json as _json_dtype
+                                    _sj_raw = cand['sections_json'] if hasattr(cand, 'keys') else None
+                                    _cj_raw = cand['content_json'] if hasattr(cand, 'keys') else None
+                                    if _sj_raw:
+                                        _sj = _json_dtype.loads(_sj_raw) if isinstance(_sj_raw, str) else _sj_raw
+                                        if isinstance(_sj, dict):
+                                            cdtype = str(_sj.get('_document_type') or '').strip().lower()
+                                    if not cdtype and _cj_raw:
+                                        _cj = _json_dtype.loads(_cj_raw) if isinstance(_cj_raw, str) else _cj_raw
+                                        if isinstance(_cj, dict):
+                                            cdtype = str(_cj.get('document_type') or '').strip().lower()
+                                            if not cdtype and isinstance(_cj.get('_contract_meta'), dict):
+                                                cdtype = str(_cj['_contract_meta'].get('document_type') or '').strip().lower()
+                                except Exception:  # noqa: BLE001
+                                    cdtype = ''
+                            if cdtype in ('strategy document',):
+                                cdtype = 'strategy'
+                            if cdtype and want_dtype and cdtype != want_dtype:
                                 continue
                         row = cand
                         break
@@ -14877,6 +14906,10 @@ def _prepare_final_render_text(text, lang='ar'):
             sanitize_visible_export_text,
         )
         out = sanitize_visible_export_text(out, lang)
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            sanitize_visible_language_text,
+        )
+        out = sanitize_visible_language_text(out, lang)
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -19707,12 +19740,17 @@ def api_strategy_latest():
         request.args.get('lang')
         or request.args.get('language')
         or '')
+    _latest_dtype = (
+        request.args.get('document_type')
+        or request.args.get('doc_type')
+        or 'strategy')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
     try:
         row, attempts = ensure_latest_strategy_recoverable(
             session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5,
             language=_latest_lang,
+            document_type=_latest_dtype,
         )
         if not row:
             # PR-CY12 Part A — do NOT return "No strategy found" while the
@@ -31722,6 +31760,33 @@ def _apply_rel36_18_ai_sdaia_kpi_synth(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _apply_rel36_19_bilingual_language_parity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical'):
+    """REL36.19 — visible language parity for cyber/data/ai strategy."""
+    del generation_mode, doc_subtype
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+        )
+        out, diag = apply_rel36_19_bilingual_language_parity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            output_type='generation',
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -40940,6 +41005,16 @@ def _prcy88_cyber_board_ready_quality_baseline(
             sections,
             lang,
             _m.get('domain') or 'cyber',
+            selected_frameworks,
+            document_type=_m.get('document_type') or 'strategy',
+            task_id=task_id or '',
+            generation_mode=_m.get('generation_mode') or 'drafting',
+            doc_subtype=_m.get('doc_subtype') or 'technical',
+        )
+        _apply_rel36_19_bilingual_language_parity(
+            sections,
+            lang,
+            _m.get('domain') or '',
             selected_frameworks,
             document_type=_m.get('document_type') or 'strategy',
             task_id=task_id or '',
@@ -51905,7 +51980,11 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                     'document_type': _dtype,
                     'generation_mode': 'drafting',
                     'selected_frameworks': (
-                        fw_labels or ['NCA ECC', 'NCA DCC']),
+                        fw_labels or (
+                            ['NCA ECC', 'NCA DCC'] if dcode == 'cyber'
+                            else ['NDMO', 'PDPL'] if dcode == 'data'
+                            else ['SDAIA'] if dcode == 'ai'
+                            else [])),
                     'sections': sections or {},
                     '_rel2_evidence_collect': True,
                     '_rel26_internal': True,
@@ -67422,6 +67501,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_19_bilingual_language_parity(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                             _wb_so = count_valid_objective_rows(sections.get('vision', '') or '')
@@ -68336,6 +68428,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_19_bilingual_language_parity(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                         _stc_secs_before_cpl = {
@@ -68674,6 +68779,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 doc_subtype=doc_subtype,
                             )
                             _apply_rel36_18_ai_sdaia_kpi_synth(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
+                            _apply_rel36_19_bilingual_language_parity(
                                 sections, lang, _dcode or domain,
                                 list(_frameworks_raw or []) or [fw_short],
                                 document_type=_document_type,
@@ -74830,6 +74948,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             doc_subtype=doc_subtype,
                         )
                         _apply_rel36_18_ai_sdaia_kpi_synth(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_19_bilingual_language_parity(
                             sections, lang, _dcode or domain,
                             _rel3691_fws,
                             document_type=_document_type,

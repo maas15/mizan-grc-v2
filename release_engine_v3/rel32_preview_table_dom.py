@@ -148,8 +148,15 @@ _FREQ_RE = re.compile(
 )
 _TYPE_RE = re.compile(r'^(kpi|kri|مؤشر|kpi/kri)$', re.I)
 _TARGET_RE = re.compile(r'^<\s*\d|[\d.]+\s*%|[\d.]+\s*ساع|[\d.]+\s*دقي', re.I)
-_FORMULA_RE = re.compile(r'مجموع|عدد\s*الحوادث|احتساب', re.I)
-_SOURCE_RE = re.compile(r'siem|soc|log|ticket|survey|report', re.I)
+_FORMULA_RE = re.compile(
+    r'مجموع|عدد\s*الحوادث|احتساب|count|total|sum|ratio|divided|/|×|%',
+    re.I,
+)
+_SOURCE_RE = re.compile(
+    r'siem|soc|log|ticket|survey|report|catalog|register|metadata|'
+    r'platform|dashboard|inventory|lineage|ndmo|pdpl|sdaia|quality',
+    re.I,
+)
 _PURE_SOURCE_RE = re.compile(r'^siem\s*/\s*soc$', re.I)
 
 
@@ -186,11 +193,16 @@ def _header_eq(got: str, expected: str, lang: str) -> bool:
         return False
     aliases = {
         'kpi description': ('indicator', 'وصف المؤشر'),
+        'type': ('النوع',),
         'target value': ('target', 'القيمة المستهدفة'),
         'calculation formula': ('formula', 'صيغة الاحتساب'),
-        'source': ('مصدر',),
+        'source': ('مصدر', 'مصدر البيانات', 'data source'),
         'frequency': ('التكرار',),
         'owner': ('المالك',),
+        'kpi': ('indicator', 'المؤشر'),
+        'indicator': ('kpi', 'المؤشر'),
+        'timeline': ('timeframe', 'الإطار الزمني'),
+        'timeframe': ('timeline', 'الإطار الزمني'),
     }
     return g in aliases.get(e, ())
 

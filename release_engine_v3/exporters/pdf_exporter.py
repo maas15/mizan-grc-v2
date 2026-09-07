@@ -129,6 +129,7 @@ def export_pdf(
                     'document_type': document_type,
                     'org_name': org_name,
                     'sector': sector,
+                    'domain': domain,
                     'selected_frameworks': selected_frameworks or [],
                 },
             }),
