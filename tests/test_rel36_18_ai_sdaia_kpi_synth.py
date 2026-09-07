@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import os
@@ -55,9 +56,11 @@ from release_engine_v3.rel36_17_en_cyber_final_save_gate_stabilizer import (
 )
 from release_engine_v3.rel36_18_ai_sdaia_kpi_synth import (
     REL36_18_AI_SDAIA_KPI_SYNTH_REPAIR_TAG,
+    REL36_181_AI_SDAIA_KPI_SYNTH_P1_GUARD_TAG,
     apply_rel36_18_ai_sdaia_kpi_synth,
     rel36_18_should_apply,
     repair_first_kpi_table,
+    required_kpi_floor,
 )
 from tests.test_rel33_risk_export_gate_isolation import _CLEAN_RISK_MD
 from tests.test_rel35_domain_framework_fidelity import (
@@ -112,6 +115,29 @@ _CYBER_LEAK_KPI = (
     '| 1 | تغطية NCA ECC | لاحق | 95% | الضوابط ÷ النطاق | سجل CISO | ربع سنوي | CISO |\n'
     '| 2 | زمن استجابة SIEM | قائد | 15 دقيقة | التنبيهات ضمن SLA | SOC/SIEM | شهري | SOC Manager |\n'
 )
+_SDAIA_BODY = 'لوائح سدايا SDAIA وممارسات الذكاء الاصطناعي المسؤول.\n'
+
+
+def _valid_n_kpis(n: int) -> str:
+    rows = []
+    guides = ['### أدلة تقييم مؤشرات الأداء']
+    for i in range(1, int(n) + 1):
+        rows.append(
+            f'| {i} | مؤشر حوكمة النماذج {i} | لاحق | 100% | '
+            f'المحوكمة ÷ النطاق × 100 | سجل نماذج الذكاء الاصطناعي | '
+            f'ربع سنوي | مسؤول حوكمة الذكاء الاصطناعي |')
+        guides.append(
+            f'#### دليل تقييم المؤشر رقم {i}:\n'
+            f'المالك: مسؤول حوكمة الذكاء الاصطناعي.')
+    hdr = (
+        '| # | وصف المؤشر | النوع | القيمة المستهدفة | صيغة الاحتساب | '
+        'مصدر | التكرار | المالك |')
+    sep = '|---|---|---|---|---|---|---|---|'
+    return (
+        '## 6. مؤشرات الأداء الرئيسية\n\n'
+        + hdr + '\n' + sep + '\n' + '\n'.join(rows) + '\n\n'
+        + '\n\n'.join(guides) + '\n'
+    )
 
 
 def _app():
@@ -278,6 +304,168 @@ class Rel3618RepairTests(unittest.TestCase):
         diag['docx_allowed'] = True
         diag['pdf_allowed'] = True
         _write_json('ai_sdaia_kpi_diagnostic.json', diag)
+
+
+class Rel36181P1GuardTests(unittest.TestCase):
+    def test_p1_01_cyber_with_sdaia_body_does_not_apply(self):
+        secs = dict(_cyber_ar_sections())
+        secs['environment'] = (secs.get('environment') or '') + _SDAIA_BODY
+        secs['kpis'] = _CYBER_LEAK_KPI
+        out, diag, log = _apply18(
+            secs, domain='cyber', lang='ar', selected_frameworks=_NCA_FWS)
+        self.assertFalse(diag.get('repair_applied'), diag)
+        self.assertFalse(diag.get('applied'), diag)
+        self.assertEqual(diag.get('skipped_reason'), 'domain_not_ai', diag)
+        self.assertEqual(diag.get('domain_resolved'), 'cyber', diag)
+        self.assertIn(REL36_181_AI_SDAIA_KPI_SYNTH_P1_GUARD_TAG, log)
+        _write_json('cyber_noop_diagnostic.json', diag)
+        self.assertEqual(out.get('kpis'), _CYBER_LEAK_KPI)
+
+    def test_p1_02_cyber_kpi_table_not_replaced_with_ai_sdaia(self):
+        secs = dict(_cyber_ar_sections())
+        secs['kpis'] = _CYBER_LEAK_KPI
+        secs['environment'] = _SDAIA_BODY
+        out, diag, _ = _apply18(
+            secs, domain='cyber', lang='ar', selected_frameworks=['SDAIA'])
+        self.assertEqual(diag.get('skipped_reason'), 'domain_not_ai', diag)
+        self.assertIn('تغطية NCA ECC', out.get('kpis') or '')
+        self.assertNotIn('مسؤول حوكمة الذكاء الاصطناعي', out.get('kpis') or '')
+
+    def test_p1_03_missing_or_unknown_domain_does_not_default_to_ai(self):
+        secs = _ai_secs(_MISSING_KPI)
+        secs['environment'] = _SDAIA_BODY
+        out_empty, diag_empty, _ = _apply18(
+            secs, domain='', selected_frameworks=_SDAIA)
+        self.assertEqual(diag_empty.get('skipped_reason'), 'domain_missing', diag_empty)
+        self.assertNotEqual(diag_empty.get('domain_resolved'), 'ai')
+        self.assertEqual(out_empty.get('kpis'), _MISSING_KPI)
+        out_unk, diag_unk, _ = _apply18(
+            dict(secs), domain='unknown-domain', selected_frameworks=_SDAIA)
+        self.assertEqual(diag_unk.get('skipped_reason'), 'domain_not_ai', diag_unk)
+        src = inspect.getsource(_app()._prcy88_cyber_board_ready_quality_baseline)
+        self.assertIn("_m.get('domain') or 'cyber'", src)
+        self.assertNotIn("_m.get('domain') or 'ai'", src)
+
+    def test_p1_04_unesco_only_with_sdaia_body_does_not_apply(self):
+        secs = _ai_secs(_MISSING_KPI)
+        secs['environment'] = _SDAIA_BODY
+        out, diag, _ = _apply18(secs, selected_frameworks=['UNESCO'])
+        self.assertFalse(diag.get('repair_applied'), diag)
+        self.assertEqual(diag.get('skipped_reason'), 'sdaia_not_selected', diag)
+        self.assertFalse(diag.get('sdaia_selected_explicitly'), diag)
+        self.assertTrue(diag.get('body_text_sdaia_ignored'), diag)
+        self.assertEqual(out.get('kpis'), _MISSING_KPI)
+        _write_json('ai_nonsdaia_noop_diagnostic.json', diag)
+
+    def test_p1_05_eu_ai_act_only_with_sdaia_body_does_not_apply(self):
+        secs = _ai_secs(_MISSING_KPI)
+        secs['environment'] = _SDAIA_BODY
+        out, diag, _ = _apply18(secs, selected_frameworks=['EU AI Act'])
+        self.assertEqual(diag.get('skipped_reason'), 'sdaia_not_selected', diag)
+        self.assertEqual(out.get('kpis'), _MISSING_KPI)
+
+    def test_p1_06_nist_ai_rmf_only_with_sdaia_body_does_not_apply(self):
+        secs = _ai_secs(_MISSING_KPI)
+        secs['environment'] = _SDAIA_BODY
+        out, diag, _ = _apply18(secs, selected_frameworks=['NIST AI RMF'])
+        self.assertEqual(diag.get('skipped_reason'), 'sdaia_not_selected', diag)
+        self.assertEqual(out.get('kpis'), _MISSING_KPI)
+        self.assertFalse(rel36_18_should_apply(
+            domain='ai', lang='ar', document_type='strategy',
+            selected_frameworks=['NIST AI RMF'], text=_SDAIA_BODY))
+
+    def test_p1_07_explicit_sdaia_selection_applies_repair(self):
+        out, diag, _ = _apply18(_ai_secs(_MISSING_KPI), selected_frameworks=_SDAIA)
+        self.assertTrue(diag.get('sdaia_selected_explicitly'), diag)
+        self.assertTrue(diag.get('repair_applied'), diag)
+        self.assertEqual(diag.get('skipped_reason'), '', diag)
+        self.assertTrue(diag.get('passed'), diag)
+        _write_json('ai_sdaia_kpi_diagnostic.json', diag)
+
+    def test_p1_08_sdaia_from_selection_not_body_text(self):
+        secs = _ai_secs(_MISSING_KPI)
+        secs['environment'] = _SDAIA_BODY
+        empty, empty_diag, _ = _apply18(secs, selected_frameworks=[])
+        self.assertEqual(empty_diag.get('skipped_reason'), 'sdaia_not_selected')
+        self.assertEqual(empty.get('kpis'), _MISSING_KPI)
+        meta, meta_diag, _ = _apply18(
+            dict(secs), selected_frameworks=[],
+            request_meta={'selected_frameworks': ['SDAIA']})
+        self.assertTrue(meta_diag.get('sdaia_selected_explicitly'), meta_diag)
+        self.assertTrue(meta_diag.get('repair_applied'), meta_diag)
+        self.assertNotEqual(meta.get('kpis'), _MISSING_KPI)
+
+    def test_p1_09_drafting_uses_drafting_floor(self):
+        self.assertEqual(required_kpi_floor('drafting'), 4)
+        out, diag, _ = _apply18(
+            _ai_secs(_MISSING_KPI), generation_mode='drafting')
+        self.assertEqual(diag.get('required_kpi_floor'), 4, diag)
+        self.assertEqual(diag.get('generation_mode'), 'drafting', diag)
+        self.assertGreaterEqual(diag.get('kpi_rows_after'), 4, diag)
+        _assert_synth_kpi_noop(self, dict(out))
+
+    def test_p1_10_consulting_uses_consulting_floor(self):
+        self.assertEqual(required_kpi_floor('consulting'), 5)
+        out, diag, _ = _apply18(
+            _ai_secs(_valid_n_kpis(4)), generation_mode='consulting')
+        self.assertEqual(diag.get('required_kpi_floor'), 5, diag)
+        self.assertGreaterEqual(diag.get('kpi_rows_after'), 5, diag)
+        added = _app().synthesize_kpi_depth(
+            dict(out), 'ar', domain='Artificial Intelligence', fw_short='SDAIA',
+            generation_mode='consulting')
+        self.assertEqual(added, 0, added)
+
+    def test_p1_11_assurance_uses_assurance_floor(self):
+        self.assertEqual(required_kpi_floor('assurance'), 6)
+        self.assertEqual(required_kpi_floor(''), 6)
+        self.assertEqual(required_kpi_floor('unknown'), 6)
+        out, diag, _ = _apply18(
+            _ai_secs(_valid_n_kpis(4)), generation_mode='assurance')
+        self.assertEqual(diag.get('required_kpi_floor'), 6, diag)
+        self.assertGreaterEqual(diag.get('kpi_rows_after'), 6, diag)
+
+    def test_p1_12_consulting_drafting_floor_rows_are_repaired(self):
+        before = _valid_n_kpis(4)
+        self.assertGreaterEqual(_app().count_substantive_kpis(before), 4)
+        unchanged, n = repair_first_kpi_table(before, 'drafting')
+        self.assertEqual(n, _app().count_substantive_kpis(unchanged))
+        self.assertGreaterEqual(n, 4)
+        out, diag, _ = _apply18(
+            _ai_secs(before), generation_mode='consulting')
+        self.assertTrue(diag.get('repair_applied'), diag)
+        self.assertGreaterEqual(diag.get('kpi_rows_after'), 5, diag)
+        self.assertNotEqual(out.get('kpis'), before)
+
+    def test_p1_13_repaired_rows_meet_mode_floor(self):
+        for mode, floor in (('drafting', 4), ('consulting', 5), ('assurance', 6)):
+            out, diag, _ = _apply18(
+                _ai_secs(_MISSING_KPI), generation_mode=mode)
+            self.assertGreaterEqual(
+                diag.get('kpi_rows_after'), floor, (mode, diag))
+            self.assertGreaterEqual(
+                _app().count_substantive_kpis(out.get('kpis') or ''), floor)
+
+    def test_p1_14_first_counted_table_not_second_ignored(self):
+        out, diag, _ = _apply18(_ai_secs(_MALFORMED_FIRST_PLUS_LATER))
+        headers = list(re.finditer(
+            r'(?im)^\|\s*#\s*\|\s*(?:وصف المؤشر|KPI Description|KPI)\s*\|',
+            out.get('kpis') or ''))
+        self.assertEqual(len(headers), 1, out.get('kpis'))
+        self.assertGreaterEqual(diag.get('first_kpi_table_rows_after'), 4)
+
+    def test_p1_15_arabic_kpi_schema_remains_valid(self):
+        out, diag, _ = _apply18(_ai_secs(_MISSING_KPI))
+        hdr = diag.get('first_kpi_table_header_after') or ''
+        for col in (
+                'وصف المؤشر', 'النوع', 'القيمة المستهدفة', 'صيغة الاحتساب',
+                'مصدر', 'التكرار', 'المالك'):
+            self.assertIn(col, hdr, hdr)
+        self.assertTrue(diag.get('schema_valid_after'), diag)
+
+    def test_p1_16_no_cyber_leakage_after_p1_guards(self):
+        out, diag, _ = _apply18(_ai_secs(_CYBER_LEAK_KPI))
+        _assert_no_leaks(self, out.get('kpis') or '')
+        self.assertEqual(diag.get('leakage_terms_after'), [], diag)
 
 
 class Rel3618RegressionTests(unittest.TestCase):

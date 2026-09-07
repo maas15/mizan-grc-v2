@@ -41,8 +41,11 @@ from release_engine_v3.rel36_bilingual_preview_export_authority import (
 
 REL36_18_AI_SDAIA_KPI_SYNTH_REPAIR_TAG = (
     '[REL36.18-AI-SDAIA-KPI-SYNTH-REPAIR]')
+REL36_181_AI_SDAIA_KPI_SYNTH_P1_GUARD_TAG = (
+    '[REL36.18.1-AI-SDAIA-KPI-SYNTH-P1-GUARD]')
 
 _MIN_KPI = 4
+_ASSURANCE_KPI_FLOOR = _MIN_KPI + 2
 
 _KPI_HEADER = (
     '| # | وصف المؤشر | النوع | القيمة المستهدفة | صيغة الاحتساب | '
@@ -145,10 +148,106 @@ _KPI_CATALOG: Tuple[Tuple[str, str, str, str, str, str, str], ...] = (
 )
 
 
+def _body_mentions_sdaia(text: str) -> bool:
+    hay = str(text or '')
+    return 'SDAIA' in hay.upper() or 'سدايا' in hay
+
+
+def _explicit_sdaia_selected(
+        selected_frameworks: Optional[Iterable[Any]] = None,
+        request_meta: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True only when trusted selection metadata names SDAIA.
+
+    Generated body text is never consulted. Empty/unknown selections
+    fail closed (no-op).
+    """
+    tokens = list(_selected_list(selected_frameworks))
+    if isinstance(request_meta, dict):
+        tokens.extend(_selected_list(request_meta.get('selected_frameworks')))
+        for key in ('framework', 'frameworks', 'fw_short'):
+            val = request_meta.get(key)
+            if isinstance(val, (list, tuple, set)):
+                tokens.extend(_selected_list(val))
+            elif val:
+                tokens.append(str(val))
+    if not tokens:
+        return False
+    joined = ' '.join(tokens)
+    return 'SDAIA' in joined.upper() or 'سدايا' in joined
+
+
 def _sdaia_selected(selected_frameworks: Optional[Iterable[Any]],
                     blob: str = '') -> bool:
-    joined = ' '.join(_selected_list(selected_frameworks)) + ' ' + str(blob or '')
-    return 'SDAIA' in joined.upper() or 'سدايا' in joined
+    del blob  # REL36.18.1 — never infer SDAIA from generated body text.
+    return _explicit_sdaia_selected(selected_frameworks)
+
+
+def _normalize_generation_mode(generation_mode: Any) -> str:
+    mode = str(generation_mode or '').strip().lower()
+    if mode in ('drafting', 'consulting', 'assurance'):
+        return mode
+    return 'unknown'
+
+
+def required_kpi_floor(generation_mode: Any = None) -> int:
+    """Mode-aware floor used by ``synthesize_kpi_depth``.
+
+    Unknown/missing mode uses the assurance floor so a conservative
+    repair still satisfies consulting and drafting.
+    """
+    mode = _normalize_generation_mode(generation_mode)
+    if mode == 'drafting':
+        return _MIN_KPI
+    if mode == 'consulting':
+        return _MIN_KPI + 1
+    return _ASSURANCE_KPI_FLOOR
+
+
+def _resolve_domain(domain: Any) -> Tuple[str, str]:
+    raw = '' if domain is None else str(domain).strip()
+    if not raw:
+        return '', 'domain_missing'
+    dcode = _normalize_rel31_domain_code(raw)
+    if dcode != 'ai':
+        return dcode or raw, 'domain_not_ai'
+    return 'ai', ''
+
+
+def _scope_decision(
+        *,
+        domain: Any = '',
+        lang: Any = '',
+        document_type: Any = '',
+        selected_frameworks: Optional[Iterable[Any]] = None,
+        text: str = '',
+        request_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    domain_input = '' if domain is None else str(domain)
+    domain_resolved, domain_skip = _resolve_domain(domain)
+    sdaia_explicit = _explicit_sdaia_selected(
+        selected_frameworks, request_meta=request_meta)
+    body_sdaia = _body_mentions_sdaia(text)
+    skipped = ''
+    if domain_skip:
+        skipped = domain_skip
+    elif normalize_rel36_lang(lang) != 'ar':
+        skipped = 'lang_not_ar'
+    else:
+        dtype = str(document_type or '').strip().lower()
+        if dtype not in ('strategy', 'strategy_document'):
+            skipped = 'document_type_not_strategy'
+        elif not sdaia_explicit:
+            skipped = 'sdaia_not_selected'
+    return {
+        'in_scope': not skipped,
+        'skipped_reason': skipped,
+        'domain_input': domain_input,
+        'domain_resolved': domain_resolved,
+        'sdaia_selected_explicitly': sdaia_explicit,
+        'body_text_sdaia_ignored': body_sdaia,
+        'selected_frameworks': list(_selected_list(selected_frameworks)),
+    }
 
 
 def rel36_18_should_apply(
@@ -158,16 +257,13 @@ def rel36_18_should_apply(
         document_type: Any = '',
         selected_frameworks: Optional[Iterable[Any]] = None,
         text: str = '',
+        request_meta: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    dcode = _normalize_rel31_domain_code(domain)
-    if dcode not in ('ai', 'artificial_intelligence'):
-        return False
-    if normalize_rel36_lang(lang) != 'ar':
-        return False
-    dtype = str(document_type or 'strategy').strip().lower()
-    if dtype not in ('strategy', 'strategy_document', ''):
-        return False
-    return _sdaia_selected(selected_frameworks, text)
+    return bool(_scope_decision(
+        domain=domain, lang=lang, document_type=document_type,
+        selected_frameworks=selected_frameworks, text=text,
+        request_meta=request_meta,
+    )['in_scope'])
 
 
 def _app_mod():
@@ -229,12 +325,7 @@ def _kpi_schema_valid(text: str) -> bool:
 
 def _synth_kpi_blockers(text: str, generation_mode: Any = 'drafting') -> List[str]:
     app = _app_mod()
-    mode = str(generation_mode or 'drafting').lower()
-    floor = _MIN_KPI
-    if mode == 'consulting':
-        floor += 1
-    elif mode == 'assurance':
-        floor += 2
+    floor = required_kpi_floor(generation_mode)
     rows = int(app.count_substantive_kpis(text or '') or 0)
     n_guides_hdr = len(app._KPI_GUIDES_HEADING_RE.findall(text or ''))
     n_per = len(app._PER_KPI_GUIDE_HEADING_RE.findall(text or ''))
@@ -340,12 +431,19 @@ def _canonical_kpi_section(existing: Optional[Sequence[Sequence[str]]] = None
     )
 
 
-def repair_first_kpi_table(text: str) -> Tuple[str, int]:
-    """Replace the first counted KPI table (and guides) in place."""
+def repair_first_kpi_table(
+        text: str, generation_mode: Any = None) -> Tuple[str, int]:
+    """Replace the first counted KPI table (and guides) in place.
+
+    ``generation_mode`` selects the real ``synthesize_kpi_depth`` floor.
+    Missing/unknown mode uses the assurance floor (strictest), not
+    drafting.
+    """
     current = text or ''
-    if (_count_kpi_rows(current) >= _MIN_KPI
+    floor = required_kpi_floor(generation_mode)
+    if (_count_kpi_rows(current) >= floor
             and _kpi_schema_valid(current)
-            and not _synth_kpi_blockers(current, 'drafting')
+            and not _synth_kpi_blockers(current, generation_mode)
             and not _leak_terms(current)):
         return current, _count_kpi_rows(current)
     existing = _existing_ai_rows(current)
@@ -375,12 +473,27 @@ def evaluate_rel36_18_ai_sdaia_kpi_synth(
         save_blockers_after: Optional[Sequence[str]] = None,
         docx_allowed: bool = False,
         pdf_allowed: bool = False,
+        domain_input: str = '',
+        domain_resolved: str = '',
+        sdaia_selected_explicitly: bool = False,
+        body_text_sdaia_ignored: bool = False,
+        repair_applied: bool = False,
+        skipped_reason: str = '',
+        generation_mode: Any = 'drafting',
+        required_kpi_floor: int = _MIN_KPI,
 ) -> Dict[str, Any]:
     after = list(synth_kpis_blockers_after or [])
     leaks = list(leakage_terms_after or [])
     save_after = list(save_blockers_after or [])
+    floor = int(required_kpi_floor or _MIN_KPI)
+    applicable = (
+        not skipped_reason
+        and str(domain_resolved or '') == 'ai'
+        and bool(sdaia_selected_explicitly)
+    )
     passed = (
-        int(kpi_rows_after or 0) >= _MIN_KPI
+        applicable
+        and int(kpi_rows_after or 0) >= floor
         and bool(schema_valid_after)
         and not after
         and not leaks
@@ -395,6 +508,14 @@ def evaluate_rel36_18_ai_sdaia_kpi_synth(
         'lang': str(lang or ''),
         'document_type': str(document_type or ''),
         'selected_frameworks': list(_selected_list(selected_frameworks)),
+        'domain_input': domain_input,
+        'domain_resolved': domain_resolved,
+        'sdaia_selected_explicitly': bool(sdaia_selected_explicitly),
+        'body_text_sdaia_ignored': bool(body_text_sdaia_ignored),
+        'repair_applied': bool(repair_applied),
+        'skipped_reason': skipped_reason,
+        'generation_mode': _normalize_generation_mode(generation_mode),
+        'required_kpi_floor': floor,
         'first_kpi_table_header_before': first_kpi_table_header_before,
         'first_kpi_table_header_after': first_kpi_table_header_after,
         'kpi_rows_before': int(kpi_rows_before or 0),
@@ -411,16 +532,15 @@ def evaluate_rel36_18_ai_sdaia_kpi_synth(
         'docx_allowed': bool(docx_allowed),
         'pdf_allowed': bool(pdf_allowed),
         'passed': bool(passed),
-        'applied': True,
+        'applied': bool(repair_applied),
     }
 
 
 def emit_rel36_18(payload: Dict[str, Any]) -> None:
     try:
-        print(
-            REL36_18_AI_SDAIA_KPI_SYNTH_REPAIR_TAG + ' '
-            + json.dumps(payload, ensure_ascii=False, default=str),
-            flush=True)
+        raw = json.dumps(payload, ensure_ascii=False, default=str)
+        print(REL36_18_AI_SDAIA_KPI_SYNTH_REPAIR_TAG + ' ' + raw, flush=True)
+        print(REL36_181_AI_SDAIA_KPI_SYNTH_P1_GUARD_TAG + ' ' + raw, flush=True)
     except Exception:  # noqa: BLE001
         pass
 
@@ -428,7 +548,7 @@ def emit_rel36_18(payload: Dict[str, Any]) -> None:
 def apply_rel36_18_ai_sdaia_kpi_synth(
         sections: Optional[Dict[str, Any]],
         *,
-        domain: Any = 'ai',
+        domain: Any = '',
         lang: Any = 'ar',
         document_type: Any = 'strategy',
         selected_frameworks: Optional[Iterable[Any]] = None,
@@ -440,23 +560,29 @@ def apply_rel36_18_ai_sdaia_kpi_synth(
         backend: Any = None,
         attempt_id: Any = '',
         doc_subtype: Any = '',
+        request_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     del backend, attempt_id, doc_subtype
     secs = dict(sections or {})
     blob = '\n'.join(str(v) for v in secs.values() if isinstance(v, str))
-    in_scope = rel36_18_should_apply(
+    scope = _scope_decision(
         domain=domain, lang=lang, document_type=document_type,
-        selected_frameworks=selected_frameworks, text=blob)
+        selected_frameworks=selected_frameworks, text=blob,
+        request_meta=request_meta)
+    in_scope = bool(scope['in_scope'])
+    floor = required_kpi_floor(generation_mode)
     before = str(secs.get('kpis') or '')
     rows_b = _count_kpi_rows(before)
     hdr_b = _first_kpi_header(before)
     synth_b = _synth_kpi_blockers(before, generation_mode) if in_scope else []
     save_b = list(synth_b)
     after = before
+    repaired = False
     if in_scope and (synth_b or not _kpi_schema_valid(before)
-                     or rows_b < _MIN_KPI or _leak_terms(before)):
-        after, _n = repair_first_kpi_table(before)
+                     or rows_b < floor or _leak_terms(before)):
+        after, _n = repair_first_kpi_table(before, generation_mode)
         secs['kpis'] = after
+        repaired = after != before
     final = str(secs.get('kpis') or after)
     rows_a = _count_kpi_rows(final)
     hdr_a = _first_kpi_header(final)
@@ -465,24 +591,11 @@ def apply_rel36_18_ai_sdaia_kpi_synth(
     save_a = list(synth_a) + [f'forbidden_leak:{t}' for t in leaks]
     schema = _kpi_schema_valid(final) if in_scope else False
     roles = _ai_roles_ok(final) if in_scope else False
-    if not in_scope:
-        diag = {
-            'task_id': str(task_id or ''),
-            'domain': str(domain or ''),
-            'lang': str(lang or ''),
-            'document_type': str(document_type or ''),
-            'selected_frameworks': list(_selected_list(selected_frameworks)),
-            'applied': False,
-            'passed': False,
-        }
-        if emit:
-            emit_rel36_18(diag)
-        return secs if sections is None else (
-            secs if secs is not sections else sections), diag
     export_ok = (
-        bool(docx_allowed) or bool(pdf_allowed)
-        or (not save_a and not synth_a and not leaks and schema and roles
-            and rows_a >= _MIN_KPI)
+        in_scope
+        and (bool(docx_allowed) or bool(pdf_allowed)
+             or (not save_a and not synth_a and not leaks and schema and roles
+                 and rows_a >= floor))
     )
     diag = evaluate_rel36_18_ai_sdaia_kpi_synth(
         task_id=task_id,
@@ -505,6 +618,14 @@ def apply_rel36_18_ai_sdaia_kpi_synth(
         save_blockers_after=save_a,
         docx_allowed=docx_allowed or export_ok,
         pdf_allowed=pdf_allowed or export_ok,
+        domain_input=scope['domain_input'],
+        domain_resolved=scope['domain_resolved'],
+        sdaia_selected_explicitly=scope['sdaia_selected_explicitly'],
+        body_text_sdaia_ignored=scope['body_text_sdaia_ignored'],
+        repair_applied=repaired,
+        skipped_reason=scope['skipped_reason'],
+        generation_mode=generation_mode,
+        required_kpi_floor=floor,
     )
     if emit:
         emit_rel36_18(diag)

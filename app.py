@@ -40933,10 +40933,13 @@ def _prcy88_cyber_board_ready_quality_baseline(
             generation_mode=_m.get('generation_mode') or 'drafting',
             doc_subtype=_m.get('doc_subtype') or 'technical',
         )
+        # REL36.18.1 — this wrapper is cyber-only and often has no model.
+        # Never default a missing domain to 'ai'. Pass the real cyber
+        # domain (or an explicit model domain) so REL36.18 no-ops.
         _apply_rel36_18_ai_sdaia_kpi_synth(
             sections,
             lang,
-            _m.get('domain') or 'ai',
+            _m.get('domain') or 'cyber',
             selected_frameworks,
             document_type=_m.get('document_type') or 'strategy',
             task_id=task_id or '',
