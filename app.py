@@ -21817,7 +21817,8 @@ def count_valid_objective_rows(vision_text):
     if not vision_text:
         return 0
     hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+        r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+        r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
         _ts_re.IGNORECASE,
     )
     # Singular forms (month/year/week/day) are already covered by the
@@ -31787,6 +31788,38 @@ def _apply_rel36_19_bilingual_language_parity(
         if isinstance(out, dict) and out is not sections:
             sections.clear()
             sections.update(out)
+        resolved_org = extract_org_name(org_name, sections)
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        resolved_org = org_name or ''
+        diag = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_20_data_ai_guide_save_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=resolved_org,
+    )
+    return diag
+
+
+def _apply_rel36_20_data_ai_guide_save_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.20 — Data/AI roadmap, core-synth, and guide completeness."""
+    try:
+        from release_engine_v3.rel36_20_data_ai_guide_save_stability import (
+            apply_rel36_20_data_ai_guide_save_stability,
+        )
+        out, diag = apply_rel36_20_data_ai_guide_save_stability(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
         return diag
     except Exception:  # noqa: BLE001 — never skip the later gate
         return {'applied': False, 'action_taken': 'hook_error'}
@@ -31819,6 +31852,9 @@ def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type=document_type)
     _apply_rel36_15_final_registry_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type)
+    _apply_rel36_20_data_ai_guide_save_stability(
         sections, lang, domain, selected_frameworks,
         document_type=document_type)
 
@@ -68812,6 +68848,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                             )
                         except Exception:
                             pass
+                        _apply_rel36_20_data_ai_guide_save_stability(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
                         if _final_synth:
