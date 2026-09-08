@@ -596,7 +596,11 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
                 translate_generated_phrase,
             )
             if re.search(r'[\u0600-\u06FF]', out):
-                out = translate_generated_phrase(out)
+                from release_engine_v3.rel36_19_bilingual_language_parity import (
+                    resolve_org_name,
+                )
+                out = translate_generated_phrase(
+                    out, org_name=resolve_org_name())
         except Exception:
             pass
     return out

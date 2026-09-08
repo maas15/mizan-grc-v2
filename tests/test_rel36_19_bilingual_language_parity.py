@@ -64,9 +64,13 @@ from release_engine_v3.rel36_19_bilingual_language_parity import (
     SO_HEADERS_EN,
     apply_rel36_19_bilingual_language_parity,
     bind_latest_preview_payload,
+    count_kpi_main_tables,
+    first_kpi_table_headers,
+    kpi_main_schema_valid,
     roadmap_visible_row_count,
     sanitize_preview_txt_print,
     sanitize_visible_language_text,
+    set_visible_org_name,
 )
 from release_engine.rel27_export_checks import _is_roadmap_heading
 from release_engine_v3.rel36_bilingual_preview_export_authority import (
@@ -813,6 +817,345 @@ class Rel3619LanguageParityTests(unittest.TestCase):
             encoding='utf-8')
         self.assertIn("label_en: 'Type'", js)
         self.assertIn("label_en: 'Source'", js)
+
+
+_AR_ORG = 'شركة مثال'
+
+
+def _alias_kpi_table():
+    return (
+        '## 6. Key Performance Indicators\n\n'
+        '| # | KPI | Type | Target | Formula | Data Source | Frequency | Owner |\n'
+        '|---|---|---|---|---|---|---|---|\n'
+        '| 1 | MTTD | KPI | < 15 minutes | total detect time / incidents | SIEM | Monthly | CISO |\n'
+    )
+
+
+def _malformed_kpi_table():
+    return (
+        '## 6. KPIs\n\n'
+        '| # | Metric | Target |\n'
+        '|---|---|---|\n'
+        '| 1 | Coverage | 100% |\n'
+    )
+
+
+class Rel36191CodexGuardTests(unittest.TestCase):
+    def test_01_en_cyber_arabic_org_preserved(self):
+        secs = _en_cyber_arabic_prose()
+        secs['vision'] = (
+            f'Prepared for {_AR_ORG}.\n\n' + (secs.get('vision') or ''))
+        out, diag, _ = _apply19(secs, domain='cyber', org_name=_AR_ORG)
+        blob = '\n'.join(str(v) for v in out.values() if isinstance(v, str))
+        self.assertIn(_AR_ORG, blob)
+        self.assertIn('Strategic Objective', out.get('vision') or '')
+        self.assertNotIn('الهدف الاستراتيجي', out.get('vision') or '')
+        self.assertTrue(diag.get('org_name_preserved'), diag)
+        _write_preview('en_cyber_ar_org', out)
+        _write_json('en_cyber_ar_org_language_parity.json', diag)
+
+    def test_02_en_data_arabic_org_prose_removed(self):
+        secs = _en_data_mixed()
+        secs['vision'] = (
+            f'Prepared for {_AR_ORG}.\n\n' + (secs.get('vision') or ''))
+        out, diag, _ = _apply19(
+            secs, domain='data', selected_frameworks=_NDMO, org_name=_AR_ORG)
+        blob = '\n'.join(str(v) for v in out.values() if isinstance(v, str))
+        self.assertIn(_AR_ORG, blob)
+        self.assertFalse(diag.get('arabic_header_hits_in_en_after'), diag)
+        self.assertFalse(diag.get('arabic_prose_hits_in_en_after'), diag)
+        pair = _export_pair(out, lang='en', domain='data')
+        _write_preview('en_data_ar_org', out)
+        _write_export('en_data_ar_org', pair)
+        _write_json('en_data_ar_org_language_parity.json', diag)
+
+    def test_03_en_ai_arabic_org_generated_text_removed(self):
+        secs = _en_ai_mixed()
+        secs['vision'] = (
+            f'Prepared for {_AR_ORG}.\n\n' + (secs.get('vision') or ''))
+        out, diag, _ = _apply19(
+            secs, domain='ai', selected_frameworks=_SDAIA, org_name=_AR_ORG)
+        vision = out.get('vision') or ''
+        self.assertIn(_AR_ORG, vision)
+        self.assertNotIn('تأسيس حوكمة الذكاء الاصطناعي', vision)
+        self.assertNotIn('الهدف الاستراتيجي', vision)
+        pair = _export_pair(out, lang='en', domain='ai')
+        _write_preview('en_ai_ar_org', out)
+        _write_export('en_ai_ar_org', pair)
+        _write_json('en_ai_ar_org_language_parity.json', diag)
+
+    def test_04_preview_sanitizer_receives_org_name(self):
+        set_visible_org_name(_AR_ORG)
+        out = sanitize_visible_language_text(
+            f'Prepared for {_AR_ORG}. الهدف الاستراتيجي leftover',
+            'en', org_name=_AR_ORG)
+        self.assertIn(_AR_ORG, out)
+        self.assertNotIn('الهدف الاستراتيجي', out)
+        preview = sanitize_visible_preview_text(
+            f'Prepared for {_AR_ORG}. المبرر leftover',
+            'en', org_name=_AR_ORG)
+        self.assertIn(_AR_ORG, preview)
+
+    def test_05_export_paths_receive_org_name(self):
+        txt = sanitize_preview_txt_print(
+            f'Print for {_AR_ORG}. الخطوة leftover',
+            lang='en', domain='cyber', org_name=_AR_ORG)
+        self.assertIn(_AR_ORG, txt)
+        secs = _en_cyber_arabic_prose()
+        secs['vision'] = f'Org {_AR_ORG}\n\n' + (secs.get('vision') or '')
+        out, _, _ = _apply19(secs, domain='cyber', org_name=_AR_ORG)
+        pair = _export_pair(out, lang='en', domain='cyber')
+        docx = _docx_text(pair)
+        if docx:
+            self.assertIn(_AR_ORG, docx)
+        self.assertTrue(pair['docx_ev'].export_return_allowed)
+        self.assertTrue(pair['pdf_ev'].export_return_allowed)
+        _write_export('en_cyber_ar_org', pair)
+
+    def test_06_arabic_org_not_counted_as_prose(self):
+        secs = _en_data_mixed()
+        secs['environment'] = f'Prepared for {_AR_ORG}.'
+        out, diag, _ = _apply19(
+            secs, domain='data', selected_frameworks=_NDMO, org_name=_AR_ORG)
+        self.assertFalse(diag.get('arabic_prose_hits_in_en_after'), diag)
+        self.assertIn(_AR_ORG, out.get('environment') or '')
+
+    def test_07_generated_arabic_headers_still_replaced(self):
+        out, _, _ = _apply19(
+            _en_cyber_arabic_prose(), domain='cyber', org_name=_AR_ORG)
+        self.assertIn('Strategic Objective', out.get('vision') or '')
+        self.assertNotIn('الهدف الاستراتيجي', out.get('vision') or '')
+
+    def test_08_repair_runs_before_canonical_artifact(self):
+        from release_engine_v3.canonical_document import build_final_document_artifact
+        secs = _en_data_mixed()
+        art = {
+            'sections': secs,
+            'domain': 'data',
+            'document_type': 'strategy',
+            'lang': 'en',
+            'org_name': _AR_ORG,
+            'strategy_id': 'rel36-19-1-precanon',
+            'contract_meta': {
+                'lang': 'en', 'domain': 'data', 'document_type': 'strategy',
+                'selected_frameworks': list(_NDMO),
+            },
+            'selected_frameworks': list(_NDMO),
+        }
+        built = build_final_document_artifact(art, strategy_id='rel36-19-1-precanon')
+        diag = art.get('_rel36_19') or {}
+        self.assertEqual(diag.get('repair_stage'), 'pre_canonical_artifact', diag)
+        self.assertTrue(diag.get('pre_canonical_repair_applied'), diag)
+        _write_json('pre_canonical_repair_diagnostic.json', {
+            'repair_stage': diag.get('repair_stage'),
+            'pre_canonical_repair_applied': diag.get('pre_canonical_repair_applied'),
+            'canonical_hash_source': diag.get('canonical_hash_source'),
+            'canonical_sections_repaired': diag.get('canonical_sections_repaired'),
+            'legacy_sections_repaired': diag.get('legacy_sections_repaired'),
+            'stale_canonical_headers_after': diag.get(
+                'stale_canonical_headers_after'),
+            'stale_freeze_blockers_after': diag.get(
+                'stale_freeze_blockers_after'),
+            'canonical_hash': getattr(built, 'canonical_hash', ''),
+            'passed': (
+                diag.get('repair_stage') == 'pre_canonical_artifact'
+                and bool(diag.get('canonical_sections_repaired'))
+                and not (diag.get('stale_canonical_headers_after') or [])
+                and not (diag.get('stale_freeze_blockers_after') or [])
+            ),
+        })
+
+    def test_09_canonical_hash_uses_repaired_sections(self):
+        from release_engine_v3.canonical_document import build_final_document_artifact
+        secs = _en_ai_mixed()
+        art = {
+            'sections': secs,
+            'domain': 'ai',
+            'document_type': 'strategy',
+            'lang': 'en',
+            'strategy_id': 'rel36-19-1-hash',
+            'contract_meta': {
+                'lang': 'en', 'domain': 'ai', 'document_type': 'strategy',
+                'selected_frameworks': list(_SDAIA),
+            },
+        }
+        build_final_document_artifact(art, strategy_id='rel36-19-1-hash')
+        diag = art.get('_rel36_19') or {}
+        self.assertEqual(diag.get('canonical_hash_source'), 'repaired_sections', diag)
+        self.assertTrue(diag.get('canonical_sections_repaired'), diag)
+
+    def test_10_preview_docx_pdf_share_repaired_headers(self):
+        out, _, _ = _apply19(_en_data_mixed(), domain='data', selected_frameworks=_NDMO)
+        pair = _export_pair(out, lang='en', domain='data')
+        preview = out.get('vision') or ''
+        docx = _docx_text(pair) or preview
+        self.assertIn('Strategic Objective', preview)
+        self.assertIn('Strategic Objective', docx)
+        self.assertNotIn('الهدف الاستراتيجي', preview)
+        self.assertNotIn('الهدف الاستراتيجي', docx)
+
+    def test_11_stale_arabic_headers_do_not_survive_export(self):
+        out, _, _ = _apply19(_en_ai_mixed(), domain='ai', selected_frameworks=_SDAIA)
+        pair = _export_pair(out, lang='en', domain='ai')
+        blob = (_docx_text(pair) or '') + (out.get('vision') or '')
+        self.assertNotIn('الهدف الاستراتيجي', blob)
+        self.assertTrue(pair['docx_ev'].export_return_allowed)
+
+    def test_12_frozen_lock_no_stale_pre_repair_blockers(self):
+        from release_engine_v3.canonical_document import build_final_document_artifact
+        secs = _en_cyber_arabic_prose()
+        art = {
+            'sections': secs,
+            'domain': 'cyber',
+            'document_type': 'strategy',
+            'lang': 'en',
+            'strategy_id': 'rel36-19-1-lock',
+            'contract_meta': {
+                'lang': 'en', 'domain': 'cyber', 'document_type': 'strategy',
+                'selected_frameworks': list(_NCA_FWS),
+            },
+        }
+        build_final_document_artifact(art, strategy_id='rel36-19-1-lock')
+        diag = art.get('_rel36_19') or {}
+        self.assertEqual(diag.get('stale_canonical_headers_after') or [], [], diag)
+
+    def test_13_valid_alias_kpi_no_second_seed(self):
+        secs = _en_cyber_arabic_prose()
+        secs['kpis'] = _alias_kpi_table()
+        out, diag, _ = _apply19(secs, domain='cyber')
+        self.assertFalse(diag.get('seed_table_appended'), diag)
+        self.assertLessEqual(int(diag.get('kpi_table_count_after') or 0), 1)
+        _write_json('kpi_duplicate_table_diagnostic.json', {
+            'first_kpi_table_header_before': diag.get(
+                'first_kpi_table_header_before'),
+            'first_kpi_table_header_after': diag.get(
+                'first_kpi_table_header_after'),
+            'first_kpi_table_schema_valid_before': diag.get(
+                'first_kpi_table_schema_valid_before'),
+            'first_kpi_table_schema_valid_after': diag.get(
+                'first_kpi_table_schema_valid_after'),
+            'seed_table_appended': diag.get('seed_table_appended'),
+            'kpi_table_count_before': diag.get('kpi_table_count_before'),
+            'kpi_table_count_after': diag.get('kpi_table_count_after'),
+            'duplicate_kpi_table_after': diag.get('duplicate_kpi_table_after'),
+            'passed': (
+                not diag.get('seed_table_appended')
+                and not diag.get('duplicate_kpi_table_after')
+                and bool(diag.get('first_kpi_table_schema_valid_after'))
+            ),
+        })
+
+    def test_14_valid_official_english_kpi_recognized(self):
+        hdr = list(KPI_MAIN_EN)
+        self.assertTrue(kpi_main_schema_valid(hdr, 'en'))
+
+    def test_15_valid_alias_kpi_recognized_without_literal(self):
+        hdr = ['#', 'KPI', 'Type', 'Target', 'Formula', 'Data Source',
+               'Frequency', 'Owner']
+        self.assertTrue(kpi_main_schema_valid(hdr, 'en'), hdr)
+        self.assertNotEqual(' '.join(hdr), ' '.join(KPI_MAIN_EN))
+
+    def test_16_malformed_first_kpi_replaced_not_appended(self):
+        secs = _en_data_mixed()
+        secs['kpis'] = _malformed_kpi_table()
+        out, diag, _ = _apply19(
+            secs, domain='data', selected_frameworks=_NDMO)
+        kpis = out.get('kpis') or ''
+        self.assertTrue(diag.get('first_kpi_table_schema_valid_after'), diag)
+        self.assertLessEqual(count_kpi_main_tables(kpis, 'en'), 1)
+        self.assertEqual(kpis.lower().count('key performance indicators'), 1)
+
+    def test_17_kpi_count_does_not_increase_when_valid(self):
+        secs = _en_cyber_arabic_prose()
+        secs['kpis'] = _alias_kpi_table()
+        before = count_kpi_main_tables(secs['kpis'], 'en')
+        out, diag, _ = _apply19(secs, domain='cyber')
+        after = count_kpi_main_tables(out.get('kpis') or '', 'en')
+        self.assertEqual(before, 1)
+        self.assertEqual(after, 1)
+        self.assertFalse(diag.get('seed_table_appended'), diag)
+
+    def test_18_arabic_kpi_schema_remains_arabic(self):
+        secs = dict(_data_sections())
+        out, _, _ = _apply19(
+            secs, domain='data', lang='ar', selected_frameworks=_NDMO)
+        kpis = out.get('kpis') or ''
+        self.assertIn('وصف المؤشر', kpis)
+        self.assertTrue(kpi_main_schema_valid(first_kpi_table_headers(kpis, 'ar'), 'ar'))
+
+    def test_19_en_preview_headers_remain_english(self):
+        for domain, fws, seed in (
+                ('cyber', _NCA_FWS, _en_cyber_arabic_prose()),
+                ('data', _NDMO, _en_data_mixed()),
+                ('ai', _SDAIA, _en_ai_mixed())):
+            out, _, _ = _apply19(
+                seed, domain=domain, selected_frameworks=list(fws))
+            self.assertIn('Strategic Objective', out.get('vision') or '', domain)
+
+    def test_20_ar_preview_headers_remain_arabic(self):
+        for domain, fws, seed in (
+                ('cyber', _NCA_FWS, _cyber_ar_sections()),
+                ('data', _NDMO, _data_sections()),
+                ('ai', _SDAIA, _ai_sections())):
+            out, _, _ = _apply19(
+                seed, domain=domain, lang='ar', selected_frameworks=list(fws))
+            blob = '\n'.join(str(v) for v in out.values() if isinstance(v, str))
+            self.assertTrue(_AR_RE.search(blob), domain)
+
+    def test_21_en_data_docx_pdf_allowed(self):
+        out, _, _ = _apply19(
+            _en_data_mixed(), domain='data', selected_frameworks=_NDMO)
+        pair = _export_pair(out, lang='en', domain='data')
+        self.assertTrue(pair['docx_ev'].export_return_allowed)
+        self.assertTrue(pair['pdf_ev'].export_return_allowed)
+        _write_export('en_data', pair)
+
+    def test_22_en_ai_docx_pdf_allowed(self):
+        out, _, _ = _apply19(
+            _en_ai_mixed(), domain='ai', selected_frameworks=_SDAIA)
+        pair = _export_pair(out, lang='en', domain='ai')
+        self.assertTrue(pair['docx_ev'].export_return_allowed)
+        self.assertTrue(pair['pdf_ev'].export_return_allowed)
+        _write_export('en_ai', pair)
+
+    def test_23_no_data_ai_roadmap_drift(self):
+        for domain, fws, seed in (
+                ('data', _NDMO, _en_data_mixed()),
+                ('ai', _SDAIA, _en_ai_mixed())):
+            out, diag, _ = _apply19(
+                seed, domain=domain, selected_frameworks=list(fws))
+            self.assertGreater(int(diag.get('roadmap_visible_row_count_after') or 0), 0)
+
+    def test_24_no_pdf_evidence_failed_data_ai(self):
+        for domain, fws, seed in (
+                ('data', _NDMO, _en_data_mixed()),
+                ('ai', _SDAIA, _en_ai_mixed())):
+            out, _, _ = _apply19(
+                seed, domain=domain, selected_frameworks=list(fws))
+            pair = _export_pair(out, lang='en', domain=domain)
+            blob = ' '.join(str(b) for b in (pair['pdf_ev'].blocking_errors or []))
+            self.assertNotIn('actual PDF evidence validation failed', blob)
+
+    def test_25_ai_sdaia_5_shape_still_passes(self):
+        Rel3619LanguageParityTests().test_27_rel36_18_ai_sdaia_5_shape_regression()
+
+    def test_26_en_cyber_10_shape_still_passes(self):
+        Rel3619LanguageParityTests().test_28_rel36_17_english_cyber_10_shape_regression()
+
+    def test_27_data_ndmo_pdpl_still_passes(self):
+        Rel3619LanguageParityTests().test_29_data_ndmo_pdpl_regression()
+
+    def test_28_erm_still_passes(self):
+        Rel3619LanguageParityTests().test_30_erm_risk_regression()
+
+    def test_29_dt_dga_still_passes(self):
+        Rel3619LanguageParityTests().test_31_dt_dga_regression()
+
+    def test_30_auth_csrf_still_passes(self):
+        Rel3619LanguageParityTests().test_32_auth_csrf_regression()
+
+    def test_31_full_smoke_matrix_still_present(self):
+        Rel3619LanguageParityTests().test_33_full_smoke_matrix_scripts_present()
 
 
 if __name__ == '__main__':

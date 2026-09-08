@@ -8,6 +8,7 @@ Cyber, Data, and AI strategies. Does not suppress
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -29,6 +30,25 @@ from release_engine_v3.rel36_bilingual_preview_export_authority import (
 
 REL36_19_BILINGUAL_LANGUAGE_PARITY_TAG = (
     '[REL36.19-BILINGUAL-LANGUAGE-PARITY]')
+REL36_191_BILINGUAL_P1_GUARDS_TAG = (
+    '[REL36.19.1-BILINGUAL-P1-GUARDS]')
+
+_ORG_NAME_CTX: contextvars.ContextVar[str] = contextvars.ContextVar(
+    'rel36_19_org_name', default='')
+_ORG_PLACEHOLDER = '\x00REL3619_ORG\x00'
+
+KPI_MAIN_ALIASES_EN = {
+    '#': ('#', 'no', 'n'),
+    'kpi description': (
+        'kpi description', 'kpi', 'indicator', 'indicator description',
+    ),
+    'type': ('type', 'category'),
+    'target value': ('target value', 'target'),
+    'calculation formula': ('calculation formula', 'formula'),
+    'source': ('source', 'data source'),
+    'frequency': ('frequency',),
+    'owner': ('owner',),
+}
 
 REL36_19_DOMAINS = frozenset({'cyber', 'data', 'ai'})
 REL36_19_DOCUMENT_TYPES = frozenset({
@@ -452,6 +472,123 @@ def _blob(headers: Sequence[str]) -> str:
     return ' '.join(_norm_cell(h) for h in headers)
 
 
+def extract_org_name(*sources: Any) -> str:
+    """Return the first explicit user-entered organization name."""
+    keys = ('org_name', 'organization_name', 'entity_name', 'organisation_name')
+    for src in sources:
+        if isinstance(src, str) and src.strip():
+            return src.strip()
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            val = str(src.get(key) or '').strip()
+            if val:
+                return val
+    return str(_ORG_NAME_CTX.get() or '').strip()
+
+
+def set_visible_org_name(org_name: Any = '') -> str:
+    org = str(org_name or '').strip()
+    _ORG_NAME_CTX.set(org)
+    return org
+
+
+def resolve_org_name(*candidates: Any) -> str:
+    return extract_org_name(*candidates, _ORG_NAME_CTX.get())
+
+
+def org_name_is_arabic(org_name: str) -> bool:
+    return bool(_AR_RE.search(str(org_name or '')))
+
+
+def _protect_org_name(text: str, org_name: str = '') -> Tuple[str, str]:
+    org = resolve_org_name(org_name)
+    out = str(text or '')
+    if org and org in out:
+        return out.replace(org, _ORG_PLACEHOLDER), org
+    return out, org
+
+
+def _restore_org_name(text: str, org_name: str = '') -> str:
+    org = str(org_name or '').strip()
+    out = str(text or '')
+    if org:
+        return out.replace(_ORG_PLACEHOLDER, org)
+    return out.replace(_ORG_PLACEHOLDER, '')
+
+
+def _header_role_en(cell: str) -> str:
+    n = _norm_cell(cell)
+    for role, aliases in KPI_MAIN_ALIASES_EN.items():
+        if n == role or n in aliases:
+            return role
+    return ''
+
+
+def looks_like_kpi_main(headers: Sequence[str], lang: str = '') -> bool:
+    nlang = normalize_rel36_lang(lang) if lang else ''
+    joined = ' '.join(headers)
+    blob = _blob(headers)
+    if nlang == 'ar' or any(tok in joined for tok in (
+            'وصف المؤشر', 'صيغة الاحتساب', 'القيمة المستهدفة')):
+        if 'وصف المؤشر' in joined and len(headers) >= 7:
+            return True
+    roles = {_header_role_en(h) for h in headers}
+    needed = {
+        'kpi description', 'type', 'target value',
+        'calculation formula', 'source', 'frequency', 'owner',
+    }
+    if len(headers) >= 7 and needed.issubset(roles):
+        return True
+    if len(headers) >= 7 and (
+            'kpi description' in roles or 'kpi' in blob or 'indicator' in blob
+            ) and ('source' in roles or 'data source' in blob or 'مصدر' in joined):
+        return True
+    return False
+
+
+def kpi_main_schema_valid(headers: Sequence[str], lang: str = 'en') -> bool:
+    nlang = normalize_rel36_lang(lang)
+    hdr = [_norm_cell(h) for h in headers]
+    if nlang == 'ar':
+        expected = [_norm_cell(h) for h in KPI_MAIN_AR]
+        if hdr == expected:
+            return True
+        return (
+            len(headers) >= 7
+            and 'وصف المؤشر' in ' '.join(headers)
+            and 'صيغة الاحتساب' in ' '.join(headers)
+            and 'المالك' in ' '.join(headers)
+        )
+    roles = [_header_role_en(h) for h in headers]
+    needed = {
+        'kpi description', 'type', 'target value',
+        'calculation formula', 'source', 'frequency', 'owner',
+    }
+    return len(headers) >= 7 and needed.issubset(set(roles))
+
+
+def iter_kpi_main_tables(text: str, lang: str = 'en') -> List[re.Match[str]]:
+    found: List[re.Match[str]] = []
+    for match in _TABLE_RE.finditer(str(text or '')):
+        headers = _cells(match.group(1).splitlines()[0])
+        if looks_like_kpi_main(headers, lang) or classify_table(headers) == 'kpi_main':
+            found.append(match)
+    return found
+
+
+def count_kpi_main_tables(text: str, lang: str = 'en') -> int:
+    return len(iter_kpi_main_tables(text, lang))
+
+
+def first_kpi_table_headers(text: str, lang: str = 'en') -> List[str]:
+    matches = iter_kpi_main_tables(text, lang)
+    if not matches:
+        headers, _ = _first_markdown_table(text)
+        return headers
+    return _cells(matches[0].group(1).splitlines()[0])
+
+
 def classify_table(headers: Sequence[str]) -> str:
     blob = _blob(headers)
     joined = ' '.join(headers)
@@ -459,8 +596,13 @@ def classify_table(headers: Sequence[str]) -> str:
             'الهدف الاستراتيجي', 'Strategic Objective', 'Measurable Target',
             'المستهدف القابل للقياس')):
         return 'so'
-    if 'وصف المؤشر' in joined or 'kpi description' in blob:
-        return 'kpi_main'
+    if looks_like_kpi_main(headers) or 'وصف المؤشر' in joined:
+        if not (
+                len(headers) <= 4
+                and ('صيغة الاحتساب' in joined or 'calculation formula' in blob)
+                and 'وصف المؤشر' not in joined
+                and 'kpi description' not in blob):
+            return 'kpi_main'
     if (('صيغة الاحتساب' in joined or 'calculation formula' in blob)
             and len(headers) <= 4
             and ('المؤشر' in joined or 'data source' in blob
@@ -553,21 +695,15 @@ def _allowed_acronym_hits(text: str, domain: str, lang: str) -> List[str]:
 
 
 def translate_generated_phrase(text: str, *, org_name: str = '') -> str:
-    out = str(text or '')
-    org = str(org_name or '').strip()
-    protected = ''
-    if org and org in out:
-        protected = '\x00ORG\x00'
-        out = out.replace(org, protected)
+    org = resolve_org_name(org_name)
+    out, org = _protect_org_name(text, org)
     for ar, en in sorted(_PHRASE_EN.items(), key=lambda kv: -len(kv[0])):
         if ar in out:
             out = out.replace(ar, en)
     if _AR_RE.search(out):
         out = _AR_RE.sub('', out)
         out = re.sub(r'\s{2,}', ' ', out).strip(' /|-')
-    if protected:
-        out = out.replace(protected, org)
-    return out
+    return _restore_org_name(out, org)
 
 
 def _phase_from_period(period: str, lang: str) -> str:
@@ -759,7 +895,10 @@ def ensure_english_professional_roadmap_rows(
     cleaned: List[List[str]] = []
     seen: set = set()
     for row in rows or []:
-        cells = [translate_generated_phrase(c) for c in (list(row) + [''] * 6)[:6]]
+        cells = [
+            translate_generated_phrase(c, org_name=resolve_org_name())
+            for c in (list(row) + [''] * 6)[:6]
+        ]
         if any(_AR_RE.search(c) for c in cells):
             continue
         key = cells[2].strip().lower()[:80]
@@ -1013,16 +1152,21 @@ def normalize_visible_table_headers(
         out = out.replace('ل معالجة', 'treatment')
         out = out.replace('لل معالجة', 'treatment')
         out = out.replace('ال معالجة', 'treatment')
-    return sanitize_visible_language_text(out, nlang)
+    return sanitize_visible_language_text(out, nlang, org_name=org_name)
 
 
-def sanitize_visible_language_text(text: str, lang: str = 'ar') -> str:
+def sanitize_visible_language_text(
+        text: str, lang: str = 'ar', org_name: str = '') -> str:
     """Shared preview / TXT / Print / export visible-language sanitizer.
 
     Newline-safe: does not collapse ``\\n`` or strip leading table pipes.
+    Protects the exact user-entered organization name before generated
+    Arabic cleanup, then restores it. Does not guess an org name.
     """
     nlang = normalize_rel36_lang(lang)
-    cleaned = _FAMILY_RE.sub(' ', str(text or ''))
+    org = resolve_org_name(org_name)
+    cleaned, org = _protect_org_name(text, org)
+    cleaned = _FAMILY_RE.sub(' ', cleaned)
     try:
         from release_engine_v3.rel34_visible_output_quality import (
             FAMILY_MARKER_RE,
@@ -1046,7 +1190,7 @@ def sanitize_visible_language_text(text: str, lang: str = 'ar') -> str:
     except Exception:
         pass
     if nlang == 'en':
-        cleaned = translate_generated_phrase(cleaned)
+        cleaned = translate_generated_phrase(cleaned, org_name=org)
         cleaned = cleaned.replace('سجل\u00a0معالجة', 'processing register')
         cleaned = cleaned.replace('سجل معالجة', 'processing register')
         cleaned = cleaned.replace('لل\u00a0معالجة', 'treatment')
@@ -1056,7 +1200,7 @@ def sanitize_visible_language_text(text: str, lang: str = 'ar') -> str:
         cleaned = cleaned.replace('ال معالجة', 'treatment')
         cleaned = cleaned.replace('ل معالجة', 'treatment')
     cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
-    return cleaned
+    return _restore_org_name(cleaned, org)
 
 
 def sanitize_preview_txt_print(
@@ -1081,6 +1225,11 @@ def repair_sections_language_parity(
         org_name: str = '',
 ) -> Dict[str, Any]:
     secs = dict(sections or {})
+    nlang = normalize_rel36_lang(lang)
+    kpi_src = str(secs.get('kpis') or '')
+    pre_headers = first_kpi_table_headers(kpi_src, nlang)
+    pre_valid = bool(pre_headers) and kpi_main_schema_valid(pre_headers, nlang)
+    pre_count = count_kpi_main_tables(kpi_src, nlang)
     for key, value in list(secs.items()):
         if str(key).startswith('_') or not isinstance(value, str):
             continue
@@ -1089,7 +1238,6 @@ def repair_sections_language_parity(
             selected_frameworks=selected_frameworks, org_name=org_name))
     road = str(secs.get('roadmap') or '')
     if road.strip():
-        nlang = normalize_rel36_lang(lang)
         heading = (
             '### Implementation Roadmap' if nlang == 'en'
             else '### خارطة الطريق التنفيذية')
@@ -1100,21 +1248,75 @@ def repair_sections_language_parity(
                     'roadmap' in ln.lower() or 'خارطة الطريق' in ln)
                 for ln in road.splitlines()):
             secs['roadmap'] = heading + '\n\n' + road.lstrip()
-    nlang = normalize_rel36_lang(lang)
-    if nlang == 'en':
-        kpis = str(secs.get('kpis') or '')
-        if 'KPI Description' not in kpis:
-            seeds = english_kpi_seed_tables(domain)
-            if seeds:
-                main = seeds[0]
-                lines = [_join(main['header']), _sep(len(main['header']))]
-                for row in main.get('rows') or []:
-                    lines.append(_join(row))
-                secs['kpis'] = (
-                    (kpis + '\n\n' if kpis.strip() else '')
-                    + '### Key Performance Indicators\n\n'
-                    + '\n'.join(lines) + '\n')
+    kpi_diag = _ensure_counted_kpi_table(
+        secs, lang=nlang, domain=domain)
+    kpi_diag['first_kpi_table_header_before'] = pre_headers
+    kpi_diag['first_kpi_table_schema_valid_before'] = pre_valid
+    kpi_diag['kpi_table_count_before'] = pre_count
+    secs.pop('_rel36_191_kpi', None)
+    secs['_rel36_191_kpi_diag'] = kpi_diag
     return secs
+
+
+def _seed_kpi_markdown(domain: str) -> str:
+    seeds = english_kpi_seed_tables(domain)
+    if not seeds:
+        return ''
+    main = seeds[0]
+    lines = [_join(main['header']), _sep(len(main['header']))]
+    for row in main.get('rows') or []:
+        lines.append(_join(row))
+    return '### Key Performance Indicators\n\n' + '\n'.join(lines) + '\n'
+
+
+def _ensure_counted_kpi_table(
+        secs: Dict[str, Any],
+        *,
+        lang: str,
+        domain: str,
+) -> Dict[str, Any]:
+    nlang = normalize_rel36_lang(lang)
+    kpis = str(secs.get('kpis') or '')
+    matches = iter_kpi_main_tables(kpis, nlang)
+    first_headers = (
+        _cells(matches[0].group(1).splitlines()[0]) if matches
+        else first_kpi_table_headers(kpis, nlang)
+    )
+    valid_before = kpi_main_schema_valid(first_headers, nlang) if first_headers else False
+    count_before = count_kpi_main_tables(kpis, nlang)
+    seed_appended = False
+    if nlang == 'en' and not valid_before:
+        seed_md = _seed_kpi_markdown(domain)
+        if seed_md:
+            if matches:
+                m = matches[0]
+                kpis = kpis[:m.start()] + seed_md.rstrip() + '\n' + kpis[m.end():]
+            elif first_headers:
+                first = _TABLE_RE.search(kpis)
+                if first:
+                    kpis = (
+                        kpis[:first.start()] + seed_md.rstrip() + '\n'
+                        + kpis[first.end():])
+                else:
+                    kpis = (kpis + '\n\n' if kpis.strip() else '') + seed_md
+                    seed_appended = True
+            else:
+                kpis = (kpis + '\n\n' if kpis.strip() else '') + seed_md
+                seed_appended = True
+            secs['kpis'] = kpis
+    after_headers = first_kpi_table_headers(str(secs.get('kpis') or ''), nlang)
+    count_after = count_kpi_main_tables(str(secs.get('kpis') or ''), nlang)
+    return {
+        'first_kpi_table_header_before': first_headers,
+        'first_kpi_table_header_after': after_headers,
+        'first_kpi_table_schema_valid_before': valid_before,
+        'first_kpi_table_schema_valid_after': kpi_main_schema_valid(
+            after_headers, nlang) if after_headers else False,
+        'seed_table_appended': seed_appended,
+        'kpi_table_count_before': count_before,
+        'kpi_table_count_after': count_after,
+        'duplicate_kpi_table_after': count_after > 1,
+    }
 
 
 def _demote_inner_h2(text: str) -> str:
@@ -1257,6 +1459,22 @@ def evaluate_rel36_19_bilingual_language_parity(
         blockers_before: Optional[Sequence[str]] = None,
         blockers_after: Optional[Sequence[str]] = None,
         text_after: str = '',
+        org_name: Any = '',
+        repair_stage: str = '',
+        pre_canonical_repair_applied: bool = False,
+        canonical_hash_source: str = '',
+        canonical_sections_repaired: bool = False,
+        legacy_sections_repaired: bool = False,
+        stale_canonical_headers_after: Optional[Sequence[str]] = None,
+        stale_freeze_blockers_after: Optional[Sequence[str]] = None,
+        first_kpi_table_header_before: Optional[Sequence[str]] = None,
+        first_kpi_table_header_after: Optional[Sequence[str]] = None,
+        first_kpi_table_schema_valid_before: bool = False,
+        first_kpi_table_schema_valid_after: bool = False,
+        seed_table_appended: bool = False,
+        kpi_table_count_before: int = 0,
+        kpi_table_count_after: int = 0,
+        duplicate_kpi_table_after: bool = False,
 ) -> Dict[str, Any]:
     nlang = normalize_rel36_lang(lang)
     dcode = _normalize_rel31_domain_code(domain) or str(domain or '')
@@ -1276,8 +1494,15 @@ def evaluate_rel36_19_bilingual_language_parity(
         contamination = bool(ar_hdr_after or ar_prose_after)
     else:
         contamination = bool(en_hdr_after or disallowed_after)
+    org = str(org_name or '').strip()
+    org_arabic = org_name_is_arabic(org)
+    org_preserved = bool(org) and org in str(text_after or '')
     if visible_text_has_internal_markers(text_after):
         blockers_a.append('internal_marker_leak')
+    if nlang == 'en' and org and not org_preserved:
+        blockers_a.append('org_name_not_preserved')
+    if nlang == 'en' and org and (ar_hdr_after or ar_prose_after):
+        blockers_a.append('arabic_generated_survived')
     passed = (
         rel36_19_should_apply(
             domain=domain, lang=nlang, document_type=document_type)
@@ -1292,6 +1517,7 @@ def evaluate_rel36_19_bilingual_language_parity(
             or int(roadmap_visible_row_count_after or 0) > 0
             or 'roadmap' not in str(section or output_type or '')
         )
+        and (nlang != 'en' or not org or org_preserved)
     )
     if nlang == 'en' and str(output_type) in ('docx', 'pdf', 'preview'):
         if 'roadmap' in str(text_after or '').lower() or str(section) == 'roadmap':
@@ -1335,6 +1561,29 @@ def evaluate_rel36_19_bilingual_language_parity(
         'pdf_evidence_blockers_after': pdf_blockers,
         'blockers_before': list(blockers_before or []),
         'blockers_after': blockers_a,
+        'org_name_input': org,
+        'org_name_is_arabic': org_arabic,
+        'protected_org_name_hits_before': 0,
+        'protected_org_name_hits_after': str(text_after or '').count(org) if org else 0,
+        'org_name_preserved': bool(org_preserved),
+        'arabic_generated_hits_after': ar_prose_after,
+        'repair_stage': repair_stage,
+        'pre_canonical_repair_applied': bool(pre_canonical_repair_applied),
+        'canonical_hash_source': canonical_hash_source,
+        'canonical_sections_repaired': bool(canonical_sections_repaired),
+        'legacy_sections_repaired': bool(legacy_sections_repaired),
+        'stale_canonical_headers_after': list(stale_canonical_headers_after or []),
+        'stale_freeze_blockers_after': list(stale_freeze_blockers_after or []),
+        'first_kpi_table_header_before': list(first_kpi_table_header_before or []),
+        'first_kpi_table_header_after': list(first_kpi_table_header_after or []),
+        'first_kpi_table_schema_valid_before': bool(
+            first_kpi_table_schema_valid_before),
+        'first_kpi_table_schema_valid_after': bool(
+            first_kpi_table_schema_valid_after),
+        'seed_table_appended': bool(seed_table_appended),
+        'kpi_table_count_before': int(kpi_table_count_before or 0),
+        'kpi_table_count_after': int(kpi_table_count_after or 0),
+        'duplicate_kpi_table_after': bool(duplicate_kpi_table_after),
         'passed': bool(passed),
     }
 
@@ -1371,6 +1620,11 @@ def apply_rel36_19_bilingual_language_parity(
     nlang = normalize_rel36_lang(lang)
     dcode = _normalize_rel31_domain_code(domain) or ''
     fws = list(selected_frameworks or [])
+    org = extract_org_name(org_name, secs)
+    set_visible_org_name(org)
+    repair_stage = str(
+        (secs.pop('_rel36_19_repair_stage', None) if isinstance(secs, dict) else '')
+        or 'visible_language')
     before_blob = '\n'.join(
         str(v) for v in secs.values() if isinstance(v, str))
     headers_before = (
@@ -1405,7 +1659,8 @@ def apply_rel36_19_bilingual_language_parity(
 
     repaired = repair_sections_language_parity(
         secs, lang=nlang, domain=dcode, selected_frameworks=fws,
-        org_name=str(org_name or ''))
+        org_name=org)
+    kpi_diag = dict(repaired.pop('_rel36_191_kpi_diag', {}) or {})
     after_blob = '\n'.join(
         str(v) for v in repaired.values() if isinstance(v, str))
     headers_after = (
@@ -1426,9 +1681,9 @@ def apply_rel36_19_bilingual_language_parity(
     ar_hdr_b = _arabic_hits(before_blob) if nlang == 'en' else []
     ar_hdr_a = _arabic_hits(after_blob) if nlang == 'en' else []
     ar_prose_b = _arabic_prose_hits(
-        before_blob, org_name=str(org_name or '')) if nlang == 'en' else []
+        before_blob, org_name=org) if nlang == 'en' else []
     ar_prose_a = _arabic_prose_hits(
-        after_blob, org_name=str(org_name or '')) if nlang == 'en' else []
+        after_blob, org_name=org) if nlang == 'en' else []
     en_hdr_b = _english_header_hits(before_blob) if nlang == 'ar' else []
     en_hdr_a = _english_header_hits(after_blob) if nlang == 'ar' else []
     dis_b = _disallowed_terms(before_blob, dcode, nlang)
@@ -1464,9 +1719,54 @@ def apply_rel36_19_bilingual_language_parity(
         blockers_before=['language_mix'] if (ar_hdr_b or ar_prose_b or en_hdr_b) else [],
         blockers_after=drift + dis_a,
         text_after=after_blob,
+        org_name=org,
+        repair_stage=repair_stage,
+        pre_canonical_repair_applied=(
+            repair_stage == 'pre_canonical_artifact'),
+        legacy_sections_repaired=True,
+        first_kpi_table_header_before=kpi_diag.get(
+            'first_kpi_table_header_before'),
+        first_kpi_table_header_after=kpi_diag.get(
+            'first_kpi_table_header_after'),
+        first_kpi_table_schema_valid_before=bool(
+            kpi_diag.get('first_kpi_table_schema_valid_before')),
+        first_kpi_table_schema_valid_after=bool(
+            kpi_diag.get('first_kpi_table_schema_valid_after')),
+        seed_table_appended=bool(kpi_diag.get('seed_table_appended')),
+        kpi_table_count_before=int(kpi_diag.get('kpi_table_count_before') or 0),
+        kpi_table_count_after=int(kpi_diag.get('kpi_table_count_after') or 0),
+        duplicate_kpi_table_after=bool(
+            kpi_diag.get('duplicate_kpi_table_after')),
     )
+    diag['protected_org_name_hits_before'] = before_blob.count(org) if org else 0
+    diag['protected_org_name_hits_after'] = after_blob.count(org) if org else 0
+    diag['org_name_preserved'] = bool(org) and org in after_blob
     if emit:
         emit_rel36_19(diag)
+        if org or repair_stage == 'pre_canonical_artifact':
+            try:
+                print(
+                    REL36_191_BILINGUAL_P1_GUARDS_TAG + ' '
+                    + json.dumps({
+                        'org_name_input': org,
+                        'org_name_is_arabic': org_name_is_arabic(org),
+                        'protected_org_name_hits_before': diag[
+                            'protected_org_name_hits_before'],
+                        'protected_org_name_hits_after': diag[
+                            'protected_org_name_hits_after'],
+                        'org_name_preserved': diag['org_name_preserved'],
+                        'arabic_generated_hits_after': ar_prose_a,
+                        'arabic_header_hits_in_en_after': ar_hdr_a,
+                        'repair_stage': repair_stage,
+                        'seed_table_appended': diag.get('seed_table_appended'),
+                        'duplicate_kpi_table_after': diag.get(
+                            'duplicate_kpi_table_after'),
+                        'passed': diag.get('passed'),
+                    }, ensure_ascii=False, default=str),
+                    flush=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     if isinstance(sections, dict):
         sections.clear()
         sections.update(repaired)

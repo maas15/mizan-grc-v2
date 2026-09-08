@@ -53,13 +53,19 @@ def render_preview_table_html(
         from release_engine_v3.rel36_bilingual_preview_export_authority import (
             sanitize_visible_preview_text,
         )
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            resolve_org_name as _resolve_org19,
+        )
+        _org19 = _resolve_org19()
     except Exception:  # noqa: BLE001
-        sanitize_visible_preview_text = lambda t, _l='ar': t  # noqa: E731
+        sanitize_visible_preview_text = lambda t, _l='ar', **_k: t  # noqa: E731
+        _org19 = ''
     for row_dict in bound_rows:
         cells = row_dict_to_cells(row_dict, schema_id)
         parts.append('<tr>')
         for cell in cells:
-            val = sanitize_visible_preview_text((cell or '').strip(), nlang)
+            val = sanitize_visible_preview_text(
+                (cell or '').strip(), nlang, org_name=_org19)
             if not val or val == '—':
                 parts.append('<td class="cell-missing">—</td>')
             else:

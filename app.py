@@ -14907,9 +14907,11 @@ def _prepare_final_render_text(text, lang='ar'):
         )
         out = sanitize_visible_export_text(out, lang)
         from release_engine_v3.rel36_19_bilingual_language_parity import (
+            resolve_org_name,
             sanitize_visible_language_text,
         )
-        out = sanitize_visible_language_text(out, lang)
+        out = sanitize_visible_language_text(
+            out, lang, org_name=resolve_org_name())
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -31763,12 +31765,14 @@ def _apply_rel36_18_ai_sdaia_kpi_synth(
 def _apply_rel36_19_bilingual_language_parity(
         sections, lang, domain, selected_frameworks,
         document_type='strategy', task_id='',
-        generation_mode='drafting', doc_subtype='technical'):
+        generation_mode='drafting', doc_subtype='technical',
+        org_name=''):
     """REL36.19 — visible language parity for cyber/data/ai strategy."""
     del generation_mode, doc_subtype
     try:
         from release_engine_v3.rel36_19_bilingual_language_parity import (
             apply_rel36_19_bilingual_language_parity,
+            extract_org_name,
         )
         out, diag = apply_rel36_19_bilingual_language_parity(
             sections,
@@ -31777,6 +31781,7 @@ def _apply_rel36_19_bilingual_language_parity(
             document_type=document_type,
             selected_frameworks=selected_frameworks,
             task_id=task_id,
+            org_name=extract_org_name(org_name, sections),
             output_type='generation',
         )
         if isinstance(out, dict) and out is not sections:
@@ -41020,6 +41025,7 @@ def _prcy88_cyber_board_ready_quality_baseline(
             task_id=task_id or '',
             generation_mode=_m.get('generation_mode') or 'drafting',
             doc_subtype=_m.get('doc_subtype') or 'technical',
+            org_name=_m.get('org_name') or _m.get('organization_name') or '',
         )
     except Exception:
         pass

@@ -1203,6 +1203,9 @@ def repair_canonical_before_freeze(
         from release_engine_v3.rel36_19_bilingual_language_parity import (
             apply_rel36_19_bilingual_language_parity,
         )
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _org19,
+        )
         sections, _rel36_19_pre = apply_rel36_19_bilingual_language_parity(
             sections,
             domain=domain,
@@ -1215,6 +1218,7 @@ def repair_canonical_before_freeze(
                 (art.get('contract_meta') or {}).get('selected_frameworks')
                 or art.get('selected_frameworks') or []),
             strategy_id=art.get('strategy_id') or art.get('id'),
+            org_name=_org19(art, art.get('contract_meta') or {}),
             output_type='pre_freeze',
             emit=False,
         )
@@ -2355,6 +2359,9 @@ def apply_rel31_authoritative_contract(
         from release_engine_v3.rel36_19_bilingual_language_parity import (
             apply_rel36_19_bilingual_language_parity,
         )
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _org19f,
+        )
         _secs19, _ = apply_rel36_19_bilingual_language_parity(
             dict(art.get('sections') or {}),
             domain=domain,
@@ -2362,6 +2369,7 @@ def apply_rel31_authoritative_contract(
             document_type=_contract_doc_type_early,
             selected_frameworks=backend.get('selected_frameworks') or [],
             strategy_id=str(art.get('strategy_id') or ''),
+            org_name=_org19f(art, art.get('contract_meta') or {}, backend),
             output_type='freeze',
             emit=False,
         )

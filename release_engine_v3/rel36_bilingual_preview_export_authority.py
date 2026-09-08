@@ -135,26 +135,30 @@ def english_visible_has_arabic_kpi_headers(text: str) -> bool:
     return any(tok in blob for tok in _ARABIC_KPI_HEADER_TOKENS)
 
 
-def sanitize_visible_preview_text(text: str, lang: str = 'ar') -> str:
+def sanitize_visible_preview_text(
+        text: str, lang: str = 'ar', org_name: str = '') -> str:
     """Visible preview/HTML/TXT/Print cleanup. Does not touch frozen bytes."""
     nlang = normalize_rel36_lang(lang)
     try:
         from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name,
             sanitize_visible_language_text,
         )
-        return sanitize_visible_language_text(text, nlang)
+        return sanitize_visible_language_text(
+            text, nlang, org_name=extract_org_name(org_name))
     except Exception:  # noqa: BLE001
         return sanitize_visible_export_text(text, nlang)
 
 
 def sanitize_visible_preview_sections(
-        sections: Any, lang: str = 'ar') -> Dict[str, str]:
+        sections: Any, lang: str = 'ar', org_name: str = '') -> Dict[str, str]:
     out: Dict[str, str] = {}
     for key, value in normalize_preview_sections(sections).items():
         if str(key).startswith('_'):
             out[str(key)] = value
             continue
-        out[str(key)] = sanitize_visible_preview_text(value, lang)
+        out[str(key)] = sanitize_visible_preview_text(
+            value, lang, org_name=org_name)
     return out
 
 
@@ -279,6 +283,10 @@ def bind_saved_preview_payload(
         )
         if _iso.get('blocking_errors'):
             blocking.extend(_iso['blocking_errors'])
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _extract_org19,
+        )
+        _org19 = _extract_org19(src, content_json if isinstance(content_json, dict) else {})
         sections, _rel36_19 = apply_rel36_19_bilingual_language_parity(
             sections,
             domain=domain,
@@ -289,13 +297,15 @@ def bind_saved_preview_payload(
                 or (content_json or {}).get('selected_frameworks')
                 or []),
             strategy_id=sid,
+            org_name=_org19,
             output_type='preview',
             emit=False,
         )
         del _rel36_19
     except Exception:  # noqa: BLE001
-        pass
-    visible_sections = sanitize_visible_preview_sections(sections, lang)
+        _org19 = ''
+    visible_sections = sanitize_visible_preview_sections(
+        sections, lang, org_name=locals().get('_org19', ''))
     bound = {
         'success': not blocking,
         'id': sid,

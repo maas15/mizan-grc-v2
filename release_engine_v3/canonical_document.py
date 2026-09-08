@@ -303,6 +303,41 @@ def build_final_document_artifact(
     _risk_secs_present = any(
         (not str(k).startswith('_')) and str(v).strip()
         for k, v in legacy_sections.items())
+    _rel36_19_diag: Dict[str, Any] = {}
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+            extract_org_name,
+            rel36_19_should_apply,
+            set_visible_org_name,
+        )
+        if rel36_19_should_apply(
+                domain=domain, lang=lang, document_type=document_type):
+            org = extract_org_name(
+                legacy_artifact, meta, legacy_sections)
+            set_visible_org_name(org)
+            legacy_sections['_rel36_19_repair_stage'] = (
+                'pre_canonical_artifact')
+            legacy_sections, _rel36_19_diag = (
+                apply_rel36_19_bilingual_language_parity(
+                    dict(legacy_sections),
+                    domain=domain,
+                    lang=lang,
+                    document_type=document_type,
+                    selected_frameworks=fws,
+                    strategy_id=legacy_artifact.get('strategy_id') or '',
+                    org_name=org,
+                    output_type='pre_canonical',
+                    emit=False,
+                ))
+            _rel36_19_diag['repair_stage'] = 'pre_canonical_artifact'
+            _rel36_19_diag['pre_canonical_repair_applied'] = True
+            _rel36_19_diag['canonical_hash_source'] = 'repaired_sections'
+            _rel36_19_diag['canonical_sections_repaired'] = True
+            _rel36_19_diag['legacy_sections_repaired'] = True
+            legacy_artifact['_rel36_19'] = _rel36_19_diag
+    except Exception:  # noqa: BLE001
+        _rel36_19_diag = {'pre_canonical_repair_applied': False}
     if _dtype_risk and _compiled_md and not _risk_secs_present:
         try:
             from release_engine_v3.rel33_risk_artifact import (
@@ -341,25 +376,31 @@ def build_final_document_artifact(
     if blockers:
         release_ready = False
     aid = _artifact_id_from({**legacy_artifact, 'strategy_id': strategy_id})
-    try:
-        from release_engine_v3.rel36_19_bilingual_language_parity import (
-            apply_rel36_19_bilingual_language_parity,
-            rel36_19_should_apply,
-        )
-        if rel36_19_should_apply(
-                domain=domain, lang=lang, document_type=document_type):
-            legacy_sections, _ = apply_rel36_19_bilingual_language_parity(
-                dict(legacy_sections),
-                domain=domain,
-                lang=lang,
-                document_type=document_type,
-                selected_frameworks=fws,
-                strategy_id=legacy_artifact.get('strategy_id') or '',
-                output_type='canonical',
-                emit=False,
+    if _rel36_19_diag:
+        _rel36_19_diag['stale_freeze_blockers_after'] = [
+            b for b in blockers
+            if 'language' in str(b).lower() or 'header' in str(b).lower()
+            or 'arabic' in str(b).lower()]
+        try:
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                _arabic_hits as _ar_hdr19,
             )
-    except Exception:  # noqa: BLE001
-        pass
+            _canon_parts: List[str] = [
+                str(v) for k, v in (legacy_sections or {}).items()
+                if isinstance(v, str) and not str(k).startswith('_')
+            ]
+            for _sec in (canon_map or {}).values():
+                for _attr in ('markdown', 'content', 'text', 'body'):
+                    _val = getattr(_sec, _attr, None)
+                    if isinstance(_val, str) and _val.strip():
+                        _canon_parts.append(_val)
+                        break
+            _rel36_19_diag['stale_canonical_headers_after'] = (
+                _ar_hdr19('\n'.join(_canon_parts))
+                if str(lang or '').lower().startswith('en') else [])
+        except Exception:  # noqa: BLE001
+            _rel36_19_diag['stale_canonical_headers_after'] = []
+        legacy_artifact['_rel36_19'] = _rel36_19_diag
     legacy_join = '\n\n'.join(
         str(v).strip()
         for k, v in legacy_sections.items()
