@@ -173,24 +173,75 @@ def _family_of_row(row: str) -> Optional[str]:
     return best
 
 
-def _split_roadmap_parts(text: str) -> Tuple[str, List[str], str, List[str]]:
-    """Return (preamble, header_lines, body_rows, suffix_non_rows)."""
+_COUNTER_HEADER_TOKEN_RE = re.compile(
+    r'(?:Activity|Phase|Step|Owner|Deliverable|Timeline|Timeframe|'
+    r'النشاط|المرحلة|الخطوة|المسؤول|المخرج|الإطار|الجدول\s*الزمني|'
+    r'الفترة|المبادرة)',
+    re.IGNORECASE,
+)
+
+
+def _header_token_hits(line: str) -> int:
+    s = str(line or '').strip()
+    if not (s.startswith('|') and s.endswith('|')):
+        return 0
+    cells = [c.strip() for c in s.strip('|').split('|')]
+    return sum(1 for c in cells if c and _COUNTER_HEADER_TOKEN_RE.search(c))
+
+
+def _is_recognized_roadmap_header(line: str) -> bool:
+    """Match the official richness counter: ≥2 header-token cells."""
+    s = str(line or '').strip()
+    if not (s.startswith('|') and s.endswith('|')):
+        return False
+    if _SEP_RE.match(s):
+        return False
+    return _header_token_hits(s) >= 2
+
+
+def _is_pipe_data_row(line: str) -> bool:
+    s = str(line or '').strip()
+    if not (s.startswith('|') and s.endswith('|')):
+        return False
+    if _SEP_RE.match(s) or _is_recognized_roadmap_header(s):
+        return False
+    cells = [c.strip() for c in s.strip('|').split('|') if True]
+    return len(cells) >= 4
+
+
+def _split_roadmap_parts(text: str) -> Tuple[str, List[str], List[str], List[str]]:
+    """Return (preamble, header_lines, body_rows, suffix_non_rows).
+
+    A header is recognized only when it has ≥2 official counter tokens.
+    A lone ``| المرحلة 1: …`` data row is not a header — treating it as
+    one leaves the official counter at 0/4.
+    """
     lines = (text or '').splitlines()
     header_idx = -1
     sep_idx = -1
     for idx, ln in enumerate(lines):
-        s = ln.strip()
-        if s.startswith('|') and s.endswith('|') and not _SEP_RE.match(s):
-            cells = [c.strip() for c in s.strip('|').split('|')]
-            joined = ' '.join(cells).lower()
-            if any(h in joined for h in (
-                    'المرحلة', 'phase', 'الربع', 'initiative', 'المبادرة')):
-                header_idx = idx
-                if idx + 1 < len(lines) and _SEP_RE.match(lines[idx + 1].strip()):
-                    sep_idx = idx + 1
-                break
+        if _is_recognized_roadmap_header(ln):
+            header_idx = idx
+            if idx + 1 < len(lines) and _SEP_RE.match(lines[idx + 1].strip()):
+                sep_idx = idx + 1
+            break
     if header_idx < 0:
-        return (text or ''), [], [], []
+        preamble_lines: List[str] = []
+        rows: List[str] = []
+        suffix: List[str] = []
+        seen_row = False
+        for ln in lines:
+            if _is_pipe_data_row(ln):
+                seen_row = True
+                rows.append(ln if ln.startswith('|') else ln.strip())
+                continue
+            if _SEP_RE.match(ln.strip()):
+                continue
+            if not seen_row:
+                preamble_lines.append(ln)
+            else:
+                suffix.append(ln)
+        return '\n'.join(preamble_lines).rstrip(), [], rows, suffix
     preamble = '\n'.join(lines[:header_idx]).rstrip()
     header_lines = [lines[header_idx]]
     if sep_idx >= 0:
@@ -198,12 +249,14 @@ def _split_roadmap_parts(text: str) -> Tuple[str, List[str], str, List[str]]:
         start = sep_idx + 1
     else:
         start = header_idx + 1
-    rows: List[str] = []
-    suffix: List[str] = []
+    rows = []
+    suffix = []
     in_rows = True
     for ln in lines[start:]:
         s = ln.strip()
         if in_rows and s.startswith('|') and s.endswith('|') and not _SEP_RE.match(s):
+            if _is_recognized_roadmap_header(s):
+                continue
             rows.append(ln if ln.startswith('|') else s)
             continue
         if in_rows and (not s or _SEP_RE.match(s)):
@@ -498,4 +551,17 @@ def apply_rel36_20_1_data_roadmap_family_integrity(
         + json.dumps(diag, ensure_ascii=False, default=str),
         flush=True,
     )
+    if nlang.startswith('ar'):
+        try:
+            from release_engine_v3.rel36_20_2_data_ar_countable_roadmap import (
+                apply_rel36_20_2_data_ar_countable_roadmap,
+            )
+            out, countable_diag = apply_rel36_20_2_data_ar_countable_roadmap(
+                out, domain=dcode, lang=nlang, document_type=document_type,
+                selected_frameworks=fw, task_id=task_id)
+            diag['countable_roadmap'] = countable_diag
+            if countable_diag.get('passed') is False:
+                diag['passed'] = False
+        except Exception:
+            pass
     return out, diag
