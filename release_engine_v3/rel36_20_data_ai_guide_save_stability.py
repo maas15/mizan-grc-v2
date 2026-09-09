@@ -741,7 +741,7 @@ def _gap_table(domain: str, lang: str) -> str:
                  'حوكمة الخصوصية وحماية البيانات الشخصية غير تشغيلية',
                  'عالية', 'مفتوحة'],
             ]
-        return '## تحليل الفجوات\n\n' + _md_table(
+        return _md_table(
             ['#', 'الفجوة', 'الوصف', 'الأولوية', 'الحالة'], rows)
     if domain == 'ai':
         rows = [
@@ -761,7 +761,7 @@ def _gap_table(domain: str, lang: str) -> str:
              'PDPL privacy governance and personal data protection are not operational',
              'High', 'Open'],
         ]
-    return '## Gap Analysis\n\n' + _md_table(
+    return _md_table(
         ['#', 'Gap', 'Description', 'Priority', 'Status'], rows)
 
 
@@ -797,7 +797,7 @@ def _kpi_table(domain: str, lang: str) -> str:
                  'الطلبات المغلقة في المهلة ÷ الطلبات المستلمة',
                  'سجل الطلبات', 'شهري', 'مسؤول حماية البيانات'],
             ]
-        return '## 6. مؤشرات الأداء الرئيسية\n\n' + _md_table(
+        return _md_table(
             ['#', 'وصف المؤشر', 'النوع', 'القيمة المستهدفة',
              'صيغة الاحتساب', 'مصدر', 'التكرار', 'المالك'],
             rows)
@@ -831,7 +831,7 @@ def _kpi_table(domain: str, lang: str) -> str:
              'DSR closed on time / DSR received', 'DSR ticket log',
              'Monthly', 'Data Protection Officer'],
         ]
-    return '## 6. Key Performance Indicators\n\n' + _md_table(
+    return _md_table(
         ['#', 'KPI Description', 'Type', 'Target Value',
          'Calculation Formula', 'Source', 'Frequency', 'Owner'],
         rows)
@@ -858,6 +858,7 @@ def _ensure_guides(
 
     if counted_gaps < 2:
         seed = _gap_table(domain, lang)
+        # Table only — never append a numbered ``## N.`` section heading.
         gap_text = seed if not gap_text.strip() else (
             gap_text.rstrip() + '\n\n' + seed)
         sections['gaps'] = gap_text
@@ -1174,7 +1175,12 @@ def apply_rel36_20_data_ai_guide_save_stability(
         }
 
     if dcode in {'data', 'ai'}:
+        roadmap_before_guides = str(out.get('roadmap') or '')
         guide_diag = _ensure_guides(out, domain=dcode, lang=nlang)
+        # Guide completion writes gaps/kpis only. Never mutate roadmap rows.
+        if str(out.get('roadmap') or '') != roadmap_before_guides:
+            out['roadmap'] = roadmap_before_guides
+        guide_diag['roadmap_mutated'] = False
         joined = '\n'.join(out.values())
         guide_diag.update({
             'domain': dcode,
@@ -1252,6 +1258,20 @@ def apply_rel36_20_data_ai_guide_save_stability(
         passed = passed and bool(core_diag.get('passed'))
     if guide_diag:
         passed = passed and bool(guide_diag.get('passed'))
+    family_diag: Dict[str, Any] = {}
+    if dcode == 'data':
+        from release_engine_v3.rel36_20_1_data_roadmap_family_integrity import (
+            apply_rel36_20_1_data_roadmap_family_integrity,
+        )
+        out, family_diag = apply_rel36_20_1_data_roadmap_family_integrity(
+            out, domain=dcode, lang=nlang, document_type=doc_type,
+            selected_frameworks=fw, task_id=task_id)
+        if family_diag.get('passed') is False:
+            passed = False
+        blockers_after = _save_blockers_of(
+            out, domain=dcode, lang=nlang, selected_frameworks=fw,
+            document_type=doc_type)
+
     diagnostics.update({
         'applied': True,
         'passed': passed,
@@ -1260,5 +1280,6 @@ def apply_rel36_20_data_ai_guide_save_stability(
         'roadmap': roadmap_diag,
         'core': core_diag,
         'guides': guide_diag,
+        'family_integrity': family_diag,
     })
     return out, diagnostics
