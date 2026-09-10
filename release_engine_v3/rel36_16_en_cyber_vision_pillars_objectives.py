@@ -73,7 +73,8 @@ REL36_16_EN_CYBER_VISION_PILLARS_OBJECTIVE_STABILITY_TAG = (
 _SO_HEADER = '| # | Objective | Target Metric | Justification | Timeframe |'
 _SO_SEP = '|---|---|---|---|---|'
 _SO_HEADER_RE = re.compile(
-    r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
+    r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+    r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
     re.IGNORECASE,
 )
 _SEP_ROW_RE = re.compile(r'^\|[\s:\-|]+\|\s*$')

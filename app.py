@@ -21808,6 +21808,16 @@ def _ts_table_rows(text, header_re):
             out.append(cells)
     return out
 
+# Shared first-counted Strategic Objectives header. Compliance and
+# specialized-function detectors MUST use this same pattern so they
+# inspect the table ``count_valid_objective_rows`` already counts.
+# ``Strategic Objective`` is a counted alias of ``Objective``.
+_SO_TABLE_HEADER_PATTERN = (
+    r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+    r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'
+)
+
+
 def count_valid_objective_rows(vision_text):
     """Count rows in the Strategic Objectives table that match the full schema.
     Schema: # | Objective | Target Metric | Justification | Timeframe.
@@ -21816,11 +21826,7 @@ def count_valid_objective_rows(vision_text):
     """
     if not vision_text:
         return 0
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
-        r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     # Singular forms (month/year/week/day) are already covered by the
     # plural-or-singular alternatives (months?/years?/weeks?/days?).
     # Bound the leading digit group to \d{1,6} (any real timeframe fits
@@ -28785,11 +28791,7 @@ def _compute_missing_compliance_objective(
     # Iterate the Strategic Objectives table rows. Reuse the same header
     # regex as count_valid_objective_rows so we only inspect rows from
     # the canonical objectives table.
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     rows = list(_ts_table_rows(vision_text, hdr))
 
     # Generic "selected frameworks" phrase counts for every selected fw.
@@ -29094,11 +29096,7 @@ def _compute_missing_specialized_function_objective(
     if not vision_text:
         return True
 
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     rows = list(_ts_table_rows(vision_text, hdr))
 
     # PR-CY8 — dual-requirement mode: when the registry entry exposes
@@ -31820,6 +31818,37 @@ def _apply_rel36_20_data_ai_guide_save_stability(
         if isinstance(out, dict) and out is not sections:
             sections.clear()
             sections.update(out)
+        diag20 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag20 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_21_en_data_ai_framework_objectives(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag20
+
+
+def _apply_rel36_21_en_data_ai_framework_objectives(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.21 — English Data/AI selected-framework SO coverage."""
+    try:
+        from release_engine_v3.rel36_21_en_data_ai_framework_objectives import (
+            apply_rel36_21_en_data_ai_framework_objectives,
+        )
+        out, diag = apply_rel36_21_en_data_ai_framework_objectives(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
         return diag
     except Exception:  # noqa: BLE001 — never skip the later gate
         return {'applied': False, 'action_taken': 'hook_error'}
@@ -33389,11 +33418,7 @@ def _splice_cyber_vision_objective_topup_row(
         return original_vision_text or ''
     text = original_vision_text
     lines = text.split('\n')
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     last_data_idx = -1
     in_tbl = False
@@ -33467,11 +33492,7 @@ def _extract_accepted_cyber_specialized_objective_row(vision_text):
     if not vision_text:
         return ''
     text = str(vision_text)
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     in_tbl = False
     for ln in text.split('\n'):
@@ -33682,11 +33703,7 @@ def _extract_accepted_cyber_framework_compliance_rows(
         fws = []
     if not fws:
         return {}
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     captured = {}
     in_tbl = False
@@ -34297,11 +34314,7 @@ def _emit_cyber_vision_persistence_diagnostic(
     except Exception:  # noqa: BLE001
         has_specialized_objective = False
     try:
-        _hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
-            r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE,
-        )
+        _hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
         for _cells in _ts_table_rows(vision_text, _hdr):
             if len(_cells) < 4:
                 continue
@@ -34707,10 +34720,7 @@ def _convergence_cyber_specialized_objective_topup_repair(
             try:
                 _acc_after = sections.get('vision', '') or ''
                 _acc_hdr = _ts_re.compile(
-                    r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
-                    r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-                    _ts_re.IGNORECASE,
-                )
+                    _SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
                 _acc_blob = ''
                 for _cells in _ts_table_rows(_acc_after, _acc_hdr):
                     if len(_cells) < 4:
@@ -35341,9 +35351,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                         # directly. Clear from the table header so the
                         # synth rebuilds from scratch.
                         _tbl_hdr_fc = _ts_re.search(
-                            r'^\|\s*#\s*\|'
-                            r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-                            r'|الأهداف)\s*\|',
+                            _SO_TABLE_HEADER_PATTERN,
                             _v_text,
                             _ts_re.IGNORECASE | _ts_re.MULTILINE,
                         )
@@ -57370,7 +57378,8 @@ def dedupe_arabic_section_families(sections, lang):
         ('gaps',        r'^\|\s*#\s*\|\s*(?:Gap|الفجوة|الفجوات)\s*\|'),
         ('kpis',        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف\s+المؤشر|KPI)\s*\|'),
         ('vision',
-         r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'),
+         r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+         r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'),
     ]
     for sec_key, hdr_pat in table_collapse_targets:
         text = sections.get(sec_key, '') or ''
@@ -69785,9 +69794,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         _pa_so_hdr_m.group(0).strip()
                                         if _pa_so_hdr_m else '<missing>')
                                     _pa_tbl_hdr_m = _ts_re.search(
-                                        r'^\|\s*#\s*\|\s*'
-                                        r'(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-                                        r'|الأهداف)[^\n]*$',
+                                        _SO_TABLE_HEADER_PATTERN,
                                         _pa_vis_raw,
                                         _ts_re.MULTILINE | _ts_re.IGNORECASE,
                                     )
@@ -70052,6 +70059,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'[FW-COVERAGE-REPAIR] non-fatal: {_fwxe}',
                                 flush=True,
                             )
+
+                    _apply_rel36_21_en_data_ai_framework_objectives(
+                        sections, lang, _dcode or domain,
+                        list(_frameworks_raw or []) or [fw_short],
+                        document_type=_document_type,
+                        task_id=getattr(
+                            globals().get('g', None),
+                            '_strategy_task_id', '') or '',
+                    )
 
                     # ── PR-5B.8V: Vision compliance-objective repair ─────
                     # Even when the framework's capability families are
@@ -92511,7 +92527,9 @@ def _compare_content_parity(db_content: str, client_content: str) -> dict:
         _in_tbl = False
         _count = 0
         for _ln in _lines:
-            if _cmp_re.match(r'^\|\s*#\s*\|\s*(?:Objective|الهدف)', _ln, _cmp_re.I):
+            if _cmp_re.match(
+                    r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|الهدف)',
+                    _ln, _cmp_re.I):
                 _in_tbl = True
                 _count = 0
                 continue
