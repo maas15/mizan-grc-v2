@@ -30325,6 +30325,14 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
                 sections.update(_rel35_secs)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            _apply_rel36_22_dt_dga_citizen_experience_coverage(
+                sections if isinstance(sections, dict) else {},
+                lang, domain, selected_frameworks,
+                document_type=_dtype,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         if selected_frameworks:
             _fw_missing = _compute_missing_selected_framework_coverage(
                 sections, selected_frameworks, domain=domain, lang=lang,
@@ -31838,6 +31846,37 @@ def _apply_rel36_21_en_data_ai_framework_objectives(
             apply_rel36_21_en_data_ai_framework_objectives,
         )
         out, diag = apply_rel36_21_en_data_ai_framework_objectives(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag21 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag21 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_22_dt_dga_citizen_experience_coverage(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag21
+
+
+def _apply_rel36_22_dt_dga_citizen_experience_coverage(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.22 — DT Arabic DGA citizen_experience coverage."""
+    try:
+        from release_engine_v3.rel36_22_dt_dga_citizen_experience_coverage import (
+            apply_rel36_22_dt_dga_citizen_experience_coverage,
+        )
+        out, diag = apply_rel36_22_dt_dga_citizen_experience_coverage(
             sections,
             domain=domain,
             lang=lang,
