@@ -301,6 +301,15 @@ def _append_paragraph(text: str, paragraph: str) -> str:
     return body + '\n\n' + extra
 
 
+_KPI_MAIN_HEADER_RE = re.compile(
+    r'^\|[\s\u00a0]*#[\s\u00a0]*\|'
+    r'[\s\u00a0]*(?:KPI[\s\u00a0]+Description|وصف[\s\u00a0]+المؤشر|'
+    r'KPI|المؤشر|Metric)'
+    r'[\s\u00a0]*\|',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
 def _append_md_row(text: str, header_hint: str, row: str) -> str:
     body = str(text or '').rstrip()
     if row.strip() in body:
@@ -308,6 +317,15 @@ def _append_md_row(text: str, header_hint: str, row: str) -> str:
     if '|' in body:
         return body + '\n' + row
     return _append_paragraph(body, header_hint + '\n' + row)
+
+
+def _merge_or_append_kpi_block(body: str, header: str, row: str) -> str:
+    """Insert a KPI data row into the first table. Never add a second header."""
+    text = str(body or '')
+    if _KPI_MAIN_HEADER_RE.search(text):
+        return _append_md_row(text, header, row)
+    sep = '|' + '|'.join(['---'] * 8) + '|'
+    return _append_paragraph(text, header + '\n' + sep + '\n' + row)
 
 
 def repair_dga_interoperability_sections(
@@ -403,7 +421,17 @@ def repair_dga_interoperability_sections(
         before = out.get(key, '')
         if section_has_dga_interop(before):
             continue
-        out[key] = _append_paragraph(before, paragraph)
+        if key == 'kpis':
+            lines = [ln.strip() for ln in str(paragraph).splitlines() if ln.strip()]
+            header = next((ln for ln in lines if ln.startswith('| #')), lines[0])
+            row = next(
+                (ln for ln in lines
+                 if ln.startswith('|') and '---' not in ln and ln != header),
+                lines[-1],
+            )
+            out[key] = _merge_or_append_kpi_block(before, header, row)
+        else:
+            out[key] = _append_paragraph(before, paragraph)
         repaired.append(key)
     return out, repaired
 

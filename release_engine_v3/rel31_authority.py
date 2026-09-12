@@ -1199,6 +1199,34 @@ def repair_canonical_before_freeze(
         emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_pre)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+        )
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _org19,
+        )
+        sections, _rel36_19_pre = apply_rel36_19_bilingual_language_parity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=str(
+                art.get('document_type')
+                or (art.get('contract_meta') or {}).get('document_type')
+                or 'strategy'),
+            selected_frameworks=(
+                (art.get('contract_meta') or {}).get('selected_frameworks')
+                or art.get('selected_frameworks') or []),
+            strategy_id=art.get('strategy_id') or art.get('id'),
+            org_name=_org19(art, art.get('contract_meta') or {}),
+            output_type='pre_freeze',
+            emit=False,
+        )
+        if _rel36_19_pre.get('passed') or _rel36_19_pre.get(
+                'arabic_header_hits_in_en_before'):
+            repairs.append('rel36.19:bilingual_language_parity')
+    except Exception:  # noqa: BLE001
+        pass
     art['sections'] = sections
     return art, list(dict.fromkeys(repairs))
 
@@ -2327,6 +2355,27 @@ def apply_rel31_authoritative_contract(
 
     art['sections'] = _scrub_art_sections_for_build(
         dict(art.get('sections') or {}), lang)
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+        )
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _org19f,
+        )
+        _secs19, _ = apply_rel36_19_bilingual_language_parity(
+            dict(art.get('sections') or {}),
+            domain=domain,
+            lang=lang,
+            document_type=_contract_doc_type_early,
+            selected_frameworks=backend.get('selected_frameworks') or [],
+            strategy_id=str(art.get('strategy_id') or ''),
+            org_name=_org19f(art, art.get('contract_meta') or {}, backend),
+            output_type='freeze',
+            emit=False,
+        )
+        art['sections'] = _secs19
+    except Exception:  # noqa: BLE001
+        pass
     art['blocking_errors'] = []
     built = _rel31_rebuild_frozen_artifact(
         art, lang=lang, strategy_id=str(art.get('strategy_id') or ''))

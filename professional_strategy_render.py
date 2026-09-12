@@ -339,6 +339,14 @@ CANONICAL_CONFIDENCE_FACTORS_AR: Tuple[Tuple[str, str], ...] = (
     ('نضج الحوكمة', '15%'),
     ('جاهزية حماية البيانات', '10%'),
 )
+CANONICAL_CONFIDENCE_FACTORS_EN: Tuple[Tuple[str, str], ...] = (
+    ('Input completeness', '20%'),
+    ('Reference-framework coverage', '20%'),
+    ('Roadmap feasibility', '20%'),
+    ('Resource readiness', '15%'),
+    ('Governance maturity', '15%'),
+    ('Data-protection readiness', '10%'),
+)
 
 MARKDOWN_BOLD_LABEL_RE = re.compile(
     r'\*\*([^*]+):\*\*\s*')
@@ -574,6 +582,27 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
     # PR-CY59 — concat fixes must run last; fragment repair can revert them.
     if lang == 'ar':
         out = normalize_arabic_for_render(out)
+    else:
+        out = out.replace('سجل\u00a0معالجة', 'processing register')
+        out = out.replace('سجل معالجة', 'processing register')
+        out = out.replace('لل\u00a0معالجة', 'treatment')
+        out = out.replace('ال\u00a0معالجة', 'treatment')
+        out = out.replace('ل\u00a0معالجة', 'treatment')
+        out = out.replace('لل معالجة', 'treatment')
+        out = out.replace('ال معالجة', 'treatment')
+        out = out.replace('ل معالجة', 'treatment')
+        try:
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                translate_generated_phrase,
+            )
+            if re.search(r'[\u0600-\u06FF]', out):
+                from release_engine_v3.rel36_19_bilingual_language_parity import (
+                    resolve_org_name,
+                )
+                out = translate_generated_phrase(
+                    out, org_name=resolve_org_name())
+        except Exception:
+            pass
     return out
 
 
@@ -2664,7 +2693,15 @@ def _fill_roadmap_row(
         raw_init if not _is_dash_cell(raw_init) else '',
         raw_out if not _is_dash_cell(raw_out) else '',
         raw_fw, phase_num, lang)
-    if is_cyber_strategy(dcode or domain):
+    if lang == 'en' and dcode in ('data', 'ai'):
+        try:
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                english_roadmap_spec_for_phase,
+            )
+            spec = english_roadmap_spec_for_phase(dcode, phase_num)
+        except Exception:
+            spec = roadmap_spec_for_domain(dcode or domain, phase=phase_num)
+    elif is_cyber_strategy(dcode or domain):
         spec = _roadmap_spec_for_family(family, lang)
     else:
         spec = roadmap_spec_for_domain(dcode or domain, phase=phase_num)
@@ -2732,7 +2769,16 @@ def _synth_phase_row(
     )
     dcode = normalize_domain_code(domain or '', default='')
     if dcode and dcode != 'cyber':
-        spec = roadmap_spec_for_domain(dcode, phase=phase_num)
+        if str(lang or '').lower() == 'en' and dcode in ('data', 'ai'):
+            try:
+                from release_engine_v3.rel36_19_bilingual_language_parity import (
+                    english_roadmap_spec_for_phase,
+                )
+                spec = english_roadmap_spec_for_phase(dcode, phase_num)
+            except Exception:
+                spec = roadmap_spec_for_domain(dcode, phase=phase_num)
+        else:
+            spec = roadmap_spec_for_domain(dcode, phase=phase_num)
         return [
             _phase_label(phase_num, lang), spec['period'], spec['init'],
             spec['owner'], spec['output'], spec['fw'],
@@ -2782,7 +2828,17 @@ def build_roadmap_render_spec(
         filled, meta = _fill_roadmap_row(r, lang, domain=dcode or domain)
         if _is_generic_roadmap_row(filled):
             phase_num = _phase_bucket(filled[1] or filled[0])
-            if is_cyber_strategy(dcode or domain):
+            if lang == 'en' and dcode in ('data', 'ai'):
+                family, inference_source = 'domain_catalog', 'rel36_19'
+                try:
+                    from release_engine_v3.rel36_19_bilingual_language_parity import (
+                        english_roadmap_spec_for_phase,
+                    )
+                    spec = english_roadmap_spec_for_phase(dcode, phase_num)
+                except Exception:
+                    spec = roadmap_spec_for_domain(
+                        dcode or domain, phase=phase_num)
+            elif is_cyber_strategy(dcode or domain):
                 family, inference_source = _infer_capability_family(
                     meta.get('raw_initiative', ''), meta.get('raw_output', ''),
                     meta.get('raw_framework', ''), phase_num, lang)
@@ -2811,10 +2867,11 @@ def build_roadmap_render_spec(
         buckets[bucket].append((filled, meta))
     result: List[List[str]] = []
     result_meta: List[Dict[str, Any]] = []
+    _phase_cap = 14 if (lang == 'en' and dcode in ('data', 'ai')) else 3
     for phase_num in (1, 2, 3):
         phase_rows = buckets[phase_num]
         if phase_rows:
-            for filled, meta in phase_rows[:3]:
+            for filled, meta in phase_rows[:_phase_cap]:
                 result.append(filled)
                 result_meta.append(meta)
         else:
@@ -2825,6 +2882,17 @@ def build_roadmap_render_spec(
             result_meta.append(meta)
     _rel33_readd_dropped_roadmap_families(
         result, result_meta, buckets, domain=dcode or domain)
+    if lang == 'en' and dcode in ('data', 'ai'):
+        try:
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                ensure_english_professional_roadmap_rows,
+            )
+            result = ensure_english_professional_roadmap_rows(
+                result, domain=dcode)
+            result_meta = list(result_meta) + [{}] * max(
+                0, len(result) - len(result_meta))
+        except Exception:
+            pass
     return result, result_meta
 
 
@@ -3446,7 +3514,16 @@ def repair_roadmap_table_rows(
         roadmap_spec_for_domain,
     )
     if not flags['phase_3'] and not is_cyber_strategy(domain, 'strategy'):
-        spec = roadmap_spec_for_domain(domain, phase=3)
+        if lang_n == 'en' and str(domain or '').lower() in ('data', 'ai'):
+            try:
+                from release_engine_v3.rel36_19_bilingual_language_parity import (
+                    english_roadmap_spec_for_phase,
+                )
+                spec = english_roadmap_spec_for_phase(domain, 3)
+            except Exception:
+                spec = roadmap_spec_for_domain(domain, phase=3)
+        else:
+            spec = roadmap_spec_for_domain(domain, phase=3)
         ins = [
             _phase_label(3, lang_n), spec['period'], spec['init'],
             spec['owner'], spec['output'], spec['fw'],
@@ -3515,7 +3592,7 @@ def render_canonical_roadmap_markdown_table(
     """Render canonical 6-column roadmap markdown from row cells."""
     hdr = list(SCHEMA_ROADMAP_AR if lang == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
-        'Deliverable', 'Linked Framework'))
+        'Expected Deliverable', 'Linked Framework'))
     lines = [
         '| ' + ' | '.join(hdr) + ' |',
         '| ' + ' | '.join(['---'] * 6) + ' |',
@@ -3651,7 +3728,7 @@ def apply_prcy78_roadmap_phase_coverage_to_model(
     tbl['header'] = list(
         SCHEMA_ROADMAP_AR if str(lang or '').lower() != 'en' else (
             'Phase', 'Period', 'Initiative', 'Owner',
-            'Deliverable', 'Linked Framework'))
+            'Expected Deliverable', 'Linked Framework'))
     tbl['schema'] = 'roadmap'
     model['_prcy78_roadmap_phase_diag'] = dict(diag)
     emit_prcy78_roadmap_phase_coverage_diag(diag)
@@ -3957,7 +4034,7 @@ def normalize_roadmap_table(
     """
     schema = list(SCHEMA_ROADMAP_AR if lang == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
-        'Deliverable', 'Linked Framework'))
+        'Expected Deliverable', 'Linked Framework'))
     tables = parse_markdown_tables(section_text)
     rows_out: List[List[str]] = []
     for tbl in tables:
@@ -4021,6 +4098,20 @@ def normalize_roadmap_table(
     if _p78.get('action_taken') == 'repair_applied':
         row_meta = row_meta + [{}] * max(
             0, len(rows_out) - len(row_meta))
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_to_professional_roadmap_table,
+        )
+        repaired_tbl = apply_rel36_19_to_professional_roadmap_table(
+            {'schema': 'roadmap', 'header': schema, 'rows': rows_out,
+             'row_meta': row_meta},
+            lang=lang, domain=domain)
+        if repaired_tbl:
+            rows_out = repaired_tbl.get('rows') or rows_out
+            schema = repaired_tbl.get('header') or schema
+            row_meta = row_meta + [{}] * max(0, len(rows_out) - len(row_meta))
+    except Exception:
+        pass
     return {'schema': 'roadmap', 'header': schema, 'rows': rows_out,
             'row_meta': row_meta}
 
@@ -5822,8 +5913,8 @@ def normalize_confidence_risk(
                 i += 1
     # Canonical confidence factors — never parsed from source tables.
     factor_rows: List[List[str]] = []
-    factors = (CANONICAL_CONFIDENCE_FACTORS_AR if lang == 'ar' else
-               tuple((n, w) for n, w in CANONICAL_CONFIDENCE_FACTORS_AR))
+    factors = (CANONICAL_CONFIDENCE_FACTORS_AR if lang == 'ar'
+               else CANONICAL_CONFIDENCE_FACTORS_EN)
     grade = str(min(5, max(1, round(score_val / 20))))
     for fname, weight in factors:
         w_pct = int(re.sub(r'\D', '', weight) or '0')
@@ -6427,7 +6518,7 @@ def enrich_professional_blocks(
     road_tbl = normalize_roadmap_table(road, lang_n, domain=domain_n)
     _road_schema = list(SCHEMA_ROADMAP_AR if lang_n == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
-        'Deliverable', 'Linked Framework'))
+        'Expected Deliverable', 'Linked Framework'))
     if not road_tbl or not (road_tbl.get('rows')):
         _seed = (road_tbl or {}).get('rows') or []
         _rows, _meta = build_roadmap_render_spec(_seed, lang_n, domain=domain_n)
@@ -6452,6 +6543,15 @@ def enrich_professional_blocks(
             road_tbl['rows'] = _expanded
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_to_professional_roadmap_table,
+        )
+        road_tbl = apply_rel36_19_to_professional_roadmap_table(
+            road_tbl, lang=lang_n, domain=domain_n,
+            selected_frameworks=model.get('selected_frameworks') or []) or road_tbl
+    except Exception:  # noqa: BLE001
+        pass
     road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
     emit_roadmap_framework_mapping_diag(
         {'blocks': {**blocks, 'roadmap': {'tables': [road_tbl]}}},
@@ -6468,8 +6568,15 @@ def enrich_professional_blocks(
     # after the main KPI table are not lost.
     kpi_raw = (
         (content_sections or {}).get('kpis', '') or ''
+        or (content_sections or {}).get('kpi_kri_framework', '') or ''
         or (blocks.get('kpi_kri_framework') or {}).get('content')
         or '')
+    if not str(kpi_raw).strip() or '|' not in str(kpi_raw):
+        for _k, _v in (content_sections or {}).items():
+            blob = str(_v or '')
+            if 'KPI Description' in blob or 'وصف المؤشر' in blob:
+                kpi_raw = blob
+                break
     try:
         from cyber_post_board_ready_prcy89 import _strip_kri_appendix_from_kpis
         kpi_raw = _strip_kri_appendix_from_kpis(kpi_raw)
@@ -6499,6 +6606,23 @@ def enrich_professional_blocks(
         )
         blocks['kpi_kri_framework'] = structure_kpi_section_block(
             blocks.get('kpi_kri_framework') or {}, lang_n)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _kpi_blk = blocks.get('kpi_kri_framework') or {}
+        _have_main = any(
+            t.get('schema') == 'kpi_main' and t.get('rows')
+            for t in (_kpi_blk.get('tables') or []))
+        if lang_n == 'en' and domain_n in ('data', 'ai', 'cyber') and not _have_main:
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                english_kpi_seed_tables,
+            )
+            seeded = english_kpi_seed_tables(domain_n)
+            if seeded:
+                blocks['kpi_kri_framework'] = {
+                    **_kpi_blk,
+                    'tables': seeded + list(_kpi_blk.get('tables') or []),
+                }
     except Exception:  # noqa: BLE001
         pass
 
@@ -6595,6 +6719,32 @@ def enrich_professional_blocks(
         )
     except Exception:  # noqa: BLE001
         pass
+    try:
+        if lang_n == 'en' and domain_n in ('data', 'ai'):
+            from release_engine_v3.rel36_19_bilingual_language_parity import (
+                apply_rel36_19_to_professional_roadmap_table,
+                english_kpi_seed_tables,
+            )
+            road_blk = dict(blocks.get('roadmap') or {})
+            tables = list(road_blk.get('tables') or [])
+            if tables:
+                tables[0] = apply_rel36_19_to_professional_roadmap_table(
+                    tables[0], lang=lang_n, domain=domain_n,
+                    selected_frameworks=model.get('selected_frameworks') or [],
+                ) or tables[0]
+                road_blk['tables'] = tables
+                blocks['roadmap'] = road_blk
+            kpi_blk = dict(blocks.get('kpi_kri_framework') or {})
+            have_main = any(
+                t.get('schema') == 'kpi_main' and t.get('rows')
+                for t in (kpi_blk.get('tables') or []))
+            if not have_main:
+                seeded = english_kpi_seed_tables(domain_n)
+                if seeded:
+                    kpi_blk['tables'] = seeded + list(kpi_blk.get('tables') or [])
+                    blocks['kpi_kri_framework'] = kpi_blk
+    except Exception:  # noqa: BLE001
+        pass
     blocks = sync_professional_toc_entries(blocks, lang_n)
     model['blocks'] = blocks
     model['render_layer'] = 'prcy41_professional'
@@ -6672,6 +6822,8 @@ def build_professional_strategy_document_model(
     """
     metadata = dict(metadata or {})
     metadata.setdefault('content', content or '')
+    if domain:
+        metadata['domain'] = domain
     domain_code = domain or metadata.get('domain') or 'cyber'
     lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
 
@@ -6720,12 +6872,13 @@ def confidence_factor_labels_intact(
     if not conf_factor_tbl:
         return True
     rows = conf_factor_tbl[0].get('rows') or []
-    canonical = [f[0] for f in CANONICAL_CONFIDENCE_FACTORS_AR]
-    if len(rows) < len(canonical):
+    canonical_ar = [f[0] for f in CANONICAL_CONFIDENCE_FACTORS_AR]
+    canonical_en = [f[0] for f in CANONICAL_CONFIDENCE_FACTORS_EN]
+    if len(rows) < len(canonical_ar):
         return False
-    for canon, r in zip(canonical, rows):
+    for idx, r in enumerate(rows[:len(canonical_ar)]):
         fname = str(r[0] if r else '').strip()
-        if fname != canon:
+        if fname not in (canonical_ar[idx], canonical_en[idx]):
             return False
         if fname in ('ال', 'عامل', 'اك', 'مدخلات') or len(fname) < 4:
             return False

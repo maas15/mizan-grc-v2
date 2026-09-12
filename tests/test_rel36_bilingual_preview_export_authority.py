@@ -265,6 +265,11 @@ def _export_pair(sections: dict, *, lang: str, domain: str = 'cyber'):
             'lang': lang,
             'domain': domain,
             'document_type': 'strategy',
+            'selected_frameworks': (
+                ['NCA ECC', 'NCA DCC'] if domain == 'cyber'
+                else ['NDMO', 'PDPL'] if domain == 'data'
+                else ['SDAIA'] if domain == 'ai'
+                else []),
         },
     }
     kwargs = {
@@ -273,8 +278,12 @@ def _export_pair(sections: dict, *, lang: str, domain: str = 'cyber'):
         'domain': domain,
         'doc_type': 'Strategy Document',
         'selected_frameworks': (
-            ['NCA ECC', 'NCA DCC'] if domain == 'cyber' else []),
+            ['NCA ECC', 'NCA DCC'] if domain == 'cyber'
+            else ['NDMO', 'PDPL'] if domain == 'data'
+            else ['SDAIA'] if domain == 'ai'
+            else []),
     }
+    art['selected_frameworks'] = list(kwargs['selected_frameworks'])
     buf = io.StringIO()
     with redirect_stdout(buf):
         docx_export, docx_ev = rel3_export_authoritative(
