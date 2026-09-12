@@ -31930,6 +31930,37 @@ def _apply_rel36_23_data_ai_guides_and_visible_headers(
         if isinstance(out, dict) and out is not sections:
             sections.clear()
             sections.update(out)
+        diag23 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag23 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag23
+
+
+def _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.23.1 — DT Arabic DGA single KPI table integrity."""
+    try:
+        from release_engine_v3.rel36_23_1_dt_dga_kpi_single_table_integrity import (
+            apply_rel36_23_1_dt_dga_kpi_single_table_integrity,
+        )
+        out, diag = apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
         return diag
     except Exception:  # noqa: BLE001 — never skip the later gate
         return {'applied': False, 'action_taken': 'hook_error'}
@@ -74563,6 +74594,20 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _tgate_e:
                         print(f'[STRATEGY-DIAG] traceability_gate_failed: '
                               f'{_tgate_e}', flush=True)
+
+                    # REL36.23.1 — collapse DT Arabic DGA duplicate KPI
+                    # tables before the unchanged header-count gate.
+                    try:
+                        _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
+                    except Exception:
+                        pass
 
                     # ── PRE-SAVE KPI INTEGRITY DIAGNOSTIC + HARD GATE ───
                     # Final correctness check on the KPI section exactly

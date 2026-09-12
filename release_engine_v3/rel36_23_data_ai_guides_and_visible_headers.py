@@ -47,7 +47,6 @@ from release_engine_v3.rel36_21_en_data_ai_framework_objectives import (
 )
 from release_engine_v3.rel36_22_dt_dga_citizen_experience_coverage import (
     OFFICIAL_CITIZEN_AR,
-    apply_rel36_22_dt_dga_citizen_experience_coverage,
     section_has_citizen_experience,
 )
 from release_engine_v3.rel36_bilingual_preview_export_authority import (
@@ -1079,14 +1078,25 @@ def _repair_dt_split_token(
         or any(tok in str(sections.get(key) or '') for tok in OFFICIAL_CITIZEN_AR)
         for key in _DT_SECTIONS
     )
+    reapply_needed = not present
+    reapply_mode = 'none'
     if not present:
-        # Preserve REL36.22 coverage if the split-only text was the signal.
-        repaired, _diag22 = apply_rel36_22_dt_dga_citizen_experience_coverage(
+        # Token-only repair must not re-run full REL36.22 table append.
+        # REL36.23.1 merges DGA rows into the first KPI table instead.
+        from release_engine_v3.rel36_23_1_dt_dga_kpi_single_table_integrity import (
+            apply_rel36_23_1_dt_dga_kpi_single_table_integrity,
+        )
+        repaired, _diag231 = apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
             sections, domain='dt', lang='ar', document_type='strategy',
-            selected_frameworks=selected_frameworks, emit=False)
+            selected_frameworks=selected_frameworks, emit=False,
+            rel36_22_reapply_needed=True,
+            rel36_22_reapply_mode='safe_merge',
+        )
         sections.update(repaired)
+        reapply_mode = 'safe_merge'
         present = any(
             section_has_citizen_experience(sections.get(key, ''))
+            or any(tok in str(sections.get(key) or '') for tok in OFFICIAL_CITIZEN_AR)
             for key in _DT_SECTIONS
         )
     blockers = _official_dt_blockers(sections, selected_frameworks, lang)
@@ -1103,6 +1113,8 @@ def _repair_dt_split_token(
         'split_token_hits_after': hits_after,
         'citizen_experience_token_present_after': present,
         'selected_framework_blockers_after': citizen_blockers,
+        'rel36_22_reapply_needed': reapply_needed,
+        'rel36_22_reapply_mode': reapply_mode,
         'passed': passed,
     }
 
@@ -1234,6 +1246,25 @@ def apply_rel36_23_data_ai_guides_and_visible_headers(
                              ensure_ascii=False, default=str),
                 flush=True,
             )
+
+    if rel36_23_should_apply(
+            domain=dcode, lang=nlang, document_type=doc_type,
+            selected_frameworks=fw, part='E'):
+        from release_engine_v3.rel36_23_1_dt_dga_kpi_single_table_integrity import (
+            apply_rel36_23_1_dt_dga_kpi_single_table_integrity,
+        )
+        token = parts.get('dt_ar_citizen_token') or {}
+        out, diag231 = apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+            out, domain=dcode, lang=nlang, document_type=doc_type,
+            selected_frameworks=fw, task_id=tid, org_name=org_name,
+            emit=emit,
+            rel36_22_reapply_needed=bool(
+                token.get('rel36_22_reapply_needed')),
+            rel36_22_reapply_mode=str(
+                token.get('rel36_22_reapply_mode') or 'none'),
+        )
+        parts['dt_dga_kpi_single_table'] = diag231
+        applied_any = True
 
     passed = applied_any and all(
         bool(part.get('passed')) for part in parts.values()
