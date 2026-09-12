@@ -30215,6 +30215,17 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             _normalize_cyber_ar_wording_general(sections, lang, domain)
         except Exception:  # noqa: BLE001 — defensive
             pass
+    # REL36.23 — repair EN Data pillars, Data/AI guides, EN SO headers,
+    # AR AI guide completeness, and DT split-token BEFORE audit counts
+    # and the unchanged save gates inspect the payload.
+    try:
+        _apply_rel36_23_data_ai_guides_and_visible_headers(
+            sections if isinstance(sections, dict) else {},
+            lang, domain, selected_frameworks,
+            document_type=_dtype,
+        )
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        pass
     # Strategic Objectives
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -31877,6 +31888,37 @@ def _apply_rel36_22_dt_dga_citizen_experience_coverage(
             apply_rel36_22_dt_dga_citizen_experience_coverage,
         )
         out, diag = apply_rel36_22_dt_dga_citizen_experience_coverage(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag22 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag22 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_data_ai_guides_and_visible_headers(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag22
+
+
+def _apply_rel36_23_data_ai_guides_and_visible_headers(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.23 — Data/AI guides, EN Data pillars, visible SO headers."""
+    try:
+        from release_engine_v3.rel36_23_data_ai_guides_and_visible_headers import (
+            apply_rel36_23_data_ai_guides_and_visible_headers,
+        )
+        out, diag = apply_rel36_23_data_ai_guides_and_visible_headers(
             sections,
             domain=domain,
             lang=lang,
@@ -68906,6 +68948,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                         )
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
+                        _apply_rel36_23_data_ai_guides_and_visible_headers(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
                         if _final_synth:
                             print(f'[STRATEGY-DIAG] final_synthesis_pass='
                                   f'{_final_synth}', flush=True)
@@ -74595,6 +74645,21 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _kfi_e:
                         print(f'[STRATEGY-DIAG] kpi_final_integrity_failed: '
                               f'{_kfi_e}', flush=True)
+
+                    # REL36.23 — last repair before the unchanged
+                    # pillars / guide save gates. Later synthesis can
+                    # overwrite REL36.20/21/22 output; do not skip.
+                    try:
+                        _apply_rel36_23_data_ai_guides_and_visible_headers(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
+                    except Exception:
+                        pass
 
                     # ── PRE-SAVE PILLARS INTEGRITY DIAGNOSTIC + HARD GATE
                     # Parallel gate to the KPI integrity gate but for
