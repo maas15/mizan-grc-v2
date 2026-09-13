@@ -6754,6 +6754,19 @@ def enrich_professional_blocks(
         print(f'[PDF-DOCMODEL-CLEANUP] {_cleanup}', flush=True)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_to_export_payload,
+        )
+        model = apply_rel36_23_2_to_export_payload(
+            model,
+            domain=domain_n,
+            lang=lang_n,
+            selected_frameworks=model.get('selected_frameworks') or [],
+            document_type=model.get('document_type') or 'strategy',
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return model
 
 
@@ -6789,7 +6802,21 @@ def ensure_strategy_professional_model(
         blocks = deepcopy(model.get('blocks') or {})
         blocks = _finalize_professional_blocks(
             blocks, lang_n, domain=str(model.get('domain') or domain or ''))
-        return {**model, 'blocks': blocks}
+        out = {**model, 'blocks': blocks}
+        try:
+            from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+                apply_rel36_23_2_to_export_payload,
+            )
+            out = apply_rel36_23_2_to_export_payload(
+                out,
+                domain=str(model.get('domain') or domain or ''),
+                lang=lang_n,
+                selected_frameworks=model.get('selected_frameworks') or [],
+                document_type=model.get('document_type') or 'strategy',
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return out
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
     metadata = dict(metadata or {})

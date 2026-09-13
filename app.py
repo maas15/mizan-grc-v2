@@ -30285,8 +30285,8 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     if n_kpi < _RICHNESS_MIN_KPI_ROWS:
         defects.append(('kpis', 'kpi_rows_insufficient',
                         n_kpi, _RICHNESS_MIN_KPI_ROWS))
-    n_kpi_hdr = len(_KPI_MAIN_TABLE_HEADER_RE.findall(
-        sections.get('kpis', '') or ''))
+    n_kpi_hdr = _count_full_kpi_main_headers_for_gate(
+        sections.get('kpis', '') or '')
     if n_kpi_hdr != 1:
         defects.append(('kpis', 'kpi_main_header_count_invalid',
                         n_kpi_hdr, 1))
@@ -31957,6 +31957,56 @@ def _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
             selected_frameworks=selected_frameworks,
             task_id=task_id,
             org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag231 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag231 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag231
+
+
+def _count_full_kpi_main_headers_for_gate(text):
+    """REL36.23.2 — count only the full 8-role KPI main schema.
+
+    The official loose ``_KPI_MAIN_TABLE_HEADER_RE`` also matches the
+    KPI formula/source subtable (``| # | المؤشر | صيغة الاحتساب |
+    مصدر البيانات |``). Gates must not treat that subtable as a second
+    main KPI table. Two *full* main tables still fail.
+    """
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            count_full_kpi_main_headers,
+        )
+        return int(count_full_kpi_main_headers(text))
+    except Exception:  # noqa: BLE001 — fail closed to the official regex
+        return len(_KPI_MAIN_TABLE_HEADER_RE.findall(text or ''))
+
+
+def _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name='',
+        repair_stage='pre_final_save'):
+    """REL36.23.2 — DT Arabic live KPI classifier + persisted tokens."""
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+        )
+        out, diag = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+            repair_stage=repair_stage,
         )
         if isinstance(out, dict) and out is not sections:
             sections.clear()
@@ -57102,6 +57152,16 @@ def rebuild_canonical_kpi_section(sections, lang, domain, fw_short):
         s = lines[i].strip()
         if not in_main:
             if _KPI_MAIN_TABLE_HEADER_RE.match(s):
+                # REL36.23.2 — formula/source subtables are not main tables.
+                try:
+                    from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+                        is_kpi_formula_source_header as _is_kpi_formula_hdr,
+                    )
+                    if _is_kpi_formula_hdr(s):
+                        i += 1
+                        continue
+                except Exception:
+                    pass
                 in_main = True
                 i += 1
                 # Skip separator if present
@@ -58093,8 +58153,9 @@ def validate_arabic_section_family_integrity(sections, lang):
                 'kpis_guides_subhead_duplicated_broad',
                 f'{_broad_count} KPI-guides headings (broad regex) in kpis',
             ))
-        # KPI main table must have ≥ 1 header occurrence — duplicates count
-        _main_count = len(_KPI_MAIN_TABLE_HEADER_RE.findall(_kpis_text_check))
+        # KPI main table must have ≥ 1 header occurrence — duplicates count.
+        # REL36.23.2: formula/source subtables are not main headers.
+        _main_count = _count_full_kpi_main_headers_for_gate(_kpis_text_check)
         if _main_count > 1:
             defects.append((
                 'kpis_main_table_duplicated',
@@ -69398,10 +69459,22 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_pre_text))
                         _kpi_final_rebuild = rebuild_canonical_kpi_section(
                             sections, lang, domain, fw_short)
+                        try:
+                            _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                repair_stage='after_canonical_kpi_rebuild',
+                            )
+                        except Exception:
+                            pass
                         # Capture post-canonicalization counts.
                         _kpi_post_text = sections.get('kpis', '') or ''
-                        _kpi_post_main_hdrs = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_post_text))
+                        _kpi_post_main_hdrs = _count_full_kpi_main_headers_for_gate(
+                            _kpi_post_text)
                         _kpi_post_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_post_text))
                         print(
@@ -74595,8 +74668,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                         print(f'[STRATEGY-DIAG] traceability_gate_failed: '
                               f'{_tgate_e}', flush=True)
 
-                    # REL36.23.1 — collapse DT Arabic DGA duplicate KPI
-                    # tables before the unchanged header-count gate.
+                    # REL36.23.1 / REL36.23.2 — collapse DT Arabic DGA
+                    # duplicate *full* KPI tables and normalize split
+                    # tokens on the actual save payload before the
+                    # header-count gate. Formula/source subtables stay.
                     try:
                         _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
                             sections, lang, _dcode or domain,
@@ -74605,6 +74680,18 @@ The confidence score is based on a comprehensive assessment of the organization'
                             task_id=getattr(
                                 globals().get('g', None),
                                 '_strategy_task_id', '') or '',
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                            repair_stage='before_kpi_header_count_gate',
                         )
                     except Exception:
                         pass
@@ -74619,8 +74706,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # line ~24100 also enforces it via validate_kpi_richness.
                     try:
                         _kpi_final_text = sections.get('kpis', '') or ''
-                        _kpi_hdr_count  = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_final_text))
+                        _kpi_hdr_count  = _count_full_kpi_main_headers_for_gate(
+                            _kpi_final_text)
                         _kpi_row_count  = count_substantive_kpis(_kpi_final_text)
                         _kpi_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_final_text))
@@ -77022,6 +77109,50 @@ The confidence score is based on a comprehensive assessment of the organization'
                             f'generation_contract_failed: {_cy28_e}',
                             flush=True,
                         )
+                # REL36.23.2 — last mutation of the actual persist payload
+                # (sections_json / content / preview / export). Helper-on-copy
+                # is not sufficient; the saved artifact must equal the repair.
+                try:
+                    _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                        sections, lang, _dcode or domain,
+                        list(_frameworks_raw or []) or [fw_short],
+                        document_type=_document_type,
+                        task_id=getattr(
+                            globals().get('g', None),
+                            '_strategy_task_id', '') or '',
+                        repair_stage='before_canonical_persist',
+                    )
+                    try:
+                        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+                            apply_rel36_23_2_to_markdown,
+                            normalize_dt_ar_dga_split_tokens,
+                            rel36_23_2_should_apply,
+                        )
+                        if rel36_23_2_should_apply(
+                                domain=_dcode or domain, lang=lang,
+                                document_type=_document_type,
+                                selected_frameworks=list(
+                                    _frameworks_raw or []) or [fw_short]):
+                            _fixed_parts_232 = [
+                                sections[sk] for sk in _section_order_r
+                                if sections.get(sk) and str(sections.get(sk)).strip()
+                            ]
+                            if _fixed_parts_232:
+                                content = '\n\n'.join(_fixed_parts_232)
+                            content = normalize_dt_ar_dga_split_tokens(
+                                apply_rel36_23_2_to_markdown(
+                                    content,
+                                    domain=_dcode or domain,
+                                    lang=lang,
+                                    selected_frameworks=list(
+                                        _frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                )
+                            )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 # 5) Serialize final canonical JSON from the normalized +
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back

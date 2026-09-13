@@ -1265,6 +1265,16 @@ def apply_rel36_23_data_ai_guides_and_visible_headers(
         )
         parts['dt_dga_kpi_single_table'] = diag231
         applied_any = True
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+        )
+        out, diag232 = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+            out, domain=dcode, lang=nlang, document_type=doc_type,
+            selected_frameworks=fw, task_id=tid, org_name=org_name,
+            emit=emit, repair_stage='after_rel36_23_1',
+        )
+        parts['dt_ar_live_kpi_token_integrity'] = diag232
+        applied_any = True
 
     passed = applied_any and all(
         bool(part.get('passed')) for part in parts.values()

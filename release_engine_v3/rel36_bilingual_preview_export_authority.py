@@ -267,6 +267,41 @@ def bind_saved_preview_payload(
     except Exception:  # noqa: BLE001
         pass
     try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+            apply_rel36_23_2_to_markdown,
+            rel36_23_2_should_apply,
+        )
+        _fw232 = (
+            src.get('selected_frameworks')
+            or (content_json or {}).get('selected_frameworks')
+            or [])
+        if rel36_23_2_should_apply(
+                domain=domain, lang=lang, document_type=document_type,
+                selected_frameworks=_fw232):
+            sections, _ = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                sections, domain=domain, lang=lang,
+                document_type=document_type, selected_frameworks=_fw232,
+                strategy_id=sid, repair_stage='saved_preview_binding',
+                emit=False)
+            if isinstance(content_json, dict):
+                content_json = dict(content_json)
+                if isinstance(content_json.get('sections'), dict):
+                    content_json['sections'] = dict(sections)
+                for _ck in ('content', 'final_markdown'):
+                    if content_json.get(_ck):
+                        content_json[_ck] = apply_rel36_23_2_to_markdown(
+                            content_json.get(_ck),
+                            domain=domain, lang=lang,
+                            selected_frameworks=_fw232,
+                            document_type=document_type)
+            if isinstance(src.get('content'), str) and src.get('content'):
+                src['content'] = apply_rel36_23_2_to_markdown(
+                    src.get('content'), domain=domain, lang=lang,
+                    selected_frameworks=_fw232, document_type=document_type)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from release_engine_v3.rel36_19_bilingual_language_parity import (
             apply_rel36_19_bilingual_language_parity,
             bind_latest_preview_payload,

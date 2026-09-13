@@ -1372,6 +1372,46 @@ def rel3_export_authoritative(
             or _rel36_export_ok):
         raise ValueError(f'rel3_export_bypass_detected:{route_n}')
 
+    # REL36.23.2 — persist-path token + KPI repair on the actual export
+    # artifact (sections + final_markdown) for DT Arabic DGA only.
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+            apply_rel36_23_2_to_export_payload,
+            apply_rel36_23_2_to_markdown,
+            rel36_23_2_should_apply,
+        )
+        _fw232 = (
+            (artifact_dict.get('contract_meta') or {}).get('selected_frameworks')
+            or artifact_dict.get('selected_frameworks')
+            or (export_kwargs or {}).get('selected_frameworks')
+            or [])
+        _dtype232 = str(
+            artifact_dict.get('document_type')
+            or (artifact_dict.get('contract_meta') or {}).get('document_type')
+            or 'strategy')
+        if rel36_23_2_should_apply(
+                domain=domain, lang=lang, document_type=_dtype232,
+                selected_frameworks=_fw232):
+            artifact_dict = dict(artifact_dict)
+            _secs232, _ = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                dict(artifact_dict.get('sections') or {}),
+                domain=domain, lang=lang, document_type=_dtype232,
+                selected_frameworks=_fw232,
+                repair_stage=f'rel3_export_authoritative:{route_n}',
+                emit=False)
+            artifact_dict['sections'] = _secs232
+            if artifact_dict.get('final_markdown'):
+                artifact_dict['final_markdown'] = apply_rel36_23_2_to_markdown(
+                    artifact_dict.get('final_markdown'),
+                    domain=domain, lang=lang, selected_frameworks=_fw232,
+                    document_type=_dtype232)
+            artifact_dict = apply_rel36_23_2_to_export_payload(
+                artifact_dict, domain=domain, lang=lang,
+                selected_frameworks=_fw232, document_type=_dtype232)
+    except Exception:  # noqa: BLE001
+        pass
+
     # REL36.2 — fill English cyber pillar owners before export evidence.
     # Does not weaken pillar_owner_missing or bypass evidence.
     try:
