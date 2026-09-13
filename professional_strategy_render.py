@@ -2814,7 +2814,8 @@ def build_roadmap_render_spec(
     for phase_num in (1, 2, 3):
         phase_rows = buckets[phase_num]
         if phase_rows:
-            for filled, meta in phase_rows[:3]:
+            keep_n = len(phase_rows) if not is_cyber_strategy(dcode or domain) else 3
+            for filled, meta in phase_rows[:keep_n]:
                 result.append(filled)
                 result_meta.append(meta)
         else:

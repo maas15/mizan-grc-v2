@@ -157,10 +157,16 @@ class CompileResult:
 
 def rel32_string_sections(sections: Dict[str, Any]) -> Dict[str, str]:
     """Return only persisted string section bodies (no internal metadata)."""
-    return {
-        k: v for k, v in (sections or {}).items()
-        if isinstance(v, str) and v.strip() and not k.startswith('_')
-    }
+    # REL37 stores its canonical model on reserved _rel37_* keys. Those must
+    # survive stringify or export/preview lose compiler authority.
+    kept = {}
+    for k, v in (sections or {}).items():
+        if not isinstance(v, str) or not v.strip():
+            continue
+        if k.startswith('_') and not str(k).startswith('_rel37'):
+            continue
+        kept[k] = v
+    return kept
 
 
 def is_rel32_compiler_first(
@@ -1094,6 +1100,31 @@ def compile_canonical_strategy_document(
         completeness = {}
 
     legacy = rel32_string_sections(legacy)
+    try:
+        from release_engine_v3.rel37_apply import (
+            overlay_rel37_if_applicable,
+            rel37_should_apply,
+        )
+        legacy, rel37_repairs, rel37_blockers = overlay_rel37_if_applicable(
+            legacy, ctx)
+        if rel37_repairs:
+            repairs.extend(rel37_repairs)
+            blockers = [
+                b for b in blockers if not str(b).startswith('rel32_')]
+            blockers.extend(rel37_blockers)
+            blockers = list(dict.fromkeys(blockers))
+            passed = not blockers
+    except Exception as _rel37_exc:  # noqa: BLE001
+        try:
+            from release_engine_v3.rel37_apply import rel37_should_apply
+            if rel37_should_apply(
+                    domain=domain, lang=lang,
+                    document_type=_ctx_dtype,
+                    flags=dict(ctx.get('flags') or {})):
+                blockers.append(f'rel37_overlay_failed:{_rel37_exc!s:.80}')
+                passed = False
+        except Exception:
+            pass
 
     diag = {
         'repairs': repairs,

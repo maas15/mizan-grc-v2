@@ -30231,12 +30231,11 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
         defects.append(('roadmap', 'roadmap_rows_insufficient',
                         n_road, _RICHNESS_MIN_ROADMAP_ROWS))
     # KPI rows + main-header count
-    n_kpi = count_substantive_kpis(sections.get('kpis', '') or '')
+    n_kpi = _rel37_kpi_row_count(sections)
     if n_kpi < _RICHNESS_MIN_KPI_ROWS:
         defects.append(('kpis', 'kpi_rows_insufficient',
                         n_kpi, _RICHNESS_MIN_KPI_ROWS))
-    n_kpi_hdr = len(_KPI_MAIN_TABLE_HEADER_RE.findall(
-        sections.get('kpis', '') or ''))
+    n_kpi_hdr = _rel37_kpi_main_header_count(sections)
     if n_kpi_hdr != 1:
         defects.append(('kpis', 'kpi_main_header_count_invalid',
                         n_kpi_hdr, 1))
@@ -31692,6 +31691,62 @@ def _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _rel37_authoritative_sections(sections):
+    """True when REL37 Data/AI/DT compilers own the live sections."""
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        return is_rel37_authoritative(sections)
+    except Exception:
+        return False
+
+
+def _rel37_kpi_main_header_count(sections, text=None):
+    """Count KPI main headers; REL37 uses the typed model, not regex."""
+    if _rel37_authoritative_sections(sections):
+        try:
+            from release_engine_v3.rel37_apply import rel37_kpi_main_header_count
+            return rel37_kpi_main_header_count(sections)
+        except Exception:
+            return 1
+    blob = text if text is not None else (sections.get('kpis', '') or '')
+    return len(_KPI_MAIN_TABLE_HEADER_RE.findall(blob))
+
+
+def _rel37_kpi_row_count(sections, text=None):
+    """Count KPI main rows; REL37 uses the typed model, not formula/source."""
+    if _rel37_authoritative_sections(sections):
+        try:
+            from release_engine_v3.rel37_apply import rel37_kpi_row_count
+            return rel37_kpi_row_count(sections)
+        except Exception:
+            return 0
+    blob = text if text is not None else (sections.get('kpis', '') or '')
+    return count_substantive_kpis(blob)
+
+
+def _apply_rel37_data_ai_dt_compilers(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', org_name='', task_id=''):
+    """Overlay REL37 compilers for Data/AI/DT strategy only."""
+    try:
+        from release_engine_v3.rel37_apply import apply_rel37_to_sections
+        out, repairs = apply_rel37_to_sections(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            org_name=org_name,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return {'applied': bool(repairs), 'repairs': repairs}
+    except Exception:
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_18_ai_sdaia_kpi_synth(
         sections, lang, domain, selected_frameworks,
         document_type='strategy', task_id='',
@@ -31701,6 +31756,8 @@ def _apply_rel36_18_ai_sdaia_kpi_synth(
     Runs after REL36.17 and immediately before unchanged
     ``synthesize_kpi_depth``. Does not mark that gate passed.
     """
+    if _rel37_authoritative_sections(sections):
+        return {'applied': False, 'action_taken': 'rel37_authoritative'}
     try:
         from release_engine_v3.rel36_18_ai_sdaia_kpi_synth import (
             apply_rel36_18_ai_sdaia_kpi_synth,
@@ -31732,6 +31789,8 @@ def _apply_rel36_7_data_pdpl_roadmap_balance(
     when NDMO and/or PDPL is selected and the official catalog tokens
     are absent. Neither helper skips the balance gate.
     """
+    if _rel37_authoritative_sections(sections):
+        return
     try:
         from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
             apply_rel36_7_data_pdpl_roadmap_balance,
@@ -31761,6 +31820,8 @@ def _apply_rel36_10_data_catalog_roadmap_balance(
     No-op outside Data Arabic strategy + NDMO/PDPL. Does not skip the
     ``data_roadmap_balance_missing`` gate.
     """
+    if _rel37_authoritative_sections(sections):
+        return
     try:
         from release_engine_v3.rel36_10_data_catalog_roadmap_balance import (
             apply_rel36_10_data_catalog_roadmap_balance,
@@ -56841,6 +56902,8 @@ def rebuild_canonical_kpi_section(sections, lang, domain, fw_short):
 
     Returns a dict summarizing what was rebuilt. Idempotent.
     """
+    if _rel37_authoritative_sections(sections):
+        return {'skipped': True, 'reason': 'rel37_authoritative'}
     kpis = sections.get('kpis', '') or ''
     is_ar = (lang == 'ar')
 
@@ -57852,7 +57915,7 @@ def validate_arabic_section_family_integrity(sections, lang):
                 f'{_broad_count} KPI-guides headings (broad regex) in kpis',
             ))
         # KPI main table must have ≥ 1 header occurrence — duplicates count
-        _main_count = len(_KPI_MAIN_TABLE_HEADER_RE.findall(_kpis_text_check))
+        _main_count = _rel37_kpi_main_header_count(sections, _kpis_text_check)
         if _main_count > 1:
             defects.append((
                 'kpis_main_table_duplicated',
@@ -74300,10 +74363,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # Guide coverage is also logged here; the gate at
                     # line ~24100 also enforces it via validate_kpi_richness.
                     try:
+                        _apply_rel37_data_ai_dt_compilers(
+                            sections, lang, domain,
+                            locals().get('_frameworks_raw') or [],
+                            document_type=locals().get('_document_type')
+                            or 'strategy',
+                            org_name=str(locals().get('org_name') or ''),
+                            task_id=str(locals().get('task_id') or ''),
+                        )
                         _kpi_final_text = sections.get('kpis', '') or ''
-                        _kpi_hdr_count  = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_final_text))
-                        _kpi_row_count  = count_substantive_kpis(_kpi_final_text)
+                        _kpi_hdr_count  = _rel37_kpi_main_header_count(
+                            sections, _kpi_final_text)
+                        _kpi_row_count  = _rel37_kpi_row_count(
+                            sections, _kpi_final_text)
                         _kpi_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_final_text))
                         _kpi_per_blocks = len(
@@ -74839,6 +74911,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 if '_generation_mode' in dir()
                                 else 'drafting'),
                             doc_subtype=doc_subtype,
+                        )
+                        _apply_rel37_data_ai_dt_compilers(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            org_name=str(locals().get('org_name') or ''),
+                            task_id=_rel3691_tid,
                         )
                     except Exception as _rel3691_e:
                         print(
