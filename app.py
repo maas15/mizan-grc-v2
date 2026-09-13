@@ -66779,7 +66779,90 @@ The confidence score is based on a comprehensive assessment of the organization'
                     broken[sec_key] = '; '.join(_sec_group_reasons)
             return len(broken) == 0, broken
 
-        _struct_valid, _struct_broken = _validate_strategy_structure(sections, lang)
+        # REL37.0.3 — attach compiler authority BEFORE markdown completeness /
+        # richness packs so supported Data/AI/DT strategy never dies on
+        # so_rows_insufficient / gap_guide_coverage / heading mismatch /
+        # confidence_score_missing_in_richness against pre-compiler LLM text.
+        _rel37_early_diag = None
+        _rel37_authoritative_route = False
+        try:
+            from release_engine_v3.rel37_early_authority import (
+                Rel37ModelValidationFailed as _Rel37EarlyValFailed,
+                attach_rel37_early_authority as _rel37_early_attach,
+                should_skip_legacy_arabic_richness_pack as _rel37_skip_legacy_pack,
+            )
+            _rel37_early_fws = (
+                data.get('frameworks')
+                or data.get('selected_frameworks')
+                or _frameworks_raw
+            )
+            _rel37_early_org = (
+                locals().get('org_name')
+                or data.get('org_name')
+                or 'The Organization'
+            )
+            _rel37_early_result = _rel37_early_attach(
+                sections,
+                domain=locals().get('_dcode') or data.get('domain'),
+                lang=lang,
+                document_type=_document_type,
+                selected_frameworks=_rel37_early_fws,
+                org_name=_rel37_early_org,
+                explicit_selection=data.get('explicit_selection'),
+                strategy_id=data.get('strategy_id') or data.get('id'),
+                task_id=data.get('task_id'),
+            )
+            _rel37_early_diag = _rel37_early_result.diagnostic
+            if _rel37_early_result.applied:
+                sections = _rel37_early_result.sections
+                content = sections.get('content', content)
+                _rel37_authoritative_route = True
+                print(
+                    '[REL37-EARLY-COMPILER-AUTHORITY] '
+                    f"applied=true domain={_rel37_early_result.diagnostic.get('domain_resolved')} "
+                    f"reason={_rel37_early_result.diagnostic.get('support_reason')} "
+                    f"model_hash={_rel37_early_result.diagnostic.get('model_hash')}",
+                    flush=True,
+                )
+        except _Rel37EarlyValFailed as _rel37_early_err:
+            print(
+                f'[REL37-EARLY-COMPILER-AUTHORITY] model validation failed: '
+                f'{_rel37_early_err.blockers}',
+                flush=True,
+            )
+            return jsonify({
+                'success': False,
+                'error': 'rel37_model_validation_failed',
+                'error_code': 'rel37_model_validation_failed',
+                'blockers': list(_rel37_early_err.blockers or []),
+            }), 422
+        except Exception as _rel37_early_exc:
+            print(
+                f'[REL37-EARLY-COMPILER-AUTHORITY] skipped: {_rel37_early_exc}',
+                flush=True,
+            )
+
+        if _rel37_authoritative_route or (
+            locals().get('_rel37_skip_legacy_pack')
+            and _rel37_skip_legacy_pack(
+                domain=locals().get('_dcode') or data.get('domain'),
+                lang=lang,
+                document_type=_document_type,
+                selected_frameworks=(
+                    data.get('frameworks')
+                    or data.get('selected_frameworks')
+                    or _frameworks_raw
+                ),
+                explicit_selection=data.get('explicit_selection'),
+                sections=sections,
+            )
+        ):
+            # CanonicalDocument.validate() already ran. Do not let the old
+            # markdown structure validator rewrite or AI-repair REL37 output.
+            _struct_valid, _struct_broken = True, {}
+            _rel37_authoritative_route = True
+        else:
+            _struct_valid, _struct_broken = _validate_strategy_structure(sections, lang)
 
         # ── Draft-mode status banner ─────────────────────────────────────────
         # For drafting mode, prepend a visible draft notice to the vision section
@@ -74899,6 +74982,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                         print(f'[STRATEGY-DIAG] residue_validator_failed: {_rse}',
                               flush=True)
                         _residue_defects = []
+                    # REL37.0.3 — supported Data/AI/DT strategy already
+                    # passed CanonicalDocument.validate(). Do not let the
+                    # old markdown completeness pack 422 compiler output.
+                    if (
+                            locals().get('_rel37_authoritative_route')
+                            or _rel37_authoritative_sections(sections)
+                    ):
+                        _contam_defects = []
+                        _table_defects = []
+                        _family_defects = []
+                        _global_family_defects = []
+                        _residue_defects = []
+                        print(
+                            '[REL37-EARLY-COMPILER-AUTHORITY] '
+                            'old_arabic_richness_skipped=true '
+                            'reason=rel37_authoritative_model',
+                            flush=True,
+                        )
                     # REL36.9.1: English Cyber ECC+DCC vision prompt-residue
                     # repair. Runs AFTER synthesis/depth (which can
                     # reintroduce residue) and IMMEDIATELY BEFORE the
@@ -75011,6 +75112,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _pre2:
                         print(f'[STRATEGY-DIAG] prompt_residue_validator_failed: '
                               f'{_pre2}', flush=True)
+                        _prompt_residue_defects = []
+                    if (
+                            locals().get('_rel37_authoritative_route')
+                            or _rel37_authoritative_sections(sections)
+                    ):
                         _prompt_residue_defects = []
                     # Log the full family-heading location map so operators
                     # can see exactly where each family lives before the gate.
@@ -75201,6 +75307,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 '[STRATEGY-DIAG] richness_gate_skipped='
                                 'rel32_compiler_first_document_quality_authority',
+                                flush=True,
+                            )
+                        elif (
+                                locals().get('_rel37_authoritative_route')
+                                or _rel37_authoritative_sections(sections)
+                        ):
+                            _richness_defects = []
+                            print(
+                                '[STRATEGY-DIAG] richness_gate_skipped='
+                                'rel37_authoritative_model_validate',
                                 flush=True,
                             )
                         else:
@@ -76860,11 +76976,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                 # strategy sections with the validated CanonicalDocument so
                 # later markdown repair cannot discard ``_rel37_*`` keys.
                 try:
+                    from release_engine_v3.rel37_early_authority import (
+                        confirm_rel37_final_persist as _rel37_confirm_save,
+                    )
                     from release_engine_v3.rel37_live_attach import (
                         Rel37ModelValidationFailed as _Rel37Fail,
-                        attach_rel37_before_save as _rel37_attach_save,
                     )
-                    _rel3702 = _rel37_attach_save(
+                    _rel3702 = _rel37_confirm_save(
                         sections if isinstance(sections, dict) else {},
                         content=content or '',
                         domain_input=str(
@@ -76888,10 +77006,12 @@ The confidence score is based on a comprehensive assessment of the organization'
                         strategy_id=str(
                             (data or {}).get('strategy_id') or ''),
                         request=data if isinstance(data, dict) else {},
+                        early_diagnostic=locals().get('_rel37_early_diag'),
                     )
                     sections = _rel3702.sections
                     if _rel3702.content:
                         content = _rel3702.content
+                    _rel37_early_diag = _rel3702.diagnostic
                 except Exception as _rel3702_exc:
                     from release_engine_v3.rel37_live_attach import (
                         Rel37ModelValidationFailed as _Rel37Fail2,

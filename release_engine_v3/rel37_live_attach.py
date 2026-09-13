@@ -194,7 +194,17 @@ def public_sections_hash(sections: Optional[Dict[str, Any]]) -> str:
     return _sha256_text(payload)
 
 
-def stamp_rel37_keys(sections: Dict[str, Any], model: CanonicalDocument) -> Dict[str, Any]:
+def stamp_rel37_keys(
+        sections: Dict[str, Any],
+        model: CanonicalDocument,
+        *,
+        selection_reason: str = 'supported_selection',
+        selection_supported: bool = True,
+) -> Dict[str, Any]:
+    from release_engine_v3.rel37_apply import (
+        REL37_SELECTION_REASON_KEY,
+        REL37_SELECTION_SUPPORTED_KEY,
+    )
     out = dict(sections or {})
     rendered = model_to_sections(model)
     out.update(rendered)
@@ -203,6 +213,15 @@ def stamp_rel37_keys(sections: Dict[str, Any], model: CanonicalDocument) -> Dict
     out[REL37_HASH_KEY] = model.model_hash
     out[REL37_SOURCE_KEY] = model.model_hash
     out[REL37_MARKDOWN_KEY] = model_to_markdown(model)
+    reason = str(selection_reason or 'supported_selection').strip()
+    if reason in (
+            'unsupported_frameworks', 'unsupported_empty_explicit',
+            'unsupported_empty_after_normalize', 'domain_not_supported',
+            'document_type_not_supported', 'document_type_unsupported',
+            'lang_unsupported', 'feature_switch_off', 'domain_not_phase1'):
+        reason = 'supported_selection'
+    out[REL37_SELECTION_REASON_KEY] = reason
+    out[REL37_SELECTION_SUPPORTED_KEY] = 'true' if selection_supported else 'false'
     return out
 
 
@@ -460,12 +479,38 @@ def attach_rel37_before_save(
     diag['supported_selection'] = bool(selection.supported)
     diag['support_reason'] = mapped_reason
     if not selection.supported:
+        # Do not strip an already-applied REL37 model when a later hook
+        # sees dirty/unsupported frameworks. That left applied=true with
+        # a stale unsupported_frameworks reason on Data/DT latest.
+        if sections_have_rel37(incoming):
+            diag['compiler_used'] = True
+            diag['supported_selection'] = True
+            diag['support_reason'] = str(
+                incoming.get('_rel37_selection_reason') or 'supported_selection')
+            if diag['support_reason'] in (
+                    'unsupported_frameworks', 'unsupported_empty_explicit',
+                    'unsupported_empty_after_normalize', 'domain_not_supported',
+                    'document_type_not_supported', 'document_type_unsupported',
+                    'lang_unsupported', 'feature_switch_off', 'domain_not_phase1'):
+                incoming['_rel37_selection_reason'] = 'supported_selection'
+                incoming['_rel37_selection_supported'] = 'true'
+                diag['support_reason'] = 'supported_selection'
+            diag['saved_sections_has_rel37'] = True
+            diag['model_hash'] = str(incoming.get(REL37_HASH_KEY) or '')
+            diag['passed'] = True
+            emit_live_attach_diagnostic(diag)
+            return Rel37LiveAttachResult(
+                sections=incoming,
+                content=content or incoming.get(REL37_MARKDOWN_KEY) or '',
+                diagnostic=diag,
+            )
         incoming.pop(REL37_APPLIED_KEY, None)
         incoming.pop(REL37_MODEL_KEY, None)
         incoming.pop(REL37_HASH_KEY, None)
         incoming.pop(REL37_SOURCE_KEY, None)
         incoming.pop(REL37_MARKDOWN_KEY, None)
         incoming['_rel37_selection_reason'] = mapped_reason
+        incoming['_rel37_selection_supported'] = 'false'
         diag['compiler_used'] = False
         diag['passed'] = True
         emit_live_attach_diagnostic(diag)
@@ -497,7 +542,8 @@ def attach_rel37_before_save(
                 error='rel37_model_validation_failed',
                 model=model,
             )
-        out = stamp_rel37_keys(incoming, model)
+        out = stamp_rel37_keys(
+            incoming, model, selection_reason=mapped_reason or 'supported_selection')
         markdown = out[REL37_MARKDOWN_KEY]
         rendered_hash = _sha256_text(markdown)
         bundle = export_bundle_from_sections(out)

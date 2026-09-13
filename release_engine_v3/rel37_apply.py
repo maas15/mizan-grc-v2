@@ -13,6 +13,16 @@ from release_engine_v3.rel37_selection import rel37_supported_selection
 REL37_APPLIED_KEY = '_rel37_applied'
 REL37_MODEL_KEY = '_rel37_canonical'
 REL37_HASH_KEY = '_rel37_model_hash'
+REL37_SELECTION_REASON_KEY = '_rel37_selection_reason'
+REL37_SELECTION_SUPPORTED_KEY = '_rel37_selection_supported'
+REL37_SOURCE_KEY = '_rel37_source_hash'
+REL37_MARKDOWN_KEY = '_rel37_markdown'
+
+_SUPPORTED_REASONS = frozenset(('supported_selection', 'default_expanded'))
+_AUTHORITY_KEYS = (
+    REL37_APPLIED_KEY, REL37_MODEL_KEY, REL37_HASH_KEY,
+    REL37_SOURCE_KEY, REL37_MARKDOWN_KEY,
+)
 
 
 def _normalize_lang(value: object) -> str:
@@ -148,7 +158,15 @@ def apply_rel37_to_sections(
             not rel37_compiler_flag_enabled()
             or flags.get('rel37_data_ai_dt_compiler') in (0, False, '0', 'false', 'off')
             or not selection.supported):
-        out['_rel37_selection_reason'] = selection.reason
+        # Do not stamp a stale unsupported reason onto an already-applied
+        # model. That is how Data/DT latest showed applied=true plus
+        # unsupported_frameworks after a later no-op overlay.
+        if is_rel37_authoritative(out):
+            return out, []
+        for key in _AUTHORITY_KEYS:
+            out.pop(key, None)
+        out[REL37_SELECTION_REASON_KEY] = selection.reason
+        out[REL37_SELECTION_SUPPORTED_KEY] = 'false'
         return out, []
     payload = dict(request or {})
     payload.setdefault('domain', domain)
@@ -163,8 +181,12 @@ def apply_rel37_to_sections(
     out[REL37_APPLIED_KEY] = '1'
     out[REL37_MODEL_KEY] = serialize_model(model)
     out[REL37_HASH_KEY] = model.model_hash
-    out['_rel37_source_hash'] = model.model_hash
-    out['_rel37_markdown'] = model_to_markdown(model)
+    out[REL37_SOURCE_KEY] = model.model_hash
+    out[REL37_MARKDOWN_KEY] = model_to_markdown(model)
+    out[REL37_SELECTION_REASON_KEY] = (
+        selection.reason if selection.reason in _SUPPORTED_REASONS
+        else 'supported_selection')
+    out[REL37_SELECTION_SUPPORTED_KEY] = 'true'
     repairs = ['rel37:deterministic_compiler']
     if model.blockers:
         repairs.append('rel37:validate_blockers')
