@@ -13,9 +13,9 @@ CanonicalDocument
     lang                    "ar" | "en"
     selected_frameworks[]   from request only
     org_name                exact Unicode
-    task_id / strategy_id
-    model_hash              SHA-256 of canonical JSON (stable key order)
-    prose_hash              SHA-256 of narrative fields only
+    task_id / strategy_id   persistence only; excluded from model_hash
+    model_hash              SHA-256 of canonical_hash_payload()
+    prose_hash              SHA-256 of narrative fields only (derived)
   prose:
     vision
     environment_narrative
@@ -39,12 +39,37 @@ CanonicalDocument
   validation:
     passed: bool
     blockers: []
-  render:
+    render:
     targets: [md, html, docx, pdf, txt, print]
-    last_render_hash: {target: hash}
+    last_render_hash: {target: hash}   # derived; excluded from model_hash
 ```
 
 `selected_frameworks` is copied from the request. Compilers and scanners must not invent frameworks from body text.
+
+## 1.1 `model_hash` authority (non-self-referential)
+
+`model_hash = SHA-256(canonical_hash_payload())`.
+
+`canonical_hash_payload()` is the only hash input. It includes stable model-authority fields only:
+
+- `schema_version`, `coverage_registry_version`
+- `document_type`, `domain`, `lang`
+- `selected_frameworks` (normalized, sorted)
+- `org_name` (exact Unicode)
+- narrative and typed table rows
+- `required_families`, `satisfied_families`
+
+It **excludes** all derived / runtime fields, including:
+
+- `model_hash` itself
+- `prose_hash`, `source_hash`, `preview_hash`, `docx_hash`, `pdf_hash`
+- evidence hashes / `EvidenceProjection`
+- `validation_passed`, `blockers`, `missing_families`
+- `task_id` / strategy ids (not part of identity)
+- validation or generated timestamps
+- `runtime_diagnostics`, export/debug artifacts, `last_render_hash`
+
+`compute_hashes()` calls `compute_model_hash()` and then assigns derived fields. Recomputing without content change returns the same digest. Rendering preview/DOCX/PDF must not change `model_hash`. `EvidenceProjection.source_hash` equals `model_hash` and must not feed back into the hash input.
 
 ## 2. Typed tables
 

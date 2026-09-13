@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from release_engine_v3.rel37_schema_registry import (
     APPROVED_ACRONYMS,
+    COVERAGE_REGISTRY_VERSION,
     FORMULA_BLOCK,
     GAP_GUIDE_HEADING,
     KPI_FORMULA_HEADERS,
@@ -20,6 +21,27 @@ from release_engine_v3.rel37_schema_registry import (
     header_line,
     leakage_terms,
 )
+
+# Derived / runtime fields that must never enter model_hash input.
+HASH_EXCLUDED_FIELDS = frozenset({
+    'model_hash',
+    'prose_hash',
+    'source_hash',
+    'preview_hash',
+    'docx_hash',
+    'pdf_hash',
+    'evidence',
+    'evidence_hashes',
+    'validation_passed',
+    'blockers',
+    'missing_families',
+    'task_id',
+    'runtime_diagnostics',
+    'validation_timestamps',
+    'generated_timestamps',
+    'export_debug',
+    'last_render_hash',
+})
 
 _AR_LETTER = re.compile(r'[\u0600-\u06FF]')
 _SPLIT_BENEFICIARY = re.compile(r'المست\s+فيد')
@@ -247,10 +269,13 @@ class CanonicalDocument:
     prose_hash: str = ''
     validation_passed: bool = False
     blockers: Tuple[str, ...] = ()
+    runtime_diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def canonical_payload(self) -> Dict[str, Any]:
+        """Persistence projection. Includes task_id; excludes derived hashes."""
         return {
             'schema_version': self.schema_version,
+            'coverage_registry_version': COVERAGE_REGISTRY_VERSION,
             'document_type': self.document_type,
             'domain': self.domain,
             'lang': self.lang,
@@ -278,15 +303,36 @@ class CanonicalDocument:
             'satisfied_families': list(self.satisfied_families),
         }
 
+    def canonical_hash_payload(self) -> Dict[str, Any]:
+        """Stable model-authority payload. Never includes derived hash fields."""
+        persist = self.canonical_payload()
+        payload = {
+            key: value
+            for key, value in persist.items()
+            if key not in HASH_EXCLUDED_FIELDS
+        }
+        payload['selected_frameworks'] = sorted(
+            str(item).strip().lower() for item in payload.get('selected_frameworks') or []
+            if str(item).strip()
+        )
+        payload['required_families'] = list(self.required_families)
+        payload['satisfied_families'] = list(self.satisfied_families)
+        payload['coverage_registry_version'] = COVERAGE_REGISTRY_VERSION
+        payload['schema_version'] = self.schema_version
+        payload['org_name'] = self.org_name
+        return payload
+
+    def compute_model_hash(self) -> str:
+        return sha256_text(_stable_json(self.canonical_hash_payload()))
+
     def compute_hashes(self) -> 'CanonicalDocument':
-        payload = self.canonical_payload()
         prose = {
             'vision': self.vision,
             'environment_narrative': self.environment_narrative,
             'confidence_justification': self.confidence_justification,
             'org_name': self.org_name,
         }
-        self.model_hash = sha256_text(_stable_json(payload))
+        self.model_hash = self.compute_model_hash()
         self.prose_hash = sha256_text(_stable_json(prose))
         return self
 
@@ -490,6 +536,7 @@ class CanonicalDocument:
             prose_hash=str(data.get('prose_hash') or ''),
             validation_passed=bool(data.get('validation_passed')),
             blockers=tuple(data.get('blockers') or ()),
+            runtime_diagnostics=dict(data.get('runtime_diagnostics') or {}),
         )
         return doc
 

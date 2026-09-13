@@ -1120,7 +1120,9 @@ def compile_canonical_strategy_document(
             if rel37_should_apply(
                     domain=domain, lang=lang,
                     document_type=_ctx_dtype,
-                    flags=dict(ctx.get('flags') or {})):
+                    flags=dict(ctx.get('flags') or {}),
+                    selected_frameworks=ctx.get('selected_frameworks'),
+                    request=ctx):
                 blockers.append(f'rel37_overlay_failed:{_rel37_exc!s:.80}')
                 passed = False
         except Exception:

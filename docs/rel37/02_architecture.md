@@ -50,10 +50,22 @@ REL37 compilers are **additive** modules. They are selected only when:
 ```text
 document_type == strategy
 AND domain in {data, ai, dt}
+AND lang in {ar, en}
 AND rel37_compiler_enabled (flag, default on in tests)
+AND rel37_supported_selection(...).supported == true
 ```
 
-Cyber must not enter this selector in Phase 1.
+Phase 1 supported framework selections (from request metadata only; never inferred from body text):
+
+| Domain | Supported `selected_frameworks` |
+|---|---|
+| Data | `NDMO`, `PDPL`, `NDMO+PDPL` |
+| AI | `SDAIA` |
+| DT | `DGA` |
+
+Empty selection expands to the domain default **only** when `explicit_selection=false` (the live UI meaning of “no frameworks chosen”). An explicit empty list is unsupported and REL37 no-ops.
+
+Any unsupported or mixed token (`NCA`, `NIST AI RMF`, `EU AI Act`, `UNESCO`, `NIST CSF`, Data+NCA, …) makes `supported=false`. REL37 does **not** drop the unsupported subset and compile the rest. The request stays on the existing `main` path. Cyber, ERM, Global, and non-strategy types never enter this selector.
 
 ## 4. Module layout (when implementation is approved)
 

@@ -2,18 +2,13 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from release_engine_v3.domain_codes import normalize_domain_code
 from release_engine_v3.rel37_canonical_document import CanonicalDocument
 from release_engine_v3.rel37_compilers import compile_for_domain
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections
-from release_engine_v3.rel37_schema_registry import (
-    PHASE1_DOMAINS,
-    PHASE1_LANGS,
-    rel37_compiler_flag_enabled,
-)
+from release_engine_v3.rel37_schema_registry import rel37_compiler_flag_enabled
+from release_engine_v3.rel37_selection import rel37_supported_selection
 
 REL37_APPLIED_KEY = '_rel37_applied'
 REL37_MODEL_KEY = '_rel37_canonical'
@@ -29,6 +24,30 @@ def _normalize_lang(value: object) -> str:
     return raw
 
 
+def _infer_explicit_selection(
+        selected_frameworks: Optional[List[str]],
+        request: Optional[Dict[str, Any]],
+        explicit_selection: Optional[bool],
+) -> bool:
+    if explicit_selection is not None:
+        return bool(explicit_selection)
+    ctx = dict(request or {})
+    if ctx.get('explicit_selection') is not None:
+        return bool(ctx.get('explicit_selection'))
+    values = []
+    if selected_frameworks is not None:
+        values = [item for item in selected_frameworks if str(item).strip()]
+    elif ctx.get('selected_frameworks') is not None:
+        raw = ctx.get('selected_frameworks')
+        if isinstance(raw, str):
+            values = [part for part in raw.replace('|', ',').split(',') if part.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            values = [item for item in raw if str(item).strip()]
+    # Live UI sends an empty list when the user picked nothing. That is the
+    # documented default-expansion case, not an explicit empty selection.
+    return bool(values)
+
+
 def rel37_should_apply(
         *,
         domain: str = '',
@@ -36,21 +55,30 @@ def rel37_should_apply(
         document_type: str = 'strategy',
         sections: Optional[Dict[str, Any]] = None,
         flags: Optional[Dict[str, Any]] = None,
+        selected_frameworks: Optional[List[str]] = None,
+        explicit_selection: Optional[bool] = None,
+        request: Optional[Dict[str, Any]] = None,
 ) -> bool:
     if not rel37_compiler_flag_enabled():
         return False
     flags = flags or {}
     if flags.get('rel37_data_ai_dt_compiler') in (0, False, '0', 'false', 'off'):
         return False
-    dtype = str(document_type or 'strategy').strip().lower()
-    if dtype not in ('strategy', ''):
-        return False
-    dcode = normalize_domain_code(str(domain or ''), default='')
-    if dcode not in PHASE1_DOMAINS:
-        return False
-    if _normalize_lang(lang) not in PHASE1_LANGS:
-        return False
-    return True
+    # sections/body text must not influence selection. Frameworks come from
+    # trusted request metadata only.
+    _ = sections
+    explicit = _infer_explicit_selection(
+        selected_frameworks, request, explicit_selection)
+    result = rel37_supported_selection(
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        selected_frameworks=selected_frameworks
+        if selected_frameworks is not None
+        else (request or {}).get('selected_frameworks'),
+        explicit_selection=explicit,
+    )
+    return bool(result.supported)
 
 
 def is_rel37_authoritative(sections: Optional[Dict[str, Any]]) -> bool:
@@ -101,21 +129,33 @@ def apply_rel37_to_sections(
         task_id: str = '',
         flags: Optional[Dict[str, Any]] = None,
         request: Optional[Dict[str, Any]] = None,
+        explicit_selection: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     out = dict(sections or {})
-    if not rel37_should_apply(
-            domain=domain, lang=lang, document_type=document_type,
-            sections=out, flags=flags):
+    flags = flags or {}
+    explicit = _infer_explicit_selection(
+        selected_frameworks, request, explicit_selection)
+    selection = rel37_supported_selection(
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        selected_frameworks=selected_frameworks
+        if selected_frameworks is not None
+        else (request or {}).get('selected_frameworks'),
+        explicit_selection=explicit,
+    )
+    if (
+            not rel37_compiler_flag_enabled()
+            or flags.get('rel37_data_ai_dt_compiler') in (0, False, '0', 'false', 'off')
+            or not selection.supported):
+        out['_rel37_selection_reason'] = selection.reason
         return out, []
     payload = dict(request or {})
     payload.setdefault('domain', domain)
     payload.setdefault('lang', _normalize_lang(lang))
     payload.setdefault('org_name', org_name or payload.get('org_name') or '')
     payload.setdefault('task_id', task_id)
-    if selected_frameworks is not None:
-        payload['selected_frameworks'] = list(selected_frameworks)
-    elif 'selected_frameworks' not in payload:
-        payload['selected_frameworks'] = []
+    payload['selected_frameworks'] = list(selection.normalized_frameworks)
     model = compile_for_domain(domain, payload)
     rendered = model_to_sections(model)
     for key, value in rendered.items():
@@ -150,21 +190,32 @@ def overlay_rel37_if_applicable(
         or ctx.get('organization')
         or backend.get('org_name')
         or '')
-    selected = (
-        ctx.get('selected_frameworks')
-        or backend.get('selected_frameworks')
-        or []
-    )
+    if 'selected_frameworks' in ctx:
+        selected = ctx.get('selected_frameworks')
+    elif 'selected_frameworks' in backend:
+        selected = backend.get('selected_frameworks')
+    elif 'frameworks' in ctx:
+        selected = ctx.get('frameworks')
+    else:
+        selected = None
+    if isinstance(selected, str):
+        selected_list = [
+            part for part in selected.replace('|', ',').split(',') if part.strip()]
+    elif isinstance(selected, (list, tuple, set)):
+        selected_list = list(selected)
+    else:
+        selected_list = None
     out, repairs = apply_rel37_to_sections(
         sections,
         domain=domain,
         lang=lang,
         document_type=document_type,
-        selected_frameworks=list(selected) if selected else [],
+        selected_frameworks=selected_list,
         org_name=org_name,
         task_id=str(ctx.get('task_id') or ctx.get('strategy_id') or ''),
         flags=dict(ctx.get('flags') or backend.get('flags') or {}),
         request=ctx,
+        explicit_selection=ctx.get('explicit_selection'),
     )
     blockers: List[str] = []
     model = load_model(out)

@@ -20,13 +20,19 @@ os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
 os.environ.setdefault('REL37_DATA_AI_DT_COMPILER', '1')
 
 from release_engine_v3.rel37_apply import (  # noqa: E402
+    apply_rel37_to_sections,
     is_rel37_authoritative,
     rel37_should_apply,
 )
 from release_engine_v3.rel37_canonical_document import (  # noqa: E402
+    HASH_EXCLUDED_FIELDS,
     CanonicalDocument,
     KpiFormulaRow,
     KpiRow,
+)
+from release_engine_v3.rel37_selection import (  # noqa: E402
+    last_selection_diagnostic,
+    rel37_supported_selection,
 )
 from release_engine_v3.rel37_compilers import compile_for_domain  # noqa: E402
 from release_engine_v3.rel37_render import (  # noqa: E402
@@ -288,6 +294,208 @@ class Rel37DeterministicCompilerTests(unittest.TestCase):
     def test_25_smoke_scripts_present(self):
         self.assertTrue((ROOT / 'scripts' / 'smoke_document_type_matrix.py').is_file())
         self.assertTrue((ROOT / 'scripts' / 'smoke_all_domains_preview_docx_pdf.py').is_file())
+
+
+class Rel37HashAuthorityTests(unittest.TestCase):
+    def test_26_model_hash_stable_across_recompute(self):
+        model = _compile('data', 'en', org_name='Hash Org')
+        first = model.model_hash
+        second = model.compute_hashes().model_hash
+        third = model.compute_model_hash()
+        self.assertEqual(first, second)
+        self.assertEqual(first, third)
+        self.assertTrue(first)
+
+    def test_27_hash_payload_excludes_derived_fields(self):
+        model = _compile('ai', 'ar')
+        payload = model.canonical_hash_payload()
+        for field in HASH_EXCLUDED_FIELDS:
+            self.assertNotIn(field, payload)
+        blob = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn('"model_hash"', blob)
+        self.assertNotIn(model.model_hash, blob)
+
+    def test_28_manual_model_hash_does_not_feed_back(self):
+        model = _compile('dt', 'en')
+        original = model.model_hash
+        model.model_hash = 'deadbeef' * 8
+        model.runtime_diagnostics['tampered'] = True
+        recomputed = model.compute_hashes().model_hash
+        self.assertEqual(recomputed, original)
+        self.assertNotEqual(recomputed, 'deadbeef' * 8)
+
+    def test_29_row_mutation_changes_hash(self):
+        model = _compile('data', 'ar')
+        before = model.model_hash
+        rows = list(model.kpis)
+        first = rows[0]
+        rows[0] = KpiRow(
+            number=first.number, description=first.description + ' mutated',
+            type=first.type, target=first.target, formula=first.formula,
+            source=first.source, frequency=first.frequency, owner=first.owner,
+            family=first.family, framework=first.framework,
+        )
+        model.kpis = tuple(rows)
+        after = model.compute_hashes().model_hash
+        self.assertNotEqual(before, after)
+
+    def test_30_render_does_not_change_model_hash(self):
+        model = _compile('ai', 'en', org_name='Render Hash')
+        before = model.model_hash
+        for target in ('preview', 'docx', 'pdf'):
+            out = render(model, target)
+            self.assertEqual(model.model_hash, before)
+            self.assertEqual(out.evidence.source_hash, before)
+            self.assertEqual(out.evidence.model_hash, before)
+
+    def test_31_diagnostics_do_not_affect_model_hash(self):
+        model = _compile('data', 'en')
+        before = model.compute_model_hash()
+        model.runtime_diagnostics.update({
+            'export_debug': {'preview_hash': 'aaa', 'docx_hash': 'bbb'},
+            'validation_timestamps': 'now',
+        })
+        ev = evidence_from_model(model)
+        self.assertEqual(model.compute_model_hash(), before)
+        self.assertEqual(ev.source_hash, before)
+        self.assertNotIn('model_hash', model.canonical_hash_payload())
+
+
+class Rel37SupportedSelectionTests(unittest.TestCase):
+    def _apply(self, domain, lang='ar', document_type='strategy',
+               frameworks=None, explicit=None, sections=None):
+        return apply_rel37_to_sections(
+            sections or {'vision': 'x'},
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=frameworks,
+            explicit_selection=explicit,
+        )
+
+    def test_32_data_ndmo_applies(self):
+        self.assertTrue(rel37_should_apply(
+            domain='data', lang='ar', document_type='strategy',
+            selected_frameworks=['NDMO'], explicit_selection=True))
+        out, repairs = self._apply('data', frameworks=['NDMO'], explicit=True)
+        self.assertTrue(is_rel37_authoritative(out))
+        self.assertTrue(repairs)
+
+    def test_33_data_pdpl_applies(self):
+        self.assertTrue(rel37_should_apply(
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=['PDPL'], explicit_selection=True))
+
+    def test_34_data_ndmo_pdpl_applies(self):
+        self.assertTrue(rel37_should_apply(
+            domain='data', lang='ar', document_type='strategy',
+            selected_frameworks=['NDMO', 'PDPL'], explicit_selection=True))
+
+    def test_35_data_explicit_nca_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='data', lang='ar', document_type='strategy',
+            selected_frameworks=['NCA'], explicit_selection=True))
+        out, repairs = self._apply('data', frameworks=['NCA'], explicit=True)
+        self.assertFalse(is_rel37_authoritative(out))
+        self.assertEqual(repairs, [])
+        self.assertIn('unsupported', last_selection_diagnostic().get('reason', ''))
+
+    def test_36_data_mixed_ndmo_nca_not_authoritative(self):
+        out, repairs = self._apply(
+            'data', frameworks=['NDMO', 'NCA'], explicit=True)
+        self.assertFalse(is_rel37_authoritative(out))
+        self.assertEqual(repairs, [])
+        diag = last_selection_diagnostic()
+        self.assertFalse(diag.get('supported'))
+        self.assertTrue(diag.get('unsupported_frameworks'))
+
+    def test_37_ai_sdaia_applies(self):
+        self.assertTrue(rel37_should_apply(
+            domain='ai', lang='ar', document_type='strategy',
+            selected_frameworks=['SDAIA'], explicit_selection=True))
+
+    def test_38_ai_eu_ai_act_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='ai', lang='en', document_type='strategy',
+            selected_frameworks=['EU AI Act'], explicit_selection=True))
+
+    def test_39_ai_nist_ai_rmf_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='ai', lang='en', document_type='strategy',
+            selected_frameworks=['NIST AI RMF'], explicit_selection=True))
+
+    def test_40_ai_unesco_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='ai', lang='ar', document_type='strategy',
+            selected_frameworks=['UNESCO'], explicit_selection=True))
+
+    def test_41_dt_dga_applies(self):
+        self.assertTrue(rel37_should_apply(
+            domain='dt', lang='ar', document_type='strategy',
+            selected_frameworks=['DGA'], explicit_selection=True))
+
+    def test_42_dt_nist_csf_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='dt', lang='en', document_type='strategy',
+            selected_frameworks=['NIST CSF'], explicit_selection=True))
+
+    def test_43_cyber_never_applies(self):
+        self.assertFalse(rel37_should_apply(
+            domain='cyber', lang='ar', document_type='strategy',
+            selected_frameworks=['NCA ECC'], explicit_selection=True))
+
+    def test_44_erm_never_applies(self):
+        self.assertFalse(rel37_should_apply(
+            domain='erm', lang='ar', document_type='risk',
+            selected_frameworks=['ISO 31000'], explicit_selection=True))
+
+    def test_45_global_never_applies(self):
+        self.assertFalse(rel37_should_apply(
+            domain='global', lang='ar', document_type='gap_assessment'))
+
+    def test_46_policy_procedure_does_not_apply(self):
+        self.assertFalse(rel37_should_apply(
+            domain='data', lang='ar', document_type='policy',
+            selected_frameworks=['NDMO'], explicit_selection=True))
+        self.assertFalse(rel37_should_apply(
+            domain='ai', lang='en', document_type='procedure',
+            selected_frameworks=['SDAIA'], explicit_selection=True))
+
+    def test_47_empty_expands_default_only_when_not_explicit(self):
+        implicit = rel37_supported_selection(
+            'data', 'ar', 'strategy', [], explicit_selection=False)
+        self.assertTrue(implicit.supported)
+        self.assertTrue(implicit.default_expanded)
+        self.assertEqual(list(implicit.normalized_frameworks), ['ndmo', 'pdpl'])
+        explicit = rel37_supported_selection(
+            'data', 'ar', 'strategy', [], explicit_selection=True)
+        self.assertFalse(explicit.supported)
+        self.assertEqual(explicit.reason, 'unsupported_empty_explicit')
+
+    def test_48_body_text_does_not_infer_frameworks(self):
+        body = {
+            'vision': 'SDAIA NDMO DGA national alignment',
+            'kpis': '| SDAIA | NDMO | DGA |',
+        }
+        self.assertFalse(rel37_should_apply(
+            domain='ai', lang='en', document_type='strategy',
+            sections=body,
+            selected_frameworks=['EU AI Act'],
+            explicit_selection=True))
+        out, repairs = self._apply(
+            'ai', lang='en', frameworks=['EU AI Act'], explicit=True,
+            sections=body)
+        self.assertFalse(is_rel37_authoritative(out))
+        self.assertEqual(repairs, [])
+
+    def test_49_unsupported_emits_diagnostic_reason(self):
+        rel37_supported_selection(
+            'dt', 'en', 'strategy', ['NIST CSF'], explicit_selection=True)
+        diag = last_selection_diagnostic()
+        self.assertEqual(diag.get('supported'), False)
+        self.assertEqual(diag.get('reason'), 'unsupported_frameworks')
+        self.assertTrue(diag.get('unsupported_frameworks'))
+        self.assertEqual(diag.get('domain'), 'dt')
 
 
 if __name__ == '__main__':

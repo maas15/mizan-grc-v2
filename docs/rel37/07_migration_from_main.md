@@ -9,7 +9,7 @@
 2. Keep PR #128 open; add no more commits to that branch.
 3. Land REL37 plan (this folder) on `feature/rel37-deterministic-data-ai-dt-compilers`.
 4. After approval, implement compilers + `tests/test_rel37_deterministic_compilers.py` on the same branch.
-5. Wire a **domain selector** in generation for Data/AI/DT strategy only. Cyber remains on `main` REL32/REL36.8–18.1 path.
+5. Wire a **domain + supported-framework selector** in generation for Data/AI/DT strategy only. Cyber remains on `main` REL32/REL36.8–18.1 path. Unsupported selections (NCA on Data, NIST AI RMF on AI, NIST CSF on DT, Cyber, ERM, Global, non-strategy types) **remain on the existing path or fail safely**. They are never compiled as a REL37 authoritative model.
 6. Phase 2: persist model JSON; point Data/AI/DT preview/export at `rel37_render`.
 7. Phase 3: QA Harness.
 
@@ -37,3 +37,5 @@ Old Data/AI/DT artifacts saved on production (`ec779cc`) or `main` remain markdo
 ## 5. Flag
 
 `REL37_DATA_AI_DT_COMPILER=1` in tests. Production stays off until a later, explicit deploy decision (not this work).
+
+The flag is necessary but not sufficient. `rel37_should_apply()` also requires `rel37_supported_selection(...).supported`.

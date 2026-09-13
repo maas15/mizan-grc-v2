@@ -5,9 +5,15 @@ import os
 from typing import Dict, Tuple
 
 SCHEMA_VERSION = 'rel37.strategy.v1'
+COVERAGE_REGISTRY_VERSION = 'rel37.coverage.v1'
 PHASE1_DOMAINS = ('data', 'ai', 'dt')
 PHASE1_LANGS = ('ar', 'en')
 DOMAIN_DEFAULT_FRAMEWORKS: Dict[str, Tuple[str, ...]] = {
+    'data': ('ndmo', 'pdpl'),
+    'ai': ('sdaia',),
+    'dt': ('dga',),
+}
+PHASE1_ALLOWED_FRAMEWORKS: Dict[str, Tuple[str, ...]] = {
     'data': ('ndmo', 'pdpl'),
     'ai': ('sdaia',),
     'dt': ('dga',),

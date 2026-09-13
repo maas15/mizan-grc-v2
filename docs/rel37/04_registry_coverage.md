@@ -2,6 +2,20 @@
 
 Phase 1 compilers generate these families from **request `selected_frameworks`**, not from body-text salvage.
 
+## 0. Supported selections (Phase 1 gate)
+
+`rel37_supported_selection()` decides whether REL37 may compile. Unsupported combinations no-op onto the existing `main` path. REL37 never silently drops unsupported tokens and compiles the remainder.
+
+| Domain | Supported selections | Default when `explicit_selection=false` and list empty |
+|---|---|---|
+| Data | `NDMO` / `PDPL` / `NDMO+PDPL` | `NDMO+PDPL` |
+| AI | `SDAIA` | `SDAIA` |
+| DT | `DGA` | `DGA` |
+
+Unsupported (examples; not exhaustive): Data+`NCA`, AI+`EU AI Act` / `NIST AI RMF` / `UNESCO`, DT+`NIST CSF`, Cyber, ERM, Global, `policy` / `procedure` / `audit`, explicit empty selection.
+
+Diagnostic line: `[REL37-SUPPORTED-FRAMEWORK-SELECTION]` with `domain`, `lang`, `document_type`, `selected_frameworks_input`, `explicit_selection`, `normalized_frameworks`, `unsupported_frameworks`, `default_expanded`, `supported`, `reason`.
+
 Seed catalogs already on `main` (`rel32_registries.py`: `DATA_*`, `AI_*`, `DT_*`) are the starting inventory. REL37 versions them as `rel37.strategy.v1` and adds the families listed below that `main` under-specifies (for example explicit `citizen_experience` / `digital_services` DT rows).
 
 ## 1. Shared leakage deny-lists
