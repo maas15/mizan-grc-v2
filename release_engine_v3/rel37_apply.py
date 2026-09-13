@@ -83,8 +83,8 @@ def rel37_should_apply(
 
 def is_rel37_authoritative(sections: Optional[Dict[str, Any]]) -> bool:
     secs = sections or {}
-    return str(secs.get(REL37_APPLIED_KEY) or '') == '1' and bool(
-        secs.get(REL37_MODEL_KEY))
+    applied = str(secs.get(REL37_APPLIED_KEY) or '').strip().lower()
+    return applied in ('1', 'true', 'yes', 'on') and bool(secs.get(REL37_MODEL_KEY))
 
 
 def serialize_model(model: CanonicalDocument) -> str:
@@ -163,6 +163,7 @@ def apply_rel37_to_sections(
     out[REL37_APPLIED_KEY] = '1'
     out[REL37_MODEL_KEY] = serialize_model(model)
     out[REL37_HASH_KEY] = model.model_hash
+    out['_rel37_source_hash'] = model.model_hash
     out['_rel37_markdown'] = model_to_markdown(model)
     repairs = ['rel37:deterministic_compiler']
     if model.blockers:

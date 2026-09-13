@@ -787,7 +787,9 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
 
 def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                         retry_delay_seconds=1.0,
-                                        language=None):
+                                        language=None,
+                                        document_type=None,
+                                        strategy_id=None):
     """Look up the most recently saved strategy for user+domain with a
     small retry loop to absorb DB-commit races.
 
@@ -840,11 +842,16 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                         (user_id,)
                     ).fetchall()
                     row = None
+                    _latest_matches = []
                     for cand in candidates:
                         cd = (cand['domain']
                               if hasattr(cand, 'keys') else cand[4])
                         if _strategy_domain_canonical(cd) != target_code:
                             continue
+                        if strategy_id not in (None, ''):
+                            _cid = cand['id'] if hasattr(cand, 'keys') else cand[0]
+                            if str(_cid) != str(strategy_id):
+                                continue
                         if want_lang:
                             cl = (cand['language']
                                   if hasattr(cand, 'keys') else '')
@@ -855,8 +862,32 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                 cl_n = 'en'
                             if cl_n and cl_n != want_lang:
                                 continue
-                        row = cand
-                        break
+                        _cand_dtype = ''
+                        _cand_rel37 = False
+                        try:
+                            import json as _json_lsr
+                            _sj_raw = (
+                                cand['sections_json']
+                                if hasattr(cand, 'keys') else None)
+                            _sj = _json_lsr.loads(_sj_raw) if _sj_raw else {}
+                            if isinstance(_sj, dict):
+                                _cand_dtype = str(
+                                    _sj.get('_document_type') or '').strip().lower()
+                                _cand_rel37 = str(
+                                    _sj.get('_rel37_applied') or ''
+                                ).strip().lower() in ('1', 'true', 'yes', 'on')
+                        except Exception:  # noqa: BLE001
+                            _cand_dtype = ''
+                            _cand_rel37 = False
+                        _want_dtype = str(document_type or '').strip().lower()
+                        if _want_dtype:
+                            _got_dtype = _cand_dtype or 'strategy'
+                            if _got_dtype != _want_dtype:
+                                continue
+                        _latest_matches.append((cand, _cand_rel37))
+                    if _latest_matches:
+                        _rel37_hits = [item for item in _latest_matches if item[1]]
+                        row = (_rel37_hits or _latest_matches)[0][0]
             if row:
                 print(f"[STRATEGY-ASYNC] latest_recoverable_hit "
                       f"user={user_id} domain={domain!r} attempt={attempt} "
@@ -19707,12 +19738,22 @@ def api_strategy_latest():
         request.args.get('lang')
         or request.args.get('language')
         or '')
+    _latest_dtype = (
+        request.args.get('document_type')
+        or request.args.get('doc_type')
+        or '')
+    _latest_sid = (
+        request.args.get('strategy_id')
+        or request.args.get('id')
+        or '')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
     try:
         row, attempts = ensure_latest_strategy_recoverable(
             session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5,
             language=_latest_lang,
+            document_type=_latest_dtype,
+            strategy_id=_latest_sid,
         )
         if not row:
             # PR-CY12 Part A — do NOT return "No strategy found" while the
@@ -30150,6 +30191,23 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             return defects
     except Exception:  # noqa: BLE001
         pass
+    # REL37.0.2 — Data/AI/DT strategy uses model.validate(), not markdown
+    # richness / synth_failed regex gates.
+    try:
+        from release_engine_v3.rel37_live_attach import (
+            rel37_legacy_audit_defects,
+            should_skip_legacy_richness_gates,
+        )
+        if should_skip_legacy_richness_gates(
+                domain=domain or '',
+                lang=lang,
+                document_type=_dtype,
+                selected_frameworks=selected_frameworks,
+                sections=sections if isinstance(sections, dict) else None):
+            return rel37_legacy_audit_defects(
+                sections if isinstance(sections, dict) else {})
+    except Exception:  # noqa: BLE001
+        pass
     # PR-CY16 — normalize Arabic CISO-office variants in the Cyber
     # Vision section BEFORE the audit inspects it. Strictly scoped to
     # ``domain == 'cyber'`` (no-op for every other domain); only mutates
@@ -31743,7 +31801,12 @@ def _apply_rel37_data_ai_dt_compilers(
             sections.clear()
             sections.update(out)
         return {'applied': bool(repairs), 'repairs': repairs}
-    except Exception:
+    except Exception as _rel37_hook_e:
+        print(
+            '[REL37-LIVE-COMPILER-ATTACH] '
+            f'early_hook_error={_rel37_hook_e!r}',
+            flush=True,
+        )
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
@@ -74418,6 +74481,21 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'vs {_kpi_row_count} substantive rows '
                                 f'(expected equal)',
                             ))
+                        try:
+                            from release_engine_v3.rel37_live_attach import (
+                                should_skip_legacy_richness_gates as _rel37_skip_kpi,
+                            )
+                            if _rel37_skip_kpi(
+                                    domain=domain,
+                                    lang=lang,
+                                    document_type=locals().get('_document_type')
+                                    or 'strategy',
+                                    selected_frameworks=locals().get(
+                                        '_frameworks_raw') or [],
+                                    sections=sections):
+                                _kpi_integrity_defects = []
+                        except Exception:  # noqa: BLE001
+                            pass
                         if _kpi_integrity_defects:
                             _msg_en = (
                                 'KPI section failed final integrity gate: '
@@ -76373,8 +76451,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                         _skip_so_final = True
                 except Exception:  # noqa: BLE001
                     pass
+                _rel37_skip_legacy_save = False
+                try:
+                    from release_engine_v3.rel37_live_attach import (
+                        should_skip_legacy_richness_gates as _rel37_skip_save,
+                    )
+                    _rel37_skip_legacy_save = _rel37_skip_save(
+                        domain=_dcode or domain,
+                        lang=lang,
+                        document_type=_document_type,
+                        selected_frameworks=_frameworks_raw,
+                        request=data if isinstance(data, dict) else {},
+                        sections=sections,
+                    )
+                except Exception:  # noqa: BLE001
+                    _rel37_skip_legacy_save = False
                 if (doc_subtype != 'board' and _remaining_so_final
-                        and not _skip_so_final):
+                        and not _skip_so_final
+                        and not _rel37_skip_legacy_save):
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=strategic_objectives_malformed_post_normalization '
                           f'issues={sorted(_remaining_so_final)}', flush=True)
@@ -76421,7 +76515,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                       f'vision_len={len(sections.get("vision","") or "")}',
                       flush=True)
                 if (_remaining_core_final
-                        and _cy28_dcode != 'cyber'):
+                        and _cy28_dcode != 'cyber'
+                        and not _rel37_skip_legacy_save):
                     _human_final = ', '.join(_core_tech_required_final[k] for k in sorted(_remaining_core_final))
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=core_tech_missing_post_normalization '
@@ -76761,6 +76856,68 @@ The confidence score is based on a comprehensive assessment of the organization'
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back
                 #    by _canonical_content_from_db for PDF/DOCX export.
+                # REL37.0.2 — last writer before persist. Replaces Data/AI/DT
+                # strategy sections with the validated CanonicalDocument so
+                # later markdown repair cannot discard ``_rel37_*`` keys.
+                try:
+                    from release_engine_v3.rel37_live_attach import (
+                        Rel37ModelValidationFailed as _Rel37Fail,
+                        attach_rel37_before_save as _rel37_attach_save,
+                    )
+                    _rel3702 = _rel37_attach_save(
+                        sections if isinstance(sections, dict) else {},
+                        content=content or '',
+                        domain_input=str(
+                            (data or {}).get('domain') or domain or ''),
+                        domain=str(_dcode or domain or ''),
+                        lang=lang,
+                        document_type=_document_type,
+                        selected_frameworks=list(
+                            (data or {}).get('frameworks')
+                            or (data or {}).get('selected_frameworks')
+                            or _frameworks_raw
+                            or []),
+                        explicit_selection=(
+                            (data or {}).get('explicit_selection')
+                            if isinstance(data, dict) else None),
+                        org_name=str(locals().get('org_name') or ''),
+                        task_id=str(
+                            (data or {}).get('async_task_id')
+                            or (data or {}).get('task_id')
+                            or ''),
+                        strategy_id=str(
+                            (data or {}).get('strategy_id') or ''),
+                        request=data if isinstance(data, dict) else {},
+                    )
+                    sections = _rel3702.sections
+                    if _rel3702.content:
+                        content = _rel3702.content
+                except Exception as _rel3702_exc:
+                    from release_engine_v3.rel37_live_attach import (
+                        Rel37ModelValidationFailed as _Rel37Fail2,
+                    )
+                    if isinstance(_rel3702_exc, _Rel37Fail2) or (
+                            type(_rel3702_exc).__name__
+                            == 'Rel37ModelValidationFailed'):
+                        _rel3702_blockers = list(
+                            getattr(_rel3702_exc, 'blockers', [])
+                            or ['rel37_model_validation_failed'])
+                        print(
+                            '[REL37-LIVE-COMPILER-ATTACH] '
+                            f'fail_closed blockers={_rel3702_blockers}',
+                            flush=True,
+                        )
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'model_validation_blockers': _rel3702_blockers,
+                        }), 422
+                    print(
+                        '[REL37-LIVE-COMPILER-ATTACH] '
+                        f'persist_hook_error={_rel3702_exc!r}',
+                        flush=True,
+                    )
                 # REL3.3 — the strategies table has no document_type column, so
                 # non-strategy document types (gap_assessment / risk) must ride
                 # inside sections_json for /api/strategy/latest to resolve the
@@ -91322,6 +91479,17 @@ def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -
     """
     if not isinstance(sections_dict, dict) or not sections_dict:
         return ""
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        from release_engine_v3.rel37_live_attach import (
+            canonical_markdown_from_sections,
+        )
+        if is_rel37_authoritative(sections_dict):
+            _rel37_md = canonical_markdown_from_sections(sections_dict)
+            if _rel37_md.strip():
+                return _rel37_md
+    except Exception:
+        pass
     parts = [sections_dict[k] for k in STRATEGY_SECTION_ORDER
              if sections_dict.get(k)
              and isinstance(sections_dict[k], str)
