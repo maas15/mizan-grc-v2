@@ -46,11 +46,16 @@
     if (g === e) return true;
     var aliases = {
       'kpi description': ['indicator', 'وصف المؤشر'],
+      'type': ['النوع'],
       'target value': ['target', 'القيمة المستهدفة'],
       'calculation formula': ['formula', 'صيغة الاحتساب'],
-      'source': ['مصدر'],
+      'source': ['مصدر', 'مصدر البيانات', 'data source'],
       'frequency': ['التكرار'],
-      'owner': ['المالك']
+      'owner': ['المالك'],
+      'kpi': ['indicator', 'المؤشر'],
+      'indicator': ['kpi', 'المؤشر'],
+      'timeline': ['timeframe', 'الإطار الزمني'],
+      'timeframe': ['timeline', 'الإطار الزمني']
     };
     return (aliases[e] || []).indexOf(g) !== -1;
   }
@@ -74,33 +79,44 @@
       table_id: 'kpi_formula',
       css_schema: 'kpi-formula',
       columns: [
-        { key: 'row_num', label_ar: '#', keywords: ['#', 'م', 'no'] },
-        { key: 'indicator', label_ar: 'المؤشر', keywords: ['المؤشر', 'indicator', 'kpi', 'metric'] },
-        { key: 'formula', label_ar: 'صيغة الاحتساب', keywords: ['صيغة الاحتساب', 'صيغة', 'formula', 'احتساب'] },
-        { key: 'source', label_ar: 'مصدر البيانات', keywords: ['مصدر البيانات', 'مصدر', 'source'] }
+        { key: 'row_num', label_ar: '#', label_en: '#', keywords: ['#', 'م', 'no'] },
+        { key: 'indicator', label_ar: 'المؤشر', label_en: 'KPI', keywords: ['المؤشر', 'indicator', 'kpi', 'metric'] },
+        { key: 'formula', label_ar: 'صيغة الاحتساب', label_en: 'Calculation Formula', keywords: ['صيغة الاحتساب', 'صيغة', 'formula', 'احتساب', 'calculation formula'] },
+        { key: 'source', label_ar: 'مصدر البيانات', label_en: 'Data Source', keywords: ['مصدر البيانات', 'مصدر', 'source', 'data source'] }
+      ]
+    },
+    strategic_objectives: {
+      table_id: 'strategic_objectives',
+      css_schema: 'strategic-objectives',
+      columns: [
+        { key: 'row_num', label_ar: '#', label_en: '#', keywords: ['#', 'م', 'no'] },
+        { key: 'objective', label_ar: 'الهدف الاستراتيجي', label_en: 'Strategic Objective', keywords: ['الهدف الاستراتيجي', 'الهدف', 'objective', 'strategic objective'] },
+        { key: 'target', label_ar: 'المستهدف القابل للقياس', label_en: 'Measurable Target', keywords: ['المستهدف القابل للقياس', 'مستهدف', 'target', 'measurable target'] },
+        { key: 'rationale', label_ar: 'المبرر', label_en: 'Rationale', keywords: ['المبرر', 'rationale', 'justification'] },
+        { key: 'timeframe', label_ar: 'الإطار الزمني', label_en: 'Timeframe', keywords: ['الإطار الزمني', 'زمن', 'timeframe', 'timeline'] }
       ]
     },
     roadmap: {
       table_id: 'roadmap',
       css_schema: 'roadmap',
       columns: [
-        { key: 'phase', label_ar: 'المرحلة', keywords: ['المرحلة', 'مرحلة', 'phase'] },
-        { key: 'period', label_ar: 'الفترة', keywords: ['الفترة', 'فترة', 'الإطار الزمني', 'زمن', 'period', 'timeframe'] },
-        { key: 'initiative', label_ar: 'المبادرة', keywords: ['المبادرة', 'مبادرة', 'initiative', 'نشاط'] },
-        { key: 'owner', label_ar: 'المسؤول', keywords: ['المسؤول', 'مسؤول', 'المالك', 'owner', 'مالك'] },
-        { key: 'deliverable', label_ar: 'المخرج المتوقع', keywords: ['المخرج المتوقع', 'المخرج', 'مخرج', 'deliverable', 'output'] },
-        { key: 'framework', label_ar: 'الإطار المرتبط', keywords: ['الإطار المرتبط', 'الإطار', 'إطار', 'framework', 'مرتبط'] }
+        { key: 'phase', label_ar: 'المرحلة', label_en: 'Phase', keywords: ['المرحلة', 'مرحلة', 'phase'] },
+        { key: 'period', label_ar: 'الفترة', label_en: 'Period', keywords: ['الفترة', 'فترة', 'الإطار الزمني', 'زمن', 'period', 'timeframe', 'timeline'] },
+        { key: 'initiative', label_ar: 'المبادرة', label_en: 'Initiative', keywords: ['المبادرة', 'مبادرة', 'initiative', 'نشاط', 'activity'] },
+        { key: 'owner', label_ar: 'المسؤول', label_en: 'Owner', keywords: ['المسؤول', 'مسؤول', 'المالك', 'owner', 'مالك'] },
+        { key: 'deliverable', label_ar: 'المخرج المتوقع', label_en: 'Expected Deliverable', keywords: ['المخرج المتوقع', 'المخرج', 'مخرج', 'deliverable', 'expected deliverable', 'output'] },
+        { key: 'framework', label_ar: 'الإطار المرتبط', label_en: 'Linked Framework', keywords: ['الإطار المرتبط', 'الإطار', 'إطار', 'framework', 'linked framework', 'مرتبط'] }
       ]
     },
     gap_action: {
       table_id: 'gap_action',
       css_schema: 'gap-action',
       columns: [
-        { key: 'step', label_ar: 'الخطوة', keywords: ['الخطوة', 'خطوة', 'step'] },
-        { key: 'action', label_ar: 'الإجراء', keywords: ['الإجراء', 'إجراء', 'action'] },
-        { key: 'owner', label_ar: 'المسؤول', keywords: ['المسؤول', 'مسؤول', 'owner', 'مالك'] },
-        { key: 'timeframe', label_ar: 'الإطار الزمني', keywords: ['الإطار الزمني', 'زمن', 'timeframe', 'period', 'الإطار'] },
-        { key: 'output', label_ar: 'الناتج', keywords: ['الناتج', 'ناتج', 'output', 'مخرج'] }
+        { key: 'step', label_ar: 'الخطوة', label_en: 'Step', keywords: ['الخطوة', 'خطوة', 'step'] },
+        { key: 'action', label_ar: 'الإجراء', label_en: 'Action', keywords: ['الإجراء', 'إجراء', 'action'] },
+        { key: 'owner', label_ar: 'المسؤول', label_en: 'Owner', keywords: ['المسؤول', 'مسؤول', 'owner', 'مالك'] },
+        { key: 'timeframe', label_ar: 'الإطار الزمني', label_en: 'Timeline', keywords: ['الإطار الزمني', 'زمن', 'timeframe', 'timeline', 'period', 'الإطار'] },
+        { key: 'output', label_ar: 'الناتج', label_en: 'Output', keywords: ['الناتج', 'ناتج', 'output', 'مخرج'] }
       ]
     }
   };
@@ -298,31 +314,51 @@
 
   function headersLookLikeKpiMain(headers){
     var h = (headers || []).join('\u0001');
-    return h.indexOf('وصف المؤشر') !== -1 || (h.indexOf('التكرار') !== -1 && h.indexOf('المالك') !== -1 && h.indexOf('النوع') !== -1);
+    var joined = (headers || []).join(' ').toLowerCase();
+    return h.indexOf('وصف المؤشر') !== -1 ||
+      joined.indexOf('kpi description') !== -1 ||
+      (h.indexOf('التكرار') !== -1 && h.indexOf('المالك') !== -1 && h.indexOf('النوع') !== -1) ||
+      (joined.indexOf('frequency') !== -1 && joined.indexOf('owner') !== -1 && joined.indexOf('type') !== -1);
   }
 
   function headersLookLikeKpiFormula(headers){
     var hdrs = headers || [];
     if (hdrs.length !== 4) return false;
     var joined = hdrs.join(' ');
+    var low = joined.toLowerCase();
     if (joined.indexOf('طريقة التقييم') !== -1 || joined.indexOf('Assessment Method') !== -1) {
       return false;
     }
-    return joined.indexOf('صيغة الاحتساب') !== -1 &&
-      (joined.indexOf('المؤشر') !== -1 || joined.indexOf('مصدر البيانات') !== -1) &&
-      joined.indexOf('وصف المؤشر') === -1;
+    return (joined.indexOf('صيغة الاحتساب') !== -1 || low.indexOf('calculation formula') !== -1) &&
+      (joined.indexOf('المؤشر') !== -1 || joined.indexOf('مصدر البيانات') !== -1 ||
+       low.indexOf('data source') !== -1 || /(^|\s)kpi(\s|$)/i.test(joined) || low.indexOf('indicator') !== -1) &&
+      joined.indexOf('وصف المؤشر') === -1 && low.indexOf('kpi description') === -1;
   }
 
   function headersLookLikeRoadmap(headers){
     var joined = (headers || []).join(' ');
-    return (joined.indexOf('المرحلة') !== -1 || joined.indexOf('الفترة') !== -1) &&
-      joined.indexOf('المبادرة') !== -1;
+    var low = joined.toLowerCase();
+    return ((joined.indexOf('المرحلة') !== -1 || joined.indexOf('الفترة') !== -1 ||
+             low.indexOf('phase') !== -1 || low.indexOf('period') !== -1) &&
+            (joined.indexOf('المبادرة') !== -1 || low.indexOf('initiative') !== -1)) ||
+           (low.indexOf('activity') !== -1 && low.indexOf('owner') !== -1 &&
+            (low.indexOf('timeline') !== -1 || low.indexOf('deliverable') !== -1));
   }
 
   function headersLookLikeGapAction(headers){
     var joined = (headers || []).join(' ');
-    return joined.indexOf('الإجراء') !== -1 && joined.indexOf('المسؤول') !== -1 &&
-      (joined.indexOf('الناتج') !== -1 || joined.indexOf('الإطار الزمني') !== -1);
+    var low = joined.toLowerCase();
+    return (joined.indexOf('الإجراء') !== -1 || low.indexOf('action') !== -1) &&
+      (joined.indexOf('المسؤول') !== -1 || low.indexOf('owner') !== -1) &&
+      (joined.indexOf('الناتج') !== -1 || joined.indexOf('الإطار الزمني') !== -1 ||
+       low.indexOf('output') !== -1 || low.indexOf('timeline') !== -1 || low.indexOf('timeframe') !== -1);
+  }
+
+  function headersLookLikeStrategicObjectives(headers){
+    var joined = (headers || []).join(' ');
+    var low = joined.toLowerCase();
+    return (joined.indexOf('الهدف الاستراتيجي') !== -1 || low.indexOf('strategic objective') !== -1) &&
+      (joined.indexOf('المستهدف') !== -1 || low.indexOf('measurable target') !== -1 || low.indexOf('target') !== -1);
   }
 
   function inferTableSchemaId(headers, tableIdAttr){
@@ -332,6 +368,7 @@
     if (detected) return detected;
     if (headersLookLikeKpiMain(headers)) return 'kpi_main';
     if (headersLookLikeKpiFormula(headers)) return 'kpi_formula';
+    if (headersLookLikeStrategicObjectives(headers)) return 'strategic_objectives';
     if (headersLookLikeRoadmap(headers)) return 'roadmap';
     if (headersLookLikeGapAction(headers)) return 'gap_action';
     return null;
@@ -444,11 +481,17 @@
   }
 
   function _formulaLike(v){
-    return /مجموع|عدد\s*الحوادث|عدد\s*الحوادث|احتساب/i.test(String(v || ''));
+    return /مجموع|عدد\s*الحوادث|احتساب|count|total|sum|ratio|divided|\/|×|%/i.test(String(v || ''));
   }
 
   function _sourceLike(v){
-    return /siem|soc|log|ticket|survey|report/i.test(String(v || ''));
+    var s = String(v || '').trim();
+    if (!s || s === '—') return false;
+    if (/siem|soc|log|ticket|survey|report|catalog|register|metadata|platform|dashboard|inventory|lineage|ndmo|pdpl|sdaia|quality/i.test(s)) {
+      return true;
+    }
+    if (/[\u0600-\u06FF]/.test(s)) return true;
+    return s.length >= 3 && !_FREQ_RE.test(s);
   }
 
   function _pureSourceToken(v){

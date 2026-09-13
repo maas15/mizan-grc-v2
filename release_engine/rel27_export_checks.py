@@ -407,22 +407,26 @@ def _is_roadmap_heading(line: str) -> bool:
     ``## 5. Roadmap`` instead of ``Implementation Roadmap``. The coverage
     counter previously ignored those tables, producing
     ``roadmap_visible_row_count:0`` even when source rows existed.
+
+    TOC entries such as ``9  Implementation Roadmap`` must not match —
+    they steal the section blob from the real heading and leave evidence
+    counting the 7-phase methodology instead of the countable roadmap.
     """
     raw = str(line or '').strip()
     if not raw:
         return False
-    if 'خارطة الطريق' in raw:
+    hashed = raw.startswith('#')
+    title = raw.lstrip('#').strip()
+    if (not hashed) and re.match(r'^\d+\s+\S', title):
+        return False
+    title_md = re.sub(r'^\d+[\.\)]\s*', '', title).strip()
+    if 'خارطة الطريق' in title_md:
+        return hashed or title_md.startswith('خارطة الطريق')
+    low = title_md.lower()
+    if low in ('roadmap', 'strategic roadmap', 'implementation roadmap'):
         return True
-    low = raw.lower()
-    if 'implementation roadmap' in low:
+    if hashed and low.endswith('roadmap') and len(title_md) < 80:
         return True
-    if raw.startswith('#'):
-        title = raw.lstrip('#').strip().lower()
-        title = re.sub(r'^\d+[\.\)]\s*', '', title).strip()
-        if title in ('roadmap', 'strategic roadmap', 'implementation roadmap'):
-            return True
-        if title.endswith('roadmap') and len(title) < 80:
-            return True
     return False
 
 
@@ -434,7 +438,10 @@ def _roadmap_section_blob(blob: str) -> str:
             in_roadmap = True
             lines = [ln]
             continue
-        if in_roadmap and ln.strip().startswith('##') and not _is_roadmap_heading(ln):
+        # H2 only — leftover ``###`` markdown must not cut the section
+        # before DOCX table cells appended after all paragraphs.
+        if (in_roadmap and re.match(r'^##(?!#)', ln.strip())
+                and not _is_roadmap_heading(ln)):
             break
         if in_roadmap:
             lines.append(ln)
@@ -510,7 +517,7 @@ def check_roadmap_coverage(blob: str, domain: str = 'cyber') -> Dict[str, Any]:
     section = _roadmap_section_blob(blob or '')
     scan_blob = (blob or '') if 'خارطة الطريق' in (blob or '') else (section or '')
     if scan_blob:
-        low = scan_blob.lower()
+        low = re.sub(r'\s+', ' ', scan_blob.lower())
         for fam, tokens in family_tokens.items():
             if present.get(fam):
                 continue

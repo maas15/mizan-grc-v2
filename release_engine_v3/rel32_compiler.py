@@ -616,6 +616,23 @@ def _build_kpis_section(
     sections['kpis'] = (
         sections['kpis'].rstrip()
         + build_kpi_assessment_guides_block(guide_rows, lang=lang))
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+            rel36_23_2_should_apply,
+        )
+        _fw = list((backend or {}).get('selected_frameworks') or [])
+        if rel36_23_2_should_apply(
+                domain=dcode, lang=lang, document_type='strategy',
+                selected_frameworks=_fw):
+            repaired, _ = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                sections, domain=dcode, lang=lang,
+                document_type='strategy', selected_frameworks=_fw,
+                repair_stage='rel32_build_kpis_section', emit=False)
+            if isinstance(repaired, dict) and repaired.get('kpis'):
+                sections['kpis'] = repaired['kpis']
+    except Exception:
+        pass
     return sections['kpis'], tuple(kpi_rows), tuple(formula_rows)
 
 

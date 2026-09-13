@@ -374,6 +374,24 @@ def repair_kpi_canonical_families(
     passed = not blockers and main_count == formula_count
     out = dict(sections)
     out['kpis'] = new_text
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+            rel36_23_2_should_apply,
+        )
+        _fw232 = list((backend or {}).get('selected_frameworks') or [])
+        if rel36_23_2_should_apply(
+                domain=_dcode, lang=lang, document_type='strategy',
+                selected_frameworks=_fw232):
+            repaired, _ = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                out, domain=_dcode, lang=lang, document_type='strategy',
+                selected_frameworks=_fw232,
+                repair_stage='after_formula_appendix_sync', emit=False)
+            if isinstance(repaired, dict):
+                out = repaired
+                new_text = repaired.get('kpis') or new_text
+    except Exception:
+        pass
     diag = {
         'duplicate_metric_labels_before': dup_labels_before,
         'duplicate_families_before': dup_fams_before,

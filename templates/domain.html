@@ -1882,7 +1882,7 @@ try{
   }
 
   function _doRecoveryFetch(reason){
-    fetch('/api/strategy/latest?domain='+encodeURIComponent(data.domain)+'&lang='+encodeURIComponent(data.language||lang||''))
+    fetch('/api/strategy/latest?domain='+encodeURIComponent(data.domain)+'&lang='+encodeURIComponent(data.language||lang||'')+'&document_type='+encodeURIComponent(data.document_type||data.doc_type||'strategy'))
     .then(function(r){return r.json().catch(function(){return null;});})
     .then(function(d){
       /* PR-CY12 Part A — backend now distinguishes "no strategy at all"

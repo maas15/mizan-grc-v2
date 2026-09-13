@@ -135,19 +135,30 @@ def english_visible_has_arabic_kpi_headers(text: str) -> bool:
     return any(tok in blob for tok in _ARABIC_KPI_HEADER_TOKENS)
 
 
-def sanitize_visible_preview_text(text: str, lang: str = 'ar') -> str:
+def sanitize_visible_preview_text(
+        text: str, lang: str = 'ar', org_name: str = '') -> str:
     """Visible preview/HTML/TXT/Print cleanup. Does not touch frozen bytes."""
-    return sanitize_visible_export_text(text, normalize_rel36_lang(lang))
+    nlang = normalize_rel36_lang(lang)
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name,
+            sanitize_visible_language_text,
+        )
+        return sanitize_visible_language_text(
+            text, nlang, org_name=extract_org_name(org_name))
+    except Exception:  # noqa: BLE001
+        return sanitize_visible_export_text(text, nlang)
 
 
 def sanitize_visible_preview_sections(
-        sections: Any, lang: str = 'ar') -> Dict[str, str]:
+        sections: Any, lang: str = 'ar', org_name: str = '') -> Dict[str, str]:
     out: Dict[str, str] = {}
     for key, value in normalize_preview_sections(sections).items():
         if str(key).startswith('_'):
             out[str(key)] = value
             continue
-        out[str(key)] = sanitize_visible_preview_text(value, lang)
+        out[str(key)] = sanitize_visible_preview_text(
+            value, lang, org_name=org_name)
     return out
 
 
@@ -255,7 +266,81 @@ def bind_saved_preview_payload(
                 content_json['sections'] = dict(sections)
     except Exception:  # noqa: BLE001
         pass
-    visible_sections = sanitize_visible_preview_sections(sections, lang)
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+            apply_rel36_23_2_to_markdown,
+            rel36_23_2_should_apply,
+        )
+        _fw232 = (
+            src.get('selected_frameworks')
+            or (content_json or {}).get('selected_frameworks')
+            or [])
+        if rel36_23_2_should_apply(
+                domain=domain, lang=lang, document_type=document_type,
+                selected_frameworks=_fw232):
+            sections, _ = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                sections, domain=domain, lang=lang,
+                document_type=document_type, selected_frameworks=_fw232,
+                strategy_id=sid, repair_stage='saved_preview_binding',
+                emit=False)
+            if isinstance(content_json, dict):
+                content_json = dict(content_json)
+                if isinstance(content_json.get('sections'), dict):
+                    content_json['sections'] = dict(sections)
+                for _ck in ('content', 'final_markdown'):
+                    if content_json.get(_ck):
+                        content_json[_ck] = apply_rel36_23_2_to_markdown(
+                            content_json.get(_ck),
+                            domain=domain, lang=lang,
+                            selected_frameworks=_fw232,
+                            document_type=document_type)
+            if isinstance(src.get('content'), str) and src.get('content'):
+                src['content'] = apply_rel36_23_2_to_markdown(
+                    src.get('content'), domain=domain, lang=lang,
+                    selected_frameworks=_fw232, document_type=document_type)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+            bind_latest_preview_payload,
+        )
+        _iso = bind_latest_preview_payload(
+            {
+                'language': lang,
+                'domain': domain,
+                'document_type': document_type,
+            },
+            expected_domain=expected_domain,
+            expected_lang=expected_lang,
+            expected_document_type=expected_document_type,
+        )
+        if _iso.get('blocking_errors'):
+            blocking.extend(_iso['blocking_errors'])
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            extract_org_name as _extract_org19,
+        )
+        _org19 = _extract_org19(src, content_json if isinstance(content_json, dict) else {})
+        sections, _rel36_19 = apply_rel36_19_bilingual_language_parity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=(
+                src.get('selected_frameworks')
+                or (content_json or {}).get('selected_frameworks')
+                or []),
+            strategy_id=sid,
+            org_name=_org19,
+            output_type='preview',
+            emit=False,
+        )
+        del _rel36_19
+    except Exception:  # noqa: BLE001
+        _org19 = ''
+    visible_sections = sanitize_visible_preview_sections(
+        sections, lang, org_name=locals().get('_org19', ''))
     bound = {
         'success': not blocking,
         'id': sid,

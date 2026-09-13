@@ -451,6 +451,8 @@ function grcMarkdownToHTML(md){
           Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'roadmap';
         var isRel32GapAction = (typeof Rel32PreviewTableSchema !== 'undefined') &&
           Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'gap_action';
+        var isRel32StrategicObjectives = (typeof Rel32PreviewTableSchema !== 'undefined') &&
+          Rel32PreviewTableSchema.detectRel32PreviewSchema(header) === 'strategic_objectives';
         var isKpiTable = isRel32KpiMain || ((numCols === 6) && (function(){
           var h = header.map(function(c){ return (c||'').toLowerCase().trim(); });
           return (h[0] === '#' || h[0] === 'م') &&
@@ -585,7 +587,7 @@ function grcMarkdownToHTML(md){
 
         // ── REL32 schema-key preview binding (same schema order for th + td) ──
         if(typeof Rel32PreviewTableSchema !== 'undefined' &&
-           (isRel32KpiMain || isRel32KpiFormula || isRel32Roadmap || isRel32GapAction)){
+           (isRel32KpiMain || isRel32KpiFormula || isRel32Roadmap || isRel32GapAction || isRel32StrategicObjectives)){
           var _rtl = (typeof isRtl !== 'undefined') ? !!isRtl : false;
           var _rel32 = Rel32PreviewTableSchema.renderRel32PreviewTableHtml(
             header, dataRows, { isRtl: _rtl });

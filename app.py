@@ -787,7 +787,8 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
 
 def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                         retry_delay_seconds=1.0,
-                                        language=None):
+                                        language=None,
+                                        document_type=None):
     """Look up the most recently saved strategy for user+domain with a
     small retry loop to absorb DB-commit races.
 
@@ -854,6 +855,34 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                             elif cl_n.startswith('en'):
                                 cl_n = 'en'
                             if cl_n and cl_n != want_lang:
+                                continue
+                        if document_type:
+                            want_dtype = str(document_type or '').strip().lower()
+                            if want_dtype in ('', 'strategy document'):
+                                want_dtype = 'strategy'
+                            cdtype = ''
+                            if hasattr(cand, 'keys') and 'document_type' in cand.keys():
+                                cdtype = str(cand['document_type'] or '').strip().lower()
+                            if not cdtype:
+                                try:
+                                    import json as _json_dtype
+                                    _sj_raw = cand['sections_json'] if hasattr(cand, 'keys') else None
+                                    _cj_raw = cand['content_json'] if hasattr(cand, 'keys') else None
+                                    if _sj_raw:
+                                        _sj = _json_dtype.loads(_sj_raw) if isinstance(_sj_raw, str) else _sj_raw
+                                        if isinstance(_sj, dict):
+                                            cdtype = str(_sj.get('_document_type') or '').strip().lower()
+                                    if not cdtype and _cj_raw:
+                                        _cj = _json_dtype.loads(_cj_raw) if isinstance(_cj_raw, str) else _cj_raw
+                                        if isinstance(_cj, dict):
+                                            cdtype = str(_cj.get('document_type') or '').strip().lower()
+                                            if not cdtype and isinstance(_cj.get('_contract_meta'), dict):
+                                                cdtype = str(_cj['_contract_meta'].get('document_type') or '').strip().lower()
+                                except Exception:  # noqa: BLE001
+                                    cdtype = ''
+                            if cdtype in ('strategy document',):
+                                cdtype = 'strategy'
+                            if cdtype and want_dtype and cdtype != want_dtype:
                                 continue
                         row = cand
                         break
@@ -14877,6 +14906,12 @@ def _prepare_final_render_text(text, lang='ar'):
             sanitize_visible_export_text,
         )
         out = sanitize_visible_export_text(out, lang)
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            resolve_org_name,
+            sanitize_visible_language_text,
+        )
+        out = sanitize_visible_language_text(
+            out, lang, org_name=resolve_org_name())
     except Exception:  # noqa: BLE001
         pass
     return out
@@ -19707,12 +19742,17 @@ def api_strategy_latest():
         request.args.get('lang')
         or request.args.get('language')
         or '')
+    _latest_dtype = (
+        request.args.get('document_type')
+        or request.args.get('doc_type')
+        or 'strategy')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
     try:
         row, attempts = ensure_latest_strategy_recoverable(
             session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5,
             language=_latest_lang,
+            document_type=_latest_dtype,
         )
         if not row:
             # PR-CY12 Part A — do NOT return "No strategy found" while the
@@ -21768,6 +21808,16 @@ def _ts_table_rows(text, header_re):
             out.append(cells)
     return out
 
+# Shared first-counted Strategic Objectives header. Compliance and
+# specialized-function detectors MUST use this same pattern so they
+# inspect the table ``count_valid_objective_rows`` already counts.
+# ``Strategic Objective`` is a counted alias of ``Objective``.
+_SO_TABLE_HEADER_PATTERN = (
+    r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+    r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'
+)
+
+
 def count_valid_objective_rows(vision_text):
     """Count rows in the Strategic Objectives table that match the full schema.
     Schema: # | Objective | Target Metric | Justification | Timeframe.
@@ -21776,10 +21826,7 @@ def count_valid_objective_rows(vision_text):
     """
     if not vision_text:
         return 0
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     # Singular forms (month/year/week/day) are already covered by the
     # plural-or-singular alternatives (months?/years?/weeks?/days?).
     # Bound the leading digit group to \d{1,6} (any real timeframe fits
@@ -28744,11 +28791,7 @@ def _compute_missing_compliance_objective(
     # Iterate the Strategic Objectives table rows. Reuse the same header
     # regex as count_valid_objective_rows so we only inspect rows from
     # the canonical objectives table.
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     rows = list(_ts_table_rows(vision_text, hdr))
 
     # Generic "selected frameworks" phrase counts for every selected fw.
@@ -29053,11 +29096,7 @@ def _compute_missing_specialized_function_objective(
     if not vision_text:
         return True
 
-    hdr = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     rows = list(_ts_table_rows(vision_text, hdr))
 
     # PR-CY8 — dual-requirement mode: when the registry entry exposes
@@ -30176,6 +30215,17 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             _normalize_cyber_ar_wording_general(sections, lang, domain)
         except Exception:  # noqa: BLE001 — defensive
             pass
+    # REL36.23 — repair EN Data pillars, Data/AI guides, EN SO headers,
+    # AR AI guide completeness, and DT split-token BEFORE audit counts
+    # and the unchanged save gates inspect the payload.
+    try:
+        _apply_rel36_23_data_ai_guides_and_visible_headers(
+            sections if isinstance(sections, dict) else {},
+            lang, domain, selected_frameworks,
+            document_type=_dtype,
+        )
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        pass
     # Strategic Objectives
     n_so = count_valid_objective_rows(sections.get('vision', '') or '')
     if n_so < _RICHNESS_MIN_SO_ROWS:
@@ -30235,8 +30285,8 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
     if n_kpi < _RICHNESS_MIN_KPI_ROWS:
         defects.append(('kpis', 'kpi_rows_insufficient',
                         n_kpi, _RICHNESS_MIN_KPI_ROWS))
-    n_kpi_hdr = len(_KPI_MAIN_TABLE_HEADER_RE.findall(
-        sections.get('kpis', '') or ''))
+    n_kpi_hdr = _count_full_kpi_main_headers_for_gate(
+        sections.get('kpis', '') or '')
     if n_kpi_hdr != 1:
         defects.append(('kpis', 'kpi_main_header_count_invalid',
                         n_kpi_hdr, 1))
@@ -30284,6 +30334,14 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             )
             if isinstance(sections, dict):
                 sections.update(_rel35_secs)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _apply_rel36_22_dt_dga_citizen_experience_coverage(
+                sections if isinstance(sections, dict) else {},
+                lang, domain, selected_frameworks,
+                document_type=_dtype,
+            )
         except Exception:  # noqa: BLE001
             pass
         if selected_frameworks:
@@ -31722,6 +31780,242 @@ def _apply_rel36_18_ai_sdaia_kpi_synth(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _apply_rel36_19_bilingual_language_parity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='',
+        generation_mode='drafting', doc_subtype='technical',
+        org_name=''):
+    """REL36.19 — visible language parity for cyber/data/ai strategy."""
+    del generation_mode, doc_subtype
+    try:
+        from release_engine_v3.rel36_19_bilingual_language_parity import (
+            apply_rel36_19_bilingual_language_parity,
+            extract_org_name,
+        )
+        out, diag = apply_rel36_19_bilingual_language_parity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=extract_org_name(org_name, sections),
+            output_type='generation',
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        resolved_org = extract_org_name(org_name, sections)
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        resolved_org = org_name or ''
+        diag = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_20_data_ai_guide_save_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=resolved_org,
+    )
+    return diag
+
+
+def _apply_rel36_20_data_ai_guide_save_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.20 — Data/AI roadmap, core-synth, and guide completeness."""
+    try:
+        from release_engine_v3.rel36_20_data_ai_guide_save_stability import (
+            apply_rel36_20_data_ai_guide_save_stability,
+        )
+        out, diag = apply_rel36_20_data_ai_guide_save_stability(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag20 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag20 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_21_en_data_ai_framework_objectives(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag20
+
+
+def _apply_rel36_21_en_data_ai_framework_objectives(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.21 — English Data/AI selected-framework SO coverage."""
+    try:
+        from release_engine_v3.rel36_21_en_data_ai_framework_objectives import (
+            apply_rel36_21_en_data_ai_framework_objectives,
+        )
+        out, diag = apply_rel36_21_en_data_ai_framework_objectives(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag21 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag21 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_22_dt_dga_citizen_experience_coverage(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag21
+
+
+def _apply_rel36_22_dt_dga_citizen_experience_coverage(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.22 — DT Arabic DGA citizen_experience coverage."""
+    try:
+        from release_engine_v3.rel36_22_dt_dga_citizen_experience_coverage import (
+            apply_rel36_22_dt_dga_citizen_experience_coverage,
+        )
+        out, diag = apply_rel36_22_dt_dga_citizen_experience_coverage(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag22 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag22 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_data_ai_guides_and_visible_headers(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag22
+
+
+def _apply_rel36_23_data_ai_guides_and_visible_headers(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.23 — Data/AI guides, EN Data pillars, visible SO headers."""
+    try:
+        from release_engine_v3.rel36_23_data_ai_guides_and_visible_headers import (
+            apply_rel36_23_data_ai_guides_and_visible_headers,
+        )
+        out, diag = apply_rel36_23_data_ai_guides_and_visible_headers(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag23 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag23 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag23
+
+
+def _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name=''):
+    """REL36.23.1 — DT Arabic DGA single KPI table integrity."""
+    try:
+        from release_engine_v3.rel36_23_1_dt_dga_kpi_single_table_integrity import (
+            apply_rel36_23_1_dt_dga_kpi_single_table_integrity,
+        )
+        out, diag = apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        diag231 = diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        diag231 = {'applied': False, 'action_taken': 'hook_error'}
+    _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type, task_id=task_id,
+        org_name=org_name,
+    )
+    return diag231
+
+
+def _count_full_kpi_main_headers_for_gate(text):
+    """REL36.23.2 — count only the full 8-role KPI main schema.
+
+    The official loose ``_KPI_MAIN_TABLE_HEADER_RE`` also matches the
+    KPI formula/source subtable (``| # | المؤشر | صيغة الاحتساب |
+    مصدر البيانات |``). Gates must not treat that subtable as a second
+    main KPI table. Two *full* main tables still fail.
+    """
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            count_full_kpi_main_headers,
+        )
+        return int(count_full_kpi_main_headers(text))
+    except Exception:  # noqa: BLE001 — fail closed to the official regex
+        return len(_KPI_MAIN_TABLE_HEADER_RE.findall(text or ''))
+
+
+def _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', task_id='', org_name='',
+        repair_stage='pre_final_save'):
+    """REL36.23.2 — DT Arabic live KPI classifier + persisted tokens."""
+    try:
+        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+            apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity,
+        )
+        out, diag = apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            task_id=task_id,
+            org_name=org_name,
+            repair_stage=repair_stage,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return diag
+    except Exception:  # noqa: BLE001 — never skip the later gate
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type='strategy'):
@@ -31749,6 +32043,9 @@ def _apply_rel36_7_data_pdpl_roadmap_balance(
         sections, lang, domain, selected_frameworks,
         document_type=document_type)
     _apply_rel36_15_final_registry_stability(
+        sections, lang, domain, selected_frameworks,
+        document_type=document_type)
+    _apply_rel36_20_data_ai_guide_save_stability(
         sections, lang, domain, selected_frameworks,
         document_type=document_type)
 
@@ -33283,11 +33580,7 @@ def _splice_cyber_vision_objective_topup_row(
         return original_vision_text or ''
     text = original_vision_text
     lines = text.split('\n')
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     last_data_idx = -1
     in_tbl = False
@@ -33361,11 +33654,7 @@ def _extract_accepted_cyber_specialized_objective_row(vision_text):
     if not vision_text:
         return ''
     text = str(vision_text)
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     in_tbl = False
     for ln in text.split('\n'):
@@ -33576,11 +33865,7 @@ def _extract_accepted_cyber_framework_compliance_rows(
         fws = []
     if not fws:
         return {}
-    hdr_re = _ts_re.compile(
-        r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-        r'|الأهداف)\s*\|',
-        _ts_re.IGNORECASE,
-    )
+    hdr_re = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
     sep_re = _ts_re.compile(r'^\|[\s\-:|]+\|$')
     captured = {}
     in_tbl = False
@@ -34191,11 +34476,7 @@ def _emit_cyber_vision_persistence_diagnostic(
     except Exception:  # noqa: BLE001
         has_specialized_objective = False
     try:
-        _hdr = _ts_re.compile(
-            r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
-            r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-            _ts_re.IGNORECASE,
-        )
+        _hdr = _ts_re.compile(_SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
         for _cells in _ts_table_rows(vision_text, _hdr):
             if len(_cells) < 4:
                 continue
@@ -34601,10 +34882,7 @@ def _convergence_cyber_specialized_objective_topup_repair(
             try:
                 _acc_after = sections.get('vision', '') or ''
                 _acc_hdr = _ts_re.compile(
-                    r'^\|\s*#\s*\|\s*(?:Objective|الهدف'
-                    r'(?:\s+الاستراتيجي)?|الأهداف)\s*\|',
-                    _ts_re.IGNORECASE,
-                )
+                    _SO_TABLE_HEADER_PATTERN, _ts_re.IGNORECASE)
                 _acc_blob = ''
                 for _cells in _ts_table_rows(_acc_after, _acc_hdr):
                     if len(_cells) < 4:
@@ -35235,9 +35513,7 @@ def converge_strategy_sections(sections, lang, domain, fw_short,
                         # directly. Clear from the table header so the
                         # synth rebuilds from scratch.
                         _tbl_hdr_fc = _ts_re.search(
-                            r'^\|\s*#\s*\|'
-                            r'\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-                            r'|الأهداف)\s*\|',
+                            _SO_TABLE_HEADER_PATTERN,
                             _v_text,
                             _ts_re.IGNORECASE | _ts_re.MULTILINE,
                         )
@@ -40945,6 +41221,17 @@ def _prcy88_cyber_board_ready_quality_baseline(
             task_id=task_id or '',
             generation_mode=_m.get('generation_mode') or 'drafting',
             doc_subtype=_m.get('doc_subtype') or 'technical',
+        )
+        _apply_rel36_19_bilingual_language_parity(
+            sections,
+            lang,
+            _m.get('domain') or '',
+            selected_frameworks,
+            document_type=_m.get('document_type') or 'strategy',
+            task_id=task_id or '',
+            generation_mode=_m.get('generation_mode') or 'drafting',
+            doc_subtype=_m.get('doc_subtype') or 'technical',
+            org_name=_m.get('org_name') or _m.get('organization_name') or '',
         )
     except Exception:
         pass
@@ -51905,7 +52192,11 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                     'document_type': _dtype,
                     'generation_mode': 'drafting',
                     'selected_frameworks': (
-                        fw_labels or ['NCA ECC', 'NCA DCC']),
+                        fw_labels or (
+                            ['NCA ECC', 'NCA DCC'] if dcode == 'cyber'
+                            else ['NDMO', 'PDPL'] if dcode == 'data'
+                            else ['SDAIA'] if dcode == 'ai'
+                            else [])),
                     'sections': sections or {},
                     '_rel2_evidence_collect': True,
                     '_rel26_internal': True,
@@ -56861,6 +57152,16 @@ def rebuild_canonical_kpi_section(sections, lang, domain, fw_short):
         s = lines[i].strip()
         if not in_main:
             if _KPI_MAIN_TABLE_HEADER_RE.match(s):
+                # REL36.23.2 — formula/source subtables are not main tables.
+                try:
+                    from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+                        is_kpi_formula_source_header as _is_kpi_formula_hdr,
+                    )
+                    if _is_kpi_formula_hdr(s):
+                        i += 1
+                        continue
+                except Exception:
+                    pass
                 in_main = True
                 i += 1
                 # Skip separator if present
@@ -57249,7 +57550,8 @@ def dedupe_arabic_section_families(sections, lang):
         ('gaps',        r'^\|\s*#\s*\|\s*(?:Gap|الفجوة|الفجوات)\s*\|'),
         ('kpis',        r'^\|\s*#\s*\|\s*(?:KPI Description|وصف\s+المؤشر|KPI)\s*\|'),
         ('vision',
-         r'^\|\s*#\s*\|\s*(?:Objective|الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'),
+         r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|'
+         r'الهدف(?:\s+الاستراتيجي)?|الأهداف)\s*\|'),
     ]
     for sec_key, hdr_pat in table_collapse_targets:
         text = sections.get(sec_key, '') or ''
@@ -57851,8 +58153,9 @@ def validate_arabic_section_family_integrity(sections, lang):
                 'kpis_guides_subhead_duplicated_broad',
                 f'{_broad_count} KPI-guides headings (broad regex) in kpis',
             ))
-        # KPI main table must have ≥ 1 header occurrence — duplicates count
-        _main_count = len(_KPI_MAIN_TABLE_HEADER_RE.findall(_kpis_text_check))
+        # KPI main table must have ≥ 1 header occurrence — duplicates count.
+        # REL36.23.2: formula/source subtables are not main headers.
+        _main_count = _count_full_kpi_main_headers_for_gate(_kpis_text_check)
         if _main_count > 1:
             defects.append((
                 'kpis_main_table_duplicated',
@@ -67422,6 +67725,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_19_bilingual_language_parity(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                             _wb_so = count_valid_objective_rows(sections.get('vision', '') or '')
@@ -68336,6 +68652,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         else 'drafting'),
                                     doc_subtype=doc_subtype,
                                 )
+                                _apply_rel36_19_bilingual_language_parity(
+                                    sections, lang, _dcode or domain,
+                                    list(_frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                    task_id=getattr(
+                                        globals().get('g', None),
+                                        '_strategy_task_id', '') or '',
+                                    generation_mode=(
+                                        _generation_mode
+                                        if '_generation_mode' in dir()
+                                        else 'drafting'),
+                                    doc_subtype=doc_subtype,
+                                )
                             except Exception:
                                 pass
                         _stc_secs_before_cpl = {
@@ -68686,10 +69015,39 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     else 'drafting'),
                                 doc_subtype=doc_subtype,
                             )
+                            _apply_rel36_19_bilingual_language_parity(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                generation_mode=(
+                                    _generation_mode
+                                    if '_generation_mode' in dir()
+                                    else 'drafting'),
+                                doc_subtype=doc_subtype,
+                            )
                         except Exception:
                             pass
+                        _apply_rel36_20_data_ai_guide_save_stability(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
                         _final_synth = _apply_final_synthesis_pass(
                             sections, lang, domain, fw_short, ctx=_final_ctx)
+                        _apply_rel36_23_data_ai_guides_and_visible_headers(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
                         if _final_synth:
                             print(f'[STRATEGY-DIAG] final_synthesis_pass='
                                   f'{_final_synth}', flush=True)
@@ -69101,10 +69459,22 @@ The confidence score is based on a comprehensive assessment of the organization'
                             _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_pre_text))
                         _kpi_final_rebuild = rebuild_canonical_kpi_section(
                             sections, lang, domain, fw_short)
+                        try:
+                            _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                                sections, lang, _dcode or domain,
+                                list(_frameworks_raw or []) or [fw_short],
+                                document_type=_document_type,
+                                task_id=getattr(
+                                    globals().get('g', None),
+                                    '_strategy_task_id', '') or '',
+                                repair_stage='after_canonical_kpi_rebuild',
+                            )
+                        except Exception:
+                            pass
                         # Capture post-canonicalization counts.
                         _kpi_post_text = sections.get('kpis', '') or ''
-                        _kpi_post_main_hdrs = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_post_text))
+                        _kpi_post_main_hdrs = _count_full_kpi_main_headers_for_gate(
+                            _kpi_post_text)
                         _kpi_post_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_post_text))
                         print(
@@ -69617,9 +69987,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                                         _pa_so_hdr_m.group(0).strip()
                                         if _pa_so_hdr_m else '<missing>')
                                     _pa_tbl_hdr_m = _ts_re.search(
-                                        r'^\|\s*#\s*\|\s*'
-                                        r'(?:Objective|الهدف(?:\s+الاستراتيجي)?'
-                                        r'|الأهداف)[^\n]*$',
+                                        _SO_TABLE_HEADER_PATTERN,
                                         _pa_vis_raw,
                                         _ts_re.MULTILINE | _ts_re.IGNORECASE,
                                     )
@@ -69884,6 +70252,15 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'[FW-COVERAGE-REPAIR] non-fatal: {_fwxe}',
                                 flush=True,
                             )
+
+                    _apply_rel36_21_en_data_ai_framework_objectives(
+                        sections, lang, _dcode or domain,
+                        list(_frameworks_raw or []) or [fw_short],
+                        document_type=_document_type,
+                        task_id=getattr(
+                            globals().get('g', None),
+                            '_strategy_task_id', '') or '',
+                    )
 
                     # ── PR-5B.8V: Vision compliance-objective repair ─────
                     # Even when the framework's capability families are
@@ -74291,6 +74668,34 @@ The confidence score is based on a comprehensive assessment of the organization'
                         print(f'[STRATEGY-DIAG] traceability_gate_failed: '
                               f'{_tgate_e}', flush=True)
 
+                    # REL36.23.1 / REL36.23.2 — collapse DT Arabic DGA
+                    # duplicate *full* KPI tables and normalize split
+                    # tokens on the actual save payload before the
+                    # header-count gate. Formula/source subtables stay.
+                    try:
+                        _apply_rel36_23_1_dt_dga_kpi_single_table_integrity(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                            repair_stage='before_kpi_header_count_gate',
+                        )
+                    except Exception:
+                        pass
+
                     # ── PRE-SAVE KPI INTEGRITY DIAGNOSTIC + HARD GATE ───
                     # Final correctness check on the KPI section exactly
                     # as it will be saved. Any of these conditions is a
@@ -74301,8 +74706,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # line ~24100 also enforces it via validate_kpi_richness.
                     try:
                         _kpi_final_text = sections.get('kpis', '') or ''
-                        _kpi_hdr_count  = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_final_text))
+                        _kpi_hdr_count  = _count_full_kpi_main_headers_for_gate(
+                            _kpi_final_text)
                         _kpi_row_count  = count_substantive_kpis(_kpi_final_text)
                         _kpi_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_final_text))
@@ -74372,6 +74777,21 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _kfi_e:
                         print(f'[STRATEGY-DIAG] kpi_final_integrity_failed: '
                               f'{_kfi_e}', flush=True)
+
+                    # REL36.23 — last repair before the unchanged
+                    # pillars / guide save gates. Later synthesis can
+                    # overwrite REL36.20/21/22 output; do not skip.
+                    try:
+                        _apply_rel36_23_data_ai_guides_and_visible_headers(
+                            sections, lang, _dcode or domain,
+                            list(_frameworks_raw or []) or [fw_short],
+                            document_type=_document_type,
+                            task_id=getattr(
+                                globals().get('g', None),
+                                '_strategy_task_id', '') or '',
+                        )
+                    except Exception:
+                        pass
 
                     # ── PRE-SAVE PILLARS INTEGRITY DIAGNOSTIC + HARD GATE
                     # Parallel gate to the KPI integrity gate but for
@@ -74830,6 +75250,17 @@ The confidence score is based on a comprehensive assessment of the organization'
                             doc_subtype=doc_subtype,
                         )
                         _apply_rel36_18_ai_sdaia_kpi_synth(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            task_id=_rel3691_tid,
+                            generation_mode=(
+                                _generation_mode
+                                if '_generation_mode' in dir()
+                                else 'drafting'),
+                            doc_subtype=doc_subtype,
+                        )
+                        _apply_rel36_19_bilingual_language_parity(
                             sections, lang, _dcode or domain,
                             _rel3691_fws,
                             document_type=_document_type,
@@ -76678,6 +77109,50 @@ The confidence score is based on a comprehensive assessment of the organization'
                             f'generation_contract_failed: {_cy28_e}',
                             flush=True,
                         )
+                # REL36.23.2 — last mutation of the actual persist payload
+                # (sections_json / content / preview / export). Helper-on-copy
+                # is not sufficient; the saved artifact must equal the repair.
+                try:
+                    _apply_rel36_23_2_dt_ar_live_kpi_and_token_integrity(
+                        sections, lang, _dcode or domain,
+                        list(_frameworks_raw or []) or [fw_short],
+                        document_type=_document_type,
+                        task_id=getattr(
+                            globals().get('g', None),
+                            '_strategy_task_id', '') or '',
+                        repair_stage='before_canonical_persist',
+                    )
+                    try:
+                        from release_engine_v3.rel36_23_2_dt_ar_live_kpi_and_token_integrity import (
+                            apply_rel36_23_2_to_markdown,
+                            normalize_dt_ar_dga_split_tokens,
+                            rel36_23_2_should_apply,
+                        )
+                        if rel36_23_2_should_apply(
+                                domain=_dcode or domain, lang=lang,
+                                document_type=_document_type,
+                                selected_frameworks=list(
+                                    _frameworks_raw or []) or [fw_short]):
+                            _fixed_parts_232 = [
+                                sections[sk] for sk in _section_order_r
+                                if sections.get(sk) and str(sections.get(sk)).strip()
+                            ]
+                            if _fixed_parts_232:
+                                content = '\n\n'.join(_fixed_parts_232)
+                            content = normalize_dt_ar_dga_split_tokens(
+                                apply_rel36_23_2_to_markdown(
+                                    content,
+                                    domain=_dcode or domain,
+                                    lang=lang,
+                                    selected_frameworks=list(
+                                        _frameworks_raw or []) or [fw_short],
+                                    document_type=_document_type,
+                                )
+                            )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 # 5) Serialize final canonical JSON from the normalized +
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back
@@ -92332,7 +92807,9 @@ def _compare_content_parity(db_content: str, client_content: str) -> dict:
         _in_tbl = False
         _count = 0
         for _ln in _lines:
-            if _cmp_re.match(r'^\|\s*#\s*\|\s*(?:Objective|الهدف)', _ln, _cmp_re.I):
+            if _cmp_re.match(
+                    r'^\|\s*#\s*\|\s*(?:Strategic\s+Objective|Objective|الهدف)',
+                    _ln, _cmp_re.I):
                 _in_tbl = True
                 _count = 0
                 continue
