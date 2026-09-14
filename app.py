@@ -10761,7 +10761,7 @@ def _split_strategy_sections_by_h2(content):
         ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
         ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
         ('environment', r'(?:البيئة|Environment|Regulatory)'),
-        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|تقييم\s+الفجوات|Gap\s+Analysis|Gap\s+Assessment|Gaps)'),
         ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
         ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
         ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
@@ -19472,6 +19472,7 @@ def api_strategy_status(task_id):
                                     },
                                     read_only=True,
                                     task_id=task_id,
+                                    sections=_sj if isinstance(_sj, dict) else None,
                                 ))
                             _cy25_prev_blockers = (
                                 _cy25_contract_prev.get(
@@ -37811,7 +37812,7 @@ def _prcy22_apply_sections_to_content(content, sections):
         ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
         ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
         ('environment', r'(?:البيئة|Environment|Regulatory)'),
-        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|تقييم\s+الفجوات|Gap\s+Analysis|Gap\s+Assessment|Gaps)'),
         ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
         ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
         ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
@@ -52621,6 +52622,22 @@ def _build_cyber_final_strategy_artifact(
     blocking_errors = []
     repair_actions = []
     diagnostics = {'artifact_builder': 'PR-CY85', 'phase': output_type}
+    if dcode != 'cyber':
+        try:
+            from release_engine_v3.rel37_preview_section_contract import (
+                apply_rel37_preview_section_contract as _rel37_psc,
+            )
+            _sections, _rel37_psc_diag = _rel37_psc(
+                _sections,
+                domain=dcode,
+                lang=lang_n,
+                document_type='strategy',
+                markdown=_content,
+                emit=True,
+            )
+            diagnostics['rel37_preview_section_contract'] = _rel37_psc_diag
+        except Exception:  # noqa: BLE001
+            pass
 
     if (dcode == 'cyber' and not read_only
             and _PRCY28_VERSION_FLAGS.get('prcy89')):
@@ -82205,8 +82222,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             _rel31_adapter_build = False
         if rel2_export_validation or _rel31_adapter_build:
             if isinstance(sections, dict) and sections:
+                try:
+                    from release_engine_v3.rel37_preview_section_contract import (
+                        sections_for_visible_render as _rel37_vis,
+                    )
+                    _vis_docx = _rel37_vis(sections)
+                except Exception:  # noqa: BLE001
+                    _vis_docx = sections
                 _cy22_docx_sections = {
-                    k: v for k, v in sections.items()
+                    k: v for k, v in _vis_docx.items()
                     if isinstance(v, str) and not str(k).startswith('_')}
             else:
                 try:
@@ -82270,6 +82294,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     selected_frameworks=selected_frameworks or [],
                     lang='ar' if is_arabic else 'en',
                     domain=domain,
+                    sections=sections if isinstance(sections, dict) else None,
                     output_type='docx',
                     request_context={
                         'payload': data if isinstance(
@@ -82281,6 +82306,14 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 )
                 content = _cy25_contract_docx.get('final_markdown', content)
                 _cy22_docx_sections = _cy25_contract_docx.get('sections', {})
+                try:
+                    from release_engine_v3.rel37_preview_section_contract import (
+                        sections_for_visible_render as _rel37_vis_docx,
+                    )
+                    if isinstance(_cy22_docx_sections, dict):
+                        _cy22_docx_sections = _rel37_vis_docx(_cy22_docx_sections)
+                except Exception:  # noqa: BLE001
+                    pass
                 if is_arabic and _PRCY28_VERSION_FLAGS.get('prcy86'):
                     content, _cy22_docx_sections = (
                         _prcy86_maybe_polish_cyber_export(

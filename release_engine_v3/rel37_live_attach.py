@@ -222,6 +222,17 @@ def stamp_rel37_keys(
         reason = 'supported_selection'
     out[REL37_SELECTION_REASON_KEY] = reason
     out[REL37_SELECTION_SUPPORTED_KEY] = 'true' if selection_supported else 'false'
+    from release_engine_v3.rel37_preview_section_contract import (
+        apply_rel37_preview_section_contract,
+    )
+    out, _psc = apply_rel37_preview_section_contract(
+        out,
+        domain=model.domain,
+        lang=model.lang,
+        document_type=getattr(model, 'document_type', 'strategy') or 'strategy',
+        model=model,
+        emit=False,
+    )
     return out
 
 

@@ -183,7 +183,17 @@ def warning_bypass_would_block(
 
 
 def status_poll_public_sections(sections: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Official status-poll contract: public keys only."""
+    """Official status-poll contract: public keys only.
+
+    REL37.0.4 — include the legacy ``gap_analysis`` alias when the
+    preview contract requires it. ``_rel37_*`` keys stay hidden.
+    """
+    from release_engine_v3.rel37_preview_section_contract import (
+        public_status_sections,
+    )
+    public = public_status_sections(sections)
+    if public:
+        return public
     secs = sections or {}
     return {
         key: secs[key]

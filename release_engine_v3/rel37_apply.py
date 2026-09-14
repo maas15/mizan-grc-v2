@@ -187,9 +187,22 @@ def apply_rel37_to_sections(
         selection.reason if selection.reason in _SUPPORTED_REASONS
         else 'supported_selection')
     out[REL37_SELECTION_SUPPORTED_KEY] = 'true'
+    from release_engine_v3.rel37_preview_section_contract import (
+        apply_rel37_preview_section_contract,
+    )
+    out, _psc = apply_rel37_preview_section_contract(
+        out,
+        domain=domain,
+        lang=_normalize_lang(lang),
+        document_type=document_type,
+        model=model,
+        emit=False,
+    )
     repairs = ['rel37:deterministic_compiler']
     if model.blockers:
         repairs.append('rel37:validate_blockers')
+    if _psc.get('alias_map_applied'):
+        repairs.append('rel37:preview_gap_analysis_alias')
     return out, repairs
 
 
