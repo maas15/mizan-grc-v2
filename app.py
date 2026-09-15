@@ -19172,6 +19172,26 @@ def api_generate_strategy_async():
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
 
+    from release_engine_v3.rel37_framework_aliases import (
+        FrameworksRequestTypeError as _FwReqTypeErr,
+        validate_frameworks_request_type as _validate_fw_req,
+    )
+    try:
+        _validate_fw_req(data.get('frameworks'), field='frameworks')
+        if 'selected_frameworks' in data:
+            _validate_fw_req(
+                data.get('selected_frameworks'), field='selected_frameworks')
+    except _FwReqTypeErr as _fw_req_err:
+        return jsonify({
+            'success': False,
+            'error': str(_fw_req_err),
+            'error_code': getattr(_fw_req_err, 'error_code',
+                                 'frameworks_request_type_invalid'),
+            'field': getattr(_fw_req_err, 'field', 'frameworks'),
+            'actual_type': getattr(_fw_req_err, 'actual_type', ''),
+            'index': getattr(_fw_req_err, 'index', None),
+        }), 400
+
     if not data.get('domain'):
         return jsonify({'error': 'domain required'}), 400
 
@@ -62337,6 +62357,28 @@ def api_generate_strategy():
     
     try:
         data = request.json
+        from release_engine_v3.rel37_framework_aliases import (
+            FrameworksRequestTypeError as _FwReqTypeErrSync,
+            validate_frameworks_request_type as _validate_fw_req_sync,
+        )
+        try:
+            _validate_fw_req_sync(
+                (data or {}).get('frameworks'), field='frameworks')
+            if isinstance(data, dict) and 'selected_frameworks' in data:
+                _validate_fw_req_sync(
+                    data.get('selected_frameworks'),
+                    field='selected_frameworks')
+        except _FwReqTypeErrSync as _fw_req_err_sync:
+            return jsonify({
+                'success': False,
+                'error': str(_fw_req_err_sync),
+                'error_code': getattr(
+                    _fw_req_err_sync, 'error_code',
+                    'frameworks_request_type_invalid'),
+                'field': getattr(_fw_req_err_sync, 'field', 'frameworks'),
+                'actual_type': getattr(_fw_req_err_sync, 'actual_type', ''),
+                'index': getattr(_fw_req_err_sync, 'index', None),
+            }), 400
         # PR-5B.8B Section E: coarse stage beacon — generation_pipeline.
         # Earliest safe point inside api_generate_strategy where ``data``
         # is bound; no generation logic depends on this call.
@@ -67788,10 +67830,31 @@ The confidence score is based on a comprehensive assessment of the organization'
         # out of the post-INSERT tail (remediation prompt clause B:
         # "Do NOT mutate sections after INSERT without rebuilding and
         # updating persisted content").
+        from release_engine_v3.rel37_preview_section_contract import (
+            VisibleSectionTypeError as _VisibleSectionTypeError,
+            textual_section_value_or_raise as _textual_section_value_or_raise,
+        )
+
+        def _text_processor_value(sk):
+            try:
+                return _textual_section_value_or_raise(sk, sections.get(sk))
+            except _VisibleSectionTypeError as _vte:
+                return jsonify({
+                    'success': False,
+                    'error': str(_vte),
+                    'error_code': getattr(
+                        _vte, 'error_code', 'visible_section_type_invalid'),
+                    'section_key': getattr(_vte, 'key', sk),
+                    'actual_type': getattr(_vte, 'actual_type', ''),
+                }), 422
+
         for sk in list(sections.keys()):
-            if sections[sk]:
+            _sv = _text_processor_value(sk)
+            if isinstance(_sv, tuple):
+                return _sv
+            if _sv:
                 # Kill any 3+ asterisk runs, replace with space
-                sections[sk] = re.sub(r'\*{3,}', ' ', sections[sk])
+                sections[sk] = re.sub(r'\*{3,}', ' ', _sv)
                 # Ensure plain 'Confidence Score: XX%' gets bold markers
                 sections[sk] = re.sub(r'(?<!\*)(Confidence Score)\s*:\s*(\d+%)', r'**\1:** \2', sections[sk])
                 sections[sk] = re.sub(r'(?<!\*)(درجة الثقة)\s*:\s*(\d+%)', r'**\1:** \2', sections[sk])
@@ -68102,8 +68165,11 @@ The confidence score is based on a comprehensive assessment of the organization'
             return text.strip()
 
         for sk in list(sections.keys()):
-            if sections[sk]:
-                sections[sk] = _normalize_section(sk, sections[sk])
+            _sv = _text_processor_value(sk)
+            if isinstance(_sv, tuple):
+                return _sv
+            if _sv:
+                sections[sk] = _normalize_section(sk, _sv)
 
         # ── POST-NORMALIZE: Section-specific table guards ─────────────────────
         # Guard A: Ensure gap table always has # column as first column

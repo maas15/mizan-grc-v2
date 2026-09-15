@@ -145,6 +145,50 @@ def lookup_key(value: object) -> str:
     return raw.casefold()
 
 
+class FrameworksRequestTypeError(ValueError):
+    """Request ``frameworks`` / ``selected_frameworks`` is not a supported type."""
+
+    error_code = 'frameworks_request_type_invalid'
+
+    def __init__(self, field: str, actual_type: str, index: Optional[int] = None):
+        self.field = str(field or 'frameworks')
+        self.actual_type = str(actual_type or 'unknown')
+        self.index = index
+        if index is None:
+            msg = (
+                f'frameworks_request_type_invalid:{self.field}:'
+                f'expected string or list of strings, got {self.actual_type}'
+            )
+        else:
+            msg = (
+                f'frameworks_request_type_invalid:{self.field}[{index}]:'
+                f'expected string, got {self.actual_type}'
+            )
+        super().__init__(msg)
+
+
+def validate_frameworks_request_type(
+        value: object,
+        *,
+        field: str = 'frameworks',
+) -> object:
+    """Accept omitted/None, a scalar string, or a list/tuple of strings.
+
+    Nested or non-text elements are rejected. Callers must not coerce.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            if not isinstance(item, (str, bytes, bytearray)):
+                raise FrameworksRequestTypeError(
+                    field, type(item).__name__, index=index)
+        return value
+    raise FrameworksRequestTypeError(field, type(value).__name__)
+
+
 def _input_tokens(selected_frameworks: Optional[Iterable[object]]) -> List[str]:
     if selected_frameworks is None:
         return []

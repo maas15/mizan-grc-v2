@@ -64,6 +64,47 @@ PUBLIC_CONTRACT_SECTION_KEYS = (
 
 VISIBLE_SECTION_KEYS = _PUBLIC_SECTION_KEYS
 
+# Declared strategy prose keys. Text processors (regex, heading
+# normalization, markdown cleanup) may touch only these. REL37
+# metadata lists and other typed/_prefixed keys stay structured.
+TEXTUAL_SECTION_KEYS = frozenset(PUBLIC_CONTRACT_SECTION_KEYS)
+
+
+class VisibleSectionTypeError(ValueError):
+    """A declared visible section is not textual."""
+
+    error_code = 'visible_section_type_invalid'
+
+    def __init__(self, key: str, actual_type: str):
+        self.key = str(key or '')
+        self.actual_type = str(actual_type or 'unknown')
+        super().__init__(
+            f'visible_section_type_invalid:{self.key}:'
+            f'expected string, got {self.actual_type}'
+        )
+
+
+def is_textual_section_key(key: object) -> bool:
+    return str(key or '') in TEXTUAL_SECTION_KEYS
+
+
+def textual_section_value_or_raise(key: object, value: Any) -> Any:
+    """Return a visible-section value for text processors.
+
+    Metadata / non-prose keys return None so callers skip them.
+    A declared textual key that is not str/bytes raises instead of
+    being silently discarded or coerced.
+    """
+    name = str(key or '')
+    if name not in TEXTUAL_SECTION_KEYS:
+        return None
+    if value is None or value == '':
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    raise VisibleSectionTypeError(name, type(value).__name__)
+
+
 _GAP_HEADING_RE = re.compile(
     r'^##\s*(?:\d+\.?\s*)?(?:'
     r'تحليل\s+الفجوات|تقييم\s+الفجوات|'
