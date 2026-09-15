@@ -8,6 +8,10 @@ from release_engine_v3.rel37_canonical_document import CanonicalDocument
 from release_engine_v3.rel37_compilers import compile_for_domain
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections
 from release_engine_v3.rel37_schema_registry import rel37_compiler_flag_enabled
+from release_engine_v3.rel37_framework_aliases import (
+    REL37_CANONICAL_FW_KEY,
+    REL37_ORIGINAL_FW_KEY,
+)
 from release_engine_v3.rel37_selection import rel37_supported_selection
 
 REL37_APPLIED_KEY = '_rel37_applied'
@@ -167,6 +171,8 @@ def apply_rel37_to_sections(
             out.pop(key, None)
         out[REL37_SELECTION_REASON_KEY] = selection.reason
         out[REL37_SELECTION_SUPPORTED_KEY] = 'false'
+        out[REL37_ORIGINAL_FW_KEY] = list(selection.selected_frameworks_original)
+        out[REL37_CANONICAL_FW_KEY] = list(selection.selected_frameworks_canonical)
         return out, []
     payload = dict(request or {})
     payload.setdefault('domain', domain)
@@ -174,6 +180,10 @@ def apply_rel37_to_sections(
     payload.setdefault('org_name', org_name or payload.get('org_name') or '')
     payload.setdefault('task_id', task_id)
     payload['selected_frameworks'] = list(selection.normalized_frameworks)
+    payload['selected_frameworks_original'] = list(
+        selection.selected_frameworks_original)
+    payload['selected_frameworks_canonical'] = list(
+        selection.normalized_frameworks)
     model = compile_for_domain(domain, payload)
     rendered = model_to_sections(model)
     for key, value in rendered.items():
@@ -187,6 +197,8 @@ def apply_rel37_to_sections(
         selection.reason if selection.reason in _SUPPORTED_REASONS
         else 'supported_selection')
     out[REL37_SELECTION_SUPPORTED_KEY] = 'true'
+    out[REL37_ORIGINAL_FW_KEY] = list(selection.selected_frameworks_original)
+    out[REL37_CANONICAL_FW_KEY] = list(selection.normalized_frameworks)
     from release_engine_v3.rel37_preview_section_contract import (
         apply_rel37_preview_section_contract,
     )

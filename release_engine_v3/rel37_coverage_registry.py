@@ -419,6 +419,12 @@ def selected_frameworks_from_request(payload: dict) -> List[str]:
         values = [str(item) for item in raw]
     elif isinstance(raw, dict):
         values = [str(key) for key, flag in raw.items() if flag]
+    from release_engine_v3.rel37_framework_aliases import (
+        canonicalize_request_frameworks,
+    )
+    mapped = canonicalize_request_frameworks(values)
+    if mapped:
+        return mapped
     normalized = []
     seen = set()
     for item in values:

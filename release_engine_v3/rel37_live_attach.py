@@ -467,6 +467,8 @@ def attach_rel37_before_save(
         'lang': lang_n,
         'document_type': dtype,
         'selected_frameworks_input': list(frameworks),
+        'selected_frameworks_original': list(frameworks),
+        'selected_frameworks_canonical': [],
         'explicit_selection': explicit,
         'attach_stage': attach_stage,
         'old_sections_hash_before': public_sections_hash(incoming),
@@ -489,6 +491,8 @@ def attach_rel37_before_save(
     )
     diag['supported_selection'] = bool(selection.supported)
     diag['support_reason'] = mapped_reason
+    diag['selected_frameworks_original'] = list(selection.selected_frameworks_original)
+    diag['selected_frameworks_canonical'] = list(selection.selected_frameworks_canonical)
     if not selection.supported:
         # Do not strip an already-applied REL37 model when a later hook
         # sees dirty/unsupported frameworks. That left applied=true with
@@ -522,6 +526,10 @@ def attach_rel37_before_save(
         incoming.pop(REL37_MARKDOWN_KEY, None)
         incoming['_rel37_selection_reason'] = mapped_reason
         incoming['_rel37_selection_supported'] = 'false'
+        incoming['_rel37_selected_frameworks_original'] = list(
+            selection.selected_frameworks_original)
+        incoming['_rel37_selected_frameworks_canonical'] = list(
+            selection.selected_frameworks_canonical)
         diag['compiler_used'] = False
         diag['passed'] = True
         emit_live_attach_diagnostic(diag)
@@ -555,6 +563,10 @@ def attach_rel37_before_save(
             )
         out = stamp_rel37_keys(
             incoming, model, selection_reason=mapped_reason or 'supported_selection')
+        out['_rel37_selected_frameworks_original'] = list(
+            selection.selected_frameworks_original)
+        out['_rel37_selected_frameworks_canonical'] = list(
+            selection.normalized_frameworks)
         markdown = out[REL37_MARKDOWN_KEY]
         rendered_hash = _sha256_text(markdown)
         bundle = export_bundle_from_sections(out)

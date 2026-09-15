@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from release_engine_v3.domain_codes import normalize_domain_code
 from release_engine_v3.rel37_coverage_registry import normalize_framework_token
+from release_engine_v3.rel37_framework_aliases import canonicalize_framework_labels
 from release_engine_v3.rel37_schema_registry import (
     DOMAIN_DEFAULT_FRAMEWORKS,
     PHASE1_ALLOWED_FRAMEWORKS,
@@ -44,6 +45,8 @@ class SupportedSelectionResult:
     lang: str = ''
     document_type: str = ''
     selected_frameworks_input: Tuple[str, ...] = ()
+    selected_frameworks_original: Tuple[str, ...] = ()
+    selected_frameworks_canonical: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -92,6 +95,8 @@ def emit_selection_diagnostic(result: SupportedSelectionResult) -> Dict[str, Any
         'lang': result.lang,
         'document_type': result.document_type,
         'selected_frameworks_input': list(result.selected_frameworks_input),
+        'selected_frameworks_original': list(result.selected_frameworks_original),
+        'selected_frameworks_canonical': list(result.selected_frameworks_canonical),
         'explicit_selection': result.explicit_selection,
         'normalized_frameworks': list(result.normalized_frameworks),
         'unsupported_frameworks': list(result.unsupported_frameworks),
@@ -129,6 +134,14 @@ def rel37_supported_selection(
     lang_n = _normalize_lang(lang)
     dtype = str(document_type or 'strategy').strip().lower() or 'strategy'
     raw_input = tuple(_input_tokens(selected_frameworks))
+    canon = canonicalize_framework_labels(
+        raw_input,
+        domain=dcode,
+        lang=lang_n,
+        document_type=dtype,
+        explicit_selection=bool(explicit_selection),
+        emit=True,
+    )
 
     def _result(
             *,
@@ -149,6 +162,8 @@ def rel37_supported_selection(
             lang=lang_n,
             document_type=dtype,
             selected_frameworks_input=raw_input,
+            selected_frameworks_original=raw_input,
+            selected_frameworks_canonical=tuple(normalized),
         )
         emit_selection_diagnostic(out)
         return out
@@ -176,20 +191,8 @@ def rel37_supported_selection(
             default_expanded=True,
         )
 
-    normalized: List[str] = []
-    unsupported: List[str] = []
-    seen = set()
-    for raw in raw_input:
-        token, canonical = _canonicalize_token(raw)
-        if not token:
-            continue
-        if canonical is None or canonical not in allowed:
-            if token not in unsupported:
-                unsupported.append(token)
-            continue
-        if canonical not in seen:
-            seen.add(canonical)
-            normalized.append(canonical)
+    normalized = list(canon.selected_frameworks_canonical)
+    unsupported = list(canon.unsupported_frameworks)
 
     if unsupported:
         return _result(
