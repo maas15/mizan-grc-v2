@@ -1,14 +1,21 @@
-"""REL37.0.6 — UI strategy request type contract.
+"""REL37.0.6/0.7 — UI request type, persist, and actual export contract.
 
 Replays the captured Data EN browser payload through the real
 async route → worker → api_generate_strategy path. Mocks only
 provider I/O (generate_ai_content). Does not rewrite display
 labels to short IDs.
+
+REL37.0.7 also requires terminal persist, identity-matched REL37
+models, public preview, and actual DOCX/PDF route completion for
+supported Data/AI/DT AR+EN requests.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -31,6 +38,9 @@ os.environ['REL37_DATA_AI_DT_COMPILER'] = '1'
 
 import app as app_mod  # noqa: E402
 
+from release_engine_v3.rel33_pdf_evidence_norm import (  # noqa: E402
+    arabic_token_present,
+)
 from release_engine_v3.rel37_apply import (  # noqa: E402
     is_rel37_authoritative,
     load_model,
@@ -545,27 +555,53 @@ class CapturedBrowserRequestTests(unittest.TestCase):
             set(result['saved']['sections'].get(REL37_CANONICAL_FW_KEY)),
             {'pdpl', 'ndmo'})
 
-    def _assert_worker_past_type_contract(self, result, expected_canonical):
+    def _assert_typeerror_absent(self, result):
+        """REL37.0.6 TypeError regression only. Not persist acceptance."""
         self.assertEqual(result['http_status'], 200, result['http_body'])
         self.assertTrue(result['task_id'])
         err = (result['status'] or {}).get('error')
         self.assertNotEqual(err, _OBSERVED_TYPEERROR, result['status'])
-        if (result['status'] or {}).get('status') == 'done':
-            self.assertIsNotNone(result['saved'])
-            self.assertTrue(is_rel37_authoritative(result['saved']['sections']))
-            self.assertEqual(
-                set(result['saved']['sections'].get(REL37_CANONICAL_FW_KEY)),
-                set(expected_canonical))
-            self.assertIsInstance(
-                result['saved']['sections'].get(REL37_ORIGINAL_FW_KEY), list)
-            return
-        # Worker passed the list-typed sanitizer. Residual Arabic
-        # heading-pack 422s are outside this type-contract defect.
-        self.assertNotIn('list', str(err or '').lower())
+        self.assertNotIn("got 'list'", str(err or ''))
+
+    def _assert_supported_persist(self, result, payload, expected_canonical):
+        self._assert_typeerror_absent(result)
+        self.assertEqual((result['status'] or {}).get('status'), 'done',
+                         result['status'])
+        saved = result['saved']
+        self.assertIsNotNone(saved, result['status'])
+        inner = result['status'].get('result') if isinstance(
+            result['status'].get('result'), dict) else {}
+        status_sid = result['status'].get('strategy_id') or inner.get('strategy_id')
+        self.assertEqual(saved['id'], status_sid)
+        self.assertTrue(is_rel37_authoritative(saved['sections']))
+        model = load_model(saved['sections'])
+        self.assertIsNotNone(model)
+        self.assertTrue(model.validation_passed or not model.validate())
+        self.assertTrue(model.confidence)
+        self.assertTrue(model.risks)
+        self.assertTrue(all(all(str(c).strip() for c in row.cells())
+                            for row in model.confidence))
+        self.assertTrue(all(all(str(c).strip() for c in row.cells())
+                            for row in model.risks))
+        self.assertEqual(
+            set(saved['sections'].get(REL37_CANONICAL_FW_KEY)),
+            set(expected_canonical))
+        self.assertIsInstance(
+            saved['sections'].get(REL37_ORIGINAL_FW_KEY), list)
+        public = public_status_sections(saved['sections'])
+        visible = visible_sections(saved['sections'])
+        blob = '\n'.join(visible.values())
+        self.assertNotIn(REL37_ORIGINAL_FW_KEY, public)
+        self.assertNotIn(REL37_ORIGINAL_FW_KEY, blob)
+        self.assertNotIn("['PDPL (Personal Data Protection Law)'", blob)
+        latest_sid = result['latest'].get('strategy_id') or result['latest'].get('id')
+        self.assertEqual(latest_sid, saved['id'])
+        self.assertEqual(saved['org_name'], payload['org_name'])
+        return saved
 
     def test_03_data_ar_form_english_labels(self):
         result = _run_async(DATA_AR_FORM)
-        self._assert_worker_past_type_contract(result, ['pdpl', 'ndmo'])
+        self._assert_supported_persist(result, DATA_AR_FORM, ['pdpl', 'ndmo'])
         from release_engine_v3.rel37_early_authority import (
             attach_rel37_early_authority,
         )
@@ -588,7 +624,7 @@ class CapturedBrowserRequestTests(unittest.TestCase):
 
     def test_04_data_ar_ui_labels(self):
         result = _run_async(DATA_AR_LABELS)
-        self._assert_worker_past_type_contract(result, ['pdpl', 'ndmo'])
+        self._assert_supported_persist(result, DATA_AR_LABELS, ['pdpl', 'ndmo'])
         from release_engine_v3.rel37_early_authority import (
             attach_rel37_early_authority,
         )
@@ -608,14 +644,11 @@ class CapturedBrowserRequestTests(unittest.TestCase):
 
     def test_05_ai_en_sdaia_label(self):
         result = _run_async(AI_EN)
-        self.assertEqual((result['status'] or {}).get('status'), 'done',
-                         result['status'])
-        self.assertEqual(
-            result['saved']['sections'].get(REL37_CANONICAL_FW_KEY), ['sdaia'])
+        self._assert_supported_persist(result, AI_EN, ['sdaia'])
 
     def test_06_ai_ar_sdaia_label(self):
         result = _run_async(AI_AR)
-        self._assert_worker_past_type_contract(result, ['sdaia'])
+        self._assert_supported_persist(result, AI_AR, ['sdaia'])
         from release_engine_v3.rel37_early_authority import (
             attach_rel37_early_authority,
         )
@@ -633,14 +666,11 @@ class CapturedBrowserRequestTests(unittest.TestCase):
 
     def test_07_dt_en_dga_label(self):
         result = _run_async(DT_EN)
-        self.assertEqual((result['status'] or {}).get('status'), 'done',
-                         result['status'])
-        self.assertEqual(
-            result['saved']['sections'].get(REL37_CANONICAL_FW_KEY), ['dga'])
+        self._assert_supported_persist(result, DT_EN, ['dga'])
 
     def test_08_dt_ar_dga_label(self):
         result = _run_async(DT_AR)
-        self._assert_worker_past_type_contract(result, ['dga'])
+        self._assert_supported_persist(result, DT_AR, ['dga'])
         from release_engine_v3.rel37_early_authority import (
             attach_rel37_early_authority,
         )
@@ -738,6 +768,717 @@ class CapturedBrowserRequestTests(unittest.TestCase):
             if saved:
                 self.assertFalse(
                     is_rel37_authoritative(saved['sections']), label)
+
+
+_LEGACY_CSF_RE = re.compile(
+    r'###\s+(?:عوامل\s+النجاح\s+الحرجة|Critical\s+Success\s+Factors)',
+    re.IGNORECASE,
+)
+_LEGACY_RISK_RE = re.compile(
+    r'###\s+(?:المخاطر\s+الرئيسية|Key\s+Risks)',
+    re.IGNORECASE,
+)
+
+
+def _legacy_heading_failures(confidence_md):
+    text = confidence_md or ''
+    failures = []
+    if not _LEGACY_CSF_RE.search(text):
+        failures.append('confidence_csf_heading_missing')
+    if not _LEGACY_RISK_RE.search(text):
+        failures.append('confidence_risk_heading_missing')
+    hdr_count = len(_LEGACY_RISK_RE.findall(text))
+    if hdr_count != 1:
+        failures.append(f'confidence_risk_heading_count={hdr_count} (must be 1)')
+    return failures
+
+
+def _export_route(result, payload, fmt):
+    saved = result['saved']
+    client = result['client']
+    headers = result['headers']
+    body = {
+        'content': saved.get('content') or saved['sections'].get('vision') or '## Vision',
+        'filename': f'rel3707_{fmt}',
+        'language': payload['language'],
+        'domain': payload['domain'],
+        'doc_type': 'Strategy Document',
+        'document_type': 'strategy',
+        'artifact_type': 'strategy',
+        'generation_mode': 'drafting',
+        'strategy_id': saved['id'],
+        'artifact_id': saved['id'],
+        'selected_frameworks': payload['frameworks'],
+        'frameworks': payload['frameworks'],
+        'org_name': payload['org_name'],
+    }
+    route = f'/api/generate-{fmt}-async'
+    with patch('threading.Thread', ImmediateThread):
+        resp = client.post(route, json=body, headers=headers)
+    submit = resp.get_json(silent=True) or {}
+    export_task = submit.get('task_id')
+    status = None
+    if export_task:
+        status = client.get(
+            f'/api/export-status/{export_task}', headers=headers
+        ).get_json(silent=True)
+    download_bytes = b''
+    download = None
+    if export_task and (status or {}).get('status') == 'done':
+        dl = client.get(f'/api/export-download/{export_task}', headers=headers)
+        download = {
+            'http_status': dl.status_code,
+            'content_type': dl.headers.get('Content-Type'),
+        }
+        download_bytes = dl.data or b''
+    parsed_ok = False
+    parsed_text = ''
+    if download_bytes:
+        try:
+            if fmt == 'docx':
+                from docx import Document
+                doc = Document(io.BytesIO(download_bytes))
+                parsed_text = '\n'.join(p.text for p in doc.paragraphs)
+                parsed_ok = True
+            else:
+                parsed_ok = download_bytes.startswith(b'%PDF')
+                try:
+                    import pymupdf
+                    doc = pymupdf.open(stream=download_bytes, filetype='pdf')
+                    parsed_text = '\n'.join(page.get_text() for page in doc)
+                    parsed_ok = len(doc) > 0
+                except Exception:
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(io.BytesIO(download_bytes))
+                    parsed_text = '\n'.join(
+                        (page.extract_text() or '') for page in reader.pages)
+                    parsed_ok = len(reader.pages) > 0
+        except Exception as exc:
+            parsed_text = f'parse_error:{type(exc).__name__}:{exc}'
+    return {
+        'submit_http': resp.status_code,
+        'export_task_id': export_task,
+        'status': status or {},
+        'download': download,
+        'bytes': download_bytes,
+        'sha256': hashlib.sha256(download_bytes).hexdigest() if download_bytes else '',
+        'parsed_ok': parsed_ok,
+        'parsed_text': parsed_text,
+    }
+
+
+class Rel37ConfidenceRiskGateContractTests(unittest.TestCase):
+    """Failing-before / passing-after on the ff34348 heading grammar."""
+
+    def _compiled_sections(self, domain, lang, org_name, frameworks):
+        from release_engine_v3.rel37_apply import apply_rel37_to_sections
+        out, _repairs = apply_rel37_to_sections(
+            {'vision': 'placeholder'},
+            domain=domain,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=frameworks,
+            org_name=org_name,
+        )
+        return out
+
+    def test_legacy_heading_regex_rejects_rel37_arabic_render(self):
+        sections = self._compiled_sections(
+            'Data Management', 'ar', DATA_AR_FORM['org_name'],
+            DATA_AR_FORM['frameworks'])
+        failures = _legacy_heading_failures(sections.get('confidence') or '')
+        self.assertIn('confidence_csf_heading_missing', failures)
+        self.assertIn('confidence_risk_heading_missing', failures)
+
+    def test_rel37_gate_accepts_complete_typed_model(self):
+        from release_engine_v3.rel37_apply import (
+            rel37_confidence_risk_post_repair_result,
+        )
+        sections = self._compiled_sections(
+            'Data Management', 'ar', DATA_AR_FORM['org_name'],
+            DATA_AR_FORM['frameworks'])
+        blockers = rel37_confidence_risk_post_repair_result(
+            sections,
+            domain='Data Management',
+            lang='ar',
+            document_type='strategy',
+            org_name=DATA_AR_FORM['org_name'],
+            selected_frameworks=DATA_AR_FORM['frameworks'],
+        )
+        self.assertEqual(blockers, [])
+
+    def test_forged_applied_flag_does_not_bypass(self):
+        from release_engine_v3.rel37_apply import (
+            rel37_confidence_risk_post_repair_result,
+        )
+        forged = {
+            '_rel37_applied': 'true',
+            'confidence': '### عوامل النجاح الحرجة\n',
+        }
+        self.assertIsNone(rel37_confidence_risk_post_repair_result(
+            forged,
+            domain='Data Management',
+            lang='ar',
+            document_type='strategy',
+            org_name='x',
+            selected_frameworks=DATA_AR_FORM['frameworks'],
+        ))
+        failures = _legacy_heading_failures(forged['confidence'])
+        self.assertIn('confidence_risk_heading_missing', failures)
+
+    def test_missing_confidence_blocks(self):
+        from release_engine_v3.rel37_apply import (
+            REL37_MODEL_KEY,
+            serialize_model,
+            rel37_confidence_risk_post_repair_result,
+        )
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        model = load_model(sections)
+        model.confidence = ()
+        model.compute_hashes()
+        sections[REL37_MODEL_KEY] = serialize_model(model)
+        sections['_rel37_model_hash'] = model.model_hash
+        blockers = rel37_confidence_risk_post_repair_result(
+            sections,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        )
+        self.assertIn('rel37_confidence_missing', blockers)
+
+    def test_missing_risk_blocks(self):
+        from release_engine_v3.rel37_apply import (
+            REL37_MODEL_KEY,
+            serialize_model,
+            rel37_confidence_risk_post_repair_result,
+        )
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        model = load_model(sections)
+        model.risks = ()
+        model.compute_hashes()
+        sections[REL37_MODEL_KEY] = serialize_model(model)
+        sections['_rel37_model_hash'] = model.model_hash
+        blockers = rel37_confidence_risk_post_repair_result(
+            sections,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        )
+        self.assertIn('rel37_risks_missing', blockers)
+
+    def test_bind_export_prefers_validated_rel37_sections(self):
+        from release_engine_v3.rel37_apply import rel37_bind_export_sections
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        bound = rel37_bind_export_sections(
+            sections,
+            {'kpis': '## KPI / KRI Framework\n'},
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        )
+        self.assertTrue(is_rel37_authoritative(bound))
+        self.assertIn('KPI Description', bound.get('kpis') or '')
+
+    def test_bind_export_rejects_forged_flag(self):
+        from release_engine_v3.rel37_apply import rel37_bind_export_sections
+        fallback = {'kpis': '## KPI / KRI Framework\n'}
+        bound = rel37_bind_export_sections(
+            {'_rel37_applied': 'true', 'kpis': 'forged'},
+            fallback,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        )
+        self.assertEqual(bound, fallback)
+
+    def test_validated_export_markdown_requires_current_model(self):
+        from release_engine_v3.rel37_apply import (
+            REL37_HASH_KEY,
+            rel37_validated_export_markdown,
+        )
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        md = rel37_validated_export_markdown(sections)
+        self.assertIn('## 6. Key Performance Indicators', md)
+        self.assertIn('KPI Description', md)
+        sections[REL37_HASH_KEY] = '0' * 64
+        self.assertEqual(rel37_validated_export_markdown(sections), '')
+        self.assertEqual(
+            rel37_validated_export_markdown({'_rel37_applied': 'true'}), '')
+
+    def test_render_tree_uses_rel37_markdown_not_arabic_kpi_remix(self):
+        from release_engine_v3.contracts import (
+            CanonicalSection,
+            ExportManifest,
+            FinalDocumentArtifact,
+        )
+        from release_engine_v3.render_tree import build_render_tree
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        artifact = FinalDocumentArtifact(
+            artifact_id='rel37-en',
+            domain='data',
+            language='en',
+            document_type='strategy',
+            strategy_type='technical',
+            selected_frameworks=['pdpl', 'ndmo'],
+            canonical_sections={
+                'kpi_kri': CanonicalSection(
+                    key='kpi_kri',
+                    title='مؤشرات الأداء الرئيسية',
+                    narrative='',
+                    table_rows=(),
+                ),
+            },
+            quality_repairs=[],
+            quality_results={},
+            frozen=True,
+            canonical_hash='x',
+            render_tree_hash='',
+            export_manifest=ExportManifest(),
+            blocking_errors=[],
+            release_ready_final_passed=True,
+            legacy_sections=sections,
+        )
+        tree = build_render_tree(artifact)
+        self.assertIn('## 6. Key Performance Indicators', tree.markdown_view)
+        self.assertIn('KPI Description', tree.markdown_view)
+        self.assertNotEqual(
+            tree.markdown_view.strip(),
+            '## مؤشرات الأداء الرئيسية')
+
+    def test_rel37_english_markdown_is_not_an_export_fragment(self):
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        md = sections.get('_rel37_markdown') or ''
+        is_frag, found, why = app_mod._is_strategy_export_fragment(md)
+        self.assertFalse(is_frag, (sorted(found), why))
+        self.assertGreaterEqual(len(found), 5)
+        self.assertIn('environment', found)
+        self.assertIn('gaps', found)
+        self.assertIn('confidence', found)
+        from release_engine_v3.rel37_apply import rel37_export_completeness_ok
+        self.assertTrue(rel37_export_completeness_ok(
+            sections,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        ))
+        is_frag_typed, _, _ = app_mod._is_strategy_export_fragment(
+            '## KPI only',
+            sections,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        )
+        self.assertFalse(is_frag_typed)
+
+    def test_kpi_only_fragment_still_blocked_without_rel37_model(self):
+        fragment = (
+            '### KPI Assessment Guidelines\n\n'
+            '#### KPI #1 Assessment Guide\n\n'
+            '## 7. Confidence and Risk\n\nbody.\n'
+        )
+        is_frag, found, why = app_mod._is_strategy_export_fragment(fragment)
+        self.assertTrue(is_frag, (sorted(found), why))
+        self.assertNotIn('vision', found)
+        self.assertNotIn('pillars', found)
+        forged = {'_rel37_applied': 'true', 'kpis': fragment}
+        from release_engine_v3.rel37_apply import rel37_export_completeness_ok
+        self.assertIsNone(rel37_export_completeness_ok(
+            forged,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        ))
+        is_frag_forged, _, _ = app_mod._is_strategy_export_fragment(
+            fragment, forged)
+        self.assertTrue(is_frag_forged)
+
+    def test_hash_and_identity_mismatch_not_trusted(self):
+        from release_engine_v3.rel37_apply import (
+            rel37_confidence_risk_post_repair_result,
+        )
+        sections = self._compiled_sections(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        sections['_rel37_model_hash'] = '0' * 64
+        blockers = rel37_confidence_risk_post_repair_result(
+            sections,
+            domain='Cyber Security',
+            lang='ar',
+            document_type='risk',
+            org_name='Other Org',
+            selected_frameworks=['NCA ECC'],
+        )
+        self.assertTrue(blockers)
+        self.assertTrue(any('hash' in str(b) or 'mismatch' in str(b)
+                            for b in blockers))
+
+
+class Rel37KpiSemanticsRoutingTests(unittest.TestCase):
+    """Cyber PR-CY61 must not rewrite identity-matched REL37 Data/AI/DT KPIs."""
+
+    def _compiled(self, domain, lang, org_name, frameworks):
+        from release_engine_v3.rel37_apply import apply_rel37_to_sections
+        out, _repairs = apply_rel37_to_sections(
+            {'vision': 'placeholder'},
+            domain=domain,
+            lang=lang,
+            document_type='strategy',
+            selected_frameworks=frameworks,
+            org_name=org_name,
+        )
+        return out
+
+    def test_skip_requires_identity_matched_rel37_data(self):
+        from release_engine_v3.rel37_apply import rel37_skip_cyber_kpi_semantics
+        sections = self._compiled(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        self.assertTrue(rel37_skip_cyber_kpi_semantics(
+            sections,
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        ))
+        self.assertFalse(rel37_skip_cyber_kpi_semantics(
+            {'_rel37_applied': 'true'},
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        ))
+        self.assertFalse(rel37_skip_cyber_kpi_semantics(
+            sections,
+            domain='Cyber Security',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=['NCA ECC'],
+        ))
+
+    def test_compiler_on_time_kpis_preserved_and_rewritten_without_skip(self):
+        from professional_strategy_render import (
+            collect_kpi_metric_semantics_issues,
+            split_kpi_tables,
+        )
+        sections = self._compiled(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+        kpis = sections.get('kpis') or ''
+        self.assertIn('On-time data-subject request closure', kpis)
+        self.assertIn('On-time eligible-incident notification', kpis)
+        preserved = split_kpi_tables(
+            kpis, 'en', domain='data', preserve_compiler_kpis=True)
+        mutated = split_kpi_tables(kpis, 'en', domain='data')
+        preserved_blob = json.dumps(preserved, ensure_ascii=False)
+        mutated_blob = json.dumps(mutated, ensure_ascii=False)
+        self.assertIn('On-time data-subject request closure', preserved_blob)
+        self.assertIn('100%', preserved_blob)
+        self.assertIn(
+            'on-time closures / total requests × 100', preserved_blob)
+        self.assertIn('On-time eligible-incident notification', preserved_blob)
+        self.assertNotIn('≤ 72 hours', preserved_blob)
+        self.assertNotIn('Critical incident SLA resolution rate', preserved_blob)
+        from professional_strategy_render import _is_time_based_metric
+        self.assertFalse(_is_time_based_metric(
+            'On-time data-subject request closure'))
+        self.assertFalse(_is_time_based_metric(
+            'On-time eligible-incident notification'))
+        from professional_strategy_render import (
+            _derive_kpi_target,
+            _is_incident_response_metric,
+        )
+        self.assertFalse(_is_incident_response_metric(
+            'On-time eligible-incident notification'))
+        self.assertEqual(
+            _derive_kpi_target(
+                'On-time eligible-incident notification', '100%', 'en'),
+            '100%')
+        self.assertTrue(_is_incident_response_metric(
+            'Critical incident response time'))
+        self.assertTrue(_is_time_based_metric('Critical incident response time'))
+        self.assertTrue(_is_time_based_metric('Mean time to respond'))
+        # Forged authority still runs the Cyber semantic collector.
+        fake_model = {
+            'blocks': {
+                'kpi_kri_framework': {
+                    'tables': mutated,
+                }
+            }
+        }
+        cyber_bad = {
+            'blocks': {
+                'kpi_kri_framework': {
+                    'tables': [{
+                        'schema': 'kpi_main',
+                        'rows': [[
+                            '1', 'Critical incident response time', 'KPI',
+                            '95%', 'x', 'SIEM',
+                        ]],
+                    }, {
+                        'schema': 'kpi_formula',
+                        'rows': [[
+                            '1', 'Critical incident response time',
+                            '(closed / total) × 100', 'SIEM',
+                        ]],
+                    }],
+                }
+            }
+        }
+        self.assertTrue(collect_kpi_metric_semantics_issues(cyber_bad, 'en'))
+        _ = fake_model
+
+    def test_professional_gate_accepts_identity_matched_rel37_data_en(self):
+        from professional_strategy_render import (
+            build_professional_strategy_document_model,
+            identify_docmodel_failing_subgate,
+            prcy47_docmodel_professional_checks,
+        )
+        sections = self._compiled(
+            'Data Management', 'en', CAPTURED_DATA_EN['org_name'],
+            CAPTURED_DATA_EN['frameworks'])
+
+        def _base_builder(**_kwargs):
+            return {
+                'lang': 'en',
+                'domain': 'data',
+                'document_type': 'strategy',
+                'org_name': CAPTURED_DATA_EN['org_name'],
+                'selected_frameworks': ['pdpl', 'ndmo'],
+                'blocks': {},
+            }
+
+        model = build_professional_strategy_document_model(
+            sections.get('_rel37_markdown') or '',
+            metadata={
+                'domain': 'data',
+                'org_name': CAPTURED_DATA_EN['org_name'],
+                'document_type': 'strategy',
+                'selected_frameworks': ['pdpl', 'ndmo'],
+            },
+            sections=sections,
+            selected_frameworks=['pdpl', 'ndmo'],
+            lang='en',
+            domain='data',
+            base_builder=_base_builder,
+        )
+        checks = prcy47_docmodel_professional_checks(model, 'en')
+        self.assertTrue(
+            checks.get('kpi_metric_semantics_valid'), checks)
+        self.assertTrue(
+            checks.get('pdf_kpi_type_column_valid'), checks)
+        rows = json.dumps(
+            ((model.get('blocks') or {}).get('kpi_kri_framework') or {}).get(
+                'tables') or [],
+            ensure_ascii=False,
+        )
+        self.assertIn('On-time data-subject request closure', rows)
+        self.assertNotIn('Critical incident SLA resolution rate', rows)
+        if not checks.get('docmodel_professional_passed'):
+            # Other professional subgates may still fail on a stub builder;
+            # the proven EN PDF blocker is KPI semantics / type.
+            self.assertNotEqual(
+                identify_docmodel_failing_subgate(checks),
+                'kpi_metric_semantics_valid',
+                checks,
+            )
+
+
+    def test_rel37_en_roadmap_family_tokens_match_compiler_titles(self):
+        from release_engine.rel27_export_checks import check_roadmap_coverage
+        ai = self._compiled(
+            'Artificial Intelligence', 'en', AI_EN['org_name'],
+            AI_EN['frameworks'])
+        ai_cov = check_roadmap_coverage(
+            ai.get('_rel37_markdown') or ai.get('roadmap') or '', domain='ai')
+        self.assertNotIn('model_inventory', ai_cov.get('missing_families') or [])
+        self.assertNotIn('model_monitoring', ai_cov.get('missing_families') or [])
+        dt = self._compiled(
+            'Digital Transformation', 'en', DT_EN['org_name'],
+            DT_EN['frameworks'])
+        dt_cov = check_roadmap_coverage(
+            dt.get('_rel37_markdown') or dt.get('roadmap') or '', domain='dt')
+        self.assertNotIn('digital_channels', dt_cov.get('missing_families') or [])
+        empty = check_roadmap_coverage('## 5. Implementation Roadmap\n\nNone.', domain='ai')
+        self.assertIn('model_inventory', empty.get('missing_families') or [])
+
+
+class PdfResidueClassifierTests(unittest.TestCase):
+    def test_valid_processing_register_is_not_glue(self):
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+        from release_engine.export_evidence_validator import _contains_arabic_residue
+        valid = 'غياب سجل معالجة موثق للبيانات الشخصية'
+        self.assertFalse(_contains_arabic_residue(valid, 'ل معالجة'))
+        self.assertNotIn(
+            'ل معالجة',
+            check_arabic_residues_exported(valid).get('residues_found') or [])
+        self.assertFalse(_contains_arabic_residue('معدل معالجة الحوادث', 'ل معالجة'))
+
+    def test_genuine_detached_particle_still_blocks(self):
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+        from release_engine.export_evidence_validator import _contains_arabic_residue
+        defect = 'يجب ل معالجة الحوادث فوراً'
+        self.assertTrue(_contains_arabic_residue(defect, 'ل معالجة'))
+        self.assertIn(
+            'ل معالجة',
+            check_arabic_residues_exported(defect).get('residues_found') or [])
+
+
+class SupportedPersistExportMatrixTests(unittest.TestCase):
+    CASES = (
+        ('data_en', CAPTURED_DATA_EN, ['pdpl', 'ndmo']),
+        ('data_ar', DATA_AR_FORM, ['pdpl', 'ndmo']),
+        ('ai_en', AI_EN, ['sdaia']),
+        ('ai_ar', AI_AR, ['sdaia']),
+        ('dt_en', DT_EN, ['dga']),
+        ('dt_ar', DT_AR, ['dga']),
+    )
+
+    def _assert_export(self, result, payload, fmt):
+        exported = _export_route(result, payload, fmt)
+        self.assertEqual(exported['submit_http'], 200, exported)
+        self.assertTrue(exported['export_task_id'], exported)
+        self.assertEqual(
+            (exported['status'] or {}).get('status'), 'done', exported['status'])
+        self.assertTrue(exported['bytes'], exported)
+        self.assertTrue(exported['parsed_ok'], exported['parsed_text'][:300])
+        self.assertTrue(
+            arabic_token_present(exported['parsed_text'], payload['org_name']),
+            exported['parsed_text'][:800],
+        )
+        self.assertNotIn(REL37_ORIGINAL_FW_KEY, exported['parsed_text'])
+        self.assertNotIn(
+            "['PDPL (Personal Data Protection Law)'", exported['parsed_text'])
+        return exported
+
+    def test_six_supported_routes_persist_preview_docx_pdf(self):
+        for name, payload, canonical in self.CASES:
+            with self.subTest(case=name):
+                result = _run_async(payload)
+                helper = CapturedBrowserRequestTests()
+                helper._assert_supported_persist(result, payload, canonical)
+                preview = public_status_sections(result['saved']['sections'])
+                self.assertTrue(preview.get('vision') or preview.get('confidence'))
+                docx = self._assert_export(result, payload, 'docx')
+                pdf = self._assert_export(result, payload, 'pdf')
+                self.assertGreater(len(docx['bytes']), 1000)
+                self.assertGreater(len(pdf['bytes']), 1000)
+                self.assertTrue(pdf['bytes'].startswith(b'%PDF'))
+                if payload['language'] == 'en':
+                    self.assertNotIn(
+                        'Critical incident SLA resolution rate',
+                        pdf['parsed_text'])
+                    self.assertNotIn('≤ 72 hours', pdf['parsed_text'])
+                    if name == 'data_en':
+                        self.assertTrue(
+                            arabic_token_present(
+                                pdf['parsed_text'],
+                                'On-time data-subject request closure'),
+                            pdf['parsed_text'][:800],
+                        )
+                        self.assertTrue(
+                            arabic_token_present(
+                                pdf['parsed_text'],
+                                'On-time eligible-incident notification'),
+                            pdf['parsed_text'][:800],
+                        )
+                        self.assertNotIn('< 4 hours', pdf['parsed_text'])
+
+
+class NegativeControlTests(unittest.TestCase):
+    def test_malformed_frameworks_rejected_before_provider(self):
+        uid, username = _next_user()
+        client, headers = _client(uid, username)
+        calls = {'n': 0}
+
+        def _boom(*args, **kwargs):
+            calls['n'] += 1
+            raise AssertionError('provider must not run')
+
+        payload = dict(CAPTURED_DATA_EN)
+        payload['frameworks'] = [
+            'PDPL (Personal Data Protection Law)',
+            {'x': 1},
+        ]
+        with patch.object(app_mod, 'generate_ai_content', side_effect=_boom):
+            resp = client.post(
+                '/api/generate-strategy-async', json=payload, headers=headers)
+            sync = client.post(
+                '/api/generate-strategy', json=payload, headers=headers)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(sync.status_code, 400)
+        self.assertFalse((resp.get_json(silent=True) or {}).get('task_id'))
+        self.assertEqual(calls['n'], 0)
+
+    def test_missing_export_job_is_not_accepted(self):
+        uid, username = _next_user()
+        client, headers = _client(uid, username)
+        status = client.get(
+            '/api/export-status/missing-export-task', headers=headers
+        ).get_json(silent=True) or {}
+        self.assertNotEqual(status.get('status'), 'done')
+        download = client.get(
+            '/api/export-download/missing-export-task', headers=headers)
+        self.assertNotEqual(download.status_code, 200)
+
+    def test_genuine_pdf_glue_residue_still_blocks_quality(self):
+        from release_engine_v3.validators import validate_canonical_quality
+        from release_engine.rel27_export_checks import check_arabic_residues_exported
+        blob = (
+            '## 7. Confidence and Risk\n\n'
+            'Incident response requires ل معالجة of critical cases.\n'
+        )
+        found = check_arabic_residues_exported(blob).get('residues_found') or []
+        self.assertIn('ل معالجة', found)
+        quality = validate_canonical_quality(
+            {},
+            legacy_sections={'confidence': blob, 'vision': '## 1. Vision'},
+            domain='data',
+            lang='en',
+            document_type='strategy',
+        )
+        self.assertIn('ل معالجة', quality.get('blocking_errors') or [])
+
+    def test_feature_disabled_does_not_claim_rel37_authority(self):
+        from release_engine_v3.rel37_apply import (
+            rel37_confidence_risk_post_repair_result,
+        )
+        self.assertIsNone(rel37_confidence_risk_post_repair_result(
+            {'confidence': '### Key Risks\n'},
+            domain='Data Management',
+            lang='en',
+            document_type='strategy',
+            org_name=CAPTURED_DATA_EN['org_name'],
+            selected_frameworks=CAPTURED_DATA_EN['frameworks'],
+        ))
 
 
 if __name__ == '__main__':

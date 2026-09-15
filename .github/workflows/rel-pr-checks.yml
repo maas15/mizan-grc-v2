@@ -52,6 +52,26 @@ jobs:
             tests/test_rel33_all_domain_document_quality_matrix.py \
             -q
 
+      - name: pytest REL37 request, persist, and export contract
+        run: |
+          python -m pytest tests/test_rel37_ui_request_type_contract.py --collect-only -q
+          python -m pytest \
+            tests/test_rel37_ui_request_type_contract.py \
+            tests/test_rel37_deterministic_compilers.py \
+            tests/test_rel37_live_attach.py \
+            tests/test_rel37_early_authority.py \
+            tests/test_rel37_preview_section_contract.py \
+            tests/test_rel37_framework_label_canonicalization.py \
+            -q --tb=short
+
+      - name: pytest Cyber and Auth/CSRF regressions
+        run: |
+          python -m pytest \
+            tests/test_rel36_9_english_cyber_live_stability.py \
+            tests/test_rel36_11_english_cyber_export_stability.py \
+            tests/test_rel36_12_english_cyber_presave_pillar_stability.py \
+            -q --tb=short
+
       - name: rel32 cyber AR export smoke
         run: python scripts/rel32_cyber_ar_export_smoke.py
 

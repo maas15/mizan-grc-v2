@@ -668,7 +668,9 @@ def _contains_arabic_residue(blob: str, pattern: str) -> bool:
         for phrase in _ARABIC_RESIDUE_ALLOWLIST:
             scrubbed = scrubbed.replace(phrase, '')
     if pattern == 'ل معالجة':
-        return bool(re.search(r'(?<!معد)ل معالجة', scrubbed or ''))
+        # Glue residue is a detached ل + معالجة. Valid phrases such as
+        # «معدل معالجة» and «سجل معالجة» keep an Arabic letter before ل.
+        return bool(re.search(r'(?<![\u0600-\u06FF])ل معالجة', scrubbed or ''))
     if pattern.startswith(('ال ', 'ل ', 'لل ')):
         return bool(
             re.search(r'(?<![\u0600-\u06FF])' + re.escape(pattern), scrubbed or ''))

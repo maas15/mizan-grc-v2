@@ -132,6 +132,330 @@ def rel37_kpi_main_header_count(sections: Optional[Dict[str, Any]]) -> int:
     return 1
 
 
+def rel37_confidence_count(sections: Optional[Dict[str, Any]]) -> int:
+    model = load_model(sections)
+    if model is None:
+        return 0
+    return len(model.confidence)
+
+
+def rel37_risk_count(sections: Optional[Dict[str, Any]]) -> int:
+    model = load_model(sections)
+    if model is None:
+        return 0
+    return len(model.risks)
+
+
+def _rel37_normalize_lang(value: object) -> str:
+    return _normalize_lang(value)
+
+
+def rel37_request_model_consistent(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Tuple[bool, List[str]]:
+    """Identity check for REL37 persist/export. Applied-flag alone is not enough."""
+    from release_engine_v3.domain_codes import normalize_domain_code
+    from release_engine_v3.rel37_framework_aliases import (
+        classify_framework_label,
+    )
+
+    errors: List[str] = []
+    if not is_rel37_authoritative(sections):
+        return False, ['rel37_not_authoritative']
+    model = load_model(sections)
+    if model is None:
+        return False, ['rel37_model_unreadable']
+    stored_hash = str((sections or {}).get(REL37_HASH_KEY) or '').strip()
+    recomputed = model.compute_model_hash()
+    if not model.model_hash:
+        errors.append('rel37_model_hash_missing')
+    elif recomputed != model.model_hash:
+        errors.append('rel37_model_hash_stale')
+    if stored_hash and model.model_hash and stored_hash != model.model_hash:
+        errors.append('rel37_model_hash_mismatch')
+    want_domain = normalize_domain_code(str(domain or ''), default='')
+    if want_domain and model.domain != want_domain:
+        errors.append(f'rel37_domain_mismatch:{model.domain}:{want_domain}')
+    want_lang = _rel37_normalize_lang(lang) if lang else ''
+    if want_lang and model.lang != want_lang:
+        errors.append(f'rel37_lang_mismatch:{model.lang}:{want_lang}')
+    want_type = str(document_type or 'strategy').strip().lower() or 'strategy'
+    if model.document_type != want_type:
+        errors.append(
+            f'rel37_document_type_mismatch:{model.document_type}:{want_type}')
+    if org_name and model.org_name != org_name:
+        errors.append('rel37_org_name_mismatch')
+    request_canon: List[str] = []
+    for raw in list(selected_frameworks or []):
+        mapped, _kind = classify_framework_label(raw)
+        if mapped:
+            request_canon.append(mapped)
+    model_canon = [str(item).strip().lower() for item in model.selected_frameworks if str(item).strip()]
+    stored_canon = [
+        str(item).strip().lower()
+        for item in ((sections or {}).get(REL37_CANONICAL_FW_KEY) or [])
+        if str(item).strip()
+    ]
+    if request_canon and set(request_canon) != set(model_canon):
+        errors.append('rel37_frameworks_mismatch')
+    if stored_canon and set(stored_canon) != set(model_canon):
+        errors.append('rel37_stored_frameworks_mismatch')
+    return (not errors), errors
+
+
+def rel37_confidence_risk_structures_ok(
+        sections: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Complete typed confidence/risk rows under the existing REL37 schema."""
+    model = load_model(sections)
+    if model is None:
+        return ['rel37_model_unreadable']
+    errors: List[str] = []
+    if not model.confidence:
+        errors.append('rel37_confidence_missing')
+    else:
+        for index, row in enumerate(model.confidence):
+            if not all(str(cell).strip() for cell in row.cells()):
+                errors.append(f'rel37_confidence_row_incomplete:{index}')
+    if not model.risks:
+        errors.append('rel37_risks_missing')
+    else:
+        for index, row in enumerate(model.risks):
+            if not all(str(cell).strip() for cell in row.cells()):
+                errors.append(f'rel37_risk_row_incomplete:{index}')
+    return errors
+
+
+def rel37_confidence_risk_post_repair_result(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """REL37-authoritative persist gate.
+
+    Returns None when this is not a REL37-authoritative route (caller must
+    keep the legacy heading grammar). Otherwise returns blocking errors —
+    empty list means the typed model is current, identity-matched, and
+    has complete confidence/risk structures.
+    """
+    if not is_rel37_authoritative(sections):
+        return None
+    model = load_model(sections)
+    if model is None:
+        return ['rel37_model_unreadable']
+    blockers = list(model.blockers or model.validate())
+    _ok, identity = rel37_request_model_consistent(
+        sections,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        org_name=org_name,
+        selected_frameworks=selected_frameworks,
+    )
+    blockers.extend(identity)
+    blockers.extend(rel37_confidence_risk_structures_ok(sections))
+    return list(dict.fromkeys(blockers))
+
+
+def rel37_validated_export_markdown(
+        sections: Optional[Dict[str, Any]],
+) -> str:
+    """REL37 markdown only when the typed model is current and valid.
+
+    Applied-flag alone is not enough: the model must load, validate, and
+    match the stored hash. Empty string means callers keep the legacy view.
+    """
+    if not is_rel37_authoritative(sections):
+        return ''
+    model = load_model(sections)
+    if model is None:
+        return ''
+    if list(model.blockers or model.validate()):
+        return ''
+    stored_hash = str((sections or {}).get(REL37_HASH_KEY) or '').strip()
+    if not model.model_hash:
+        model.compute_hashes()
+    if stored_hash and model.model_hash and stored_hash != model.model_hash:
+        return ''
+    from release_engine_v3.rel37_live_attach import canonical_markdown_from_sections
+    return canonical_markdown_from_sections(sections) or ''
+
+
+def rel37_bind_export_sections(
+        candidate: Optional[Dict[str, Any]],
+        fallback: Optional[Dict[str, Any]] = None,
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Prefer identity-matched saved REL37 sections over H2-split markdown.
+
+    Forged ``_rel37_applied`` without a model, hash mismatch, and incomplete
+    typed confidence/risk keep the fallback (legacy) sections.
+    """
+    blockers = rel37_confidence_risk_post_repair_result(
+        candidate,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        org_name=org_name,
+        selected_frameworks=selected_frameworks,
+    )
+    if blockers == []:
+        return dict(candidate or {})
+    return dict(fallback or {})
+
+
+def rel37_export_heading_token_extras() -> Dict[str, Tuple[str, ...]]:
+    """REL37 English titles the legacy fragment detector did not know.
+
+    Arabic REL32 titles already match the 2024 heading tokens. English
+    compiler titles use Environment and Drivers / Gap Assessment /
+    Confidence and Risk, which the legacy detector treated as missing.
+    """
+    return {
+        'environment': ('environment and drivers',),
+        'gaps': ('gap assessment',),
+        'confidence': ('confidence and risk',),
+    }
+
+
+_REL37_KPI_SEMANTICS_DOMAINS = frozenset(('data', 'ai', 'dt'))
+
+
+def rel37_sections_for_professional_render(
+        candidate: Optional[Dict[str, Any]],
+        fallback: Optional[Dict[str, Any]] = None,
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Prefer identity-matched saved REL37 sections for professional render.
+
+    H2-split fallbacks keep their visible text when the candidate is not
+    identity-matched. Applied-flag alone does not win.
+    """
+    if is_rel37_authoritative(candidate):
+        bound = rel37_bind_export_sections(
+            candidate,
+            fallback,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            org_name=org_name,
+            selected_frameworks=selected_frameworks,
+        )
+        if is_rel37_authoritative(bound):
+            return bound
+    out = dict(fallback or {})
+    out.update(rel37_authority_snapshot(candidate))
+    return out
+
+
+def rel37_authority_snapshot(
+        sections: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Copy only REL37 authority keys for later identity re-validation."""
+    secs = sections or {}
+    keys = (
+        REL37_APPLIED_KEY, REL37_MODEL_KEY, REL37_HASH_KEY,
+        REL37_CANONICAL_FW_KEY, REL37_ORIGINAL_FW_KEY, REL37_SOURCE_KEY,
+    )
+    return {key: secs[key] for key in keys if key in secs}
+
+
+def rel37_skip_cyber_kpi_semantics(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> bool:
+    """True only for identity-matched REL37 Data/AI/DT compiler KPIs.
+
+    Applied-flag alone is never enough. Cyber / ERM / Global keep the
+    existing PR-CY61 semantic normalizer and quality gate.
+    """
+    from release_engine_v3.domain_codes import normalize_domain_code
+
+    dcode = normalize_domain_code(str(domain or ''), default='')
+    if dcode not in _REL37_KPI_SEMANTICS_DOMAINS:
+        return False
+    blockers = rel37_confidence_risk_post_repair_result(
+        sections,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        org_name=org_name,
+        selected_frameworks=selected_frameworks,
+    )
+    return blockers == []
+
+
+def rel37_export_completeness_ok(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Optional[bool]:
+    """Typed-model completeness for the export fragment gate.
+
+    Returns None when this is not a REL37-authoritative route (caller keeps
+    the legacy heading grammar). True means the current model is valid,
+    identity-matched, and carries the core strategy sections. False means
+    the route is REL37-authoritative but must not skip the legacy check.
+    Applied-flag alone is never enough.
+    """
+    blockers = rel37_confidence_risk_post_repair_result(
+        sections,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        org_name=org_name,
+        selected_frameworks=selected_frameworks,
+    )
+    if blockers is None:
+        return None
+    if blockers:
+        return False
+    keys = {
+        str(key)
+        for key, value in (sections or {}).items()
+        if not str(key).startswith('_') and str(value or '').strip()
+    }
+    core = {
+        'vision', 'pillars', 'environment', 'gaps', 'roadmap',
+        'kpis', 'confidence',
+    }
+    populated = keys & core
+    if len(populated) < 5:
+        return False
+    if not (populated & {'vision', 'pillars'}):
+        return False
+    return True
+
+
 def apply_rel37_to_sections(
         sections: Optional[Dict[str, Any]],
         *,

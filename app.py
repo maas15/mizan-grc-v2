@@ -69887,6 +69887,38 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 _pa_conf, _ts_re.IGNORECASE,
                             ))
                             _pa_failures = []
+                            _pa_rel37_cr = None
+                            try:
+                                from release_engine_v3.rel37_apply import (
+                                    rel37_confidence_risk_post_repair_result
+                                    as _rel37_cr_gate,
+                                )
+                                _pa_rel37_cr = _rel37_cr_gate(
+                                    sections,
+                                    domain=locals().get('_dcode')
+                                    or data.get('domain')
+                                    or domain,
+                                    lang=lang,
+                                    document_type=locals().get(
+                                        '_document_type') or 'strategy',
+                                    org_name=str(
+                                        locals().get('org_name')
+                                        or data.get('org_name')
+                                        or ''),
+                                    selected_frameworks=(
+                                        data.get('frameworks')
+                                        or data.get('selected_frameworks')
+                                        or locals().get('_frameworks_raw')
+                                        or []
+                                    ),
+                                )
+                            except Exception as _pa_rel37_cr_err:
+                                print(
+                                    '[REL37-CONFIDENCE-RISK-GATE] '
+                                    f'helper_error={_pa_rel37_cr_err!r}',
+                                    flush=True,
+                                )
+                                _pa_rel37_cr = None
                             if _pa_so < 6:
                                 # Safe diagnostic logging — surfaces why the
                                 # post-repair vision audit rejected the
@@ -69936,18 +69968,31 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     )
                                 _pa_failures.append(
                                     f'vision_so_rows={_pa_so} (need ≥ 6)')
-                            if not _pa_csf_present:
-                                _pa_failures.append('confidence_csf_heading_missing')
-                            if not _pa_risk_present:
-                                _pa_failures.append('confidence_risk_heading_missing')
-                            if _pa_risk_hdr_count != 1:
-                                _pa_failures.append(
-                                    f'confidence_risk_heading_count='
-                                    f'{_pa_risk_hdr_count} (must be 1)')
-                            if _pa_risk_rows < 6:
-                                _pa_failures.append(
-                                    f'confidence_risk_rows={_pa_risk_rows}'
-                                    f' (need ≥ 6)')
+                            if _pa_rel37_cr is not None:
+                                # REL37-authoritative: typed model + identity.
+                                # Never treat _rel37_applied=true as a bypass.
+                                _pa_failures.extend(_pa_rel37_cr)
+                                print(
+                                    '[REL37-CONFIDENCE-RISK-GATE] '
+                                    f'authoritative=true '
+                                    f'blockers={list(_pa_rel37_cr)}',
+                                    flush=True,
+                                )
+                            else:
+                                if not _pa_csf_present:
+                                    _pa_failures.append(
+                                        'confidence_csf_heading_missing')
+                                if not _pa_risk_present:
+                                    _pa_failures.append(
+                                        'confidence_risk_heading_missing')
+                                if _pa_risk_hdr_count != 1:
+                                    _pa_failures.append(
+                                        f'confidence_risk_heading_count='
+                                        f'{_pa_risk_hdr_count} (must be 1)')
+                                if _pa_risk_rows < 6:
+                                    _pa_failures.append(
+                                        f'confidence_risk_rows={_pa_risk_rows}'
+                                        f' (need ≥ 6)')
                             if _pa_failures:
                                 _pa_msg = (
                                     'Post-repair assertions failed: '
@@ -81457,7 +81502,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         )
     if _is_strategy_doc and content:
         try:
-            _is_frag_b, _found_b, _why_b = _is_strategy_export_fragment(content)
+            _is_frag_b, _found_b, _why_b = _is_strategy_export_fragment(
+                content,
+                sections,
+                domain=domain,
+                lang=lang,
+                document_type='strategy',
+                org_name=org_name,
+                selected_frameworks=selected_frameworks,
+            )
         except Exception:
             _is_frag_b, _found_b, _why_b = False, set(), ''
         print(
@@ -82298,6 +82351,21 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 _cy22_docx_sections = {
                     k: v for k, v in _vis_docx.items()
                     if isinstance(v, str) and not str(k).startswith('_')}
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        rel37_bind_export_sections as _rel37_bind_vis,
+                    )
+                    _cy22_docx_sections = _rel37_bind_vis(
+                        sections if isinstance(sections, dict) else {},
+                        _cy22_docx_sections,
+                        domain=domain,
+                        lang='ar' if is_arabic else 'en',
+                        document_type='strategy',
+                        org_name=org_name,
+                        selected_frameworks=selected_frameworks or [],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             else:
                 try:
                     _cy22_docx_sections = (
@@ -82472,6 +82540,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     'domain':   domain,
                     'doc_type': doc_type,
                     'content':  content,
+                    '_rel37_source_sections': (
+                        sections if isinstance(sections, dict) else {}),
                 },
                 sections=_cy22_docx_sections or None,
                 selected_frameworks=selected_frameworks or [],
@@ -83579,7 +83649,25 @@ def api_generate_docx():
                 _export_sections = _norm_risk_secs_d(
                     _split_risk_md_d(content or '')) or {}
         else:
-            _export_sections = _split_strategy_sections_by_h2(content or '') or {}
+            _h2_export_sections = (
+                _split_strategy_sections_by_h2(content or '') or {})
+            _prep_export_sections = dict(
+                (locals().get('_rel33_prep_d') or {}).get('sections') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    rel37_bind_export_sections as _rel37_bind_docx,
+                )
+                _export_sections = _rel37_bind_docx(
+                    _prep_export_sections,
+                    _h2_export_sections,
+                    domain=domain,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(_art_type),
+                    org_name=org_name,
+                    selected_frameworks=_selected_fws_sync,
+                )
+            except Exception:  # noqa: BLE001
+                _export_sections = _h2_export_sections
             if _rel33_risk_sections_d:
                 _export_sections = dict(_rel33_risk_sections_d)
         _export_hash = ''
@@ -84360,8 +84448,25 @@ def api_generate_pdf():
                 _pdf_sections_early = _norm_risk_secs_pe(
                     _split_risk_md_pe(content or '')) or {}
         else:
-            _pdf_sections_early = (
+            _h2_pdf_sections = (
                 _split_strategy_sections_by_h2(content or '') or {})
+            _prep_pdf_sections = dict(
+                (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    rel37_bind_export_sections as _rel37_bind_pdf,
+                )
+                _pdf_sections_early = _rel37_bind_pdf(
+                    _prep_pdf_sections,
+                    _h2_pdf_sections,
+                    domain=domain_pdf,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(_art_type_p),
+                    org_name=org_name_pdf,
+                    selected_frameworks=_selected_fws_pdf,
+                )
+            except Exception:  # noqa: BLE001
+                _pdf_sections_early = _h2_pdf_sections
         _pdf_hash_early = ''
         try:
             _pch = _rel2_backend_callables().get('content_hash')
@@ -85282,6 +85387,53 @@ def api_generate_pdf():
                         route_name='pdf',
                         output_type='pdf',
                     )
+                _prof_sections = dict(_cy22_sections or {})
+                _rel37_prep_secs = dict(
+                    (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative as _rel37_auth_pdf,
+                        rel37_sections_for_professional_render as _rel37_prof,
+                    )
+                    if not _rel37_auth_pdf(_rel37_prep_secs):
+                        import json as _json_rel37_pdf
+                        _rel37_uid = session.get('user_id', 0)
+                        _rel37_sid = _resolve_numeric_strategy_id(
+                            data.get('strategy_id') or _art_id_p,
+                            _rel37_uid)
+                        _rel37_row = get_db().execute(
+                            'SELECT sections_json FROM strategies '
+                            'WHERE id = ? AND user_id = ?',
+                            (_rel37_sid, _rel37_uid),
+                        ).fetchone()
+                        if _rel37_row and _rel37_row['sections_json']:
+                            _rel37_loaded = _json_rel37_pdf.loads(
+                                _rel37_row['sections_json'])
+                            if isinstance(_rel37_loaded, dict):
+                                _rel37_prep_secs = _rel37_loaded
+                    _prof_sections = _rel37_prof(
+                        _rel37_prep_secs,
+                        _prof_sections,
+                        domain=domain_pdf,
+                        lang=lang,
+                        document_type=_rel33_export_document_type(
+                            _art_type_p),
+                        org_name=org_name_pdf,
+                        selected_frameworks=_selected_fws_in,
+                    )
+                except Exception as _rel37_prof_e:  # noqa: BLE001
+                    print(
+                        f'[REL37-PROF] pdf bind failed: {_rel37_prof_e}',
+                        flush=True)
+                _rel37_meta_snap = {}
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        rel37_authority_snapshot as _rel37_snap_meta,
+                    )
+                    _rel37_meta_snap = _rel37_snap_meta(
+                        _rel37_prep_secs or _prof_sections)
+                except Exception:  # noqa: BLE001
+                    _rel37_meta_snap = {}
                 _strategy_doc_model = (
                     _build_professional_strategy_document_model(
                         content,
@@ -85291,8 +85443,10 @@ def api_generate_pdf():
                             'domain':   domain_pdf,
                             'doc_type': doc_type_pdf,
                             'content':  content,
+                            '_rel37_source_sections': (
+                                _rel37_prep_secs or _rel37_meta_snap),
                         },
-                        sections=_cy22_sections or None,
+                        sections=_prof_sections or None,
                         selected_frameworks=_selected_fws_in,
                         lang='ar' if is_arabic else 'en',
                         domain=domain_pdf,
@@ -88564,7 +88718,23 @@ def api_generate_pdf():
             _is_strategy_pdf = False
         if _is_strategy_pdf and content:
             try:
-                _is_frag_b2, _found_b2, _why_b2 = _is_strategy_export_fragment(content)
+                _frag_secs_p = (
+                    (locals().get('_pdf_sections_early') or None)
+                    or (locals().get('_rel33_prep_p') or {}).get('sections')
+                    or data.get('sections')
+                )
+                _is_frag_b2, _found_b2, _why_b2 = _is_strategy_export_fragment(
+                    content,
+                    _frag_secs_p,
+                    domain=domain_pdf,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(
+                        data.get('artifact_type') or 'strategy'),
+                    org_name=org_name_pdf,
+                    selected_frameworks=(
+                        data.get('selected_frameworks')
+                        or data.get('frameworks')),
+                )
             except Exception:
                 _is_frag_b2, _found_b2, _why_b2 = False, set(), ''
             print(
@@ -91748,15 +91918,18 @@ _STRATEGY_SECTION_HEADING_TOKENS = {
     'vision':      ('vision', 'الرؤية'),
     'pillars':     ('pillar', 'الركيزة', 'الركائز'),
     'environment': ('business environment', 'regulatory context',
+                    'environment and drivers',
                     'البيئة', 'السياق التنظيمي'),
     'gaps':        ('gap analysis', 'gap implementation', 'gaps',
+                    'gap assessment',
                     'تحليل الفجوات', 'الفجوات'),
     'roadmap':     ('roadmap', 'phase 1', 'phase 2', 'execution roadmap',
                     'خارطة الطريق', 'المرحلة'),
     'kpis':        ('strategic kpi', 'key performance', 'kpis',
                     'مؤشرات الأداء', 'المؤشرات الرئيسية'),
     'confidence':  ('confidence assessment', 'confidence score',
-                    'risk assessment', 'تقييم الثقة', 'درجة الثقة',
+                    'risk assessment', 'confidence and risk',
+                    'تقييم الثقة', 'درجة الثقة',
                     'تقييم المخاطر'),
 }
 
@@ -91782,6 +91955,18 @@ def _detect_canonical_sections_in_text(text: str):
     if not text:
         return set()
     found = set()
+    token_map = {
+        key: tuple(tokens)
+        for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items()
+    }
+    try:
+        from release_engine_v3.rel37_apply import (
+            rel37_export_heading_token_extras,
+        )
+        for key, extras in rel37_export_heading_token_extras().items():
+            token_map[key] = token_map.get(key, ()) + tuple(extras)
+    except Exception:  # noqa: BLE001
+        pass
     # Normalise once; iterate line-by-line so substring noise inside
     # tables / narrative cannot trip the gate.
     for raw_line in text.split('\n'):
@@ -91793,7 +91978,7 @@ def _detect_canonical_sections_in_text(text: str):
         head = ls.lstrip('#').strip().lower()
         if not head:
             continue
-        for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items():
+        for key, tokens in token_map.items():
             if key in found:
                 continue
             for tok in tokens:
@@ -91822,7 +92007,15 @@ _MIN_CANONICAL_SECTIONS_FOR_EXPORT = 5
 _REQUIRED_LEADING_SECTIONS_FOR_EXPORT = ('vision', 'pillars')
 
 
-def _is_strategy_export_fragment(text: str):
+def _is_strategy_export_fragment(
+        text: str,
+        sections=None,
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks=None):
     """Return (is_fragment: bool, found_sections: set, reason: str).
 
     A strategy export is a "fragment" when EITHER:
@@ -91830,7 +92023,28 @@ def _is_strategy_export_fragment(text: str):
         canonical sections are detected via heading-anchored matching, OR
       * BOTH leading sections (``vision`` and ``pillars``) are missing —
         the precise signature of the kpis+confidence fragment bug.
+
+    REL37-authoritative Data/AI/DT routes use the typed model when it is
+    current and identity-matched. Applied-flag alone never skips this gate.
     """
+    if sections is not None:
+        try:
+            from release_engine_v3.rel37_apply import (
+                rel37_export_completeness_ok as _rel37_export_ok,
+            )
+            _rel37_ok = _rel37_export_ok(
+                sections,
+                domain=domain,
+                lang=lang,
+                document_type=document_type or 'strategy',
+                org_name=org_name,
+                selected_frameworks=selected_frameworks,
+            )
+            if _rel37_ok is True:
+                found = _detect_canonical_sections_in_text(text)
+                return False, found, ''
+        except Exception:  # noqa: BLE001
+            pass
     found = _detect_canonical_sections_in_text(text)
     if len(found) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
         return True, found, (

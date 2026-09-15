@@ -1402,13 +1402,19 @@ GLOBAL_ROADMAP_CATALOG_AR: Dict[str, Tuple[str, ...]] = {
 
 AI_ROADMAP_FAMILY_TOKENS: Dict[str, Tuple[str, ...]] = {
     'ai_governance': ('حوكمة الذكاء الاصطناعي', 'sdaia', 'ai governance'),
-    'model_inventory': ('جرد نماذج', 'جرد النماذج', 'model inventory'),
+    'model_inventory': (
+        'جرد نماذج', 'جرد النماذج', 'model inventory',
+        'model-registry', 'model registry',
+    ),
     'model_risk': ('تقييم مخاطر النماذج', 'مخاطر النماذج', 'model risk'),
     'human_oversight': ('الإشراف البشري', 'إشراف بشري', 'oversight'),
     'bias_testing': ('الانحياز', 'العدالة', 'bias'),
     'explainability': ('قابلية التفسير', 'تفسير', 'explainab'),
     'ai_incident_management': ('حوادث الذكاء الاصطناعي', 'إدارة حوادث', 'incident'),
-    'model_monitoring': ('انحراف النماذج', 'مراقبة انحراف', 'drift'),
+    'model_monitoring': (
+        'انحراف النماذج', 'مراقبة انحراف', 'drift',
+        'model-monitoring', 'model monitoring',
+    ),
     'mlops_lifecycle': ('mlops', 'خط نشر', 'دورة حياة النماذج'),
     'ai_compliance': ('امتثال الذكاء الاصطناعي', 'امتثال', 'compliance'),
 }
@@ -1417,7 +1423,10 @@ DT_ROADMAP_FAMILY_TOKENS: Dict[str, Tuple[str, ...]] = {
     'digital_strategy_alignment': ('خارطة التحول الرقمي', 'التحول الرقمي', 'dga'),
     'enterprise_architecture': ('البنية المؤسسية', 'enterprise architecture'),
     'service_design': ('تصميم الخدمات', 'service design'),
-    'digital_channels': ('القنوات الرقمية', 'بوابة الخدمات', 'بوابة خدمات'),
+    'digital_channels': (
+        'القنوات الرقمية', 'بوابة الخدمات', 'بوابة خدمات',
+        'digital channel', 'digital-service', 'digital service',
+    ),
     'integration_apis': (
         'التكامل', 'api', 'واجهات', 'التشغيل البيني', 'التكامل الحكومي',
         'interoperability'),
