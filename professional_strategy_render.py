@@ -2814,7 +2814,8 @@ def build_roadmap_render_spec(
     for phase_num in (1, 2, 3):
         phase_rows = buckets[phase_num]
         if phase_rows:
-            for filled, meta in phase_rows[:3]:
+            keep_n = len(phase_rows) if not is_cyber_strategy(dcode or domain) else 3
+            for filled, meta in phase_rows[:keep_n]:
                 result.append(filled)
                 result_meta.append(meta)
         else:
@@ -2959,9 +2960,28 @@ def _sanitize_table_spec(
     return out
 
 
+def _rel37_preserve_compiler_kpis_from_model(
+        model: Optional[Dict[str, Any]], lang: str = '') -> bool:
+    """Re-validate attached REL37 authority before skipping Cyber KPI gates."""
+    try:
+        from release_engine_v3.rel37_apply import rel37_skip_cyber_kpi_semantics
+    except Exception:  # noqa: BLE001
+        return False
+    payload = model or {}
+    return rel37_skip_cyber_kpi_semantics(
+        payload.get('_rel37_source_sections') or {},
+        domain=str(payload.get('domain') or ''),
+        lang=lang or str(payload.get('lang') or ''),
+        document_type=str(payload.get('document_type') or 'strategy'),
+        org_name=str(payload.get('org_name') or ''),
+        selected_frameworks=list(payload.get('selected_frameworks') or []),
+    )
+
+
 def _finalize_professional_blocks(
         blocks: Dict[str, Any], lang: str = 'ar',
-        domain: str = '') -> Dict[str, Any]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False) -> Dict[str, Any]:
     """PR-CY48 — last pass over all blocks before PDF/DOCX render."""
     out = deepcopy(blocks)
     for kind, blk in out.items():
@@ -3024,7 +3044,9 @@ def _finalize_professional_blocks(
                      str(fw.get('description') or ''), lang)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
-    out = _normalize_kpi_tables_semantics(out, lang, domain=domain)
+    out = _normalize_kpi_tables_semantics(
+        out, lang, domain=domain,
+        preserve_compiler_kpis=preserve_compiler_kpis)
     if lang == 'ar' or find_arabic_concat_issues(str(out)):
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
     try:
@@ -4025,9 +4047,17 @@ def normalize_roadmap_table(
             'row_meta': row_meta}
 
 
+def _is_on_time_rate_metric(name: str) -> bool:
+    """REL37 compiler rates such as 'On-time closure' are not duration SLAs."""
+    n = (name or '').strip().lower()
+    return bool(re.search(r'\bon[-\s]?time\b', n) or 'في الوقت' in (name or ''))
+
+
 def _is_time_based_metric(name: str) -> bool:
     """True when KPI measures duration/time, not a percentage rate."""
     if _is_soc_detection_metric(name):
+        return False
+    if _is_on_time_rate_metric(name):
         return False
     n = (name or '').strip().lower()
     if any(k in n for k in ('ثغر', 'vulnerability', 'vm')):
@@ -4057,6 +4087,8 @@ def _is_incident_response_metric(name: str) -> bool:
     """PR-CY58 — incident response time metrics (not SOC detection)."""
     n = (name or '').strip().lower()
     ar = name or ''
+    if _is_on_time_rate_metric(name):
+        return False
     if _is_incident_detection_metric(name):
         return False
     return any(k in n for k in (
@@ -4883,8 +4915,11 @@ def emit_kpi_metric_semantics_diag(
 
 def _normalize_kpi_tables_semantics(
         blocks: Dict[str, Any], lang: str = 'ar',
-        domain: str = '') -> Dict[str, Any]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False) -> Dict[str, Any]:
     """PR-CY61 — repair KPI main + formula tables before quality gates."""
+    if preserve_compiler_kpis:
+        return blocks
     domain = domain or str(
         (blocks.get('domain') if isinstance(blocks, dict) else '') or '')
     kpi_blk = blocks.get('kpi_kri_framework') or {}
@@ -4965,7 +5000,8 @@ def _is_freq_or_timeframe(val: str) -> bool:
 
 def split_kpi_tables(
         section_text: str, lang: str = 'ar',
-        domain: str = '') -> List[Dict[str, Any]]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False) -> List[Dict[str, Any]]:
     """PR-CY47 — header-aware KPI/KRI normalization into a summary table and a
     formula/source detail table built from a structured spec (not raw column
     order), so the formula column never holds a frequency and the source
@@ -5016,10 +5052,11 @@ def split_kpi_tables(
             target = _cell(r, i_target)
             formula = _cell(r, i_formula) if i_formula >= 0 else '—'
             source = _cell(r, i_source) if i_source >= 0 else '—'
-            name, kpi_type, target, formula, source, _fam = (
-                _normalize_kpi_semantic_row(
-                    name, kpi_type, target, formula, source, lang,
-                    domain=domain))
+            if not preserve_compiler_kpis:
+                name, kpi_type, target, formula, source, _fam = (
+                    _normalize_kpi_semantic_row(
+                        name, kpi_type, target, formula, source, lang,
+                        domain=domain))
             main_rows.append([
                 idx, name, kpi_type, target, formula, source,
                 _cell(r, i_freq),
@@ -6476,7 +6513,48 @@ def enrich_professional_blocks(
     except Exception:  # noqa: BLE001
         pass
     kpis = _sec('kpi_kri_framework')
-    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n, domain=domain_n)
+    preserve_compiler_kpis = False
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            rel37_authority_snapshot,
+            rel37_skip_cyber_kpi_semantics,
+        )
+        _rel37_identity = {
+            'domain': domain_n,
+            'lang': lang_n,
+            'document_type': str(model.get('document_type') or 'strategy'),
+            'org_name': str(
+                model.get('org_name')
+                or (metadata or {}).get('org_name')
+                or ''),
+            'selected_frameworks': list(
+                model.get('selected_frameworks')
+                or (metadata or {}).get('selected_frameworks')
+                or []),
+        }
+        _meta_rel37 = (metadata or {}).get('_rel37_source_sections')
+        if (
+                not is_rel37_authoritative(content_sections)
+                and is_rel37_authoritative(_meta_rel37)
+                and rel37_skip_cyber_kpi_semantics(
+                    _meta_rel37, **_rel37_identity)):
+            content_sections = dict(_meta_rel37)
+            kpi_raw = (
+                content_sections.get('kpis', '') or kpi_raw)
+        preserve_compiler_kpis = rel37_skip_cyber_kpi_semantics(
+            content_sections, **_rel37_identity)
+        if preserve_compiler_kpis:
+            model['_rel37_source_sections'] = rel37_authority_snapshot(
+                content_sections)
+            if not model.get('org_name'):
+                model['org_name'] = str(
+                    (metadata or {}).get('org_name') or '')
+    except Exception:  # noqa: BLE001
+        preserve_compiler_kpis = False
+    kpi_tables = split_kpi_tables(
+        kpi_raw or kpis, lang_n, domain=domain_n,
+        preserve_compiler_kpis=preserve_compiler_kpis)
     kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
     _main_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_main']
     _formula_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_formula']
@@ -6492,7 +6570,8 @@ def enrich_professional_blocks(
     }
     blocks = _normalize_kpi_tables_semantics(
         {'blocks': blocks, 'domain': domain_n}, lang_n,
-        domain=domain_n)['blocks']
+        domain=domain_n,
+        preserve_compiler_kpis=preserve_compiler_kpis)['blocks']
     try:
         from release_engine_v3.rel34_visible_output_quality import (
             structure_kpi_section_block,
@@ -6581,7 +6660,8 @@ def enrich_professional_blocks(
         }
 
     blocks = _finalize_professional_blocks(
-        blocks, lang_n, domain=domain_n)
+        blocks, lang_n, domain=domain_n,
+        preserve_compiler_kpis=preserve_compiler_kpis)
     try:
         from release_engine_v3.rel35_domain_framework_fidelity import (
             apply_fidelity_to_blocks,
@@ -6638,7 +6718,9 @@ def ensure_strategy_professional_model(
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
         blocks = _finalize_professional_blocks(
-            blocks, lang_n, domain=str(model.get('domain') or domain or ''))
+            blocks, lang_n, domain=str(model.get('domain') or domain or ''),
+            preserve_compiler_kpis=_rel37_preserve_compiler_kpis_from_model(
+                model, lang_n))
         return {**model, 'blocks': blocks}
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
@@ -6975,8 +7057,14 @@ def prcy47_docmodel_professional_checks(
         domain=str((model or {}).get('domain') or ''))
     roadmap_framework_mapping_valid = not _roadmap_violations
 
-    kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)
-    kpi_metric_semantics_valid = not kpi_sem_issues
+    preserve_compiler_kpis = _rel37_preserve_compiler_kpis_from_model(
+        model, lang)
+    if preserve_compiler_kpis:
+        kpi_sem_issues = []
+        kpi_metric_semantics_valid = True
+    else:
+        kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)
+        kpi_metric_semantics_valid = not kpi_sem_issues
     confidence_table_layout_valid = bool(conf_factor_tbl)
     if confidence_table_layout_valid:
         for r in conf_factor_tbl[0].get('rows') or []:
@@ -6994,7 +7082,8 @@ def prcy47_docmodel_professional_checks(
     pdf_confidence_factor_labels_intact = confidence_factor_labels_intact(
         conf_factor_tbl)
     pdf_roadmap_cell_density_valid = roadmap_cell_density_valid(road_rows)
-    pdf_kpi_type_column_valid = kpi_type_column_valid(kpi_main)
+    pdf_kpi_type_column_valid = (
+        True if preserve_compiler_kpis else kpi_type_column_valid(kpi_main))
     final_arabic_spacing_pdf_passed = final_table_cell_arabic_cleanup_passed
 
     # PR-CY53 — PDF table layout hardening gates.

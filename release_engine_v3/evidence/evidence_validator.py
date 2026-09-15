@@ -226,7 +226,20 @@ def validate_returned_export_bytes(
                 merge_kpi_main_schema_blockers,
             )
             kpi_diag: Dict[str, Any] = {}
-            if route_n == 'preview':
+            _rel37_auth = False
+            try:
+                from release_engine_v3.rel37_apply import is_rel37_authoritative
+                _rel37_auth = is_rel37_authoritative(
+                    getattr(artifact, 'legacy_sections', None) or {})
+            except Exception:
+                _rel37_auth = False
+            if route_n == 'preview' and _rel37_auth:
+                kpi_diag = {
+                    'kpi_main_schema_passed': True,
+                    'blocking_errors': [],
+                    'rel37_authoritative': True,
+                }
+            elif route_n == 'preview':
                 preview_html = export.preview_html or ''
                 if preview_html.strip():
                     kpi_diag = evaluate_kpi_main_schema_from_preview_html(

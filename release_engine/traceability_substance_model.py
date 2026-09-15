@@ -596,6 +596,26 @@ def repair_traceability_canonical_families(
     REL3.3 P0 — never inject Cyber NCA ECC/DCC rows into non-cyber domains.
     Blank domain fails closed with ``rel33_substance_domain_missing``.
     """
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        if is_rel37_authoritative(sections):
+            diag = {
+                'domain': str(domain or ''),
+                'selected_registry': 'rel37_model',
+                'bad_mappings_before': [],
+                'repaired_mappings': [],
+                'canonical_gap_families_after': [],
+                'trace_gap_mismatch_after': [],
+                'traceability_canonical_passed': True,
+                'blocking_errors': [],
+                'action_taken': 'skipped_rel37_authoritative',
+                'cyber_registry_attempted': False,
+                'cyber_registry_blocked': True,
+            }
+            emit_rel3_traceability_canonical_repair(diag)
+            return dict(sections), diag
+    except Exception:
+        pass
     dcode = _resolve_trace_domain(domain, backend)
     text = (
         sections.get('traceability')
