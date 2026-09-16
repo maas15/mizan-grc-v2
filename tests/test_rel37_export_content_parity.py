@@ -12,11 +12,19 @@ import os
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+_ENV_KEYS = (
+    'ADMIN_PASSWORD', 'SECRET_KEY', 'DATABASE_PATH', 'DATABASE_URL',
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY',
+    'REL2_SKIP_EXPORT_EVIDENCE', 'REL37_DATA_AI_DT_COMPILER',
+)
+_ENV_BEFORE = {key: os.environ.get(key) for key in _ENV_KEYS}
 
 _TMP = tempfile.mkdtemp(prefix='test_rel37_parity_')
 os.environ['ADMIN_PASSWORD'] = 'test-admin-password'
@@ -26,8 +34,12 @@ os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(_TMP, 'rel37_parity.db'
 os.environ['OPENAI_API_KEY'] = ''
 os.environ['ANTHROPIC_API_KEY'] = ''
 os.environ['GOOGLE_API_KEY'] = ''
-os.environ['REL2_SKIP_EXPORT_EVIDENCE'] = '1'
 os.environ['REL37_DATA_AI_DT_COMPILER'] = '1'
+# Do not set REL2_SKIP_EXPORT_EVIDENCE here. That flag disables REL2/cyber
+# byte-evidence collection and DQS enforcement. This file's required
+# content-parity gate is evaluate_export_parity on returned bytes.
+# A leftover process-wide skip must not leak into later suites.
+os.environ.pop('REL2_SKIP_EXPORT_EVIDENCE', None)
 
 import app as app_mod  # noqa: E402
 
@@ -49,6 +61,7 @@ from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
     arabic_char_count,
     compare_model_to_docx,
     evaluate_export_parity,
+    expected_rows,
     extract_pdf_text,
     inventory_docx_bytes,
     negative_control_arabic_cell_fails,
@@ -61,6 +74,7 @@ from release_engine_v3.rel37_professional_projection import (  # noqa: E402
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections  # noqa: E402
 
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'rel37' / 'data_en_saved_canonical_model.json'
+# Optional archival paths. Mandatory regressions must not read these.
 ORIGINAL_DOCX = ROOT / 'qa_outputs' / 'rel37_07_staging' / 'live' / 'data_en' / 'export.docx'
 ORIGINAL_MODEL = ROOT / 'qa_outputs' / 'rel37_07_staging' / 'live' / 'data_en' / 'saved_canonical_model.json'
 EXPECTED_MODEL_HASH = 'd73047a541e3a640d2ef0246b58ab50465e1a5464554633220cb9bf36f0bbdab'
@@ -92,6 +106,102 @@ def _load_saved_model() -> CanonicalDocument:
     if not model.model_hash:
         model.compute_hashes()
     return model
+
+
+def _docx_package_readable(raw: bytes) -> bool:
+    if not raw.startswith(b'PK'):
+        return False
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            names = zf.namelist()
+            if 'word/document.xml' not in names:
+                return False
+            zf.read('word/document.xml')
+        inventory_docx_bytes(raw)
+    except Exception:
+        return False
+    return True
+
+
+def _docx_from_model(model: CanonicalDocument) -> bytes:
+    """Test-owned readable DOCX built from the tracked fixture model."""
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph(model.vision or model.org_name or 'REL37 fixture')
+    for family, rows in expected_rows(model).items():
+        if family.startswith('_') or not rows:
+            continue
+        cols = max(len(row) for row in rows)
+        table = doc.add_table(rows=len(rows), cols=cols)
+        for ridx, row in enumerate(rows):
+            for cidx, value in enumerate(row):
+                table.cell(ridx, cidx).text = str(value)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _pdf_from_model(model: CanonicalDocument) -> bytes:
+    """Test-owned extractable PDF containing the model's substantive cells."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen.canvas import Canvas
+    buf = io.BytesIO()
+    canv = Canvas(buf, pagesize=A4)
+    width, height = A4
+    y = height - 36
+    canv.setFont('Helvetica', 8)
+    canv.drawString(36, y, f'{model.org_name} {model.domain} {model.lang}')
+    y -= 12
+    for family, rows in expected_rows(model).items():
+        if family.startswith('_'):
+            continue
+        for row in rows:
+            line = ' | '.join(str(cell) for cell in row)
+            if y < 48:
+                canv.showPage()
+                canv.setFont('Helvetica', 8)
+                y = height - 36
+            canv.drawString(36, y, line[:120])
+            y -= 10
+    canv.save()
+    return buf.getvalue()
+
+
+def _mutate_roadmap_deliverable(raw: bytes, model: CanonicalDocument, replacement: str) -> bytes:
+    from docx import Document
+    original = model.roadmap[0].deliverable
+    doc = Document(io.BytesIO(raw))
+    mutated = False
+    target_row = None
+    for table in doc.tables:
+        for row in table.rows:
+            texts = [cell.text for cell in row.cells]
+            if original in texts:
+                for cell in row.cells:
+                    if cell.text == original:
+                        cell.text = replacement
+                        mutated = True
+                        target_row = [c.text for c in row.cells]
+                        break
+            if mutated:
+                break
+        if mutated:
+            break
+    if not mutated:
+        raise AssertionError('roadmap deliverable cell was not found for mutation')
+    if original in (target_row or []) or replacement not in (target_row or []):
+        raise AssertionError('mutation missed the intended deliverable cell')
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def tearDownModule():
+    for key, previous in _ENV_BEFORE.items():
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 def _sections_from_model(model: CanonicalDocument, original_fw=None) -> dict:
@@ -248,6 +358,11 @@ def _compile(domain, lang, org_name, frameworks):
 class BaselineReproductionTests(unittest.TestCase):
     def test_original_evidence_untouched(self):
         self.assertTrue(FIXTURE.exists())
+        self.assertEqual(
+            _load_saved_model().model_hash, EXPECTED_MODEL_HASH)
+        if not ORIGINAL_DOCX.exists() and not ORIGINAL_MODEL.exists():
+            # Archival check is not_run. Absence is not verification.
+            return
         if ORIGINAL_MODEL.exists():
             self.assertEqual(
                 hashlib.sha256(ORIGINAL_MODEL.read_bytes()).digest(),
@@ -258,8 +373,6 @@ class BaselineReproductionTests(unittest.TestCase):
                 'd145425f6cbdd45323c1440355df9e076d2ac3a6332d831a5439b847611e49bd')
             inv = inventory_docx_bytes(ORIGINAL_DOCX.read_bytes())
             self.assertIn(WRONG_REPLACEMENT, inv['text'])
-            # Pillars/KPIs still carry the English deliverable; the defect is
-            # the roadmap-cell substitution, not a document-wide deletion.
             self.assertIn('Approved NDMO policy', inv['text'])
             self.assertTrue(any(
                 WRONG_REPLACEMENT in ' | '.join(row)
@@ -431,18 +544,105 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_source_hash_does_not_override_divergent_docx(self):
         model = _load_saved_model()
+        before_hash = model.model_hash
+        preview = model_to_markdown(model)
+        matching_docx = _docx_from_model(model)
+        matching_pdf = _pdf_from_model(model)
+        self.assertTrue(_docx_package_readable(matching_docx))
+        self.assertTrue(matching_docx.startswith(b'PK'))
+        self.assertTrue(matching_pdf.startswith(b'%PDF'))
+        self.assertGreater(len(matching_docx), 64)
+        positive = evaluate_export_parity(
+            model=model,
+            persist_ok=True,
+            download_ok=True,
+            parsed_ok=True,
+            preview_text=preview,
+            docx_bytes=matching_docx,
+            pdf_bytes=matching_pdf,
+            source_hash=before_hash,
+        )
+        self.assertEqual(positive.content_parity, 'passed', positive.blockers)
+        self.assertEqual(positive.language_correctness, 'passed', positive.blockers)
+        self.assertFalse(any(
+            item.startswith('pdf_') or item.startswith('docx_bytes')
+            for item in positive.blockers))
+        self.assertEqual(model.compute_model_hash(), before_hash)
+
+        mutated = _mutate_roadmap_deliverable(
+            matching_docx, model, 'Approved NDMO framework charter')
+        self.assertTrue(_docx_package_readable(mutated))
+        inv = inventory_docx_bytes(mutated)
+        self.assertIn('Approved NDMO framework charter', inv['text'])
+        self.assertTrue(any(
+            'Approved NDMO framework charter' in ' | '.join(row)
+            and model.roadmap[0].initiative in ' | '.join(row)
+            for table in inv['tables'] for row in table
+        ))
+        docx_only = compare_model_to_docx(model, mutated)
+        self.assertTrue(
+            any(item.startswith('docx_row_field_mismatch:roadmap:0')
+                for item in docx_only),
+            docx_only)
+
         result = evaluate_export_parity(
             model=model,
             persist_ok=True,
             download_ok=True,
             parsed_ok=True,
-            preview_text=model_to_markdown(model),
-            docx_bytes=ORIGINAL_DOCX.read_bytes() if ORIGINAL_DOCX.exists() else b'PK',
-            pdf_bytes=b'',
-            source_hash=model.model_hash,
+            preview_text=preview,
+            docx_bytes=mutated,
+            pdf_bytes=matching_pdf,
+            source_hash=before_hash,
         )
-        self.assertEqual(result.content_parity, 'failed')
+        self.assertEqual(result.content_parity, 'failed', result.blockers)
+        self.assertTrue(
+            any(item.startswith('docx_row_field_mismatch:roadmap:0')
+                for item in result.blockers),
+            result.blockers)
+        self.assertFalse(any(
+            item in result.blockers for item in (
+                'pdf_bytes_missing', 'pdf_extraction_unreliable',
+                'docx_bytes_missing', 'download_or_parse_failed')),
+            result.blockers)
+        self.assertEqual(result.details.get('pdf_blockers'), [])
+        self.assertEqual(result.details.get('preview_blockers'), [])
         self.assertTrue(result.details['source_hash_does_not_override_content'])
+        self.assertTrue(result.details['source_hash_matches_model'])
+        self.assertEqual(model.compute_model_hash(), before_hash)
+        self.assertEqual(result.model_hash, before_hash)
+
+    def test_malformed_docx_is_not_accepted(self):
+        model = _load_saved_model()
+        matching_pdf = _pdf_from_model(model)
+        raw = b'PK'
+        with self.assertRaises(zipfile.BadZipFile):
+            inventory_docx_bytes(raw)
+        raised = None
+        result = None
+        try:
+            result = evaluate_export_parity(
+                model=model,
+                persist_ok=True,
+                download_ok=True,
+                parsed_ok=True,
+                preview_text=model_to_markdown(model),
+                docx_bytes=raw,
+                pdf_bytes=matching_pdf,
+                source_hash=model.model_hash,
+            )
+        except zipfile.BadZipFile as exc:
+            raised = exc
+        if raised is not None:
+            self.assertIsInstance(raised, zipfile.BadZipFile)
+            self.assertIsNone(result)
+        else:
+            self.assertIsNotNone(result)
+            self.assertNotEqual(result.content_parity, 'passed')
+            self.assertNotEqual(result.rendering_readability, 'passed')
+
+    def test_process_does_not_set_rel2_evidence_skip(self):
+        self.assertNotEqual(os.environ.get('REL2_SKIP_EXPORT_EVIDENCE'), '1')
 
     def test_pdf_zero_arabic_without_expected_text_fails(self):
         model = _load_saved_model()

@@ -346,12 +346,20 @@ def evaluate_export_parity(
 
     if docx_bytes:
         result.file_sha256 = hashlib.sha256(docx_bytes).hexdigest()
+    matching_hash = bool(
+        source_hash and model.model_hash and source_hash == model.model_hash)
+    docx_content_failed = any(
+        item.startswith('docx_row_field_mismatch')
+        or item.startswith('docx_missing_')
+        for item in docx_blockers)
     result.details = {
         'preview_blockers': preview_blockers,
         'docx_blockers': docx_blockers,
         'pdf_blockers': pdf_blockers,
         'pdf_meta': pdf_meta,
-        'source_hash_does_not_override_content': True,
+        'source_hash_matches_model': matching_hash,
+        'source_hash_does_not_override_content': bool(
+            matching_hash and docx_content_failed),
     }
     result.blockers = list(dict.fromkeys(result.blockers))
     return result
