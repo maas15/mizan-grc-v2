@@ -265,6 +265,56 @@ def rel37_request_model_consistent(
     return (not errors), errors
 
 
+def rel37_guide_structures_ok(
+        sections: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Complete typed gap/KPI guides with 1:1 row associations."""
+    model = load_model(sections)
+    if model is None:
+        return ['rel37_model_unreadable']
+    errors: List[str] = []
+    if model.gaps and not model.gap_guides:
+        errors.append('rel37_gap_guides_missing')
+    if model.kpis and not model.kpi_guides:
+        errors.append('rel37_kpi_guides_missing')
+    errors.extend(model.guide_association_blockers())
+    return list(dict.fromkeys(errors))
+
+
+def rel37_guide_completeness_persist_result(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Generation-time guide gate. Does not require a saved strategy_id.
+
+    None — not a REL37-authoritative generation; caller keeps legacy regex.
+    [] — typed model is current, identity-matched, and guides are complete.
+    Non-empty — fail closed. ``_rel37_applied`` alone is not trusted.
+    """
+    if not is_rel37_authoritative(sections):
+        return None
+    model = load_model(sections)
+    if model is None:
+        return ['rel37_model_unreadable']
+    blockers = list(model.blockers or model.validate() or [])
+    _ok, identity = rel37_request_model_consistent(
+        sections,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        org_name=org_name,
+        selected_frameworks=selected_frameworks,
+    )
+    blockers.extend(identity)
+    blockers.extend(rel37_guide_structures_ok(sections))
+    return list(dict.fromkeys(blockers))
+
+
 def rel37_confidence_risk_structures_ok(
         sections: Optional[Dict[str, Any]],
 ) -> List[str]:

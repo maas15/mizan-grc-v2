@@ -41,6 +41,22 @@ def _md_guide(heading: str, lang: str, steps) -> str:
 def model_to_sections(model: CanonicalDocument) -> Dict[str, str]:
     lang = model.lang
     so_table = _md_table('so', lang, [r.cells() for r in model.strategic_objectives])
+    pdpl_selected = any(
+        str(item or '').strip().lower() in ('pdpl',)
+        for item in (model.selected_frameworks or ())
+    )
+    if lang == 'ar':
+        pdpl_line = (
+            'يغطي هذا القسم حقوق صاحب البيانات وحق الوصول وتصنيف البيانات '
+            'الشخصية وإخطار الخروقات وإدارة الموافقات.'
+        )
+    else:
+        pdpl_line = (
+            'This section covers data subject rights, access request handling, '
+            'personal data classification, data breach notification, and '
+            'consent management.'
+        )
+    pdpl_needed = model.domain == 'data' and pdpl_selected
     vision = '\n\n'.join([
         _section_heading('vision', lang),
         model.vision,
@@ -60,6 +76,8 @@ def model_to_sections(model: CanonicalDocument) -> Dict[str, str]:
         ]
         if inits:
             pillar_parts.append(_md_table('pillar', lang, inits))
+    if pdpl_needed:
+        pillar_parts.append(pdpl_line)
     pillars = '\n\n'.join(pillar_parts)
 
     environment = '\n\n'.join([
@@ -76,12 +94,17 @@ def model_to_sections(model: CanonicalDocument) -> Dict[str, str]:
     gap_parts.append(_md_table('gap', lang, [r.cells() for r in model.gaps]))
     for guide in model.gap_guides:
         gap_parts.append(_md_guide(guide.heading, lang, guide.steps))
+    if pdpl_needed:
+        gap_parts.append(pdpl_line)
     gaps = '\n\n'.join(gap_parts)
 
-    roadmap = '\n\n'.join([
+    roadmap_parts = [
         _section_heading('roadmap', lang),
         _md_table('roadmap', lang, [r.cells() for r in model.roadmap]),
-    ])
+    ]
+    if pdpl_needed:
+        roadmap_parts.append(pdpl_line)
+    roadmap = '\n\n'.join(roadmap_parts)
 
     kpi_parts = [
         _section_heading('kpis', lang),
@@ -94,6 +117,8 @@ def model_to_sections(model: CanonicalDocument) -> Dict[str, str]:
     kpi_parts.append(KPI_GUIDES_BLOCK[lang])
     for guide in model.kpi_guides:
         kpi_parts.append(_md_guide(guide.heading, lang, guide.steps))
+    if pdpl_needed:
+        kpi_parts.append(pdpl_line)
     kpis = '\n\n'.join(kpi_parts)
 
     if lang == 'ar':
@@ -101,15 +126,20 @@ def model_to_sections(model: CanonicalDocument) -> Dict[str, str]:
         risk_head = '### سجل المخاطر وخطة المعالجة'
         gov_headers = ('الدور', 'المسؤولية', 'التكرار', 'المالك')
         conf_note = model.confidence_justification
+        if 'مبررات التقييم' not in conf_note and 'مبررات درجة الثقة' not in conf_note:
+            conf_note = f'مبررات التقييم: {conf_note}'
     else:
         score_line = f'Confidence Score: {model.confidence_score}'
         risk_head = '### Risk register and treatment plan'
         gov_headers = ('Role', 'Responsibility', 'Cadence', 'Owner')
         conf_note = model.confidence_justification
+        if 'Score Justification' not in conf_note and 'Confidence Rationale' not in conf_note:
+            conf_note = f'Score Justification: {conf_note}'
     confidence = '\n\n'.join([
         _section_heading('confidence', lang),
         score_line,
         conf_note,
+        pdpl_line if pdpl_needed else '',
         _md_table('csf', lang, [r.cells() for r in model.confidence]),
         risk_head,
         _md_table('risk', lang, [r.cells() for r in model.risks]),

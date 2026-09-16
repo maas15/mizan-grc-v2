@@ -377,6 +377,45 @@ class CanonicalDocument:
             parts.extend(row.cells())
         return '\n'.join(parts)
 
+    def guide_association_blockers(self) -> List[str]:
+        """1:1 guide-to-row numbers and required non-empty steps."""
+        blockers: List[str] = []
+
+        def _assoc(rows, guides, kind: str) -> None:
+            row_ids = [int(row.number) for row in rows]
+            guide_ids = [int(guide.number) for guide in guides]
+            if len(guide_ids) != len(set(guide_ids)):
+                blockers.append(f'{kind}_guide_duplicate_association')
+            extra = set(guide_ids) - set(row_ids)
+            missing = set(row_ids) - set(guide_ids)
+            if extra:
+                blockers.append(f'{kind}_guide_orphan_association')
+            if missing:
+                blockers.append(f'{kind}_guide_missing_row_association')
+            wrong = [
+                gid for gid, row_id in zip(guide_ids, row_ids)
+                if gid != row_id
+            ]
+            if wrong and not extra and not missing and len(guide_ids) == len(row_ids):
+                blockers.append(f'{kind}_guide_wrong_row_association')
+            for guide in guides:
+                if not guide.steps:
+                    blockers.append(f'{kind}_guide_steps_missing:{guide.number}')
+                    continue
+                for step in guide.steps:
+                    if (
+                        not str(step.action or '').strip()
+                        or not str(step.output or '').strip()
+                    ):
+                        blockers.append(
+                            f'{kind}_guide_step_incomplete:'
+                            f'{guide.number}:{step.step}'
+                        )
+
+        _assoc(self.gaps, self.gap_guides, 'gap')
+        _assoc(self.kpis, self.kpi_guides, 'kpi')
+        return blockers
+
     def validate(self) -> List[str]:
         blockers: List[str] = []
         if self.schema_version != SCHEMA_VERSION:
@@ -400,6 +439,7 @@ class CanonicalDocument:
         if len(self.gap_guides) != len(self.gaps):
             blockers.append(
                 f'gap_guide_count_mismatch:{len(self.gap_guides)}:{len(self.gaps)}')
+        blockers.extend(self.guide_association_blockers())
         missing = self.missing_families()
         if missing:
             blockers.append('coverage_missing:' + ','.join(missing))

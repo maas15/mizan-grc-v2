@@ -67495,10 +67495,70 @@ The confidence score is based on a comprehensive assessment of the organization'
             'score_justification_repair_failed': 'Score Justification',
             'confidence_section_missing_after_repair': 'Confidence Section',
         } if doc_subtype != 'board' else {}
+        # REL37 generation-time authority: validate the in-progress model
+        # (no saved strategy_id required). Legacy markdown grammar must
+        # not reject a complete typed guide set, and later repair text
+        # must not replace that model as the persist source.
+        _rel37_typed_guides = None
+        try:
+            from release_engine_v3.rel37_apply import (
+                load_model as _rel37_load_guides,
+                rel37_guide_completeness_persist_result as _rel37_guide_gate,
+            )
+            from release_engine_v3.rel37_live_attach import (
+                stamp_rel37_keys as _rel37_stamp_guides,
+            )
+            _rel37_typed_guides = _rel37_guide_gate(
+                sections,
+                domain=_dcode or domain,
+                lang=lang,
+                document_type=_document_type,
+                org_name=str(
+                    locals().get('org_name')
+                    or (data or {}).get('org_name')
+                    or ''),
+                selected_frameworks=_frameworks_raw,
+            )
+            if _rel37_typed_guides:
+                print(
+                    '[STRATEGY-GATE] save_decision=BLOCKED '
+                    'reason=rel37_guide_completeness '
+                    f'issues={list(_rel37_typed_guides)}',
+                    flush=True,
+                )
+                return jsonify({
+                    'success': False,
+                    'strategy_id': None,
+                    'error': 'rel37_model_validation_failed',
+                    'error_code': 'rel37_model_validation_failed',
+                    'blockers': list(_rel37_typed_guides),
+                }), 422
+            if _rel37_typed_guides is not None:
+                _rel37_guide_model = _rel37_load_guides(sections)
+                if _rel37_guide_model is not None:
+                    sections = _rel37_stamp_guides(
+                        sections, _rel37_guide_model)
+                    content = (
+                        sections.get('_rel37_markdown')
+                        or sections.get('content')
+                        or content
+                    )
+                _quality_issues_post = [
+                    i for i in (_quality_issues_post or [])
+                    if i not in _core_tech_required
+                ]
+        except Exception as _rel37_guide_gate_exc:  # noqa: BLE001
+            print(
+                '[STRATEGY-GATE] rel37_guide_gate_error '
+                f'{_rel37_guide_gate_exc!r}',
+                flush=True,
+            )
+            _rel37_typed_guides = None
         _remaining_core = _prcy65_critical_core_tech_issue_tags(
             _quality_issues_post)
         if (doc_subtype != 'board' and _remaining_core
-                and _dcode != 'cyber'):
+                and _dcode != 'cyber'
+                and _rel37_typed_guides is None):
             _human = ', '.join(_core_tech_required[k] for k in sorted(_remaining_core))
             print(f"[STRATEGY] Refusing save — Technical Strategy missing mandatory "
                   f"sections after repair: {sorted(_remaining_core)}", flush=True)
@@ -73808,6 +73868,35 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     _pr5b9y_is_data_pdpl = (
                                         'PDPL' in _pr5b9y_resolved)
                                 if _pr5b9y_is_data_pdpl:
+                                    try:
+                                        from release_engine_v3.rel37_apply import (
+                                            load_model as _rel37_pdpl_load,
+                                            rel37_guide_completeness_persist_result
+                                            as _rel37_pdpl_guides,
+                                        )
+                                        from release_engine_v3.rel37_live_attach import (
+                                            stamp_rel37_keys as _rel37_pdpl_stamp,
+                                        )
+                                        _rel37_pdpl_ok = _rel37_pdpl_guides(
+                                            sections,
+                                            domain=_dcode or domain,
+                                            lang=lang,
+                                            document_type=_document_type,
+                                            org_name=str(
+                                                locals().get('org_name')
+                                                or (data or {}).get('org_name')
+                                                or ''),
+                                            selected_frameworks=_frameworks_raw,
+                                        )
+                                        if _rel37_pdpl_ok is not None and not _rel37_pdpl_ok:
+                                            _rel37_pdpl_model = _rel37_pdpl_load(
+                                                sections)
+                                            if _rel37_pdpl_model is not None:
+                                                sections = _rel37_pdpl_stamp(
+                                                    sections, _rel37_pdpl_model)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                if _pr5b9y_is_data_pdpl:
                                     _pr5b9y_remaining_before = (
                                         _compute_missing_selected_framework_coverage(
                                             sections, _frameworks_raw,
@@ -76958,6 +77047,51 @@ The confidence score is based on a comprehensive assessment of the organization'
                     )
                 except Exception:  # noqa: BLE001
                     _rel37_skip_legacy_save = False
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        load_model as _rel37_load_post,
+                        rel37_guide_completeness_persist_result as _rel37_guide_post,
+                    )
+                    from release_engine_v3.rel37_live_attach import (
+                        stamp_rel37_keys as _rel37_stamp_post,
+                    )
+                    _rel37_post_guides = _rel37_guide_post(
+                        sections,
+                        domain=_dcode or domain,
+                        lang=lang,
+                        document_type=_document_type,
+                        org_name=str(
+                            locals().get('org_name')
+                            or (data or {}).get('org_name')
+                            or ''),
+                        selected_frameworks=_frameworks_raw,
+                    )
+                    if _rel37_post_guides:
+                        print(
+                            '[STRATEGY-GATE] save_decision=BLOCKED '
+                            'reason=rel37_guide_completeness_post_normalization '
+                            f'issues={list(_rel37_post_guides)}',
+                            flush=True,
+                        )
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'error_code': 'rel37_model_validation_failed',
+                            'blockers': list(_rel37_post_guides),
+                        }), 422
+                    if _rel37_post_guides is not None:
+                        _rel37_post_model = _rel37_load_post(sections)
+                        if _rel37_post_model is not None:
+                            sections = _rel37_stamp_post(
+                                sections, _rel37_post_model)
+                        _rel37_skip_legacy_save = True
+                except Exception as _rel37_post_guide_exc:  # noqa: BLE001
+                    print(
+                        '[STRATEGY-GATE] rel37_guide_post_gate_error '
+                        f'{_rel37_post_guide_exc!r}',
+                        flush=True,
+                    )
                 if (doc_subtype != 'board' and _remaining_so_final
                         and not _skip_so_final
                         and not _rel37_skip_legacy_save):

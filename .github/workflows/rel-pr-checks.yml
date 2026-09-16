@@ -66,6 +66,7 @@ jobs:
             tests/test_rel37_preview_section_contract.py \
             tests/test_rel37_framework_label_canonicalization.py \
             tests/test_rel37_export_content_parity.py \
+            tests/test_rel37_guide_completeness_persist.py \
             -q --tb=short
 
       - name: pytest REL37 sync PDF ownership
