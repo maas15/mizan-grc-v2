@@ -14822,6 +14822,8 @@ def _build_professional_strategy_document_model(
             section_splitter=_split_strategy_sections_by_h2,
         )
     except Exception as _p41_e:  # noqa: BLE001
+        if _p41_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+            raise
         print(
             f'[PR-CY41] professional model fallback to base model: {_p41_e}',
             flush=True,
@@ -14846,6 +14848,8 @@ def _build_professional_strategy_document_model(
             return enrich_professional_blocks(
                 base, content_sections, metadata or {}, lang)
         except Exception as _enrich_e:  # noqa: BLE001
+            if _enrich_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                raise
             print(
                 f'[PR-CY41] enrich fallback failed: {_enrich_e}',
                 flush=True,
@@ -14864,7 +14868,9 @@ def _build_professional_strategy_document_model(
                     domain=domain,
                     section_splitter=_split_strategy_sections_by_h2,
                 )
-            except Exception:
+            except Exception as _ensure_e:
+                if _ensure_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                    raise
                 return base
 
 
@@ -14894,13 +14900,19 @@ def _apply_arabic_spacing_fixes(text):
         return text or ''
 
 
-def _prepare_final_render_text(text, lang='ar'):
+def _prepare_final_render_text(text, lang='ar', preserve_model_values=False):
     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
     try:
         from professional_strategy_render import prepare_final_render_text
-        out = prepare_final_render_text(text or '', lang)
+        out = prepare_final_render_text(
+            text or '', lang,
+            preserve_model_values=preserve_model_values)
     except Exception:  # noqa: BLE001
         out = text or ''
+    # REL37 authoritative cells keep persisted values. The Cyber family-id
+    # stripper must not blank a validated framework/family code.
+    if preserve_model_values:
+        return out
     # REL34 — visible-export only: strip family:* and apply Arabic cleanup.
     # In-memory validators still see internal stamps / pre-cleanup tokens.
     try:
@@ -51878,14 +51890,20 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             return model_cache[cache_key]
         # REL3.3 P0 — never rebrand a blank domain as cyber; prefer the
         # caller-provided domain, then the backend artifact domain.
+        _meta = dict(metadata or {})
+        if isinstance(sections, dict) and not _meta.get('_rel37_source_sections'):
+            _meta['_rel37_source_sections'] = {
+                k: v for k, v in sections.items()
+                if str(k).startswith('_rel37_')
+            } or sections
         model = _build_professional_strategy_document_model(
             markdown,
-            metadata=metadata,
+            metadata=_meta,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
             domain=domain or backend.get('domain') or (
-                (metadata or {}).get('domain')),
+                _meta.get('domain')),
         )
         model_cache[cache_key] = model
         return model
@@ -52009,6 +52027,29 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             meta = dict(metadata) if isinstance(metadata, dict) else {}
             fws = selected_frameworks or meta.get('selected_frameworks') or []
             fw_labels = [_rel2_framework_display(f) for f in fws if f]
+            _rel37_src = {}
+            if isinstance(sections, dict):
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative as _rel37_auth_be,
+                        rel37_authority_snapshot as _rel37_snap_be,
+                        recall_rel37_export_snapshot as _rel37_recall_be,
+                    )
+                    _recalled = _rel37_recall_be(
+                        meta.get('strategy_id') or meta.get('artifact_id'),
+                        model_hash=meta.get('canonical_hash')
+                        or meta.get('model_hash'))
+                    if not _rel37_auth_be(sections) and _rel37_auth_be(_recalled):
+                        sections = dict(_recalled)
+                    if _rel37_auth_be(sections):
+                        _rel37_src = dict(sections)
+                    else:
+                        _rel37_src = _rel37_snap_be(sections) or dict(_recalled)
+                except Exception:  # noqa: BLE001
+                    _rel37_src = {
+                        k: v for k, v in (sections or {}).items()
+                        if str(k).startswith('_rel37_')
+                    }
             _dtype = str(meta.get('document_type') or 'strategy').strip().lower()
             _doc_type_labels = {
                 'strategy': 'Strategy Document',
@@ -52049,9 +52090,11 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                     'artifact_type': _dtype,
                     'document_type': _dtype,
                     'generation_mode': 'drafting',
-                    'selected_frameworks': (
-                        fw_labels or ['NCA ECC', 'NCA DCC']),
+                    'selected_frameworks': fw_labels or list(fws or []),
                     'sections': sections or {},
+                    '_rel37_source_sections': _rel37_src,
+                    'strategy_id': meta.get('strategy_id') or '',
+                    'artifact_id': meta.get('artifact_id') or '',
                     '_rel2_evidence_collect': True,
                     '_rel26_internal': True,
                     '_rel31_evidence_internal': True,
@@ -82555,6 +82598,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 flush=True,
             )
         except Exception as _dmdl_e:
+            if _dmdl_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                raise
             print(f'[STRATEGY-DOC-MODEL] docx non-fatal: {_dmdl_e}',
                   flush=True)
             _docx_doc_model = None
@@ -82669,8 +82714,12 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             return
         try:
             _lang = 'ar' if is_arabic else 'en'
-            header = [_prepare_final_render_text(h, _lang) for h in header]
-            rows = [[_prepare_final_render_text(c, _lang) for c in r]
+            _keep_rel37 = bool(
+                (_docx_doc_model or {}).get('rel37_content_authority'))
+            header = [_prepare_final_render_text(
+                h, _lang, preserve_model_values=_keep_rel37) for h in header]
+            rows = [[_prepare_final_render_text(
+                c, _lang, preserve_model_values=_keep_rel37) for c in r]
                     for r in rows]
             tbl = doc.add_table(rows=len(rows) + 1, cols=len(header))
             tbl.alignment = (WD_TABLE_ALIGNMENT.RIGHT
@@ -82791,9 +82840,16 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             if blk.get('title'):
                 _docx_pro_heading(blk.get('title', ''))
             _gv_rows = blk.get('rows') or []
+            _gv_hdr = [str(h) for h in (blk.get('header') or []) if str(h).strip()]
             if _gv_rows:
                 _gv_max_cols = max((len(r) for r in _gv_rows), default=3)
-                if _gv_max_cols >= 5:
+                if _gv_hdr and len(_gv_hdr) >= 4:
+                    _ncols = len(_gv_hdr)
+                    _docx_pro_grid_table(
+                        _gv_hdr,
+                        [[r[i] if len(r) > i else '' for i in range(_ncols)]
+                         for r in _gv_rows])
+                elif _gv_max_cols >= 5:
                     _hdr = (['الدور', 'نطاق المسؤولية', 'المساءلة',
                              'التقارير / التصعيد', 'الإطار المرتبط']
                             if is_arabic else
@@ -82802,6 +82858,14 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     _docx_pro_grid_table(
                         _hdr,
                         [[r[i] if len(r) > i else '' for i in range(5)]
+                         for r in _gv_rows])
+                elif _gv_max_cols >= 4:
+                    _hdr = (['الدور', 'المسؤولية', 'التكرار', 'المالك']
+                            if is_arabic else
+                            ['Role', 'Responsibility', 'Cadence', 'Owner'])
+                    _docx_pro_grid_table(
+                        _hdr,
+                        [[r[i] if len(r) > i else '' for i in range(4)]
                          for r in _gv_rows])
                 else:
                     _hdr = (['الدور', 'النطاق', 'المساءلة'] if is_arabic
@@ -84450,8 +84514,18 @@ def api_generate_pdf():
         else:
             _h2_pdf_sections = (
                 _split_strategy_sections_by_h2(content or '') or {})
-            _prep_pdf_sections = dict(
-                (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    prefer_rel37_authority_candidate as _rel37_pref_pdf,
+                )
+                _prep_pdf_sections = _rel37_pref_pdf(
+                    (locals().get('_rel33_prep_p') or {}).get('sections'),
+                    data.get('_rel37_source_sections'),
+                    data.get('sections'),
+                )
+            except Exception:  # noqa: BLE001
+                _prep_pdf_sections = dict(
+                    (locals().get('_rel33_prep_p') or {}).get('sections') or {})
             try:
                 from release_engine_v3.rel37_apply import (
                     rel37_bind_export_sections as _rel37_bind_pdf,
@@ -84651,7 +84725,10 @@ def api_generate_pdf():
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.enums import TA_RIGHT, TA_LEFT, TA_CENTER
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            PageBreak, Flowable,
+        )
         from reportlab.lib.units import inch, cm
         from reportlab.lib import colors
         from reportlab.pdfbase import pdfmetrics
@@ -85194,7 +85271,11 @@ def api_generate_pdf():
                 if isinstance(_ev_sections, dict) and _ev_sections:
                     _cy22_sections = {
                         k: v for k, v in _ev_sections.items()
-                        if isinstance(v, str) and not str(k).startswith('_')}
+                        if (
+                            str(k).startswith('_rel37_')
+                            or (isinstance(v, str)
+                                and not str(k).startswith('_'))
+                        )}
                 else:
                     _cy22_sections = (
                         _split_strategy_sections_by_h2(content) or {})
@@ -85388,8 +85469,19 @@ def api_generate_pdf():
                         output_type='pdf',
                     )
                 _prof_sections = dict(_cy22_sections or {})
-                _rel37_prep_secs = dict(
-                    (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        prefer_rel37_authority_candidate as _rel37_pref_prof,
+                    )
+                    _rel37_prep_secs = _rel37_pref_prof(
+                        (locals().get('_rel33_prep_p') or {}).get('sections'),
+                        data.get('_rel37_source_sections'),
+                        _cy22_sections,
+                        data.get('sections'),
+                    )
+                except Exception:  # noqa: BLE001
+                    _rel37_prep_secs = dict(
+                        (locals().get('_rel33_prep_p') or {}).get('sections') or {})
                 try:
                     from release_engine_v3.rel37_apply import (
                         is_rel37_authoritative as _rel37_auth_pdf,
@@ -85401,16 +85493,23 @@ def api_generate_pdf():
                         _rel37_sid = _resolve_numeric_strategy_id(
                             data.get('strategy_id') or _art_id_p,
                             _rel37_uid)
-                        _rel37_row = get_db().execute(
-                            'SELECT sections_json FROM strategies '
-                            'WHERE id = ? AND user_id = ?',
-                            (_rel37_sid, _rel37_uid),
-                        ).fetchone()
-                        if _rel37_row and _rel37_row['sections_json']:
-                            _rel37_loaded = _json_rel37_pdf.loads(
-                                _rel37_row['sections_json'])
-                            if isinstance(_rel37_loaded, dict):
-                                _rel37_prep_secs = _rel37_loaded
+                        if not _rel37_sid:
+                            try:
+                                _rel37_sid = int(
+                                    data.get('strategy_id') or _art_id_p or 0)
+                            except (TypeError, ValueError):
+                                _rel37_sid = 0
+                        if _rel37_sid:
+                            _rel37_row = get_db().execute(
+                                'SELECT sections_json FROM strategies '
+                                'WHERE id = ? AND user_id = ?',
+                                (_rel37_sid, _rel37_uid),
+                            ).fetchone()
+                            if _rel37_row and _rel37_row['sections_json']:
+                                _rel37_loaded = _json_rel37_pdf.loads(
+                                    _rel37_row['sections_json'])
+                                if isinstance(_rel37_loaded, dict):
+                                    _rel37_prep_secs = _rel37_loaded
                     _prof_sections = _rel37_prof(
                         _rel37_prep_secs,
                         _prof_sections,
@@ -85479,10 +85578,14 @@ def api_generate_pdf():
                     f'frameworks='
                     f'{_strategy_doc_model.get("selected_frameworks", [])} '
                     f'has_traceability='
-                    f'{bool(_strategy_doc_model["blocks"]["traceability_matrix"]["rows"])}',
+                    f'{bool(_strategy_doc_model["blocks"]["traceability_matrix"]["rows"])} '
+                    f'rel37_authority='
+                    f'{bool(_strategy_doc_model.get("rel37_content_authority"))}',
                     flush=True,
                 )
             except Exception as _mdl_e:
+                if _mdl_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                    raise
                 print(f'[STRATEGY-DOC-MODEL] non-fatal: {_mdl_e}', flush=True)
                 _strategy_doc_model = None
 
@@ -85783,6 +85886,79 @@ def api_generate_pdf():
             leading=14, spaceAfter=8,
             alignment=TA_RIGHT if is_arabic else TA_LEFT,
         )
+        _rel37_keep = bool(
+            (_strategy_doc_model or {}).get('rel37_content_authority')
+            or (_strategy_doc_model or {}).get('_rel37_source_sections'))
+        if _rel37_keep and not is_arabic:
+            for _sty in (_pro_label_sty, _pro_value_sty, _pro_body_sty):
+                _sty.wordWrap = None
+                _sty.splitLongWords = 0
+
+        class _Rel37ExtractableCell(Flowable):
+            """Draw shaped Arabic, plus extractable logical Unicode.
+
+            Visual reshape/bidi stays on the page. Extractors recover the
+            persisted logical string via PDF ActualText (UTF-16BE).
+            """
+
+            def __init__(self, logical, visual, font_name=None, font_size=None):
+                Flowable.__init__(self)
+                self._logical = str(logical or '').replace('\u00a0', ' ')
+                self._visual = visual
+                self._font_name = font_name
+                self._font_size = font_size
+
+            def wrap(self, availWidth, availHeight):
+                width, height = self._visual.wrap(availWidth, availHeight)
+                self.width, self.height = width, height
+                return width, height
+
+            def draw(self):
+                canv = self.canv
+                marked = False
+                logical = self._logical
+                if logical:
+                    try:
+                        hex_text = (
+                            'FEFF'
+                            + logical.encode('utf-16-be').hex().upper())
+                        canv._code.append(
+                            f'/Span <</ActualText <{hex_text}>>> BDC')
+                        marked = True
+                    except Exception:
+                        marked = False
+                    canv.saveState()
+                    try:
+                        if hasattr(canv, 'setTextRenderMode'):
+                            canv.setTextRenderMode(3)
+                        else:
+                            canv._code.append('3 Tr')
+                        font = self._font_name or 'Helvetica'
+                        size = float(self._font_size or 8)
+                        try:
+                            canv.setFont(font, size)
+                        except Exception:
+                            canv.setFont('Helvetica', size)
+                        y = max(float(getattr(self, 'height', size) or size) - size, 0)
+                        canv.drawString(0, y, logical)
+                    except Exception:
+                        pass
+                    canv.restoreState()
+                self._visual.drawOn(canv, 0, 0)
+                if marked:
+                    try:
+                        canv._code.append('EMC')
+                    except Exception:
+                        pass
+
+        def _rel37_has_ar(value):
+            return any('\u0600' <= ch <= '\u06FF' for ch in str(value or ''))
+
+        def _extractable_flow(logical, visual, font_name=None, font_size=None):
+            if (_rel37_keep and is_arabic and _rel37_has_ar(logical)):
+                return _Rel37ExtractableCell(
+                    logical, visual, font_name, font_size)
+            return visual
 
         def _pro_text(t, sty='value'):
             """Render Arabic text through reshape/bidi when needed; pass
@@ -85791,10 +85967,12 @@ def api_generate_pdf():
             if not t:
                 return ''
             _lang = 'ar' if is_arabic else 'en'
-            t = _prepare_final_render_text(str(t), _lang)
+            logical = _prepare_final_render_text(
+                str(t), _lang,
+                preserve_model_values=_rel37_keep)
             # NBSP is used in-model to avoid PRCY41 false positives;
             # emit a real space in the PDF so extractors keep word pairs.
-            t = str(t).replace('\u00a0', ' ')
+            t = str(logical).replace('\u00a0', ' ')
             if is_arabic:
                 # Keep ASCII-only tokens (KPI "#", MFA, etc.) out of
                 # Arabic reshape so returned-PDF extractors still see
@@ -85804,9 +85982,10 @@ def api_generate_pdf():
                 size = 15 if sty == 'title' else (9 if sty == 'label' else 10)
                 font = arabic_font_bold if sty in ('title', 'label') else arabic_font_name
                 try:
-                    return process_arabic(str(t), font, size)
+                    shaped = process_arabic(str(t), font, size)
                 except Exception:
-                    return str(t)
+                    shaped = str(t)
+                return shaped
             return str(t)
 
         def _pro_section_heading(title_txt):
@@ -85929,7 +86108,9 @@ def api_generate_pdf():
             for p in (block.get('paragraphs') or []):
                 if not p or not p.strip():
                     continue
-                flow.append(Paragraph(_pro_text(p, 'body'), _pro_body_sty))
+                flow.append(_extractable_flow(
+                    p, Paragraph(_pro_text(p, 'body'), _pro_body_sty),
+                    arabic_font_name, 10))
                 flow.append(Spacer(1, 0.05 * inch))
             return flow
 
@@ -86450,11 +86631,15 @@ def api_generate_pdf():
                 prof['render_mode'] = 'table'
             if not col_weights:
                 col_weights = prof.get('col_weights')
+            if col_weights and len(col_weights) != ncols:
+                col_weights = None
             if not col_weights:
                 try:
                     from professional_strategy_render import (
                         schema_table_col_weights)
                     col_weights = schema_table_col_weights(schema, ncols)
+                    if col_weights and len(col_weights) != ncols:
+                        col_weights = None
                 except Exception:
                     col_weights = None
             if not col_weights:
@@ -86472,6 +86657,7 @@ def api_generate_pdf():
             fs = prof.get('font_size', 8)
             hfs = prof.get('header_font_size', 9)
             pad = prof.get('padding', 5)
+            _keep_rel37 = _rel37_keep
             _val_sty = ParagraphStyle(
                 'ProTblVal', parent=_pro_value_sty, fontSize=fs, leading=fs + 3)
             _ascii_val_sty = ParagraphStyle(
@@ -86483,18 +86669,28 @@ def api_generate_pdf():
             _ascii_hdr_sty = ParagraphStyle(
                 'ProTblHdrAscii', parent=_hdr_sty,
                 fontName='Helvetica-Bold', alignment=1)
+            if _keep_rel37 and not is_arabic:
+                # Hyphenless CJK mid-word breaks make extracted PDF text
+                # diverge from the persisted value (impl + ementation).
+                for _sty in (_val_sty, _ascii_val_sty, _hdr_sty, _ascii_hdr_sty):
+                    _sty.wordWrap = None
+                    _sty.splitLongWords = 0
+            def _extractable_cell(logical, visual, font_name, font_size):
+                return _extractable_flow(
+                    logical, visual, font_name, font_size)
+
             _hdr_cells = []
             for h in hdr:
                 label = str(h or '')
                 if _nowrap:
                     label = label.replace(' ', '\u00a0')
                 if label.isascii():
-                    _hdr_cells.append(
-                        Paragraph(f"<b>{label}</b>", _ascii_hdr_sty))
+                    visual = Paragraph(f"<b>{label}</b>", _ascii_hdr_sty)
                 else:
-                    _hdr_cells.append(
-                        Paragraph(
-                            f"<b>{_pro_text(label, 'label')}</b>", _hdr_sty))
+                    visual = Paragraph(
+                        f"<b>{_pro_text(label, 'label')}</b>", _hdr_sty)
+                _hdr_cells.append(
+                    _extractable_cell(label, visual, arabic_font_bold, hfs))
             tbl_rows = [_hdr_cells]
             for r in rows:
                 cells = list(r) + [''] * (ncols - len(r))
@@ -86503,13 +86699,17 @@ def api_generate_pdf():
                     # Sanitize before truncate so family:* markers never
                     # survive as ASCII leftovers (English cells previously
                     # skipped _pro_text and leaked family:gov / family:soc_siem).
-                    txt = _pro_text(str(c), 'value')
-                    if prof:
+                    logical = str(c)
+                    txt = _pro_text(logical, 'value')
+                    if prof and not _keep_rel37:
                         txt = _truncate_cell_for_profile(txt, prof)
                     if str(txt).isascii():
-                        row_cells.append(Paragraph(str(txt), _ascii_val_sty))
+                        visual = Paragraph(str(txt), _ascii_val_sty)
                     else:
-                        row_cells.append(Paragraph(str(txt), _val_sty))
+                        visual = Paragraph(str(txt), _val_sty)
+                    row_cells.append(
+                        _extractable_cell(
+                            logical, visual, arabic_font_name, fs))
                 tbl_rows.append(row_cells)
             tbl = Table(
                 tbl_rows, colWidths=col_widths,
@@ -86555,8 +86755,12 @@ def api_generate_pdf():
                 fname, weight, grade, contrib = cells[:4]
                 if ri > 0:
                     flow.append(Spacer(1, 0.05 * inch))
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(fname, 'label')}</b>", factor_hdr_sty))
+                flow.append(_extractable_flow(
+                    fname,
+                    Paragraph(
+                        f"<b>{_pro_text(fname, 'label')}</b>",
+                        factor_hdr_sty),
+                    arabic_font_bold, 10))
                 lines = [
                     (metric_labels[0], weight),
                     (metric_labels[1], grade),
@@ -86566,7 +86770,9 @@ def api_generate_pdf():
                     txt = (
                         f"<b>{_pro_text(lbl, 'label')}:</b> "
                         f"{_pro_text(val, 'value')}")
-                    flow.append(Paragraph(txt, card_sty))
+                    flow.append(_extractable_flow(
+                        str(val), Paragraph(txt, card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.12 * inch))
             flow.append(Spacer(1, 0.1 * inch))
             return flow
@@ -86612,7 +86818,10 @@ def api_generate_pdf():
                             f"{_pro_text(title, 'label')}")
                     else:
                         heading = _pro_text(title, 'label')
-                    flow.append(Paragraph(f"<b>{heading}</b>", _pro_label_sty))
+                    flow.append(_extractable_flow(
+                        str(title),
+                        Paragraph(f"<b>{heading}</b>", _pro_label_sty),
+                        arabic_font_bold, 10))
                     pairs = []
                     _show_cols = (1, 2, 3) if _exec87 else range(len(labels))
                     for i in _show_cols:
@@ -86623,11 +86832,17 @@ def api_generate_pdf():
                         val = cells[ci] if ci < len(cells) else ''
                         if val and str(val).strip() not in ('—', ''):
                             pairs.append([
-                                Paragraph(
-                                    f"<b>{_pro_text(lbl, 'label')}</b>",
-                                    _pro_label_sty),
-                                Paragraph(
-                                    _pro_text(val, 'value'), _pro_value_sty),
+                                _extractable_flow(
+                                    str(lbl),
+                                    Paragraph(
+                                        f"<b>{_pro_text(lbl, 'label')}</b>",
+                                        _pro_label_sty),
+                                    arabic_font_bold, 10),
+                                _extractable_flow(
+                                    str(val),
+                                    Paragraph(
+                                        _pro_text(val, 'value'), _pro_value_sty),
+                                    arabic_font_name, 10),
                             ])
                     if pairs:
                         ct = Table(
@@ -86721,30 +86936,52 @@ def api_generate_pdf():
                     f"{_pro_text(idx, 'label')}. {_pro_text(init, 'label')}"
                     if idx and str(idx).strip() not in ('—', '')
                     else _pro_text(init, 'label'))
-                flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    str(init),
+                    Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                    arabic_font_bold, 10))
                 pairs = []
                 if desc and str(desc).strip() not in ('—', ''):
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_desc, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(desc, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_desc),
+                            Paragraph(
+                                f"<b>{_pro_text(label_desc, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(desc),
+                            Paragraph(_pro_text(desc, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if out and str(out).strip() not in ('—', ''):
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_out, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(out, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_out),
+                            Paragraph(
+                                f"<b>{_pro_text(label_out, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(out),
+                            Paragraph(_pro_text(out, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if owner and str(owner).strip() not in ('—', ''):
-                    _owner = (_maybe_arabic_role_label(owner) if is_arabic
-                              else owner)
+                    _owner = owner if _rel37_keep else (
+                        _maybe_arabic_role_label(owner) if is_arabic
+                        else owner)
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_owner, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(_owner, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_owner),
+                            Paragraph(
+                                f"<b>{_pro_text(label_owner, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(owner),
+                            Paragraph(_pro_text(_owner, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if pairs:
                     ct = Table(
@@ -86779,7 +87016,10 @@ def api_generate_pdf():
                     if step and str(step).strip() not in ('—', '')
                     else '')
                 if title:
-                    flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                    flow.append(_extractable_flow(
+                        str(step),
+                        Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                        arabic_font_bold, 10))
                 pairs = []
                 for ci in range(1, min(len(cells), len(hdr))):
                     val = cells[ci]
@@ -86787,9 +87027,15 @@ def api_generate_pdf():
                         continue
                     lbl = hdr[ci] if ci < len(hdr) else str(ci)
                     pairs.append([
-                        Paragraph(f"<b>{_pro_text(lbl, 'label')}</b>",
-                                  _pro_label_sty),
-                        Paragraph(_pro_text(val, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(lbl),
+                            Paragraph(f"<b>{_pro_text(lbl, 'label')}</b>",
+                                      _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(val),
+                            Paragraph(_pro_text(val, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if pairs:
                     ct = Table(
@@ -86834,17 +87080,24 @@ def api_generate_pdf():
                 if not cells:
                     continue
                 label = cells[0]
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(label, 'label')}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    str(label),
+                    Paragraph(
+                        f"<b>{_pro_text(label, 'label')}</b>",
+                        _pro_label_sty),
+                    arabic_font_bold, 10))
                 for ci in range(1, len(cells)):
                     val = cells[ci]
                     if not val or str(val).strip() in ('—', ''):
                         continue
                     lbl = hdr[ci] if ci < len(hdr) else str(ci)
-                    flow.append(Paragraph(
-                        f"<b>{_pro_text(lbl, 'label')}:</b> "
-                        f"{_pro_text(str(val), 'value')}",
-                        card_sty))
+                    flow.append(_extractable_flow(
+                        str(val),
+                        Paragraph(
+                            f"<b>{_pro_text(lbl, 'label')}:</b> "
+                            f"{_pro_text(str(val), 'value')}",
+                            card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.06 * inch))
             flow.append(Spacer(1, 0.08 * inch))
             return flow
@@ -86870,8 +87123,11 @@ def api_generate_pdf():
             for r in rows:
                 cells = list(r) + [''] * max(0, len(labels) + 1 - len(r))
                 title = cells[1] if len(cells) > 1 else cells[0]
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(title, 'label')}</b>", hdr_sty))
+                flow.append(_extractable_flow(
+                    str(title),
+                    Paragraph(
+                        f"<b>{_pro_text(title, 'label')}</b>", hdr_sty),
+                    arabic_font_bold, 10))
                 for i, lbl in enumerate(labels):
                     ci = i + 1 if len(cells) > i + 1 else i
                     val = cells[ci] if ci < len(cells) else ''
@@ -86886,7 +87142,9 @@ def api_generate_pdf():
                         txt = (
                             f"<b>{_pro_text(disp_lbl, 'label')}:</b> "
                             f"{_pro_text(val, 'value')}")
-                        flow.append(Paragraph(txt, card_sty))
+                        flow.append(_extractable_flow(
+                            str(val), Paragraph(txt, card_sty),
+                            arabic_font_name, 9))
                 flow.append(Spacer(1, 0.1 * inch))
             flow.append(Spacer(1, 0.05 * inch))
             return flow
@@ -86916,7 +87174,10 @@ def api_generate_pdf():
                     f"{_pro_text(phase, 'label')}. {_pro_text(init, 'label')}"
                     if phase and str(phase).strip() not in ('—', '')
                     else _pro_text(init, 'label'))
-                flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    f'{phase} {init}',
+                    Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                    arabic_font_bold, 10))
                 for i, lbl in enumerate(labels):
                     val = cells[i] if i < len(cells) else ''
                     if not val or str(val).strip() in ('—', ''):
@@ -86924,7 +87185,9 @@ def api_generate_pdf():
                     txt = (
                         f"<b>{_pro_text(lbl, 'label')}:</b> "
                         f"{_pro_text(val, 'value')}")
-                    flow.append(Paragraph(txt, card_sty))
+                    flow.append(_extractable_flow(
+                        str(val), Paragraph(txt, card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.1 * inch))
             flow.append(Spacer(1, 0.05 * inch))
             return flow
@@ -89394,8 +89657,25 @@ def api_generate_pdf():
             and str(_gen_mode_p or '').lower() != 'drafting'
             and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
         ):
+            try:
+                from release_engine_v3.rel37_apply import (
+                    prefer_rel37_authority_candidate as _rel37_pref_ev,
+                    recall_rel37_export_snapshot as _rel37_recall_ev,
+                )
+                _rel3_pdf_sections = _rel37_pref_ev(
+                    locals().get('_rel37_prep_secs'),
+                    data.get('_rel37_source_sections'),
+                    data.get('sections'),
+                    _rel37_recall_ev(
+                        data.get('strategy_id') or _art_id_p,
+                        model_hash=data.get('canonical_hash')),
+                    _split_strategy_sections_by_h2(content or '') or {},
+                )
+            except Exception:  # noqa: BLE001
+                _rel3_pdf_sections = (
+                    _split_strategy_sections_by_h2(content or '') or {})
             _rel3_pdf_art = {
-                'sections': _split_strategy_sections_by_h2(content or '') or {},
+                'sections': _rel3_pdf_sections,
                 'final_markdown': content,
                 'domain': domain_pdf,
                 'sealed': bool(locals().get('_cyber_sealed_pdf', False)),
@@ -92736,11 +93016,19 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int,
     try:
         _conn = get_db_direct()
         if artifact_type == 'strategy':
-            _row = _conn.execute(
-                'SELECT sections_json, content_json, content, language, domain, '
-                'document_type FROM strategies WHERE id = ? AND user_id = ?',
-                (_art_id, user_id)
-            ).fetchone()
+            try:
+                _row = _conn.execute(
+                    'SELECT sections_json, content_json, content, language, '
+                    'domain, document_type FROM strategies '
+                    'WHERE id = ? AND user_id = ?',
+                    (_art_id, user_id)
+                ).fetchone()
+            except Exception:
+                _row = _conn.execute(
+                    'SELECT sections_json, content_json, content, language, '
+                    'domain FROM strategies WHERE id = ? AND user_id = ?',
+                    (_art_id, user_id)
+                ).fetchone()
         elif artifact_type == 'risk':
             _row = _conn.execute(
                 'SELECT analysis, language, domain FROM risks '

@@ -69,6 +69,19 @@ def _bind_backend_sections(
     backend['_rel31_frozen_sections'] = sections
     backend['_rel31_sections_bound'] = True
     backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            remember_rel37_export_snapshot,
+        )
+        if is_rel37_authoritative(sections):
+            backend['_rel37_source_sections'] = dict(sections)
+            remember_rel37_export_snapshot(
+                art.get('strategy_id') or art.get('artifact_id'),
+                sections,
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _verify_rel31_section_binding(

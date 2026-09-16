@@ -362,6 +362,12 @@ def _channel_defects(
             blob = repair_rel3_arabic_canonical_text(blob)
     except Exception:  # noqa: BLE001
         pass
+    rel37_authoritative = False
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        rel37_authoritative = is_rel37_authoritative(canonical_sections)
+    except Exception:  # noqa: BLE001
+        rel37_authoritative = False
     rel27 = (
         rel27_channel_checks(blob, domain=domain)
         if dtype == 'strategy' else {
@@ -399,6 +405,25 @@ def _channel_defects(
                 domain=domain)
     except Exception:  # noqa: BLE001
         substance_defects = []
+    def _rel37_keep_defect(item: str) -> bool:
+        raw = str(item)
+        return not (
+            raw.startswith('roadmap_row_count')
+            or raw.startswith('missing_family:'))
+
+    if rel37_authoritative:
+        # Validated REL37 models own family/row coverage. Legacy catalog
+        # heuristics must not reject extracted professional PDF text.
+        substance_defects = [
+            item for item in substance_defects if _rel37_keep_defect(item)]
+        road_cov = dict(rel27.get('roadmap_coverage') or {})
+        if road_cov:
+            remaining = [
+                item for item in (road_cov.get('defects') or [])
+                if _rel37_keep_defect(item)]
+            road_cov['defects'] = remaining
+            road_cov['exported_roadmap_coverage_valid'] = not remaining
+            rel27['roadmap_coverage'] = road_cov
     # REL3.3 — strategy-only visible drift families (KPI-main, roadmap
     # visible-row-count, traceability) must not run for risk documents. A
     # risk artifact has no strategy KPI-main table / roadmap / traceability
@@ -416,15 +441,21 @@ def _channel_defects(
         kpi_defects = list(dict.fromkeys(
             _kpi_defects_in(blob) + (rel27.get('kpi_defects') or [])))
         rel27_road_defects = list(rel27.get('roadmap_defects') or [])
+        if rel37_authoritative:
+            rel27_road_defects = [
+                d for d in rel27_road_defects
+                if not (
+                    str(d).startswith('roadmap_row_count')
+                    or str(d).startswith('missing_family:'))]
         if internal_roadmap_row_count is not None and internal_roadmap_row_count >= 10:
             rel27_road_defects = [
                 d for d in rel27_road_defects
                 if not str(d).startswith('roadmap_row_count')]
         roadmap_defects = list(dict.fromkeys(
-            _roadmap_defects_in(
+            ([] if rel37_authoritative else _roadmap_defects_in(
                 blob,
                 internal_row_count=internal_roadmap_row_count,
-                domain=domain)
+                domain=domain))
             + rel27_road_defects))
         if (route == 'preview'
                 and internal_roadmap_row_count is not None
@@ -462,9 +493,16 @@ def _channel_defects(
             + arabic_residues
             + rel31_defects))
     else:
+        _legacy_forbidden = _forbidden_in(
+            blob, internal_roadmap_row_count=internal_roadmap_row_count)
+        if rel37_authoritative:
+            _legacy_forbidden = [
+                item for item in _legacy_forbidden
+                if not (
+                    str(item).startswith('roadmap_row_count')
+                    or str(item).startswith('missing_family:'))]
         forbidden = list(dict.fromkeys(
-            _forbidden_in(
-                blob, internal_roadmap_row_count=internal_roadmap_row_count)
+            _legacy_forbidden
             + (rel27.get('missing_sections') or [])
             + kpi_defects
             + risk_defects
@@ -1383,7 +1421,8 @@ def validate_artifact_actual_exports(
             preview_html=preview_html))
     sections = {
         k: v for k, v in (artifact.get('sections') or {}).items()
-        if isinstance(v, str) and not str(k).startswith('_')}
+        if isinstance(v, str) and (
+            not str(k).startswith('_') or str(k).startswith('_rel37_'))}
     if sections:
         preview_text = '\n\n'.join(
             (sections.get(k) or '').strip()

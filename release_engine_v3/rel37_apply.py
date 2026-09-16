@@ -21,6 +21,7 @@ REL37_SELECTION_REASON_KEY = '_rel37_selection_reason'
 REL37_SELECTION_SUPPORTED_KEY = '_rel37_selection_supported'
 REL37_SOURCE_KEY = '_rel37_source_hash'
 REL37_MARKDOWN_KEY = '_rel37_markdown'
+REL37_RENDER_BLOCKED_KEY = '_rel37_render_blocked'
 
 _SUPPORTED_REASONS = frozenset(('supported_selection', 'default_expanded'))
 _AUTHORITY_KEYS = (
@@ -99,6 +100,58 @@ def is_rel37_authoritative(sections: Optional[Dict[str, Any]]) -> bool:
     secs = sections or {}
     applied = str(secs.get(REL37_APPLIED_KEY) or '').strip().lower()
     return applied in ('1', 'true', 'yes', 'on') and bool(secs.get(REL37_MODEL_KEY))
+
+
+_EXPORT_SNAPSHOTS: Dict[str, Dict[str, Any]] = {}
+
+
+def remember_rel37_export_snapshot(
+        strategy_id: object,
+        sections: Optional[Dict[str, Any]],
+) -> None:
+    """Keep an identity-carrying snapshot for the in-process PDF re-entry."""
+    if not is_rel37_authoritative(sections):
+        return
+    payload = dict(sections or {})
+    sid = str(strategy_id or '').strip()
+    if sid:
+        _EXPORT_SNAPSHOTS[sid] = payload
+    stored_hash = str(payload.get(REL37_HASH_KEY) or '').strip()
+    if stored_hash:
+        _EXPORT_SNAPSHOTS[f'hash:{stored_hash}'] = payload
+
+
+def recall_rel37_export_snapshot(
+        strategy_id: object = '',
+        *,
+        model_hash: object = '',
+) -> Dict[str, Any]:
+    for key in (
+            str(strategy_id or '').strip(),
+            f'hash:{str(model_hash or "").strip()}' if model_hash else '',
+    ):
+        if key and key in _EXPORT_SNAPSHOTS:
+            return dict(_EXPORT_SNAPSHOTS[key])
+    return {}
+
+
+def prefer_rel37_authority_candidate(
+        *candidates: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Prefer an identity-carrying REL37 snapshot over H2/prep leftovers.
+
+    A non-authoritative REL33 prep dict must not hide a persisted model
+    forwarded on the export request.
+    """
+    first_nonempty: Dict[str, Any] = {}
+    for cand in candidates:
+        if not isinstance(cand, dict) or not cand:
+            continue
+        if not first_nonempty:
+            first_nonempty = cand
+        if is_rel37_authoritative(cand) or cand.get(REL37_RENDER_BLOCKED_KEY):
+            return dict(cand)
+    return dict(first_nonempty)
 
 
 def serialize_model(model: CanonicalDocument) -> str:
@@ -189,19 +242,22 @@ def rel37_request_model_consistent(
     if model.document_type != want_type:
         errors.append(
             f'rel37_document_type_mismatch:{model.document_type}:{want_type}')
-    if org_name and model.org_name != org_name:
+    if org_name and model.org_name and model.org_name != org_name:
         errors.append('rel37_org_name_mismatch')
     request_canon: List[str] = []
     for raw in list(selected_frameworks or []):
         mapped, _kind = classify_framework_label(raw)
         if mapped:
             request_canon.append(mapped)
-    model_canon = [str(item).strip().lower() for item in model.selected_frameworks if str(item).strip()]
-    stored_canon = [
-        str(item).strip().lower()
-        for item in ((sections or {}).get(REL37_CANONICAL_FW_KEY) or [])
-        if str(item).strip()
-    ]
+    model_canon: List[str] = []
+    for raw in list(model.selected_frameworks or []):
+        mapped, _kind = classify_framework_label(raw)
+        model_canon.append(mapped or str(raw).strip().lower())
+    stored_canon: List[str] = []
+    for raw in list((sections or {}).get(REL37_CANONICAL_FW_KEY) or []):
+        mapped, _kind = classify_framework_label(raw)
+        if str(raw).strip():
+            stored_canon.append(mapped or str(raw).strip().lower())
     if request_canon and set(request_canon) != set(model_canon):
         errors.append('rel37_frameworks_mismatch')
     if stored_canon and set(stored_canon) != set(model_canon):
@@ -264,6 +320,18 @@ def rel37_confidence_risk_post_repair_result(
     )
     blockers.extend(identity)
     blockers.extend(rel37_confidence_risk_structures_ok(sections))
+    if not model.roadmap:
+        blockers.append('rel37_roadmap_missing')
+    if not model.kpis:
+        blockers.append('rel37_kpis_missing')
+    if not model.confidence:
+        blockers.append('rel37_confidence_missing')
+    if not model.traceability:
+        blockers.append('rel37_traceability_missing')
+    if not model.gaps:
+        blockers.append('rel37_gaps_missing')
+    if not model.governance:
+        blockers.append('rel37_governance_missing')
     return list(dict.fromkeys(blockers))
 
 
@@ -304,8 +372,16 @@ def rel37_bind_export_sections(
     """Prefer identity-matched saved REL37 sections over H2-split markdown.
 
     Forged ``_rel37_applied`` without a model, hash mismatch, and incomplete
-    typed confidence/risk keep the fallback (legacy) sections.
+    typed confidence/risk do not keep a content-producing fallback.
     """
+    if (candidate or {}).get(REL37_RENDER_BLOCKED_KEY):
+        raw = (candidate or {}).get(REL37_RENDER_BLOCKED_KEY)
+        blockers = list(raw) if isinstance(raw, list) else [str(raw)]
+        out = rel37_authority_snapshot(candidate)
+        out[REL37_APPLIED_KEY] = False
+        out['rel37_authority_blocked'] = True
+        out[REL37_RENDER_BLOCKED_KEY] = blockers or ['rel37_render_blocked']
+        return out
     blockers = rel37_confidence_risk_post_repair_result(
         candidate,
         domain=domain,
@@ -316,6 +392,38 @@ def rel37_bind_export_sections(
     )
     if blockers == []:
         return dict(candidate or {})
+    if blockers is not None:
+        persist_tamper = any(
+            str(item) in (
+                'rel37_model_hash_mismatch',
+                'rel37_model_hash_missing',
+                'rel37_model_unreadable',
+                'rel37_org_name_mismatch',
+                'rel37_stored_frameworks_mismatch',
+                'rel37_roadmap_missing',
+                'rel37_kpis_missing',
+                'rel37_confidence_missing',
+                'rel37_traceability_missing',
+                'rel37_gaps_missing',
+                'rel37_governance_missing',
+            )
+            or str(item).startswith('rel37_domain_mismatch')
+            or str(item).startswith('rel37_lang_mismatch')
+            or str(item).startswith('rel37_document_type_mismatch')
+            or str(item).startswith('rel37_frameworks_mismatch')
+            for item in blockers
+        )
+        if persist_tamper or (candidate or {}).get(REL37_RENDER_BLOCKED_KEY):
+            # Identity/hash tamper on a claimed persist. Do not fall back
+            # to a content-producing legacy path.
+            out = rel37_authority_snapshot(candidate)
+            out[REL37_APPLIED_KEY] = False
+            out['rel37_authority_blocked'] = True
+            out[REL37_RENDER_BLOCKED_KEY] = list(blockers)
+            return out
+        # Overlay/compile quality (hash_stale, schema validate) is not a
+        # persisted identity claim. Keep the non-REL37 render path.
+        return dict(fallback or {})
     return dict(fallback or {})
 
 
@@ -351,7 +459,7 @@ def rel37_sections_for_professional_render(
     H2-split fallbacks keep their visible text when the candidate is not
     identity-matched. Applied-flag alone does not win.
     """
-    if is_rel37_authoritative(candidate):
+    if is_rel37_authoritative(candidate) or (candidate or {}).get(REL37_RENDER_BLOCKED_KEY):
         bound = rel37_bind_export_sections(
             candidate,
             fallback,
@@ -361,6 +469,8 @@ def rel37_sections_for_professional_render(
             org_name=org_name,
             selected_frameworks=selected_frameworks,
         )
+        if bound.get(REL37_RENDER_BLOCKED_KEY):
+            return bound
         if is_rel37_authoritative(bound):
             return bound
     out = dict(fallback or {})
@@ -509,6 +619,8 @@ def apply_rel37_to_sections(
     payload['selected_frameworks_canonical'] = list(
         selection.normalized_frameworks)
     model = compile_for_domain(domain, payload)
+    if not model.model_hash:
+        model.compute_hashes()
     rendered = model_to_sections(model)
     for key, value in rendered.items():
         out[key] = value
@@ -534,9 +646,34 @@ def apply_rel37_to_sections(
         model=model,
         emit=False,
     )
+    loaded = load_model(out) or model
+    loaded.compute_hashes()
+    out[REL37_MODEL_KEY] = serialize_model(loaded)
+    out[REL37_HASH_KEY] = loaded.model_hash
+    out[REL37_SOURCE_KEY] = loaded.model_hash
+    claim_blockers = rel37_confidence_risk_post_repair_result(
+        out,
+        domain=domain,
+        lang=_normalize_lang(lang),
+        document_type=document_type,
+        org_name=str(payload.get('org_name') or ''),
+        selected_frameworks=list(selection.normalized_frameworks),
+    ) or []
     repairs = ['rel37:deterministic_compiler']
-    if model.blockers:
+    if loaded.blockers:
         repairs.append('rel37:validate_blockers')
+    if claim_blockers:
+        # Overlay compile that cannot pass identity/schema must not claim
+        # persist authority. Keep rendered sections for the legacy route.
+        repairs.append('rel37:authority_unclaimed')
+        for key in _AUTHORITY_KEYS:
+            out.pop(key, None)
+        out[REL37_SELECTION_REASON_KEY] = (
+            selection.reason if selection.reason in _SUPPORTED_REASONS
+            else 'supported_selection')
+        out[REL37_SELECTION_SUPPORTED_KEY] = 'true'
+        out[REL37_ORIGINAL_FW_KEY] = list(selection.selected_frameworks_original)
+        out[REL37_CANONICAL_FW_KEY] = list(selection.normalized_frameworks)
     if _psc.get('alias_map_applied'):
         repairs.append('rel37:preview_gap_analysis_alias')
     return out, repairs

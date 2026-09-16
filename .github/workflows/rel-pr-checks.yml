@@ -62,6 +62,7 @@ jobs:
             tests/test_rel37_early_authority.py \
             tests/test_rel37_preview_section_contract.py \
             tests/test_rel37_framework_label_canonicalization.py \
+            tests/test_rel37_export_content_parity.py \
             -q --tb=short
 
       - name: pytest Cyber and Auth/CSRF regressions
