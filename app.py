@@ -12,6 +12,7 @@ import secrets
 import re
 import html
 import uuid
+import contextvars
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -1136,14 +1137,211 @@ def check_generation_rate_limit(route_label):
     return True, 0
 
 
+# Server-minted only. Never deserialized from public JSON, headers, or hashes.
+_REL_INTERNAL_EXPORT_CTX = contextvars.ContextVar(
+    '_rel_internal_export_ctx', default=None)
+_REL_INTERNAL_EXPORT_SOURCES = frozenset({
+    'build_pdf_bytes',
+    'authorized_export_service',
+})
+_PUBLIC_PDF_PRIVILEGED_KEYS = frozenset({
+    '_rel26_internal',
+    'skip_rel26_gate',
+    '_rel2_evidence_collect',
+    '_rel31_evidence_internal',
+    '_rel33_compiler_frozen_authority',
+    '_rel37_source_sections',
+})
+_SYNC_PDF_RENDER_EVENTS = []
+
+
 def _is_internal_rel_export_request(data):
-    """REL2/REL3 evidence loops — exempt from user-facing export throttles."""
-    data = data if isinstance(data, dict) else {}
+    """REL2/REL3 evidence loops — exempt from user-facing export throttles.
+
+    Trust is established only by a server-created contextvar, never by
+    client JSON flags, headers, path, or a supplied hash.
+    """
+    ctx = _REL_INTERNAL_EXPORT_CTX.get()
     return bool(
-        data.get('_rel26_internal')
-        or data.get('skip_rel26_gate')
-        or data.get('_rel2_evidence_collect')
-        or data.get('_rel31_evidence_internal'))
+        isinstance(ctx, dict)
+        and ctx.get('authorized') is True
+        and ctx.get('source') in _REL_INTERNAL_EXPORT_SOURCES
+    )
+
+
+def _server_internal_export_authorized():
+    ctx = _REL_INTERNAL_EXPORT_CTX.get()
+    return bool(
+        isinstance(ctx, dict)
+        and ctx.get('authorized') is True
+        and ctx.get('source') in _REL_INTERNAL_EXPORT_SOURCES
+    )
+
+
+def _record_sync_pdf_render(event):
+    """Spy hook: invoked only when sync PDF rendering begins."""
+    try:
+        _SYNC_PDF_RENDER_EVENTS.append(dict(event or {}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _normalize_claimed_export_id(value):
+    if value in (None, '', 0, '0'):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _strip_privileged_export_fields(payload):
+    """Discard client fields that must not mint internal trust."""
+    if not isinstance(payload, dict):
+        return {}
+    out = dict(payload)
+    for key in _PUBLIC_PDF_PRIVILEGED_KEYS:
+        out.pop(key, None)
+    for nested_key in ('sections', 'metadata', 'contract_meta'):
+        nested = out.get(nested_key)
+        if isinstance(nested, dict):
+            cleaned = dict(nested)
+            for key in _PUBLIC_PDF_PRIVILEGED_KEYS:
+                cleaned.pop(key, None)
+            out[nested_key] = cleaned
+    return out
+
+
+def _public_pdf_identifier_conflict(data):
+    sid = _normalize_claimed_export_id((data or {}).get('strategy_id'))
+    aid = _normalize_claimed_export_id((data or {}).get('artifact_id'))
+    return bool(sid and aid and sid != aid)
+
+
+def _load_authorized_saved_export_for_pdf(artifact_id, user_id, artifact_type):
+    """Load a saved strategy that the session principal already owns."""
+    if not artifact_id or not user_id:
+        return None
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    resolved = _resolve_numeric_strategy_id(artifact_id, uid)
+    try:
+        art_id = int(resolved or artifact_id)
+    except (TypeError, ValueError):
+        return None
+    if art_id <= 0:
+        return None
+    try:
+        conn = get_db_direct()
+        row = conn.execute(
+            'SELECT id, user_id, content, sections_json, content_json, '
+            'language, domain, org_name FROM strategies '
+            'WHERE id = ? AND user_id = ?',
+            (art_id, uid),
+        ).fetchone()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    keys = row.keys() if hasattr(row, 'keys') else []
+    sections = {}
+    raw_sections = row['sections_json'] if 'sections_json' in keys else ''
+    if raw_sections:
+        try:
+            parsed = (json.loads(raw_sections)
+                      if isinstance(raw_sections, str) else raw_sections)
+            if isinstance(parsed, dict):
+                sections = parsed
+        except Exception:  # noqa: BLE001
+            sections = {}
+    content = ''
+    try:
+        content = _canonical_content_from_db(
+            artifact_type or 'strategy', art_id, uid) or ''
+    except Exception:  # noqa: BLE001
+        content = ''
+    if not str(content or '').strip():
+        content = row['content'] if 'content' in keys else ''
+    return {
+        'id': int(row['id'] if 'id' in keys else art_id),
+        'content': content or '',
+        'sections': sections,
+        'lang': row['language'] if 'language' in keys else '',
+        'domain': row['domain'] if 'domain' in keys else '',
+        'org_name': row['org_name'] if 'org_name' in keys else '',
+    }
+
+
+def _bind_public_saved_pdf_export(data):
+    """Authorize a claimed saved artifact before any render or snapshot use.
+
+    Reuses ``_rel36_11_bind_saved_export_lookup``. Mutates ``data`` to the
+    authorized server record. Returns an error response, or None.
+    """
+    if not isinstance(data, dict):
+        return jsonify({
+            'error': 'Export blocked — invalid export request.',
+            'reason': 'invalid_export_request',
+        }), 400
+    if _public_pdf_identifier_conflict(data):
+        return jsonify({
+            'error': 'Export blocked — conflicting artifact identifiers.',
+            'reason': 'conflicting_export_identifiers',
+        }), 400
+    claimed = (
+        _normalize_claimed_export_id(data.get('strategy_id'))
+        or _normalize_claimed_export_id(data.get('artifact_id'))
+    )
+    if not claimed:
+        return None
+    uid = session.get('user_id', 0)
+    domain = data.get('domain') or ''
+    lang = data.get('language') or 'en'
+    art_type = _rel33_normalize_export_artifact_type(data)
+    _ctx, denied = _rel36_11_bind_saved_export_lookup(
+        data, route='pdf', export_type='pdf',
+        domain=domain, lang=lang, artifact_type=art_type,
+        artifact_id=claimed)
+    if denied is not None:
+        return denied
+    if _ctx and _ctx.get('strategy_id'):
+        claimed = str(_ctx['strategy_id'])
+        data['strategy_id'] = _ctx['strategy_id']
+        data['artifact_id'] = _ctx['strategy_id']
+    loaded = _load_authorized_saved_export_for_pdf(claimed, uid, art_type)
+    if loaded is None:
+        return jsonify({
+            'error': 'Export blocked — artifact not owned by current user.',
+            'reason': 'cross_user_export_denied',
+        }), 403
+    data['content'] = loaded['content']
+    data['sections'] = loaded['sections']
+    data['_rel37_source_sections'] = loaded['sections']
+    data['strategy_id'] = loaded['id']
+    data['artifact_id'] = loaded['id']
+    if loaded.get('org_name') and not str(data.get('org_name') or '').strip():
+        data['org_name'] = loaded['org_name']
+    return None
+
+
+def _export_store_owner_denied(entry):
+    """Deny cross-user export-status / export-download. No extra record detail."""
+    uid = session.get('user_id', 0)
+    try:
+        uid = int(uid or 0)
+    except (TypeError, ValueError):
+        uid = 0
+    try:
+        owner = int((entry or {}).get('user_id') or 0)
+    except (TypeError, ValueError):
+        owner = 0
+    if owner and uid and owner != uid:
+        return jsonify({
+            'error': 'Export blocked — artifact not owned by current user.',
+            'reason': 'cross_user_export_denied',
+        }), 403
+    return None
 
 
 # Configuration
@@ -52074,57 +52272,64 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                 )
             except Exception:  # noqa: BLE001
                 _rel33_frozen = False
-            with app.test_client() as client:
-                with client.session_transaction() as sess:
-                    sess['user_id'] = uid
-                    sess['username'] = 'rel2_export_validator'
-                    sess['role'] = 'user'
-                resp = client.post('/api/generate-pdf', json={
-                    'content': content or '',
-                    'filename': 'rel2_evidence',
-                    'language': lang,
-                    'org_name': meta.get('org_name', 'منظمة'),
-                    'sector': meta.get('sector', 'حكومي'),
-                    'doc_type': _doc_type_label,
-                    'domain': dcode,
-                    'artifact_type': _dtype,
-                    'document_type': _dtype,
-                    'generation_mode': 'drafting',
-                    'selected_frameworks': fw_labels or list(fws or []),
-                    'sections': sections or {},
-                    '_rel37_source_sections': _rel37_src,
-                    'strategy_id': meta.get('strategy_id') or '',
-                    'artifact_id': meta.get('artifact_id') or '',
-                    '_rel2_evidence_collect': True,
-                    '_rel26_internal': True,
-                    '_rel31_evidence_internal': True,
-                    '_rel33_compiler_frozen_authority': _rel33_frozen,
-                    'skip_rel26_gate': True,
-                })
-                if resp.status_code == 200 and resp.data:
-                    return resp.data
-                if resp.status_code == 422:
-                    try:
-                        import json as _json_pdf
-                        _body = _json_pdf.loads(
-                            resp.get_data(as_text=True) or '{}')
-                        _errs = _body.get('blocking_errors') or []
-                        if not _errs and _body.get('error'):
-                            _errs = [str(_body.get('error'))]
-                        if _errs:
-                            raise ValueError(str(_errs[0]))
-                        raise ValueError(
-                            'rel3_export_evidence_failed:pdf:quality_gate_422')
-                    except ValueError:
-                        raise
-                    except Exception as _pdf422_exc:  # noqa: BLE001
-                        raise ValueError(
-                            f'rel3_export_evidence_failed:pdf:quality_gate_422:'
-                            f'{_pdf422_exc}') from _pdf422_exc
-                if resp.status_code >= 400:
+            _int_token = _REL_INTERNAL_EXPORT_CTX.set({
+                'authorized': True,
+                'source': 'build_pdf_bytes',
+                'principal': uid,
+                'artifact_id': str(
+                    meta.get('artifact_id') or meta.get('strategy_id') or ''),
+                'compiler_frozen_authority': bool(_rel33_frozen),
+            })
+            try:
+                with app.test_client() as client:
+                    with client.session_transaction() as sess:
+                        sess['user_id'] = uid
+                        sess['username'] = 'rel2_export_validator'
+                        sess['role'] = 'user'
+                    resp = client.post('/api/generate-pdf', json={
+                        'content': content or '',
+                        'filename': 'rel2_evidence',
+                        'language': lang,
+                        'org_name': meta.get('org_name', 'منظمة'),
+                        'sector': meta.get('sector', 'حكومي'),
+                        'doc_type': _doc_type_label,
+                        'domain': dcode,
+                        'artifact_type': _dtype,
+                        'document_type': _dtype,
+                        'generation_mode': 'drafting',
+                        'selected_frameworks': fw_labels or list(fws or []),
+                        'sections': sections or {},
+                        '_rel37_source_sections': _rel37_src,
+                        'strategy_id': meta.get('strategy_id') or '',
+                        'artifact_id': meta.get('artifact_id') or '',
+                        '_rel33_compiler_frozen_authority': _rel33_frozen,
+                    })
+            finally:
+                _REL_INTERNAL_EXPORT_CTX.reset(_int_token)
+            if resp.status_code == 200 and resp.data:
+                return resp.data
+            if resp.status_code == 422:
+                try:
+                    import json as _json_pdf
+                    _body = _json_pdf.loads(
+                        resp.get_data(as_text=True) or '{}')
+                    _errs = _body.get('blocking_errors') or []
+                    if not _errs and _body.get('error'):
+                        _errs = [str(_body.get('error'))]
+                    if _errs:
+                        raise ValueError(str(_errs[0]))
                     raise ValueError(
-                        f'rel3_export_evidence_failed:pdf:http_'
-                        f'{resp.status_code}')
+                        'rel3_export_evidence_failed:pdf:quality_gate_422')
+                except ValueError:
+                    raise
+                except Exception as _pdf422_exc:  # noqa: BLE001
+                    raise ValueError(
+                        f'rel3_export_evidence_failed:pdf:quality_gate_422:'
+                        f'{_pdf422_exc}') from _pdf422_exc
+            if resp.status_code >= 400:
+                raise ValueError(
+                    f'rel3_export_evidence_failed:pdf:http_'
+                    f'{resp.status_code}')
         except ValueError:
             # Propagate PDF quality / render failures to the exporter so
             # callers see the explicit render_exception, not empty_bytes.
@@ -80473,6 +80678,12 @@ def api_generate_pdf_async():
         data = request.get_json(force=True) or {}
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
+    data = _strip_privileged_export_fields(data)
+    if _public_pdf_identifier_conflict(data):
+        return jsonify({
+            'error': 'Export blocked — conflicting artifact identifiers.',
+            'reason': 'conflicting_export_identifiers',
+        }), 400
 
     content  = data.get('content', '').strip()
     filename = data.get('filename', 'document')
@@ -80488,9 +80699,6 @@ def api_generate_pdf_async():
         print(f"[DOMAIN] PDF async export rejected: {_de}", flush=True)
         return jsonify({'error': 'Missing or unsupported strategy domain '
                                   'for PDF export.'}), 400
-
-    if not content:
-        return jsonify({'error': 'No content'}), 400
 
     # ── Fail-closed gate on async path ───────────────────────────────────────
     _art_id_a   = data.get('artifact_id') or data.get('strategy_id')
@@ -80508,6 +80716,23 @@ def api_generate_pdf_async():
             data['strategy_id'] = _rel3611_ctx['strategy_id']
             data['artifact_id'] = _rel3611_ctx['strategy_id']
         lang = _rel3611_ctx.get('lang') or lang
+    if _art_id_a:
+        _loaded_async = _load_authorized_saved_export_for_pdf(
+            _art_id_a, session.get('user_id', 0), _art_type_a)
+        if _loaded_async is None:
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
+        content = (_loaded_async.get('content') or '').strip()
+        data['content'] = content
+        data['sections'] = _loaded_async.get('sections') or {}
+        data['_rel37_source_sections'] = data['sections']
+        data['strategy_id'] = _loaded_async['id']
+        data['artifact_id'] = _loaded_async['id']
+        _art_id_a = _loaded_async['id']
+    if not content:
+        return jsonify({'error': 'No content'}), 400
     try:
         _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
         if not _gate_a['allowed']:
@@ -80554,10 +80779,11 @@ def api_generate_pdf_async():
             pass
         content = _db_canonical
     elif _art_id_a:
-        try:
-            content = ensure_markdown_formatting(content)
-        except Exception as _nf_e:
-            print(f'[ASYNC-NORM] PDF client-content normalize failed: {_nf_e}', flush=True)
+        if not str(content or '').strip():
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
 
     # PR-5B.7B.3: client-payload fallback guard — when no DB-canonical
     # content was used, validate the (possibly normalized) client content
@@ -80685,7 +80911,11 @@ def api_generate_pdf_async():
             }), 422
 
     task_id = str(uuid.uuid4())
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
+    _export_store[task_id] = {
+        'status': 'pending',
+        'filename': filename,
+        'user_id': session.get('user_id', 0),
+    }
 
     _content  = content
     _filename = filename
@@ -80834,7 +81064,8 @@ def api_generate_pdf_async():
             tmp.write(raw)
             tmp.close()
             _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename, 'fmt': 'pdf'
+                'status': 'done', 'tmp': tmp.name, 'filename': _filename,
+                'fmt': 'pdf', 'user_id': _export_uid_pdf,
             }
             print(f"ASYNC PDF: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
@@ -80843,6 +81074,7 @@ def api_generate_pdf_async():
             _err_entry = {'status': 'error', 'error': str(exc)}
             if _debug_evidence_pdf and _pdf_debug_holder.get('diag'):
                 _err_entry['diag'] = _pdf_debug_holder['diag']
+            _err_entry['user_id'] = _export_uid_pdf
             _export_store[_task_id] = _err_entry
 
     threading.Thread(target=_build_pdf, daemon=True).start()
@@ -81102,7 +81334,11 @@ def api_generate_docx_async():
 
     task_id = str(uuid.uuid4())
 
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
+    _export_store[task_id] = {
+        'status': 'pending',
+        'filename': filename,
+        'user_id': session.get('user_id', 0),
+    }
 
     _content  = content
     _filename = filename
@@ -81330,7 +81566,8 @@ def api_generate_docx_async():
             tmp.write(raw)
             tmp.close()
             _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename
+                'status': 'done', 'tmp': tmp.name, 'filename': _filename,
+                'user_id': _export_uid,
             }
             print(f"ASYNC DOCX: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
@@ -81370,6 +81607,7 @@ def api_generate_docx_async():
                         pass
                 except Exception:  # noqa: BLE001
                     pass
+            _err_entry_docx['user_id'] = _export_uid
             _export_store[_task_id] = _err_entry_docx
 
     threading.Thread(target=_build, daemon=True).start()
@@ -81382,12 +81620,10 @@ def api_export_status(task_id):
     """Poll async export task status."""
     entry = _export_store.get(task_id)
     if not entry:
-        # Also check other workers via a temp-file sentinel
-        import os
-        candidates = [f for f in os.listdir('/tmp') if f.startswith(f'mizan_export_{task_id}')]
-        if candidates:
-            return jsonify({'status': 'done', 'task_id': task_id})
         return jsonify({'status': 'not_found'}), 404
+    _own_denied = _export_store_owner_denied(entry)
+    if _own_denied is not None:
+        return _own_denied
 
     status = entry.get('status', 'pending')
     if status == 'done':
@@ -81414,18 +81650,14 @@ def api_export_download(task_id):
     import os
     from flask import send_file as _send_file
 
-    entry = _export_store.get(task_id, {})
+    entry = _export_store.get(task_id)
+    if not entry:
+        return jsonify({'error': 'File not ready or already downloaded'}), 404
+    _own_denied = _export_store_owner_denied(entry)
+    if _own_denied is not None:
+        return _own_denied
     tmp_path = entry.get('tmp')
     filename = entry.get('filename', 'document')
-
-    # Cross-worker fallback: scan /tmp
-    if not tmp_path:
-        candidates = [f'/tmp/{f}' for f in os.listdir('/tmp')
-                      if f.startswith('mizan_export_') and task_id in f
-                      and (f.endswith('.docx') or f.endswith('.pdf'))]
-        if candidates:
-            tmp_path = candidates[0]
-            filename = entry.get('filename', 'document')
 
     if not tmp_path or not os.path.exists(tmp_path):
         return jsonify({'error': 'File not ready or already downloaded'}), 404
@@ -84262,14 +84494,6 @@ def api_generate_pdf():
         data = request.get_json(silent=True) or {}
     except Exception:
         data = {}
-    if not _is_internal_rel_export_request(data):
-        _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
-        if not _rl_ok:
-            return jsonify({
-                'success': False,
-                'error': 'Too many export requests. Please wait a moment and try again.',
-                'retry_after': _rl_retry,
-            }), 429
     from io import BytesIO
     import os
     import glob
@@ -84279,6 +84503,38 @@ def api_generate_pdf():
             data = request.json or {}
         except Exception:
             data = {}
+    _server_internal_pdf = _server_internal_export_authorized()
+    if not _server_internal_pdf:
+        data = _strip_privileged_export_fields(data)
+        _saved_denied = _bind_public_saved_pdf_export(data)
+        if _saved_denied is not None:
+            return _saved_denied
+    else:
+        # Server-minted context only. Public JSON cannot reach this branch.
+        data = dict(data or {})
+        _ictx = _REL_INTERNAL_EXPORT_CTX.get() or {}
+        data['_rel26_internal'] = True
+        data['skip_rel26_gate'] = True
+        data['_rel2_evidence_collect'] = True
+        data['_rel31_evidence_internal'] = True
+        if _ictx.get('compiler_frozen_authority') or data.get(
+                '_rel33_compiler_frozen_authority'):
+            data['_rel33_compiler_frozen_authority'] = True
+    _pdf_saved_authority = bool(
+        not _server_internal_pdf
+        and (
+            _normalize_claimed_export_id(data.get('strategy_id'))
+            or _normalize_claimed_export_id(data.get('artifact_id'))
+        )
+    )
+    if not _is_internal_rel_export_request(data):
+        _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
+        if not _rl_ok:
+            return jsonify({
+                'success': False,
+                'error': 'Too many export requests. Please wait a moment and try again.',
+                'retry_after': _rl_retry,
+            }), 429
     content = data.get('content', '')
     filename = data.get('filename', 'document')
     lang = data.get('language', 'en')
@@ -84366,8 +84622,15 @@ def api_generate_pdf():
         except Exception:
             pass
         content = _db_canonical_p
+    elif _pdf_saved_authority:
+        if not str(content or '').strip():
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
     else:
-        # PR-5B.7B.3: client-payload fallback — guard the request body too.
+        # Ad-hoc content-to-PDF only. A failed saved-artifact lookup
+        # must not silently downgrade into this branch.
         if not data.get('_rel33_compiler_frozen_authority'):
             try:
                 _export_fws_p = (
@@ -84688,6 +84951,12 @@ def api_generate_pdf():
                 return jsonify(_pdf_err_body), 422
             from flask import send_file
             _pdf_out = _rel31_export.pdf_bytes or _rel31_export.bytes_data or b''
+            _record_sync_pdf_render({
+                'route': 'pdf',
+                'user_id': session.get('user_id', 0),
+                'artifact_id': _art_id_p,
+                'via': 'rel31_authoritative',
+            })
             return send_file(
                 BytesIO(_pdf_out),
                 mimetype='application/pdf',
@@ -84722,6 +84991,12 @@ def api_generate_pdf():
             }), 422
 
     try:
+        _record_sync_pdf_render({
+            'route': 'pdf',
+            'user_id': session.get('user_id', 0),
+            'artifact_id': _art_id_p,
+            'via': 'reportlab_builder',
+        })
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.enums import TA_RIGHT, TA_LEFT, TA_CENTER
