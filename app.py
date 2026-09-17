@@ -12,6 +12,7 @@ import secrets
 import re
 import html
 import uuid
+import contextvars
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -787,7 +788,9 @@ def ensure_strategy_task_terminal_state(task_id, error_message=None, *,
 
 def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                         retry_delay_seconds=1.0,
-                                        language=None):
+                                        language=None,
+                                        document_type=None,
+                                        strategy_id=None):
     """Look up the most recently saved strategy for user+domain with a
     small retry loop to absorb DB-commit races.
 
@@ -840,11 +843,16 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                         (user_id,)
                     ).fetchall()
                     row = None
+                    _latest_matches = []
                     for cand in candidates:
                         cd = (cand['domain']
                               if hasattr(cand, 'keys') else cand[4])
                         if _strategy_domain_canonical(cd) != target_code:
                             continue
+                        if strategy_id not in (None, ''):
+                            _cid = cand['id'] if hasattr(cand, 'keys') else cand[0]
+                            if str(_cid) != str(strategy_id):
+                                continue
                         if want_lang:
                             cl = (cand['language']
                                   if hasattr(cand, 'keys') else '')
@@ -855,8 +863,32 @@ def ensure_latest_strategy_recoverable(user_id, domain, max_retries=3,
                                 cl_n = 'en'
                             if cl_n and cl_n != want_lang:
                                 continue
-                        row = cand
-                        break
+                        _cand_dtype = ''
+                        _cand_rel37 = False
+                        try:
+                            import json as _json_lsr
+                            _sj_raw = (
+                                cand['sections_json']
+                                if hasattr(cand, 'keys') else None)
+                            _sj = _json_lsr.loads(_sj_raw) if _sj_raw else {}
+                            if isinstance(_sj, dict):
+                                _cand_dtype = str(
+                                    _sj.get('_document_type') or '').strip().lower()
+                                _cand_rel37 = str(
+                                    _sj.get('_rel37_applied') or ''
+                                ).strip().lower() in ('1', 'true', 'yes', 'on')
+                        except Exception:  # noqa: BLE001
+                            _cand_dtype = ''
+                            _cand_rel37 = False
+                        _want_dtype = str(document_type or '').strip().lower()
+                        if _want_dtype:
+                            _got_dtype = _cand_dtype or 'strategy'
+                            if _got_dtype != _want_dtype:
+                                continue
+                        _latest_matches.append((cand, _cand_rel37))
+                    if _latest_matches:
+                        _rel37_hits = [item for item in _latest_matches if item[1]]
+                        row = (_rel37_hits or _latest_matches)[0][0]
             if row:
                 print(f"[STRATEGY-ASYNC] latest_recoverable_hit "
                       f"user={user_id} domain={domain!r} attempt={attempt} "
@@ -1105,14 +1137,211 @@ def check_generation_rate_limit(route_label):
     return True, 0
 
 
+# Server-minted only. Never deserialized from public JSON, headers, or hashes.
+_REL_INTERNAL_EXPORT_CTX = contextvars.ContextVar(
+    '_rel_internal_export_ctx', default=None)
+_REL_INTERNAL_EXPORT_SOURCES = frozenset({
+    'build_pdf_bytes',
+    'authorized_export_service',
+})
+_PUBLIC_PDF_PRIVILEGED_KEYS = frozenset({
+    '_rel26_internal',
+    'skip_rel26_gate',
+    '_rel2_evidence_collect',
+    '_rel31_evidence_internal',
+    '_rel33_compiler_frozen_authority',
+    '_rel37_source_sections',
+})
+_SYNC_PDF_RENDER_EVENTS = []
+
+
 def _is_internal_rel_export_request(data):
-    """REL2/REL3 evidence loops — exempt from user-facing export throttles."""
-    data = data if isinstance(data, dict) else {}
+    """REL2/REL3 evidence loops — exempt from user-facing export throttles.
+
+    Trust is established only by a server-created contextvar, never by
+    client JSON flags, headers, path, or a supplied hash.
+    """
+    ctx = _REL_INTERNAL_EXPORT_CTX.get()
     return bool(
-        data.get('_rel26_internal')
-        or data.get('skip_rel26_gate')
-        or data.get('_rel2_evidence_collect')
-        or data.get('_rel31_evidence_internal'))
+        isinstance(ctx, dict)
+        and ctx.get('authorized') is True
+        and ctx.get('source') in _REL_INTERNAL_EXPORT_SOURCES
+    )
+
+
+def _server_internal_export_authorized():
+    ctx = _REL_INTERNAL_EXPORT_CTX.get()
+    return bool(
+        isinstance(ctx, dict)
+        and ctx.get('authorized') is True
+        and ctx.get('source') in _REL_INTERNAL_EXPORT_SOURCES
+    )
+
+
+def _record_sync_pdf_render(event):
+    """Spy hook: invoked only when sync PDF rendering begins."""
+    try:
+        _SYNC_PDF_RENDER_EVENTS.append(dict(event or {}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _normalize_claimed_export_id(value):
+    if value in (None, '', 0, '0'):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _strip_privileged_export_fields(payload):
+    """Discard client fields that must not mint internal trust."""
+    if not isinstance(payload, dict):
+        return {}
+    out = dict(payload)
+    for key in _PUBLIC_PDF_PRIVILEGED_KEYS:
+        out.pop(key, None)
+    for nested_key in ('sections', 'metadata', 'contract_meta'):
+        nested = out.get(nested_key)
+        if isinstance(nested, dict):
+            cleaned = dict(nested)
+            for key in _PUBLIC_PDF_PRIVILEGED_KEYS:
+                cleaned.pop(key, None)
+            out[nested_key] = cleaned
+    return out
+
+
+def _public_pdf_identifier_conflict(data):
+    sid = _normalize_claimed_export_id((data or {}).get('strategy_id'))
+    aid = _normalize_claimed_export_id((data or {}).get('artifact_id'))
+    return bool(sid and aid and sid != aid)
+
+
+def _load_authorized_saved_export_for_pdf(artifact_id, user_id, artifact_type):
+    """Load a saved strategy that the session principal already owns."""
+    if not artifact_id or not user_id:
+        return None
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    resolved = _resolve_numeric_strategy_id(artifact_id, uid)
+    try:
+        art_id = int(resolved or artifact_id)
+    except (TypeError, ValueError):
+        return None
+    if art_id <= 0:
+        return None
+    try:
+        conn = get_db_direct()
+        row = conn.execute(
+            'SELECT id, user_id, content, sections_json, content_json, '
+            'language, domain, org_name FROM strategies '
+            'WHERE id = ? AND user_id = ?',
+            (art_id, uid),
+        ).fetchone()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    keys = row.keys() if hasattr(row, 'keys') else []
+    sections = {}
+    raw_sections = row['sections_json'] if 'sections_json' in keys else ''
+    if raw_sections:
+        try:
+            parsed = (json.loads(raw_sections)
+                      if isinstance(raw_sections, str) else raw_sections)
+            if isinstance(parsed, dict):
+                sections = parsed
+        except Exception:  # noqa: BLE001
+            sections = {}
+    content = ''
+    try:
+        content = _canonical_content_from_db(
+            artifact_type or 'strategy', art_id, uid) or ''
+    except Exception:  # noqa: BLE001
+        content = ''
+    if not str(content or '').strip():
+        content = row['content'] if 'content' in keys else ''
+    return {
+        'id': int(row['id'] if 'id' in keys else art_id),
+        'content': content or '',
+        'sections': sections,
+        'lang': row['language'] if 'language' in keys else '',
+        'domain': row['domain'] if 'domain' in keys else '',
+        'org_name': row['org_name'] if 'org_name' in keys else '',
+    }
+
+
+def _bind_public_saved_pdf_export(data):
+    """Authorize a claimed saved artifact before any render or snapshot use.
+
+    Reuses ``_rel36_11_bind_saved_export_lookup``. Mutates ``data`` to the
+    authorized server record. Returns an error response, or None.
+    """
+    if not isinstance(data, dict):
+        return jsonify({
+            'error': 'Export blocked — invalid export request.',
+            'reason': 'invalid_export_request',
+        }), 400
+    if _public_pdf_identifier_conflict(data):
+        return jsonify({
+            'error': 'Export blocked — conflicting artifact identifiers.',
+            'reason': 'conflicting_export_identifiers',
+        }), 400
+    claimed = (
+        _normalize_claimed_export_id(data.get('strategy_id'))
+        or _normalize_claimed_export_id(data.get('artifact_id'))
+    )
+    if not claimed:
+        return None
+    uid = session.get('user_id', 0)
+    domain = data.get('domain') or ''
+    lang = data.get('language') or 'en'
+    art_type = _rel33_normalize_export_artifact_type(data)
+    _ctx, denied = _rel36_11_bind_saved_export_lookup(
+        data, route='pdf', export_type='pdf',
+        domain=domain, lang=lang, artifact_type=art_type,
+        artifact_id=claimed)
+    if denied is not None:
+        return denied
+    if _ctx and _ctx.get('strategy_id'):
+        claimed = str(_ctx['strategy_id'])
+        data['strategy_id'] = _ctx['strategy_id']
+        data['artifact_id'] = _ctx['strategy_id']
+    loaded = _load_authorized_saved_export_for_pdf(claimed, uid, art_type)
+    if loaded is None:
+        return jsonify({
+            'error': 'Export blocked — artifact not owned by current user.',
+            'reason': 'cross_user_export_denied',
+        }), 403
+    data['content'] = loaded['content']
+    data['sections'] = loaded['sections']
+    data['_rel37_source_sections'] = loaded['sections']
+    data['strategy_id'] = loaded['id']
+    data['artifact_id'] = loaded['id']
+    if loaded.get('org_name') and not str(data.get('org_name') or '').strip():
+        data['org_name'] = loaded['org_name']
+    return None
+
+
+def _export_store_owner_denied(entry):
+    """Deny cross-user export-status / export-download. No extra record detail."""
+    uid = session.get('user_id', 0)
+    try:
+        uid = int(uid or 0)
+    except (TypeError, ValueError):
+        uid = 0
+    try:
+        owner = int((entry or {}).get('user_id') or 0)
+    except (TypeError, ValueError):
+        owner = 0
+    if owner and uid and owner != uid:
+        return jsonify({
+            'error': 'Export blocked — artifact not owned by current user.',
+            'reason': 'cross_user_export_denied',
+        }), 403
+    return None
 
 
 # Configuration
@@ -10730,7 +10959,7 @@ def _split_strategy_sections_by_h2(content):
         ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
         ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
         ('environment', r'(?:البيئة|Environment|Regulatory)'),
-        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|تقييم\s+الفجوات|Gap\s+Analysis|Gap\s+Assessment|Gaps)'),
         ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
         ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
         ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
@@ -14791,6 +15020,8 @@ def _build_professional_strategy_document_model(
             section_splitter=_split_strategy_sections_by_h2,
         )
     except Exception as _p41_e:  # noqa: BLE001
+        if _p41_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+            raise
         print(
             f'[PR-CY41] professional model fallback to base model: {_p41_e}',
             flush=True,
@@ -14815,6 +15046,8 @@ def _build_professional_strategy_document_model(
             return enrich_professional_blocks(
                 base, content_sections, metadata or {}, lang)
         except Exception as _enrich_e:  # noqa: BLE001
+            if _enrich_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                raise
             print(
                 f'[PR-CY41] enrich fallback failed: {_enrich_e}',
                 flush=True,
@@ -14833,7 +15066,9 @@ def _build_professional_strategy_document_model(
                     domain=domain,
                     section_splitter=_split_strategy_sections_by_h2,
                 )
-            except Exception:
+            except Exception as _ensure_e:
+                if _ensure_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                    raise
                 return base
 
 
@@ -14863,13 +15098,19 @@ def _apply_arabic_spacing_fixes(text):
         return text or ''
 
 
-def _prepare_final_render_text(text, lang='ar'):
+def _prepare_final_render_text(text, lang='ar', preserve_model_values=False):
     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
     try:
         from professional_strategy_render import prepare_final_render_text
-        out = prepare_final_render_text(text or '', lang)
+        out = prepare_final_render_text(
+            text or '', lang,
+            preserve_model_values=preserve_model_values)
     except Exception:  # noqa: BLE001
         out = text or ''
+    # REL37 authoritative cells keep persisted values. The Cyber family-id
+    # stripper must not blank a validated framework/family code.
+    if preserve_model_values:
+        return out
     # REL34 — visible-export only: strip family:* and apply Arabic cleanup.
     # In-memory validators still see internal stamps / pre-cleanup tokens.
     try:
@@ -19141,6 +19382,26 @@ def api_generate_strategy_async():
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
 
+    from release_engine_v3.rel37_framework_aliases import (
+        FrameworksRequestTypeError as _FwReqTypeErr,
+        validate_frameworks_request_type as _validate_fw_req,
+    )
+    try:
+        _validate_fw_req(data.get('frameworks'), field='frameworks')
+        if 'selected_frameworks' in data:
+            _validate_fw_req(
+                data.get('selected_frameworks'), field='selected_frameworks')
+    except _FwReqTypeErr as _fw_req_err:
+        return jsonify({
+            'success': False,
+            'error': str(_fw_req_err),
+            'error_code': getattr(_fw_req_err, 'error_code',
+                                 'frameworks_request_type_invalid'),
+            'field': getattr(_fw_req_err, 'field', 'frameworks'),
+            'actual_type': getattr(_fw_req_err, 'actual_type', ''),
+            'index': getattr(_fw_req_err, 'index', None),
+        }), 400
+
     if not data.get('domain'):
         return jsonify({'error': 'domain required'}), 400
 
@@ -19441,6 +19702,7 @@ def api_strategy_status(task_id):
                                     },
                                     read_only=True,
                                     task_id=task_id,
+                                    sections=_sj if isinstance(_sj, dict) else None,
                                 ))
                             _cy25_prev_blockers = (
                                 _cy25_contract_prev.get(
@@ -19707,12 +19969,22 @@ def api_strategy_latest():
         request.args.get('lang')
         or request.args.get('language')
         or '')
+    _latest_dtype = (
+        request.args.get('document_type')
+        or request.args.get('doc_type')
+        or '')
+    _latest_sid = (
+        request.args.get('strategy_id')
+        or request.args.get('id')
+        or '')
     if not domain:
         return jsonify({'success': False, 'error': 'domain required'}), 400
     try:
         row, attempts = ensure_latest_strategy_recoverable(
             session['user_id'], domain, max_retries=3, retry_delay_seconds=0.5,
             language=_latest_lang,
+            document_type=_latest_dtype,
+            strategy_id=_latest_sid,
         )
         if not row:
             # PR-CY12 Part A — do NOT return "No strategy found" while the
@@ -30150,6 +30422,23 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
             return defects
     except Exception:  # noqa: BLE001
         pass
+    # REL37.0.2 — Data/AI/DT strategy uses model.validate(), not markdown
+    # richness / synth_failed regex gates.
+    try:
+        from release_engine_v3.rel37_live_attach import (
+            rel37_legacy_audit_defects,
+            should_skip_legacy_richness_gates,
+        )
+        if should_skip_legacy_richness_gates(
+                domain=domain or '',
+                lang=lang,
+                document_type=_dtype,
+                selected_frameworks=selected_frameworks,
+                sections=sections if isinstance(sections, dict) else None):
+            return rel37_legacy_audit_defects(
+                sections if isinstance(sections, dict) else {})
+    except Exception:  # noqa: BLE001
+        pass
     # PR-CY16 — normalize Arabic CISO-office variants in the Cyber
     # Vision section BEFORE the audit inspects it. Strictly scoped to
     # ``domain == 'cyber'`` (no-op for every other domain); only mutates
@@ -30231,12 +30520,11 @@ def _final_strategy_audit(sections, lang, doc_subtype=None,
         defects.append(('roadmap', 'roadmap_rows_insufficient',
                         n_road, _RICHNESS_MIN_ROADMAP_ROWS))
     # KPI rows + main-header count
-    n_kpi = count_substantive_kpis(sections.get('kpis', '') or '')
+    n_kpi = _rel37_kpi_row_count(sections)
     if n_kpi < _RICHNESS_MIN_KPI_ROWS:
         defects.append(('kpis', 'kpi_rows_insufficient',
                         n_kpi, _RICHNESS_MIN_KPI_ROWS))
-    n_kpi_hdr = len(_KPI_MAIN_TABLE_HEADER_RE.findall(
-        sections.get('kpis', '') or ''))
+    n_kpi_hdr = _rel37_kpi_main_header_count(sections)
     if n_kpi_hdr != 1:
         defects.append(('kpis', 'kpi_main_header_count_invalid',
                         n_kpi_hdr, 1))
@@ -31692,6 +31980,67 @@ def _apply_rel36_17_en_cyber_final_save_gate_stabilizer(
         return {'applied': False, 'action_taken': 'hook_error'}
 
 
+def _rel37_authoritative_sections(sections):
+    """True when REL37 Data/AI/DT compilers own the live sections."""
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        return is_rel37_authoritative(sections)
+    except Exception:
+        return False
+
+
+def _rel37_kpi_main_header_count(sections, text=None):
+    """Count KPI main headers; REL37 uses the typed model, not regex."""
+    if _rel37_authoritative_sections(sections):
+        try:
+            from release_engine_v3.rel37_apply import rel37_kpi_main_header_count
+            return rel37_kpi_main_header_count(sections)
+        except Exception:
+            return 1
+    blob = text if text is not None else (sections.get('kpis', '') or '')
+    return len(_KPI_MAIN_TABLE_HEADER_RE.findall(blob))
+
+
+def _rel37_kpi_row_count(sections, text=None):
+    """Count KPI main rows; REL37 uses the typed model, not formula/source."""
+    if _rel37_authoritative_sections(sections):
+        try:
+            from release_engine_v3.rel37_apply import rel37_kpi_row_count
+            return rel37_kpi_row_count(sections)
+        except Exception:
+            return 0
+    blob = text if text is not None else (sections.get('kpis', '') or '')
+    return count_substantive_kpis(blob)
+
+
+def _apply_rel37_data_ai_dt_compilers(
+        sections, lang, domain, selected_frameworks,
+        document_type='strategy', org_name='', task_id=''):
+    """Overlay REL37 compilers for Data/AI/DT strategy only."""
+    try:
+        from release_engine_v3.rel37_apply import apply_rel37_to_sections
+        out, repairs = apply_rel37_to_sections(
+            sections,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
+            selected_frameworks=selected_frameworks,
+            org_name=org_name,
+            task_id=task_id,
+        )
+        if isinstance(out, dict) and out is not sections:
+            sections.clear()
+            sections.update(out)
+        return {'applied': bool(repairs), 'repairs': repairs}
+    except Exception as _rel37_hook_e:
+        print(
+            '[REL37-LIVE-COMPILER-ATTACH] '
+            f'early_hook_error={_rel37_hook_e!r}',
+            flush=True,
+        )
+        return {'applied': False, 'action_taken': 'hook_error'}
+
+
 def _apply_rel36_18_ai_sdaia_kpi_synth(
         sections, lang, domain, selected_frameworks,
         document_type='strategy', task_id='',
@@ -31701,6 +32050,8 @@ def _apply_rel36_18_ai_sdaia_kpi_synth(
     Runs after REL36.17 and immediately before unchanged
     ``synthesize_kpi_depth``. Does not mark that gate passed.
     """
+    if _rel37_authoritative_sections(sections):
+        return {'applied': False, 'action_taken': 'rel37_authoritative'}
     try:
         from release_engine_v3.rel36_18_ai_sdaia_kpi_synth import (
             apply_rel36_18_ai_sdaia_kpi_synth,
@@ -31732,6 +32083,8 @@ def _apply_rel36_7_data_pdpl_roadmap_balance(
     when NDMO and/or PDPL is selected and the official catalog tokens
     are absent. Neither helper skips the balance gate.
     """
+    if _rel37_authoritative_sections(sections):
+        return
     try:
         from release_engine_v3.rel36_7_data_pdpl_roadmap_balance import (
             apply_rel36_7_data_pdpl_roadmap_balance,
@@ -31761,6 +32114,8 @@ def _apply_rel36_10_data_catalog_roadmap_balance(
     No-op outside Data Arabic strategy + NDMO/PDPL. Does not skip the
     ``data_roadmap_balance_missing`` gate.
     """
+    if _rel37_authoritative_sections(sections):
+        return
     try:
         from release_engine_v3.rel36_10_data_catalog_roadmap_balance import (
             apply_rel36_10_data_catalog_roadmap_balance,
@@ -37687,7 +38042,7 @@ def _prcy22_apply_sections_to_content(content, sections):
         ('vision',      r'(?:الرؤية|Vision|Strategic Vision)'),
         ('pillars',     r'(?:الركائز|Strategic Pillars|Pillars)'),
         ('environment', r'(?:البيئة|Environment|Regulatory)'),
-        ('gaps',        r'(?:تحليل\s+الفجوات|Gap\s+Analysis|Gaps)'),
+        ('gaps',        r'(?:تحليل\s+الفجوات|تقييم\s+الفجوات|Gap\s+Analysis|Gap\s+Assessment|Gaps)'),
         ('roadmap',     r'(?:خارطة\s+الطريق|Roadmap|Implementation)'),
         ('kpis',        r'(?:مؤشرات\s+الأداء|KPI|Key\s+Performance)'),
         ('confidence',  r'(?:تقييم\s+الثقة|Confidence|Risk)'),
@@ -51733,14 +52088,20 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             return model_cache[cache_key]
         # REL3.3 P0 — never rebrand a blank domain as cyber; prefer the
         # caller-provided domain, then the backend artifact domain.
+        _meta = dict(metadata or {})
+        if isinstance(sections, dict) and not _meta.get('_rel37_source_sections'):
+            _meta['_rel37_source_sections'] = {
+                k: v for k, v in sections.items()
+                if str(k).startswith('_rel37_')
+            } or sections
         model = _build_professional_strategy_document_model(
             markdown,
-            metadata=metadata,
+            metadata=_meta,
             sections=sections,
             selected_frameworks=selected_frameworks,
             lang=lang,
             domain=domain or backend.get('domain') or (
-                (metadata or {}).get('domain')),
+                _meta.get('domain')),
         )
         model_cache[cache_key] = model
         return model
@@ -51864,6 +52225,29 @@ def _rel2_backend_callables(*, pipeline_cache=None):
             meta = dict(metadata) if isinstance(metadata, dict) else {}
             fws = selected_frameworks or meta.get('selected_frameworks') or []
             fw_labels = [_rel2_framework_display(f) for f in fws if f]
+            _rel37_src = {}
+            if isinstance(sections, dict):
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative as _rel37_auth_be,
+                        rel37_authority_snapshot as _rel37_snap_be,
+                        recall_rel37_export_snapshot as _rel37_recall_be,
+                    )
+                    _recalled = _rel37_recall_be(
+                        meta.get('strategy_id') or meta.get('artifact_id'),
+                        model_hash=meta.get('canonical_hash')
+                        or meta.get('model_hash'))
+                    if not _rel37_auth_be(sections) and _rel37_auth_be(_recalled):
+                        sections = dict(_recalled)
+                    if _rel37_auth_be(sections):
+                        _rel37_src = dict(sections)
+                    else:
+                        _rel37_src = _rel37_snap_be(sections) or dict(_recalled)
+                except Exception:  # noqa: BLE001
+                    _rel37_src = {
+                        k: v for k, v in (sections or {}).items()
+                        if str(k).startswith('_rel37_')
+                    }
             _dtype = str(meta.get('document_type') or 'strategy').strip().lower()
             _doc_type_labels = {
                 'strategy': 'Strategy Document',
@@ -51888,55 +52272,64 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                 )
             except Exception:  # noqa: BLE001
                 _rel33_frozen = False
-            with app.test_client() as client:
-                with client.session_transaction() as sess:
-                    sess['user_id'] = uid
-                    sess['username'] = 'rel2_export_validator'
-                    sess['role'] = 'user'
-                resp = client.post('/api/generate-pdf', json={
-                    'content': content or '',
-                    'filename': 'rel2_evidence',
-                    'language': lang,
-                    'org_name': meta.get('org_name', 'منظمة'),
-                    'sector': meta.get('sector', 'حكومي'),
-                    'doc_type': _doc_type_label,
-                    'domain': dcode,
-                    'artifact_type': _dtype,
-                    'document_type': _dtype,
-                    'generation_mode': 'drafting',
-                    'selected_frameworks': (
-                        fw_labels or ['NCA ECC', 'NCA DCC']),
-                    'sections': sections or {},
-                    '_rel2_evidence_collect': True,
-                    '_rel26_internal': True,
-                    '_rel31_evidence_internal': True,
-                    '_rel33_compiler_frozen_authority': _rel33_frozen,
-                    'skip_rel26_gate': True,
-                })
-                if resp.status_code == 200 and resp.data:
-                    return resp.data
-                if resp.status_code == 422:
-                    try:
-                        import json as _json_pdf
-                        _body = _json_pdf.loads(
-                            resp.get_data(as_text=True) or '{}')
-                        _errs = _body.get('blocking_errors') or []
-                        if not _errs and _body.get('error'):
-                            _errs = [str(_body.get('error'))]
-                        if _errs:
-                            raise ValueError(str(_errs[0]))
-                        raise ValueError(
-                            'rel3_export_evidence_failed:pdf:quality_gate_422')
-                    except ValueError:
-                        raise
-                    except Exception as _pdf422_exc:  # noqa: BLE001
-                        raise ValueError(
-                            f'rel3_export_evidence_failed:pdf:quality_gate_422:'
-                            f'{_pdf422_exc}') from _pdf422_exc
-                if resp.status_code >= 400:
+            _int_token = _REL_INTERNAL_EXPORT_CTX.set({
+                'authorized': True,
+                'source': 'build_pdf_bytes',
+                'principal': uid,
+                'artifact_id': str(
+                    meta.get('artifact_id') or meta.get('strategy_id') or ''),
+                'compiler_frozen_authority': bool(_rel33_frozen),
+            })
+            try:
+                with app.test_client() as client:
+                    with client.session_transaction() as sess:
+                        sess['user_id'] = uid
+                        sess['username'] = 'rel2_export_validator'
+                        sess['role'] = 'user'
+                    resp = client.post('/api/generate-pdf', json={
+                        'content': content or '',
+                        'filename': 'rel2_evidence',
+                        'language': lang,
+                        'org_name': meta.get('org_name', 'منظمة'),
+                        'sector': meta.get('sector', 'حكومي'),
+                        'doc_type': _doc_type_label,
+                        'domain': dcode,
+                        'artifact_type': _dtype,
+                        'document_type': _dtype,
+                        'generation_mode': 'drafting',
+                        'selected_frameworks': fw_labels or list(fws or []),
+                        'sections': sections or {},
+                        '_rel37_source_sections': _rel37_src,
+                        'strategy_id': meta.get('strategy_id') or '',
+                        'artifact_id': meta.get('artifact_id') or '',
+                        '_rel33_compiler_frozen_authority': _rel33_frozen,
+                    })
+            finally:
+                _REL_INTERNAL_EXPORT_CTX.reset(_int_token)
+            if resp.status_code == 200 and resp.data:
+                return resp.data
+            if resp.status_code == 422:
+                try:
+                    import json as _json_pdf
+                    _body = _json_pdf.loads(
+                        resp.get_data(as_text=True) or '{}')
+                    _errs = _body.get('blocking_errors') or []
+                    if not _errs and _body.get('error'):
+                        _errs = [str(_body.get('error'))]
+                    if _errs:
+                        raise ValueError(str(_errs[0]))
                     raise ValueError(
-                        f'rel3_export_evidence_failed:pdf:http_'
-                        f'{resp.status_code}')
+                        'rel3_export_evidence_failed:pdf:quality_gate_422')
+                except ValueError:
+                    raise
+                except Exception as _pdf422_exc:  # noqa: BLE001
+                    raise ValueError(
+                        f'rel3_export_evidence_failed:pdf:quality_gate_422:'
+                        f'{_pdf422_exc}') from _pdf422_exc
+            if resp.status_code >= 400:
+                raise ValueError(
+                    f'rel3_export_evidence_failed:pdf:http_'
+                    f'{resp.status_code}')
         except ValueError:
             # Propagate PDF quality / render failures to the exporter so
             # callers see the explicit render_exception, not empty_bytes.
@@ -52497,6 +52890,22 @@ def _build_cyber_final_strategy_artifact(
     blocking_errors = []
     repair_actions = []
     diagnostics = {'artifact_builder': 'PR-CY85', 'phase': output_type}
+    if dcode != 'cyber':
+        try:
+            from release_engine_v3.rel37_preview_section_contract import (
+                apply_rel37_preview_section_contract as _rel37_psc,
+            )
+            _sections, _rel37_psc_diag = _rel37_psc(
+                _sections,
+                domain=dcode,
+                lang=lang_n,
+                document_type='strategy',
+                markdown=_content,
+                emit=True,
+            )
+            diagnostics['rel37_preview_section_contract'] = _rel37_psc_diag
+        except Exception:  # noqa: BLE001
+            pass
 
     if (dcode == 'cyber' and not read_only
             and _PRCY28_VERSION_FLAGS.get('prcy89')):
@@ -56841,6 +57250,8 @@ def rebuild_canonical_kpi_section(sections, lang, domain, fw_short):
 
     Returns a dict summarizing what was rebuilt. Idempotent.
     """
+    if _rel37_authoritative_sections(sections):
+        return {'skipped': True, 'reason': 'rel37_authoritative'}
     kpis = sections.get('kpis', '') or ''
     is_ar = (lang == 'ar')
 
@@ -57852,7 +58263,7 @@ def validate_arabic_section_family_integrity(sections, lang):
                 f'{_broad_count} KPI-guides headings (broad regex) in kpis',
             ))
         # KPI main table must have ≥ 1 header occurrence — duplicates count
-        _main_count = len(_KPI_MAIN_TABLE_HEADER_RE.findall(_kpis_text_check))
+        _main_count = _rel37_kpi_main_header_count(sections, _kpis_text_check)
         if _main_count > 1:
             defects.append((
                 'kpis_main_table_duplicated',
@@ -62194,6 +62605,28 @@ def api_generate_strategy():
     
     try:
         data = request.json
+        from release_engine_v3.rel37_framework_aliases import (
+            FrameworksRequestTypeError as _FwReqTypeErrSync,
+            validate_frameworks_request_type as _validate_fw_req_sync,
+        )
+        try:
+            _validate_fw_req_sync(
+                (data or {}).get('frameworks'), field='frameworks')
+            if isinstance(data, dict) and 'selected_frameworks' in data:
+                _validate_fw_req_sync(
+                    data.get('selected_frameworks'),
+                    field='selected_frameworks')
+        except _FwReqTypeErrSync as _fw_req_err_sync:
+            return jsonify({
+                'success': False,
+                'error': str(_fw_req_err_sync),
+                'error_code': getattr(
+                    _fw_req_err_sync, 'error_code',
+                    'frameworks_request_type_invalid'),
+                'field': getattr(_fw_req_err_sync, 'field', 'frameworks'),
+                'actual_type': getattr(_fw_req_err_sync, 'actual_type', ''),
+                'index': getattr(_fw_req_err_sync, 'index', None),
+            }), 400
         # PR-5B.8B Section E: coarse stage beacon — generation_pipeline.
         # Earliest safe point inside api_generate_strategy where ``data``
         # is bound; no generation logic depends on this call.
@@ -66653,7 +67086,96 @@ The confidence score is based on a comprehensive assessment of the organization'
                     broken[sec_key] = '; '.join(_sec_group_reasons)
             return len(broken) == 0, broken
 
-        _struct_valid, _struct_broken = _validate_strategy_structure(sections, lang)
+        # REL37.0.3 — attach compiler authority BEFORE markdown completeness /
+        # richness packs so supported Data/AI/DT strategy never dies on
+        # so_rows_insufficient / gap_guide_coverage / heading mismatch /
+        # confidence_score_missing_in_richness against pre-compiler LLM text.
+        _rel37_early_diag = None
+        _rel37_authoritative_route = False
+        _rel37_generation_adopted = False
+        try:
+            from release_engine_v3.rel37_early_authority import (
+                Rel37ModelValidationFailed as _Rel37EarlyValFailed,
+                attach_rel37_early_authority as _rel37_early_attach,
+                should_skip_legacy_arabic_richness_pack as _rel37_skip_legacy_pack,
+            )
+            _rel37_early_fws = (
+                data.get('frameworks')
+                or data.get('selected_frameworks')
+                or _frameworks_raw
+            )
+            _rel37_early_org = (
+                locals().get('org_name')
+                or data.get('org_name')
+                or 'The Organization'
+            )
+            _rel37_early_result = _rel37_early_attach(
+                sections,
+                domain=locals().get('_dcode') or data.get('domain'),
+                lang=lang,
+                document_type=_document_type,
+                selected_frameworks=_rel37_early_fws,
+                org_name=_rel37_early_org,
+                explicit_selection=data.get('explicit_selection'),
+                strategy_id=data.get('strategy_id') or data.get('id'),
+                task_id=data.get('task_id'),
+            )
+            _rel37_early_diag = _rel37_early_result.diagnostic
+            _rel37_generation_adopted = bool(
+                _rel37_early_result.applied
+                or _rel37_early_result.compiler_used
+                or (_rel37_early_diag or {}).get('compiler_used')
+            )
+            if _rel37_early_result.applied:
+                sections = _rel37_early_result.sections
+                content = sections.get('content', content)
+                _rel37_authoritative_route = True
+                print(
+                    '[REL37-EARLY-COMPILER-AUTHORITY] '
+                    f"applied=true domain={_rel37_early_result.diagnostic.get('domain_resolved')} "
+                    f"reason={_rel37_early_result.diagnostic.get('support_reason')} "
+                    f"model_hash={_rel37_early_result.diagnostic.get('model_hash')}",
+                    flush=True,
+                )
+        except _Rel37EarlyValFailed as _rel37_early_err:
+            print(
+                f'[REL37-EARLY-COMPILER-AUTHORITY] model validation failed: '
+                f'{_rel37_early_err.blockers}',
+                flush=True,
+            )
+            return jsonify({
+                'success': False,
+                'error': 'rel37_model_validation_failed',
+                'error_code': 'rel37_model_validation_failed',
+                'blockers': list(_rel37_early_err.blockers or []),
+            }), 422
+        except Exception as _rel37_early_exc:
+            print(
+                f'[REL37-EARLY-COMPILER-AUTHORITY] skipped: {_rel37_early_exc}',
+                flush=True,
+            )
+
+        if _rel37_authoritative_route or (
+            locals().get('_rel37_skip_legacy_pack')
+            and _rel37_skip_legacy_pack(
+                domain=locals().get('_dcode') or data.get('domain'),
+                lang=lang,
+                document_type=_document_type,
+                selected_frameworks=(
+                    data.get('frameworks')
+                    or data.get('selected_frameworks')
+                    or _frameworks_raw
+                ),
+                explicit_selection=data.get('explicit_selection'),
+                sections=sections,
+            )
+        ):
+            # CanonicalDocument.validate() already ran. Do not let the old
+            # markdown structure validator rewrite or AI-repair REL37 output.
+            _struct_valid, _struct_broken = True, {}
+            _rel37_authoritative_route = True
+        else:
+            _struct_valid, _struct_broken = _validate_strategy_structure(sections, lang)
 
         # ── Draft-mode status banner ─────────────────────────────────────────
         # For drafting mode, prepend a visible draft notice to the vision section
@@ -66979,10 +67501,80 @@ The confidence score is based on a comprehensive assessment of the organization'
             'score_justification_repair_failed': 'Score Justification',
             'confidence_section_missing_after_repair': 'Confidence Section',
         } if doc_subtype != 'board' else {}
+        # REL37 generation-time authority: validate the in-progress model
+        # (no saved strategy_id required). Legacy markdown grammar must
+        # not reject a complete typed guide set, and later repair text
+        # must not replace that model as the persist source.
+        _rel37_typed_guides = None
+        try:
+            from release_engine_v3.rel37_apply import (
+                load_model as _rel37_load_guides,
+                rel37_guide_completeness_persist_result as _rel37_guide_gate,
+            )
+            from release_engine_v3.rel37_live_attach import (
+                stamp_rel37_keys as _rel37_stamp_guides,
+            )
+            _rel37_typed_guides = _rel37_guide_gate(
+                sections,
+                domain=_dcode or domain,
+                lang=lang,
+                document_type=_document_type,
+                org_name=str(
+                    locals().get('org_name')
+                    or (data or {}).get('org_name')
+                    or ''),
+                selected_frameworks=_frameworks_raw,
+                adopted=bool(locals().get('_rel37_generation_adopted')),
+                diagnostic=locals().get('_rel37_early_diag') or {},
+            )
+            if _rel37_typed_guides:
+                print(
+                    '[STRATEGY-GATE] save_decision=BLOCKED '
+                    'reason=rel37_guide_completeness '
+                    f'issues={list(_rel37_typed_guides)}',
+                    flush=True,
+                )
+                return jsonify({
+                    'success': False,
+                    'strategy_id': None,
+                    'error': 'rel37_model_validation_failed',
+                    'error_code': 'rel37_model_validation_failed',
+                    'blockers': list(_rel37_typed_guides),
+                }), 422
+            if _rel37_typed_guides is not None:
+                _rel37_guide_model = _rel37_load_guides(sections)
+                if _rel37_guide_model is not None:
+                    sections = _rel37_stamp_guides(
+                        sections, _rel37_guide_model)
+                    content = (
+                        sections.get('_rel37_markdown')
+                        or sections.get('content')
+                        or content
+                    )
+                _quality_issues_post = [
+                    i for i in (_quality_issues_post or [])
+                    if i not in _core_tech_required
+                ]
+        except Exception as _rel37_guide_gate_exc:  # noqa: BLE001
+            print(
+                '[STRATEGY-GATE] rel37_guide_gate_error '
+                f'{_rel37_guide_gate_exc!r}',
+                flush=True,
+            )
+            if locals().get('_rel37_generation_adopted'):
+                return jsonify({
+                    'success': False,
+                    'strategy_id': None,
+                    'error': 'rel37_model_validation_failed',
+                    'error_code': 'rel37_model_validation_failed',
+                    'blockers': ['rel37_guide_gate_error'],
+                }), 422
+            _rel37_typed_guides = None
         _remaining_core = _prcy65_critical_core_tech_issue_tags(
             _quality_issues_post)
         if (doc_subtype != 'board' and _remaining_core
-                and _dcode != 'cyber'):
+                and _dcode != 'cyber'
+                and _rel37_typed_guides is None):
             _human = ', '.join(_core_tech_required[k] for k in sorted(_remaining_core))
             print(f"[STRATEGY] Refusing save — Technical Strategy missing mandatory "
                   f"sections after repair: {sorted(_remaining_core)}", flush=True)
@@ -67562,10 +68154,31 @@ The confidence score is based on a comprehensive assessment of the organization'
         # out of the post-INSERT tail (remediation prompt clause B:
         # "Do NOT mutate sections after INSERT without rebuilding and
         # updating persisted content").
+        from release_engine_v3.rel37_preview_section_contract import (
+            VisibleSectionTypeError as _VisibleSectionTypeError,
+            textual_section_value_or_raise as _textual_section_value_or_raise,
+        )
+
+        def _text_processor_value(sk):
+            try:
+                return _textual_section_value_or_raise(sk, sections.get(sk))
+            except _VisibleSectionTypeError as _vte:
+                return jsonify({
+                    'success': False,
+                    'error': str(_vte),
+                    'error_code': getattr(
+                        _vte, 'error_code', 'visible_section_type_invalid'),
+                    'section_key': getattr(_vte, 'key', sk),
+                    'actual_type': getattr(_vte, 'actual_type', ''),
+                }), 422
+
         for sk in list(sections.keys()):
-            if sections[sk]:
+            _sv = _text_processor_value(sk)
+            if isinstance(_sv, tuple):
+                return _sv
+            if _sv:
                 # Kill any 3+ asterisk runs, replace with space
-                sections[sk] = re.sub(r'\*{3,}', ' ', sections[sk])
+                sections[sk] = re.sub(r'\*{3,}', ' ', _sv)
                 # Ensure plain 'Confidence Score: XX%' gets bold markers
                 sections[sk] = re.sub(r'(?<!\*)(Confidence Score)\s*:\s*(\d+%)', r'**\1:** \2', sections[sk])
                 sections[sk] = re.sub(r'(?<!\*)(درجة الثقة)\s*:\s*(\d+%)', r'**\1:** \2', sections[sk])
@@ -67876,8 +68489,11 @@ The confidence score is based on a comprehensive assessment of the organization'
             return text.strip()
 
         for sk in list(sections.keys()):
-            if sections[sk]:
-                sections[sk] = _normalize_section(sk, sections[sk])
+            _sv = _text_processor_value(sk)
+            if isinstance(_sv, tuple):
+                return _sv
+            if _sv:
+                sections[sk] = _normalize_section(sk, _sv)
 
         # ── POST-NORMALIZE: Section-specific table guards ─────────────────────
         # Guard A: Ensure gap table always has # column as first column
@@ -69595,6 +70211,38 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 _pa_conf, _ts_re.IGNORECASE,
                             ))
                             _pa_failures = []
+                            _pa_rel37_cr = None
+                            try:
+                                from release_engine_v3.rel37_apply import (
+                                    rel37_confidence_risk_post_repair_result
+                                    as _rel37_cr_gate,
+                                )
+                                _pa_rel37_cr = _rel37_cr_gate(
+                                    sections,
+                                    domain=locals().get('_dcode')
+                                    or data.get('domain')
+                                    or domain,
+                                    lang=lang,
+                                    document_type=locals().get(
+                                        '_document_type') or 'strategy',
+                                    org_name=str(
+                                        locals().get('org_name')
+                                        or data.get('org_name')
+                                        or ''),
+                                    selected_frameworks=(
+                                        data.get('frameworks')
+                                        or data.get('selected_frameworks')
+                                        or locals().get('_frameworks_raw')
+                                        or []
+                                    ),
+                                )
+                            except Exception as _pa_rel37_cr_err:
+                                print(
+                                    '[REL37-CONFIDENCE-RISK-GATE] '
+                                    f'helper_error={_pa_rel37_cr_err!r}',
+                                    flush=True,
+                                )
+                                _pa_rel37_cr = None
                             if _pa_so < 6:
                                 # Safe diagnostic logging — surfaces why the
                                 # post-repair vision audit rejected the
@@ -69644,18 +70292,31 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     )
                                 _pa_failures.append(
                                     f'vision_so_rows={_pa_so} (need ≥ 6)')
-                            if not _pa_csf_present:
-                                _pa_failures.append('confidence_csf_heading_missing')
-                            if not _pa_risk_present:
-                                _pa_failures.append('confidence_risk_heading_missing')
-                            if _pa_risk_hdr_count != 1:
-                                _pa_failures.append(
-                                    f'confidence_risk_heading_count='
-                                    f'{_pa_risk_hdr_count} (must be 1)')
-                            if _pa_risk_rows < 6:
-                                _pa_failures.append(
-                                    f'confidence_risk_rows={_pa_risk_rows}'
-                                    f' (need ≥ 6)')
+                            if _pa_rel37_cr is not None:
+                                # REL37-authoritative: typed model + identity.
+                                # Never treat _rel37_applied=true as a bypass.
+                                _pa_failures.extend(_pa_rel37_cr)
+                                print(
+                                    '[REL37-CONFIDENCE-RISK-GATE] '
+                                    f'authoritative=true '
+                                    f'blockers={list(_pa_rel37_cr)}',
+                                    flush=True,
+                                )
+                            else:
+                                if not _pa_csf_present:
+                                    _pa_failures.append(
+                                        'confidence_csf_heading_missing')
+                                if not _pa_risk_present:
+                                    _pa_failures.append(
+                                        'confidence_risk_heading_missing')
+                                if _pa_risk_hdr_count != 1:
+                                    _pa_failures.append(
+                                        f'confidence_risk_heading_count='
+                                        f'{_pa_risk_hdr_count} (must be 1)')
+                                if _pa_risk_rows < 6:
+                                    _pa_failures.append(
+                                        f'confidence_risk_rows={_pa_risk_rows}'
+                                        f' (need ≥ 6)')
                             if _pa_failures:
                                 _pa_msg = (
                                     'Post-repair assertions failed: '
@@ -73223,6 +73884,39 @@ The confidence score is based on a comprehensive assessment of the organization'
                                     _pr5b9y_is_data_pdpl = (
                                         'PDPL' in _pr5b9y_resolved)
                                 if _pr5b9y_is_data_pdpl:
+                                    try:
+                                        from release_engine_v3.rel37_apply import (
+                                            load_model as _rel37_pdpl_load,
+                                            rel37_guide_completeness_persist_result
+                                            as _rel37_pdpl_guides,
+                                        )
+                                        from release_engine_v3.rel37_live_attach import (
+                                            stamp_rel37_keys as _rel37_pdpl_stamp,
+                                        )
+                                        _rel37_pdpl_ok = _rel37_pdpl_guides(
+                                            sections,
+                                            domain=_dcode or domain,
+                                            lang=lang,
+                                            document_type=_document_type,
+                                            org_name=str(
+                                                locals().get('org_name')
+                                                or (data or {}).get('org_name')
+                                                or ''),
+                                            selected_frameworks=_frameworks_raw,
+                                            adopted=bool(
+                                                locals().get('_rel37_generation_adopted')),
+                                            diagnostic=locals().get(
+                                                '_rel37_early_diag') or {},
+                                        )
+                                        if _rel37_pdpl_ok is not None and not _rel37_pdpl_ok:
+                                            _rel37_pdpl_model = _rel37_pdpl_load(
+                                                sections)
+                                            if _rel37_pdpl_model is not None:
+                                                sections = _rel37_pdpl_stamp(
+                                                    sections, _rel37_pdpl_model)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                if _pr5b9y_is_data_pdpl:
                                     _pr5b9y_remaining_before = (
                                         _compute_missing_selected_framework_coverage(
                                             sections, _frameworks_raw,
@@ -74300,10 +74994,19 @@ The confidence score is based on a comprehensive assessment of the organization'
                     # Guide coverage is also logged here; the gate at
                     # line ~24100 also enforces it via validate_kpi_richness.
                     try:
+                        _apply_rel37_data_ai_dt_compilers(
+                            sections, lang, domain,
+                            locals().get('_frameworks_raw') or [],
+                            document_type=locals().get('_document_type')
+                            or 'strategy',
+                            org_name=str(locals().get('org_name') or ''),
+                            task_id=str(locals().get('task_id') or ''),
+                        )
                         _kpi_final_text = sections.get('kpis', '') or ''
-                        _kpi_hdr_count  = len(
-                            _KPI_MAIN_TABLE_HEADER_RE.findall(_kpi_final_text))
-                        _kpi_row_count  = count_substantive_kpis(_kpi_final_text)
+                        _kpi_hdr_count  = _rel37_kpi_main_header_count(
+                            sections, _kpi_final_text)
+                        _kpi_row_count  = _rel37_kpi_row_count(
+                            sections, _kpi_final_text)
                         _kpi_guide_hdrs = len(
                             _KPI_GUIDES_HEADING_RE.findall(_kpi_final_text))
                         _kpi_per_blocks = len(
@@ -74346,6 +75049,21 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 f'vs {_kpi_row_count} substantive rows '
                                 f'(expected equal)',
                             ))
+                        try:
+                            from release_engine_v3.rel37_live_attach import (
+                                should_skip_legacy_richness_gates as _rel37_skip_kpi,
+                            )
+                            if _rel37_skip_kpi(
+                                    domain=domain,
+                                    lang=lang,
+                                    document_type=locals().get('_document_type')
+                                    or 'strategy',
+                                    selected_frameworks=locals().get(
+                                        '_frameworks_raw') or [],
+                                    sections=sections):
+                                _kpi_integrity_defects = []
+                        except Exception:  # noqa: BLE001
+                            pass
                         if _kpi_integrity_defects:
                             _msg_en = (
                                 'KPI section failed final integrity gate: '
@@ -74749,6 +75467,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                         print(f'[STRATEGY-DIAG] residue_validator_failed: {_rse}',
                               flush=True)
                         _residue_defects = []
+                    # REL37.0.3 — supported Data/AI/DT strategy already
+                    # passed CanonicalDocument.validate(). Do not let the
+                    # old markdown completeness pack 422 compiler output.
+                    if (
+                            locals().get('_rel37_authoritative_route')
+                            or _rel37_authoritative_sections(sections)
+                    ):
+                        _contam_defects = []
+                        _table_defects = []
+                        _family_defects = []
+                        _global_family_defects = []
+                        _residue_defects = []
+                        print(
+                            '[REL37-EARLY-COMPILER-AUTHORITY] '
+                            'old_arabic_richness_skipped=true '
+                            'reason=rel37_authoritative_model',
+                            flush=True,
+                        )
                     # REL36.9.1: English Cyber ECC+DCC vision prompt-residue
                     # repair. Runs AFTER synthesis/depth (which can
                     # reintroduce residue) and IMMEDIATELY BEFORE the
@@ -74840,6 +75576,13 @@ The confidence score is based on a comprehensive assessment of the organization'
                                 else 'drafting'),
                             doc_subtype=doc_subtype,
                         )
+                        _apply_rel37_data_ai_dt_compilers(
+                            sections, lang, _dcode or domain,
+                            _rel3691_fws,
+                            document_type=_document_type,
+                            org_name=str(locals().get('org_name') or ''),
+                            task_id=_rel3691_tid,
+                        )
                     except Exception as _rel3691_e:
                         print(
                             '[REL36.9.1-EN-CYBER-VISION-PROMPT-RESIDUE-REPAIR] '
@@ -74854,6 +75597,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                     except Exception as _pre2:
                         print(f'[STRATEGY-DIAG] prompt_residue_validator_failed: '
                               f'{_pre2}', flush=True)
+                        _prompt_residue_defects = []
+                    if (
+                            locals().get('_rel37_authoritative_route')
+                            or _rel37_authoritative_sections(sections)
+                    ):
                         _prompt_residue_defects = []
                     # Log the full family-heading location map so operators
                     # can see exactly where each family lives before the gate.
@@ -75044,6 +75792,16 @@ The confidence score is based on a comprehensive assessment of the organization'
                             print(
                                 '[STRATEGY-DIAG] richness_gate_skipped='
                                 'rel32_compiler_first_document_quality_authority',
+                                flush=True,
+                            )
+                        elif (
+                                locals().get('_rel37_authoritative_route')
+                                or _rel37_authoritative_sections(sections)
+                        ):
+                            _richness_defects = []
+                            print(
+                                '[STRATEGY-DIAG] richness_gate_skipped='
+                                'rel37_authoritative_model_validate',
                                 flush=True,
                             )
                         else:
@@ -76294,8 +77052,93 @@ The confidence score is based on a comprehensive assessment of the organization'
                         _skip_so_final = True
                 except Exception:  # noqa: BLE001
                     pass
+                _rel37_skip_legacy_save = False
+                try:
+                    from release_engine_v3.rel37_live_attach import (
+                        should_skip_legacy_richness_gates as _rel37_skip_save,
+                    )
+                    _rel37_skip_legacy_save = _rel37_skip_save(
+                        domain=_dcode or domain,
+                        lang=lang,
+                        document_type=_document_type,
+                        selected_frameworks=_frameworks_raw,
+                        request=data if isinstance(data, dict) else {},
+                        sections=sections,
+                    )
+                except Exception:  # noqa: BLE001
+                    _rel37_skip_legacy_save = False
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        load_model as _rel37_load_post,
+                        rel37_guide_completeness_persist_result as _rel37_guide_post,
+                        rel37_model_payload_missing as _rel37_missing_post,
+                        restore_adopted_rel37_model as _rel37_restore_post,
+                    )
+                    from release_engine_v3.rel37_live_attach import (
+                        stamp_rel37_keys as _rel37_stamp_post,
+                    )
+                    _rel37_early_keep = locals().get('_rel37_early_result')
+                    if (
+                            locals().get('_rel37_generation_adopted')
+                            and _rel37_early_keep is not None
+                            and getattr(_rel37_early_keep, 'model', None) is not None
+                            and _rel37_missing_post(sections)
+                    ):
+                        # Intermediate overlays may drop authority keys.
+                        # Restore the already-validated in-progress model;
+                        # do not compile a replacement.
+                        sections = _rel37_restore_post(
+                            sections, _rel37_early_keep.model)
+                    _rel37_post_guides = _rel37_guide_post(
+                        sections,
+                        domain=_dcode or domain,
+                        lang=lang,
+                        document_type=_document_type,
+                        org_name=str(
+                            locals().get('org_name')
+                            or (data or {}).get('org_name')
+                            or ''),
+                        selected_frameworks=_frameworks_raw,
+                        adopted=bool(locals().get('_rel37_generation_adopted')),
+                        diagnostic=locals().get('_rel37_early_diag') or {},
+                    )
+                    if _rel37_post_guides:
+                        print(
+                            '[STRATEGY-GATE] save_decision=BLOCKED '
+                            'reason=rel37_guide_completeness_post_normalization '
+                            f'issues={list(_rel37_post_guides)}',
+                            flush=True,
+                        )
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'error_code': 'rel37_model_validation_failed',
+                            'blockers': list(_rel37_post_guides),
+                        }), 422
+                    if _rel37_post_guides is not None:
+                        _rel37_post_model = _rel37_load_post(sections)
+                        if _rel37_post_model is not None:
+                            sections = _rel37_stamp_post(
+                                sections, _rel37_post_model)
+                        _rel37_skip_legacy_save = True
+                except Exception as _rel37_post_guide_exc:  # noqa: BLE001
+                    print(
+                        '[STRATEGY-GATE] rel37_guide_post_gate_error '
+                        f'{_rel37_post_guide_exc!r}',
+                        flush=True,
+                    )
+                    if locals().get('_rel37_generation_adopted'):
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'error_code': 'rel37_model_validation_failed',
+                            'blockers': ['rel37_guide_gate_error'],
+                        }), 422
                 if (doc_subtype != 'board' and _remaining_so_final
-                        and not _skip_so_final):
+                        and not _skip_so_final
+                        and not _rel37_skip_legacy_save):
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=strategic_objectives_malformed_post_normalization '
                           f'issues={sorted(_remaining_so_final)}', flush=True)
@@ -76342,7 +77185,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                       f'vision_len={len(sections.get("vision","") or "")}',
                       flush=True)
                 if (_remaining_core_final
-                        and _cy28_dcode != 'cyber'):
+                        and _cy28_dcode != 'cyber'
+                        and not _rel37_skip_legacy_save):
                     _human_final = ', '.join(_core_tech_required_final[k] for k in sorted(_remaining_core_final))
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=core_tech_missing_post_normalization '
@@ -76682,6 +77526,72 @@ The confidence score is based on a comprehensive assessment of the organization'
                 #    repaired sections. THIS IS THE SAME PAYLOAD that will
                 #    be persisted AND returned to preview AND read back
                 #    by _canonical_content_from_db for PDF/DOCX export.
+                # REL37.0.2 — last writer before persist. Replaces Data/AI/DT
+                # strategy sections with the validated CanonicalDocument so
+                # later markdown repair cannot discard ``_rel37_*`` keys.
+                try:
+                    from release_engine_v3.rel37_early_authority import (
+                        confirm_rel37_final_persist as _rel37_confirm_save,
+                    )
+                    from release_engine_v3.rel37_live_attach import (
+                        Rel37ModelValidationFailed as _Rel37Fail,
+                    )
+                    _rel3702 = _rel37_confirm_save(
+                        sections if isinstance(sections, dict) else {},
+                        content=content or '',
+                        domain_input=str(
+                            (data or {}).get('domain') or domain or ''),
+                        domain=str(_dcode or domain or ''),
+                        lang=lang,
+                        document_type=_document_type,
+                        selected_frameworks=list(
+                            (data or {}).get('frameworks')
+                            or (data or {}).get('selected_frameworks')
+                            or _frameworks_raw
+                            or []),
+                        explicit_selection=(
+                            (data or {}).get('explicit_selection')
+                            if isinstance(data, dict) else None),
+                        org_name=str(locals().get('org_name') or ''),
+                        task_id=str(
+                            (data or {}).get('async_task_id')
+                            or (data or {}).get('task_id')
+                            or ''),
+                        strategy_id=str(
+                            (data or {}).get('strategy_id') or ''),
+                        request=data if isinstance(data, dict) else {},
+                        early_diagnostic=locals().get('_rel37_early_diag'),
+                    )
+                    sections = _rel3702.sections
+                    if _rel3702.content:
+                        content = _rel3702.content
+                    _rel37_early_diag = _rel3702.diagnostic
+                except Exception as _rel3702_exc:
+                    from release_engine_v3.rel37_live_attach import (
+                        Rel37ModelValidationFailed as _Rel37Fail2,
+                    )
+                    if isinstance(_rel3702_exc, _Rel37Fail2) or (
+                            type(_rel3702_exc).__name__
+                            == 'Rel37ModelValidationFailed'):
+                        _rel3702_blockers = list(
+                            getattr(_rel3702_exc, 'blockers', [])
+                            or ['rel37_model_validation_failed'])
+                        print(
+                            '[REL37-LIVE-COMPILER-ATTACH] '
+                            f'fail_closed blockers={_rel3702_blockers}',
+                            flush=True,
+                        )
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'model_validation_blockers': _rel3702_blockers,
+                        }), 422
+                    print(
+                        '[REL37-LIVE-COMPILER-ATTACH] '
+                        f'persist_hook_error={_rel3702_exc!r}',
+                        flush=True,
+                    )
                 # REL3.3 — the strategies table has no document_type column, so
                 # non-strategy document types (gap_assessment / risk) must ride
                 # inside sections_json for /api/strategy/latest to resolve the
@@ -79946,6 +80856,12 @@ def api_generate_pdf_async():
         data = request.get_json(force=True) or {}
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
+    data = _strip_privileged_export_fields(data)
+    if _public_pdf_identifier_conflict(data):
+        return jsonify({
+            'error': 'Export blocked — conflicting artifact identifiers.',
+            'reason': 'conflicting_export_identifiers',
+        }), 400
 
     content  = data.get('content', '').strip()
     filename = data.get('filename', 'document')
@@ -79961,9 +80877,6 @@ def api_generate_pdf_async():
         print(f"[DOMAIN] PDF async export rejected: {_de}", flush=True)
         return jsonify({'error': 'Missing or unsupported strategy domain '
                                   'for PDF export.'}), 400
-
-    if not content:
-        return jsonify({'error': 'No content'}), 400
 
     # ── Fail-closed gate on async path ───────────────────────────────────────
     _art_id_a   = data.get('artifact_id') or data.get('strategy_id')
@@ -79981,6 +80894,23 @@ def api_generate_pdf_async():
             data['strategy_id'] = _rel3611_ctx['strategy_id']
             data['artifact_id'] = _rel3611_ctx['strategy_id']
         lang = _rel3611_ctx.get('lang') or lang
+    if _art_id_a:
+        _loaded_async = _load_authorized_saved_export_for_pdf(
+            _art_id_a, session.get('user_id', 0), _art_type_a)
+        if _loaded_async is None:
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
+        content = (_loaded_async.get('content') or '').strip()
+        data['content'] = content
+        data['sections'] = _loaded_async.get('sections') or {}
+        data['_rel37_source_sections'] = data['sections']
+        data['strategy_id'] = _loaded_async['id']
+        data['artifact_id'] = _loaded_async['id']
+        _art_id_a = _loaded_async['id']
+    if not content:
+        return jsonify({'error': 'No content'}), 400
     try:
         _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
         if not _gate_a['allowed']:
@@ -80027,10 +80957,11 @@ def api_generate_pdf_async():
             pass
         content = _db_canonical
     elif _art_id_a:
-        try:
-            content = ensure_markdown_formatting(content)
-        except Exception as _nf_e:
-            print(f'[ASYNC-NORM] PDF client-content normalize failed: {_nf_e}', flush=True)
+        if not str(content or '').strip():
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
 
     # PR-5B.7B.3: client-payload fallback guard — when no DB-canonical
     # content was used, validate the (possibly normalized) client content
@@ -80158,7 +81089,11 @@ def api_generate_pdf_async():
             }), 422
 
     task_id = str(uuid.uuid4())
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
+    _export_store[task_id] = {
+        'status': 'pending',
+        'filename': filename,
+        'user_id': session.get('user_id', 0),
+    }
 
     _content  = content
     _filename = filename
@@ -80307,7 +81242,8 @@ def api_generate_pdf_async():
             tmp.write(raw)
             tmp.close()
             _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename, 'fmt': 'pdf'
+                'status': 'done', 'tmp': tmp.name, 'filename': _filename,
+                'fmt': 'pdf', 'user_id': _export_uid_pdf,
             }
             print(f"ASYNC PDF: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
@@ -80316,6 +81252,7 @@ def api_generate_pdf_async():
             _err_entry = {'status': 'error', 'error': str(exc)}
             if _debug_evidence_pdf and _pdf_debug_holder.get('diag'):
                 _err_entry['diag'] = _pdf_debug_holder['diag']
+            _err_entry['user_id'] = _export_uid_pdf
             _export_store[_task_id] = _err_entry
 
     threading.Thread(target=_build_pdf, daemon=True).start()
@@ -80575,7 +81512,11 @@ def api_generate_docx_async():
 
     task_id = str(uuid.uuid4())
 
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
+    _export_store[task_id] = {
+        'status': 'pending',
+        'filename': filename,
+        'user_id': session.get('user_id', 0),
+    }
 
     _content  = content
     _filename = filename
@@ -80803,7 +81744,8 @@ def api_generate_docx_async():
             tmp.write(raw)
             tmp.close()
             _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename
+                'status': 'done', 'tmp': tmp.name, 'filename': _filename,
+                'user_id': _export_uid,
             }
             print(f"ASYNC DOCX: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
@@ -80843,6 +81785,7 @@ def api_generate_docx_async():
                         pass
                 except Exception:  # noqa: BLE001
                     pass
+            _err_entry_docx['user_id'] = _export_uid
             _export_store[_task_id] = _err_entry_docx
 
     threading.Thread(target=_build, daemon=True).start()
@@ -80855,12 +81798,10 @@ def api_export_status(task_id):
     """Poll async export task status."""
     entry = _export_store.get(task_id)
     if not entry:
-        # Also check other workers via a temp-file sentinel
-        import os
-        candidates = [f for f in os.listdir('/tmp') if f.startswith(f'mizan_export_{task_id}')]
-        if candidates:
-            return jsonify({'status': 'done', 'task_id': task_id})
         return jsonify({'status': 'not_found'}), 404
+    _own_denied = _export_store_owner_denied(entry)
+    if _own_denied is not None:
+        return _own_denied
 
     status = entry.get('status', 'pending')
     if status == 'done':
@@ -80887,18 +81828,14 @@ def api_export_download(task_id):
     import os
     from flask import send_file as _send_file
 
-    entry = _export_store.get(task_id, {})
+    entry = _export_store.get(task_id)
+    if not entry:
+        return jsonify({'error': 'File not ready or already downloaded'}), 404
+    _own_denied = _export_store_owner_denied(entry)
+    if _own_denied is not None:
+        return _own_denied
     tmp_path = entry.get('tmp')
     filename = entry.get('filename', 'document')
-
-    # Cross-worker fallback: scan /tmp
-    if not tmp_path:
-        candidates = [f'/tmp/{f}' for f in os.listdir('/tmp')
-                      if f.startswith('mizan_export_') and task_id in f
-                      and (f.endswith('.docx') or f.endswith('.pdf'))]
-        if candidates:
-            tmp_path = candidates[0]
-            filename = entry.get('filename', 'document')
 
     if not tmp_path or not os.path.exists(tmp_path):
         return jsonify({'error': 'File not ready or already downloaded'}), 404
@@ -81018,7 +81955,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         )
     if _is_strategy_doc and content:
         try:
-            _is_frag_b, _found_b, _why_b = _is_strategy_export_fragment(content)
+            _is_frag_b, _found_b, _why_b = _is_strategy_export_fragment(
+                content,
+                sections,
+                domain=domain,
+                lang=lang,
+                document_type='strategy',
+                org_name=org_name,
+                selected_frameworks=selected_frameworks,
+            )
         except Exception:
             _is_frag_b, _found_b, _why_b = False, set(), ''
         print(
@@ -81849,9 +82794,31 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             _rel31_adapter_build = False
         if rel2_export_validation or _rel31_adapter_build:
             if isinstance(sections, dict) and sections:
+                try:
+                    from release_engine_v3.rel37_preview_section_contract import (
+                        sections_for_visible_render as _rel37_vis,
+                    )
+                    _vis_docx = _rel37_vis(sections)
+                except Exception:  # noqa: BLE001
+                    _vis_docx = sections
                 _cy22_docx_sections = {
-                    k: v for k, v in sections.items()
+                    k: v for k, v in _vis_docx.items()
                     if isinstance(v, str) and not str(k).startswith('_')}
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        rel37_bind_export_sections as _rel37_bind_vis,
+                    )
+                    _cy22_docx_sections = _rel37_bind_vis(
+                        sections if isinstance(sections, dict) else {},
+                        _cy22_docx_sections,
+                        domain=domain,
+                        lang='ar' if is_arabic else 'en',
+                        document_type='strategy',
+                        org_name=org_name,
+                        selected_frameworks=selected_frameworks or [],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             else:
                 try:
                     _cy22_docx_sections = (
@@ -81914,6 +82881,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     selected_frameworks=selected_frameworks or [],
                     lang='ar' if is_arabic else 'en',
                     domain=domain,
+                    sections=sections if isinstance(sections, dict) else None,
                     output_type='docx',
                     request_context={
                         'payload': data if isinstance(
@@ -81925,6 +82893,14 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 )
                 content = _cy25_contract_docx.get('final_markdown', content)
                 _cy22_docx_sections = _cy25_contract_docx.get('sections', {})
+                try:
+                    from release_engine_v3.rel37_preview_section_contract import (
+                        sections_for_visible_render as _rel37_vis_docx,
+                    )
+                    if isinstance(_cy22_docx_sections, dict):
+                        _cy22_docx_sections = _rel37_vis_docx(_cy22_docx_sections)
+                except Exception:  # noqa: BLE001
+                    pass
                 if is_arabic and _PRCY28_VERSION_FLAGS.get('prcy86'):
                     content, _cy22_docx_sections = (
                         _prcy86_maybe_polish_cyber_export(
@@ -82017,6 +82993,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     'domain':   domain,
                     'doc_type': doc_type,
                     'content':  content,
+                    '_rel37_source_sections': (
+                        sections if isinstance(sections, dict) else {}),
                 },
                 sections=_cy22_docx_sections or None,
                 selected_frameworks=selected_frameworks or [],
@@ -82030,6 +83008,8 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 flush=True,
             )
         except Exception as _dmdl_e:
+            if _dmdl_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                raise
             print(f'[STRATEGY-DOC-MODEL] docx non-fatal: {_dmdl_e}',
                   flush=True)
             _docx_doc_model = None
@@ -82144,8 +83124,12 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             return
         try:
             _lang = 'ar' if is_arabic else 'en'
-            header = [_prepare_final_render_text(h, _lang) for h in header]
-            rows = [[_prepare_final_render_text(c, _lang) for c in r]
+            _keep_rel37 = bool(
+                (_docx_doc_model or {}).get('rel37_content_authority'))
+            header = [_prepare_final_render_text(
+                h, _lang, preserve_model_values=_keep_rel37) for h in header]
+            rows = [[_prepare_final_render_text(
+                c, _lang, preserve_model_values=_keep_rel37) for c in r]
                     for r in rows]
             tbl = doc.add_table(rows=len(rows) + 1, cols=len(header))
             tbl.alignment = (WD_TABLE_ALIGNMENT.RIGHT
@@ -82266,9 +83250,16 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             if blk.get('title'):
                 _docx_pro_heading(blk.get('title', ''))
             _gv_rows = blk.get('rows') or []
+            _gv_hdr = [str(h) for h in (blk.get('header') or []) if str(h).strip()]
             if _gv_rows:
                 _gv_max_cols = max((len(r) for r in _gv_rows), default=3)
-                if _gv_max_cols >= 5:
+                if _gv_hdr and len(_gv_hdr) >= 4:
+                    _ncols = len(_gv_hdr)
+                    _docx_pro_grid_table(
+                        _gv_hdr,
+                        [[r[i] if len(r) > i else '' for i in range(_ncols)]
+                         for r in _gv_rows])
+                elif _gv_max_cols >= 5:
                     _hdr = (['الدور', 'نطاق المسؤولية', 'المساءلة',
                              'التقارير / التصعيد', 'الإطار المرتبط']
                             if is_arabic else
@@ -82277,6 +83268,14 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     _docx_pro_grid_table(
                         _hdr,
                         [[r[i] if len(r) > i else '' for i in range(5)]
+                         for r in _gv_rows])
+                elif _gv_max_cols >= 4:
+                    _hdr = (['الدور', 'المسؤولية', 'التكرار', 'المالك']
+                            if is_arabic else
+                            ['Role', 'Responsibility', 'Cadence', 'Owner'])
+                    _docx_pro_grid_table(
+                        _hdr,
+                        [[r[i] if len(r) > i else '' for i in range(4)]
                          for r in _gv_rows])
                 else:
                     _hdr = (['الدور', 'النطاق', 'المساءلة'] if is_arabic
@@ -83124,7 +84123,25 @@ def api_generate_docx():
                 _export_sections = _norm_risk_secs_d(
                     _split_risk_md_d(content or '')) or {}
         else:
-            _export_sections = _split_strategy_sections_by_h2(content or '') or {}
+            _h2_export_sections = (
+                _split_strategy_sections_by_h2(content or '') or {})
+            _prep_export_sections = dict(
+                (locals().get('_rel33_prep_d') or {}).get('sections') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    rel37_bind_export_sections as _rel37_bind_docx,
+                )
+                _export_sections = _rel37_bind_docx(
+                    _prep_export_sections,
+                    _h2_export_sections,
+                    domain=domain,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(_art_type),
+                    org_name=org_name,
+                    selected_frameworks=_selected_fws_sync,
+                )
+            except Exception:  # noqa: BLE001
+                _export_sections = _h2_export_sections
             if _rel33_risk_sections_d:
                 _export_sections = dict(_rel33_risk_sections_d)
         _export_hash = ''
@@ -83655,14 +84672,6 @@ def api_generate_pdf():
         data = request.get_json(silent=True) or {}
     except Exception:
         data = {}
-    if not _is_internal_rel_export_request(data):
-        _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
-        if not _rl_ok:
-            return jsonify({
-                'success': False,
-                'error': 'Too many export requests. Please wait a moment and try again.',
-                'retry_after': _rl_retry,
-            }), 429
     from io import BytesIO
     import os
     import glob
@@ -83672,6 +84681,38 @@ def api_generate_pdf():
             data = request.json or {}
         except Exception:
             data = {}
+    _server_internal_pdf = _server_internal_export_authorized()
+    if not _server_internal_pdf:
+        data = _strip_privileged_export_fields(data)
+        _saved_denied = _bind_public_saved_pdf_export(data)
+        if _saved_denied is not None:
+            return _saved_denied
+    else:
+        # Server-minted context only. Public JSON cannot reach this branch.
+        data = dict(data or {})
+        _ictx = _REL_INTERNAL_EXPORT_CTX.get() or {}
+        data['_rel26_internal'] = True
+        data['skip_rel26_gate'] = True
+        data['_rel2_evidence_collect'] = True
+        data['_rel31_evidence_internal'] = True
+        if _ictx.get('compiler_frozen_authority') or data.get(
+                '_rel33_compiler_frozen_authority'):
+            data['_rel33_compiler_frozen_authority'] = True
+    _pdf_saved_authority = bool(
+        not _server_internal_pdf
+        and (
+            _normalize_claimed_export_id(data.get('strategy_id'))
+            or _normalize_claimed_export_id(data.get('artifact_id'))
+        )
+    )
+    if not _is_internal_rel_export_request(data):
+        _rl_ok, _rl_retry = check_generation_rate_limit('pdf_export')
+        if not _rl_ok:
+            return jsonify({
+                'success': False,
+                'error': 'Too many export requests. Please wait a moment and try again.',
+                'retry_after': _rl_retry,
+            }), 429
     content = data.get('content', '')
     filename = data.get('filename', 'document')
     lang = data.get('language', 'en')
@@ -83759,8 +84800,15 @@ def api_generate_pdf():
         except Exception:
             pass
         content = _db_canonical_p
+    elif _pdf_saved_authority:
+        if not str(content or '').strip():
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
     else:
-        # PR-5B.7B.3: client-payload fallback — guard the request body too.
+        # Ad-hoc content-to-PDF only. A failed saved-artifact lookup
+        # must not silently downgrade into this branch.
         if not data.get('_rel33_compiler_frozen_authority'):
             try:
                 _export_fws_p = (
@@ -83905,8 +84953,35 @@ def api_generate_pdf():
                 _pdf_sections_early = _norm_risk_secs_pe(
                     _split_risk_md_pe(content or '')) or {}
         else:
-            _pdf_sections_early = (
+            _h2_pdf_sections = (
                 _split_strategy_sections_by_h2(content or '') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    prefer_rel37_authority_candidate as _rel37_pref_pdf,
+                )
+                _prep_pdf_sections = _rel37_pref_pdf(
+                    (locals().get('_rel33_prep_p') or {}).get('sections'),
+                    data.get('_rel37_source_sections'),
+                    data.get('sections'),
+                )
+            except Exception:  # noqa: BLE001
+                _prep_pdf_sections = dict(
+                    (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+            try:
+                from release_engine_v3.rel37_apply import (
+                    rel37_bind_export_sections as _rel37_bind_pdf,
+                )
+                _pdf_sections_early = _rel37_bind_pdf(
+                    _prep_pdf_sections,
+                    _h2_pdf_sections,
+                    domain=domain_pdf,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(_art_type_p),
+                    org_name=org_name_pdf,
+                    selected_frameworks=_selected_fws_pdf,
+                )
+            except Exception:  # noqa: BLE001
+                _pdf_sections_early = _h2_pdf_sections
         _pdf_hash_early = ''
         try:
             _pch = _rel2_backend_callables().get('content_hash')
@@ -84054,6 +85129,12 @@ def api_generate_pdf():
                 return jsonify(_pdf_err_body), 422
             from flask import send_file
             _pdf_out = _rel31_export.pdf_bytes or _rel31_export.bytes_data or b''
+            _record_sync_pdf_render({
+                'route': 'pdf',
+                'user_id': session.get('user_id', 0),
+                'artifact_id': _art_id_p,
+                'via': 'rel31_authoritative',
+            })
             return send_file(
                 BytesIO(_pdf_out),
                 mimetype='application/pdf',
@@ -84088,10 +85169,19 @@ def api_generate_pdf():
             }), 422
 
     try:
+        _record_sync_pdf_render({
+            'route': 'pdf',
+            'user_id': session.get('user_id', 0),
+            'artifact_id': _art_id_p,
+            'via': 'reportlab_builder',
+        })
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.enums import TA_RIGHT, TA_LEFT, TA_CENTER
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            PageBreak, Flowable,
+        )
         from reportlab.lib.units import inch, cm
         from reportlab.lib import colors
         from reportlab.pdfbase import pdfmetrics
@@ -84634,7 +85724,11 @@ def api_generate_pdf():
                 if isinstance(_ev_sections, dict) and _ev_sections:
                     _cy22_sections = {
                         k: v for k, v in _ev_sections.items()
-                        if isinstance(v, str) and not str(k).startswith('_')}
+                        if (
+                            str(k).startswith('_rel37_')
+                            or (isinstance(v, str)
+                                and not str(k).startswith('_'))
+                        )}
                 else:
                     _cy22_sections = (
                         _split_strategy_sections_by_h2(content) or {})
@@ -84827,6 +85921,71 @@ def api_generate_pdf():
                         route_name='pdf',
                         output_type='pdf',
                     )
+                _prof_sections = dict(_cy22_sections or {})
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        prefer_rel37_authority_candidate as _rel37_pref_prof,
+                    )
+                    _rel37_prep_secs = _rel37_pref_prof(
+                        (locals().get('_rel33_prep_p') or {}).get('sections'),
+                        data.get('_rel37_source_sections'),
+                        _cy22_sections,
+                        data.get('sections'),
+                    )
+                except Exception:  # noqa: BLE001
+                    _rel37_prep_secs = dict(
+                        (locals().get('_rel33_prep_p') or {}).get('sections') or {})
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative as _rel37_auth_pdf,
+                        rel37_sections_for_professional_render as _rel37_prof,
+                    )
+                    if not _rel37_auth_pdf(_rel37_prep_secs):
+                        import json as _json_rel37_pdf
+                        _rel37_uid = session.get('user_id', 0)
+                        _rel37_sid = _resolve_numeric_strategy_id(
+                            data.get('strategy_id') or _art_id_p,
+                            _rel37_uid)
+                        if not _rel37_sid:
+                            try:
+                                _rel37_sid = int(
+                                    data.get('strategy_id') or _art_id_p or 0)
+                            except (TypeError, ValueError):
+                                _rel37_sid = 0
+                        if _rel37_sid:
+                            _rel37_row = get_db().execute(
+                                'SELECT sections_json FROM strategies '
+                                'WHERE id = ? AND user_id = ?',
+                                (_rel37_sid, _rel37_uid),
+                            ).fetchone()
+                            if _rel37_row and _rel37_row['sections_json']:
+                                _rel37_loaded = _json_rel37_pdf.loads(
+                                    _rel37_row['sections_json'])
+                                if isinstance(_rel37_loaded, dict):
+                                    _rel37_prep_secs = _rel37_loaded
+                    _prof_sections = _rel37_prof(
+                        _rel37_prep_secs,
+                        _prof_sections,
+                        domain=domain_pdf,
+                        lang=lang,
+                        document_type=_rel33_export_document_type(
+                            _art_type_p),
+                        org_name=org_name_pdf,
+                        selected_frameworks=_selected_fws_in,
+                    )
+                except Exception as _rel37_prof_e:  # noqa: BLE001
+                    print(
+                        f'[REL37-PROF] pdf bind failed: {_rel37_prof_e}',
+                        flush=True)
+                _rel37_meta_snap = {}
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        rel37_authority_snapshot as _rel37_snap_meta,
+                    )
+                    _rel37_meta_snap = _rel37_snap_meta(
+                        _rel37_prep_secs or _prof_sections)
+                except Exception:  # noqa: BLE001
+                    _rel37_meta_snap = {}
                 _strategy_doc_model = (
                     _build_professional_strategy_document_model(
                         content,
@@ -84836,8 +85995,10 @@ def api_generate_pdf():
                             'domain':   domain_pdf,
                             'doc_type': doc_type_pdf,
                             'content':  content,
+                            '_rel37_source_sections': (
+                                _rel37_prep_secs or _rel37_meta_snap),
                         },
-                        sections=_cy22_sections or None,
+                        sections=_prof_sections or None,
                         selected_frameworks=_selected_fws_in,
                         lang='ar' if is_arabic else 'en',
                         domain=domain_pdf,
@@ -84870,10 +86031,14 @@ def api_generate_pdf():
                     f'frameworks='
                     f'{_strategy_doc_model.get("selected_frameworks", [])} '
                     f'has_traceability='
-                    f'{bool(_strategy_doc_model["blocks"]["traceability_matrix"]["rows"])}',
+                    f'{bool(_strategy_doc_model["blocks"]["traceability_matrix"]["rows"])} '
+                    f'rel37_authority='
+                    f'{bool(_strategy_doc_model.get("rel37_content_authority"))}',
                     flush=True,
                 )
             except Exception as _mdl_e:
+                if _mdl_e.__class__.__name__ == 'Rel37RenderAuthorityError':
+                    raise
                 print(f'[STRATEGY-DOC-MODEL] non-fatal: {_mdl_e}', flush=True)
                 _strategy_doc_model = None
 
@@ -85174,6 +86339,79 @@ def api_generate_pdf():
             leading=14, spaceAfter=8,
             alignment=TA_RIGHT if is_arabic else TA_LEFT,
         )
+        _rel37_keep = bool(
+            (_strategy_doc_model or {}).get('rel37_content_authority')
+            or (_strategy_doc_model or {}).get('_rel37_source_sections'))
+        if _rel37_keep and not is_arabic:
+            for _sty in (_pro_label_sty, _pro_value_sty, _pro_body_sty):
+                _sty.wordWrap = None
+                _sty.splitLongWords = 0
+
+        class _Rel37ExtractableCell(Flowable):
+            """Draw shaped Arabic, plus extractable logical Unicode.
+
+            Visual reshape/bidi stays on the page. Extractors recover the
+            persisted logical string via PDF ActualText (UTF-16BE).
+            """
+
+            def __init__(self, logical, visual, font_name=None, font_size=None):
+                Flowable.__init__(self)
+                self._logical = str(logical or '').replace('\u00a0', ' ')
+                self._visual = visual
+                self._font_name = font_name
+                self._font_size = font_size
+
+            def wrap(self, availWidth, availHeight):
+                width, height = self._visual.wrap(availWidth, availHeight)
+                self.width, self.height = width, height
+                return width, height
+
+            def draw(self):
+                canv = self.canv
+                marked = False
+                logical = self._logical
+                if logical:
+                    try:
+                        hex_text = (
+                            'FEFF'
+                            + logical.encode('utf-16-be').hex().upper())
+                        canv._code.append(
+                            f'/Span <</ActualText <{hex_text}>>> BDC')
+                        marked = True
+                    except Exception:
+                        marked = False
+                    canv.saveState()
+                    try:
+                        if hasattr(canv, 'setTextRenderMode'):
+                            canv.setTextRenderMode(3)
+                        else:
+                            canv._code.append('3 Tr')
+                        font = self._font_name or 'Helvetica'
+                        size = float(self._font_size or 8)
+                        try:
+                            canv.setFont(font, size)
+                        except Exception:
+                            canv.setFont('Helvetica', size)
+                        y = max(float(getattr(self, 'height', size) or size) - size, 0)
+                        canv.drawString(0, y, logical)
+                    except Exception:
+                        pass
+                    canv.restoreState()
+                self._visual.drawOn(canv, 0, 0)
+                if marked:
+                    try:
+                        canv._code.append('EMC')
+                    except Exception:
+                        pass
+
+        def _rel37_has_ar(value):
+            return any('\u0600' <= ch <= '\u06FF' for ch in str(value or ''))
+
+        def _extractable_flow(logical, visual, font_name=None, font_size=None):
+            if (_rel37_keep and is_arabic and _rel37_has_ar(logical)):
+                return _Rel37ExtractableCell(
+                    logical, visual, font_name, font_size)
+            return visual
 
         def _pro_text(t, sty='value'):
             """Render Arabic text through reshape/bidi when needed; pass
@@ -85182,10 +86420,12 @@ def api_generate_pdf():
             if not t:
                 return ''
             _lang = 'ar' if is_arabic else 'en'
-            t = _prepare_final_render_text(str(t), _lang)
+            logical = _prepare_final_render_text(
+                str(t), _lang,
+                preserve_model_values=_rel37_keep)
             # NBSP is used in-model to avoid PRCY41 false positives;
             # emit a real space in the PDF so extractors keep word pairs.
-            t = str(t).replace('\u00a0', ' ')
+            t = str(logical).replace('\u00a0', ' ')
             if is_arabic:
                 # Keep ASCII-only tokens (KPI "#", MFA, etc.) out of
                 # Arabic reshape so returned-PDF extractors still see
@@ -85195,9 +86435,10 @@ def api_generate_pdf():
                 size = 15 if sty == 'title' else (9 if sty == 'label' else 10)
                 font = arabic_font_bold if sty in ('title', 'label') else arabic_font_name
                 try:
-                    return process_arabic(str(t), font, size)
+                    shaped = process_arabic(str(t), font, size)
                 except Exception:
-                    return str(t)
+                    shaped = str(t)
+                return shaped
             return str(t)
 
         def _pro_section_heading(title_txt):
@@ -85320,7 +86561,9 @@ def api_generate_pdf():
             for p in (block.get('paragraphs') or []):
                 if not p or not p.strip():
                     continue
-                flow.append(Paragraph(_pro_text(p, 'body'), _pro_body_sty))
+                flow.append(_extractable_flow(
+                    p, Paragraph(_pro_text(p, 'body'), _pro_body_sty),
+                    arabic_font_name, 10))
                 flow.append(Spacer(1, 0.05 * inch))
             return flow
 
@@ -85841,11 +87084,15 @@ def api_generate_pdf():
                 prof['render_mode'] = 'table'
             if not col_weights:
                 col_weights = prof.get('col_weights')
+            if col_weights and len(col_weights) != ncols:
+                col_weights = None
             if not col_weights:
                 try:
                     from professional_strategy_render import (
                         schema_table_col_weights)
                     col_weights = schema_table_col_weights(schema, ncols)
+                    if col_weights and len(col_weights) != ncols:
+                        col_weights = None
                 except Exception:
                     col_weights = None
             if not col_weights:
@@ -85863,6 +87110,7 @@ def api_generate_pdf():
             fs = prof.get('font_size', 8)
             hfs = prof.get('header_font_size', 9)
             pad = prof.get('padding', 5)
+            _keep_rel37 = _rel37_keep
             _val_sty = ParagraphStyle(
                 'ProTblVal', parent=_pro_value_sty, fontSize=fs, leading=fs + 3)
             _ascii_val_sty = ParagraphStyle(
@@ -85874,18 +87122,28 @@ def api_generate_pdf():
             _ascii_hdr_sty = ParagraphStyle(
                 'ProTblHdrAscii', parent=_hdr_sty,
                 fontName='Helvetica-Bold', alignment=1)
+            if _keep_rel37 and not is_arabic:
+                # Hyphenless CJK mid-word breaks make extracted PDF text
+                # diverge from the persisted value (impl + ementation).
+                for _sty in (_val_sty, _ascii_val_sty, _hdr_sty, _ascii_hdr_sty):
+                    _sty.wordWrap = None
+                    _sty.splitLongWords = 0
+            def _extractable_cell(logical, visual, font_name, font_size):
+                return _extractable_flow(
+                    logical, visual, font_name, font_size)
+
             _hdr_cells = []
             for h in hdr:
                 label = str(h or '')
                 if _nowrap:
                     label = label.replace(' ', '\u00a0')
                 if label.isascii():
-                    _hdr_cells.append(
-                        Paragraph(f"<b>{label}</b>", _ascii_hdr_sty))
+                    visual = Paragraph(f"<b>{label}</b>", _ascii_hdr_sty)
                 else:
-                    _hdr_cells.append(
-                        Paragraph(
-                            f"<b>{_pro_text(label, 'label')}</b>", _hdr_sty))
+                    visual = Paragraph(
+                        f"<b>{_pro_text(label, 'label')}</b>", _hdr_sty)
+                _hdr_cells.append(
+                    _extractable_cell(label, visual, arabic_font_bold, hfs))
             tbl_rows = [_hdr_cells]
             for r in rows:
                 cells = list(r) + [''] * (ncols - len(r))
@@ -85894,13 +87152,17 @@ def api_generate_pdf():
                     # Sanitize before truncate so family:* markers never
                     # survive as ASCII leftovers (English cells previously
                     # skipped _pro_text and leaked family:gov / family:soc_siem).
-                    txt = _pro_text(str(c), 'value')
-                    if prof:
+                    logical = str(c)
+                    txt = _pro_text(logical, 'value')
+                    if prof and not _keep_rel37:
                         txt = _truncate_cell_for_profile(txt, prof)
                     if str(txt).isascii():
-                        row_cells.append(Paragraph(str(txt), _ascii_val_sty))
+                        visual = Paragraph(str(txt), _ascii_val_sty)
                     else:
-                        row_cells.append(Paragraph(str(txt), _val_sty))
+                        visual = Paragraph(str(txt), _val_sty)
+                    row_cells.append(
+                        _extractable_cell(
+                            logical, visual, arabic_font_name, fs))
                 tbl_rows.append(row_cells)
             tbl = Table(
                 tbl_rows, colWidths=col_widths,
@@ -85946,8 +87208,12 @@ def api_generate_pdf():
                 fname, weight, grade, contrib = cells[:4]
                 if ri > 0:
                     flow.append(Spacer(1, 0.05 * inch))
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(fname, 'label')}</b>", factor_hdr_sty))
+                flow.append(_extractable_flow(
+                    fname,
+                    Paragraph(
+                        f"<b>{_pro_text(fname, 'label')}</b>",
+                        factor_hdr_sty),
+                    arabic_font_bold, 10))
                 lines = [
                     (metric_labels[0], weight),
                     (metric_labels[1], grade),
@@ -85957,7 +87223,9 @@ def api_generate_pdf():
                     txt = (
                         f"<b>{_pro_text(lbl, 'label')}:</b> "
                         f"{_pro_text(val, 'value')}")
-                    flow.append(Paragraph(txt, card_sty))
+                    flow.append(_extractable_flow(
+                        str(val), Paragraph(txt, card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.12 * inch))
             flow.append(Spacer(1, 0.1 * inch))
             return flow
@@ -86003,7 +87271,10 @@ def api_generate_pdf():
                             f"{_pro_text(title, 'label')}")
                     else:
                         heading = _pro_text(title, 'label')
-                    flow.append(Paragraph(f"<b>{heading}</b>", _pro_label_sty))
+                    flow.append(_extractable_flow(
+                        str(title),
+                        Paragraph(f"<b>{heading}</b>", _pro_label_sty),
+                        arabic_font_bold, 10))
                     pairs = []
                     _show_cols = (1, 2, 3) if _exec87 else range(len(labels))
                     for i in _show_cols:
@@ -86014,11 +87285,17 @@ def api_generate_pdf():
                         val = cells[ci] if ci < len(cells) else ''
                         if val and str(val).strip() not in ('—', ''):
                             pairs.append([
-                                Paragraph(
-                                    f"<b>{_pro_text(lbl, 'label')}</b>",
-                                    _pro_label_sty),
-                                Paragraph(
-                                    _pro_text(val, 'value'), _pro_value_sty),
+                                _extractable_flow(
+                                    str(lbl),
+                                    Paragraph(
+                                        f"<b>{_pro_text(lbl, 'label')}</b>",
+                                        _pro_label_sty),
+                                    arabic_font_bold, 10),
+                                _extractable_flow(
+                                    str(val),
+                                    Paragraph(
+                                        _pro_text(val, 'value'), _pro_value_sty),
+                                    arabic_font_name, 10),
                             ])
                     if pairs:
                         ct = Table(
@@ -86112,30 +87389,52 @@ def api_generate_pdf():
                     f"{_pro_text(idx, 'label')}. {_pro_text(init, 'label')}"
                     if idx and str(idx).strip() not in ('—', '')
                     else _pro_text(init, 'label'))
-                flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    str(init),
+                    Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                    arabic_font_bold, 10))
                 pairs = []
                 if desc and str(desc).strip() not in ('—', ''):
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_desc, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(desc, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_desc),
+                            Paragraph(
+                                f"<b>{_pro_text(label_desc, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(desc),
+                            Paragraph(_pro_text(desc, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if out and str(out).strip() not in ('—', ''):
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_out, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(out, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_out),
+                            Paragraph(
+                                f"<b>{_pro_text(label_out, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(out),
+                            Paragraph(_pro_text(out, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if owner and str(owner).strip() not in ('—', ''):
-                    _owner = (_maybe_arabic_role_label(owner) if is_arabic
-                              else owner)
+                    _owner = owner if _rel37_keep else (
+                        _maybe_arabic_role_label(owner) if is_arabic
+                        else owner)
                     pairs.append([
-                        Paragraph(
-                            f"<b>{_pro_text(label_owner, 'label')}</b>",
-                            _pro_label_sty),
-                        Paragraph(_pro_text(_owner, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(label_owner),
+                            Paragraph(
+                                f"<b>{_pro_text(label_owner, 'label')}</b>",
+                                _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(owner),
+                            Paragraph(_pro_text(_owner, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if pairs:
                     ct = Table(
@@ -86170,7 +87469,10 @@ def api_generate_pdf():
                     if step and str(step).strip() not in ('—', '')
                     else '')
                 if title:
-                    flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                    flow.append(_extractable_flow(
+                        str(step),
+                        Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                        arabic_font_bold, 10))
                 pairs = []
                 for ci in range(1, min(len(cells), len(hdr))):
                     val = cells[ci]
@@ -86178,9 +87480,15 @@ def api_generate_pdf():
                         continue
                     lbl = hdr[ci] if ci < len(hdr) else str(ci)
                     pairs.append([
-                        Paragraph(f"<b>{_pro_text(lbl, 'label')}</b>",
-                                  _pro_label_sty),
-                        Paragraph(_pro_text(val, 'value'), _pro_value_sty),
+                        _extractable_flow(
+                            str(lbl),
+                            Paragraph(f"<b>{_pro_text(lbl, 'label')}</b>",
+                                      _pro_label_sty),
+                            arabic_font_bold, 10),
+                        _extractable_flow(
+                            str(val),
+                            Paragraph(_pro_text(val, 'value'), _pro_value_sty),
+                            arabic_font_name, 10),
                     ])
                 if pairs:
                     ct = Table(
@@ -86225,17 +87533,24 @@ def api_generate_pdf():
                 if not cells:
                     continue
                 label = cells[0]
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(label, 'label')}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    str(label),
+                    Paragraph(
+                        f"<b>{_pro_text(label, 'label')}</b>",
+                        _pro_label_sty),
+                    arabic_font_bold, 10))
                 for ci in range(1, len(cells)):
                     val = cells[ci]
                     if not val or str(val).strip() in ('—', ''):
                         continue
                     lbl = hdr[ci] if ci < len(hdr) else str(ci)
-                    flow.append(Paragraph(
-                        f"<b>{_pro_text(lbl, 'label')}:</b> "
-                        f"{_pro_text(str(val), 'value')}",
-                        card_sty))
+                    flow.append(_extractable_flow(
+                        str(val),
+                        Paragraph(
+                            f"<b>{_pro_text(lbl, 'label')}:</b> "
+                            f"{_pro_text(str(val), 'value')}",
+                            card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.06 * inch))
             flow.append(Spacer(1, 0.08 * inch))
             return flow
@@ -86261,8 +87576,11 @@ def api_generate_pdf():
             for r in rows:
                 cells = list(r) + [''] * max(0, len(labels) + 1 - len(r))
                 title = cells[1] if len(cells) > 1 else cells[0]
-                flow.append(Paragraph(
-                    f"<b>{_pro_text(title, 'label')}</b>", hdr_sty))
+                flow.append(_extractable_flow(
+                    str(title),
+                    Paragraph(
+                        f"<b>{_pro_text(title, 'label')}</b>", hdr_sty),
+                    arabic_font_bold, 10))
                 for i, lbl in enumerate(labels):
                     ci = i + 1 if len(cells) > i + 1 else i
                     val = cells[ci] if ci < len(cells) else ''
@@ -86277,7 +87595,9 @@ def api_generate_pdf():
                         txt = (
                             f"<b>{_pro_text(disp_lbl, 'label')}:</b> "
                             f"{_pro_text(val, 'value')}")
-                        flow.append(Paragraph(txt, card_sty))
+                        flow.append(_extractable_flow(
+                            str(val), Paragraph(txt, card_sty),
+                            arabic_font_name, 9))
                 flow.append(Spacer(1, 0.1 * inch))
             flow.append(Spacer(1, 0.05 * inch))
             return flow
@@ -86307,7 +87627,10 @@ def api_generate_pdf():
                     f"{_pro_text(phase, 'label')}. {_pro_text(init, 'label')}"
                     if phase and str(phase).strip() not in ('—', '')
                     else _pro_text(init, 'label'))
-                flow.append(Paragraph(f"<b>{title}</b>", _pro_label_sty))
+                flow.append(_extractable_flow(
+                    f'{phase} {init}',
+                    Paragraph(f"<b>{title}</b>", _pro_label_sty),
+                    arabic_font_bold, 10))
                 for i, lbl in enumerate(labels):
                     val = cells[i] if i < len(cells) else ''
                     if not val or str(val).strip() in ('—', ''):
@@ -86315,7 +87638,9 @@ def api_generate_pdf():
                     txt = (
                         f"<b>{_pro_text(lbl, 'label')}:</b> "
                         f"{_pro_text(val, 'value')}")
-                    flow.append(Paragraph(txt, card_sty))
+                    flow.append(_extractable_flow(
+                        str(val), Paragraph(txt, card_sty),
+                        arabic_font_name, 9))
                 flow.append(Spacer(1, 0.1 * inch))
             flow.append(Spacer(1, 0.05 * inch))
             return flow
@@ -88109,7 +89434,23 @@ def api_generate_pdf():
             _is_strategy_pdf = False
         if _is_strategy_pdf and content:
             try:
-                _is_frag_b2, _found_b2, _why_b2 = _is_strategy_export_fragment(content)
+                _frag_secs_p = (
+                    (locals().get('_pdf_sections_early') or None)
+                    or (locals().get('_rel33_prep_p') or {}).get('sections')
+                    or data.get('sections')
+                )
+                _is_frag_b2, _found_b2, _why_b2 = _is_strategy_export_fragment(
+                    content,
+                    _frag_secs_p,
+                    domain=domain_pdf,
+                    lang=lang,
+                    document_type=_rel33_export_document_type(
+                        data.get('artifact_type') or 'strategy'),
+                    org_name=org_name_pdf,
+                    selected_frameworks=(
+                        data.get('selected_frameworks')
+                        or data.get('frameworks')),
+                )
             except Exception:
                 _is_frag_b2, _found_b2, _why_b2 = False, set(), ''
             print(
@@ -88769,8 +90110,25 @@ def api_generate_pdf():
             and str(_gen_mode_p or '').lower() != 'drafting'
             and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
         ):
+            try:
+                from release_engine_v3.rel37_apply import (
+                    prefer_rel37_authority_candidate as _rel37_pref_ev,
+                    recall_rel37_export_snapshot as _rel37_recall_ev,
+                )
+                _rel3_pdf_sections = _rel37_pref_ev(
+                    locals().get('_rel37_prep_secs'),
+                    data.get('_rel37_source_sections'),
+                    data.get('sections'),
+                    _rel37_recall_ev(
+                        data.get('strategy_id') or _art_id_p,
+                        model_hash=data.get('canonical_hash')),
+                    _split_strategy_sections_by_h2(content or '') or {},
+                )
+            except Exception:  # noqa: BLE001
+                _rel3_pdf_sections = (
+                    _split_strategy_sections_by_h2(content or '') or {})
             _rel3_pdf_art = {
-                'sections': _split_strategy_sections_by_h2(content or '') or {},
+                'sections': _rel3_pdf_sections,
                 'final_markdown': content,
                 'domain': domain_pdf,
                 'sealed': bool(locals().get('_cyber_sealed_pdf', False)),
@@ -91243,6 +92601,17 @@ def _assemble_canonical_from_sections(sections_dict, *, apply_formatting=True) -
     """
     if not isinstance(sections_dict, dict) or not sections_dict:
         return ""
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        from release_engine_v3.rel37_live_attach import (
+            canonical_markdown_from_sections,
+        )
+        if is_rel37_authoritative(sections_dict):
+            _rel37_md = canonical_markdown_from_sections(sections_dict)
+            if _rel37_md.strip():
+                return _rel37_md
+    except Exception:
+        pass
     parts = [sections_dict[k] for k in STRATEGY_SECTION_ORDER
              if sections_dict.get(k)
              and isinstance(sections_dict[k], str)
@@ -91282,15 +92651,18 @@ _STRATEGY_SECTION_HEADING_TOKENS = {
     'vision':      ('vision', 'الرؤية'),
     'pillars':     ('pillar', 'الركيزة', 'الركائز'),
     'environment': ('business environment', 'regulatory context',
+                    'environment and drivers',
                     'البيئة', 'السياق التنظيمي'),
     'gaps':        ('gap analysis', 'gap implementation', 'gaps',
+                    'gap assessment',
                     'تحليل الفجوات', 'الفجوات'),
     'roadmap':     ('roadmap', 'phase 1', 'phase 2', 'execution roadmap',
                     'خارطة الطريق', 'المرحلة'),
     'kpis':        ('strategic kpi', 'key performance', 'kpis',
                     'مؤشرات الأداء', 'المؤشرات الرئيسية'),
     'confidence':  ('confidence assessment', 'confidence score',
-                    'risk assessment', 'تقييم الثقة', 'درجة الثقة',
+                    'risk assessment', 'confidence and risk',
+                    'تقييم الثقة', 'درجة الثقة',
                     'تقييم المخاطر'),
 }
 
@@ -91316,6 +92688,18 @@ def _detect_canonical_sections_in_text(text: str):
     if not text:
         return set()
     found = set()
+    token_map = {
+        key: tuple(tokens)
+        for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items()
+    }
+    try:
+        from release_engine_v3.rel37_apply import (
+            rel37_export_heading_token_extras,
+        )
+        for key, extras in rel37_export_heading_token_extras().items():
+            token_map[key] = token_map.get(key, ()) + tuple(extras)
+    except Exception:  # noqa: BLE001
+        pass
     # Normalise once; iterate line-by-line so substring noise inside
     # tables / narrative cannot trip the gate.
     for raw_line in text.split('\n'):
@@ -91327,7 +92711,7 @@ def _detect_canonical_sections_in_text(text: str):
         head = ls.lstrip('#').strip().lower()
         if not head:
             continue
-        for key, tokens in _STRATEGY_SECTION_HEADING_TOKENS.items():
+        for key, tokens in token_map.items():
             if key in found:
                 continue
             for tok in tokens:
@@ -91356,7 +92740,15 @@ _MIN_CANONICAL_SECTIONS_FOR_EXPORT = 5
 _REQUIRED_LEADING_SECTIONS_FOR_EXPORT = ('vision', 'pillars')
 
 
-def _is_strategy_export_fragment(text: str):
+def _is_strategy_export_fragment(
+        text: str,
+        sections=None,
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks=None):
     """Return (is_fragment: bool, found_sections: set, reason: str).
 
     A strategy export is a "fragment" when EITHER:
@@ -91364,7 +92756,28 @@ def _is_strategy_export_fragment(text: str):
         canonical sections are detected via heading-anchored matching, OR
       * BOTH leading sections (``vision`` and ``pillars``) are missing —
         the precise signature of the kpis+confidence fragment bug.
+
+    REL37-authoritative Data/AI/DT routes use the typed model when it is
+    current and identity-matched. Applied-flag alone never skips this gate.
     """
+    if sections is not None:
+        try:
+            from release_engine_v3.rel37_apply import (
+                rel37_export_completeness_ok as _rel37_export_ok,
+            )
+            _rel37_ok = _rel37_export_ok(
+                sections,
+                domain=domain,
+                lang=lang,
+                document_type=document_type or 'strategy',
+                org_name=org_name,
+                selected_frameworks=selected_frameworks,
+            )
+            if _rel37_ok is True:
+                found = _detect_canonical_sections_in_text(text)
+                return False, found, ''
+        except Exception:  # noqa: BLE001
+            pass
     found = _detect_canonical_sections_in_text(text)
     if len(found) < _MIN_CANONICAL_SECTIONS_FOR_EXPORT:
         return True, found, (
@@ -92056,11 +93469,19 @@ def _canonical_content_from_db(artifact_type: str, artifact_id, user_id: int,
     try:
         _conn = get_db_direct()
         if artifact_type == 'strategy':
-            _row = _conn.execute(
-                'SELECT sections_json, content_json, content, language, domain, '
-                'document_type FROM strategies WHERE id = ? AND user_id = ?',
-                (_art_id, user_id)
-            ).fetchone()
+            try:
+                _row = _conn.execute(
+                    'SELECT sections_json, content_json, content, language, '
+                    'domain, document_type FROM strategies '
+                    'WHERE id = ? AND user_id = ?',
+                    (_art_id, user_id)
+                ).fetchone()
+            except Exception:
+                _row = _conn.execute(
+                    'SELECT sections_json, content_json, content, language, '
+                    'domain FROM strategies WHERE id = ? AND user_id = ?',
+                    (_art_id, user_id)
+                ).fetchone()
         elif artifact_type == 'risk':
             _row = _conn.execute(
                 'SELECT analysis, language, domain FROM risks '

@@ -140,10 +140,13 @@ def bind_rel32_docx_renderer_input(
     backend['_rel32_docx_renderer_meta'] = meta
     backend['_rel32_docx_renderer_content'] = content
     backend['_rel32_docx_renderer_sections'] = sections
+    _rel37_keep = backend.get('_rel37_source_sections')
     backend['_rel31_frozen_sections'] = dict(sections)
     backend['_rel31_sections_bound'] = True
     backend['split_sections'] = (
         lambda _content, _secs=sections: dict(_secs))
+    if _rel37_keep:
+        backend['_rel37_source_sections'] = _rel37_keep
     return content, sections, meta
 
 

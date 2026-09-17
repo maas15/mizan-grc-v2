@@ -209,8 +209,15 @@ def _legacy_to_canonical_sections(
         or sections_src.get('kpi_kri')
         or '')
     if raw_kpi:
-        sections['kpi_kri'] = enrich_kpi_section(
-            sections['kpi_kri'], raw_kpi)
+        _skip_legacy_kpi = False
+        try:
+            from release_engine_v3.rel37_apply import is_rel37_authoritative
+            _skip_legacy_kpi = is_rel37_authoritative(sections_src)
+        except Exception:  # noqa: BLE001
+            _skip_legacy_kpi = False
+        if not _skip_legacy_kpi:
+            sections['kpi_kri'] = enrich_kpi_section(
+                sections['kpi_kri'], raw_kpi)
     raw_trace = (
         sections_src.get('traceability')
         or sections_src.get('traceability_matrix')

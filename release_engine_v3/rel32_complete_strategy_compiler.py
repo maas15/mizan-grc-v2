@@ -293,7 +293,15 @@ def compile_complete_cyber_ar_technical_strategy(
     )
     emit_rel32_final_strategy_completeness_diag(completeness)
 
-    if completeness.get('blocking_errors'):
+    _rel37_live = str((legacy or {}).get('_rel37_applied') or '') == '1'
+    if _rel37_live:
+        compiled.diagnostics = dict(compiled.diagnostics or {})
+        compiled.diagnostics['rel37_skips_rel32_completeness'] = True
+        compiled.blocking_errors = [
+            b for b in (compiled.blocking_errors or [])
+            if not str(b).startswith('rel32_')]
+        compiled.passed = not compiled.blocking_errors
+    elif completeness.get('blocking_errors'):
         compiled.blocking_errors = list(dict.fromkeys(
             list(compiled.blocking_errors or [])
             + list(completeness['blocking_errors'])))
