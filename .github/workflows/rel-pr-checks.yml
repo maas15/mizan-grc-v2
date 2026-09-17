@@ -55,16 +55,25 @@ jobs:
             tests/test_rel33_all_domain_document_quality_matrix.py \
             -q
 
-      - name: pytest REL37 request, persist, and export contract
+      - name: pytest REL37 unit compilers
         run: |
-          python -m pytest tests/test_rel37_ui_request_type_contract.py --collect-only -q
           python -m pytest \
-            tests/test_rel37_ui_request_type_contract.py \
             tests/test_rel37_deterministic_compilers.py \
             tests/test_rel37_live_attach.py \
             tests/test_rel37_early_authority.py \
             tests/test_rel37_preview_section_contract.py \
             tests/test_rel37_framework_label_canonicalization.py \
+            -q --tb=short
+
+      - name: pytest REL37 request, persist, and export contract
+        env:
+          REL2_SKIP_EXPORT_EVIDENCE: ''
+        run: |
+          unset REL2_SKIP_EXPORT_EVIDENCE
+          python -m pytest tests/test_rel37_ui_request_type_contract.py --collect-only -q
+          python -m pytest \
+            tests/test_rel37_acceptance_evidence_isolation.py \
+            tests/test_rel37_ui_request_type_contract.py \
             tests/test_rel37_export_content_parity.py \
             tests/test_rel37_guide_completeness_persist.py \
             -q --tb=short

@@ -24,7 +24,6 @@ _ENV_KEYS = (
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY',
     'REL2_SKIP_EXPORT_EVIDENCE', 'REL37_DATA_AI_DT_COMPILER',
 )
-_ENV_BEFORE = {key: os.environ.get(key) for key in _ENV_KEYS}
 
 _TMP = tempfile.mkdtemp(prefix='test_rel37_parity_')
 os.environ['ADMIN_PASSWORD'] = 'test-admin-password'
@@ -38,8 +37,10 @@ os.environ['REL37_DATA_AI_DT_COMPILER'] = '1'
 # Do not set REL2_SKIP_EXPORT_EVIDENCE here. That flag disables REL2/cyber
 # byte-evidence collection and DQS enforcement. This file's required
 # content-parity gate is evaluate_export_parity on returned bytes.
-# A leftover process-wide skip must not leak into later suites.
+# Capture restore state AFTER clearing so tearDown cannot re-enable skip.
 os.environ.pop('REL2_SKIP_EXPORT_EVIDENCE', None)
+_ENV_BEFORE = {key: os.environ.get(key) for key in _ENV_KEYS}
+_ENV_BEFORE['REL2_SKIP_EXPORT_EVIDENCE'] = None
 
 import app as app_mod  # noqa: E402
 

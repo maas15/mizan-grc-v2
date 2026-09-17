@@ -265,6 +265,43 @@ def rel37_request_model_consistent(
     return (not errors), errors
 
 
+def rel37_generation_adopted(
+        diagnostic: Optional[Dict[str, Any]] = None,
+        *,
+        applied_route: bool = False,
+        compiler_used: Optional[bool] = None,
+) -> bool:
+    """Trusted worker/request adoption — not a public section flag."""
+    diag = diagnostic or {}
+    if applied_route:
+        return True
+    if compiler_used is True:
+        return True
+    return bool(diag.get('compiler_used'))
+
+
+def rel37_model_payload_missing(sections: Optional[Dict[str, Any]]) -> bool:
+    raw = (sections or {}).get(REL37_MODEL_KEY)
+    if raw is None:
+        return True
+    if isinstance(raw, str) and not raw.strip():
+        return True
+    if isinstance(raw, (dict, list)) and len(raw) == 0:
+        return True
+    return False
+
+
+def restore_adopted_rel37_model(
+        sections: Optional[Dict[str, Any]],
+        model: Optional[CanonicalDocument],
+) -> Dict[str, Any]:
+    """Restore a previously validated in-progress model. Does not compile."""
+    if model is None:
+        return dict(sections or {})
+    from release_engine_v3.rel37_live_attach import stamp_rel37_keys
+    return stamp_rel37_keys(dict(sections or {}), model)
+
+
 def rel37_guide_structures_ok(
         sections: Optional[Dict[str, Any]],
 ) -> List[str]:
@@ -289,15 +326,29 @@ def rel37_guide_completeness_persist_result(
         document_type: str = 'strategy',
         org_name: str = '',
         selected_frameworks: Optional[List[str]] = None,
+        adopted: Optional[bool] = None,
+        compiler_used: Optional[bool] = None,
+        diagnostic: Optional[Dict[str, Any]] = None,
 ) -> Optional[List[str]]:
     """Generation-time guide gate. Does not require a saved strategy_id.
 
-    None — not a REL37-authoritative generation; caller keeps legacy regex.
+    None — genuinely not a REL37 generation; caller keeps legacy regex.
     [] — typed model is current, identity-matched, and guides are complete.
-    Non-empty — fail closed. ``_rel37_applied`` alone is not trusted.
+    Non-empty — fail closed.
+
+    ``adopted`` / ``compiler_used`` / ``diagnostic`` are trusted worker
+    state. ``_rel37_applied`` alone is not trusted. Supported selection
+    is not passed here and cannot skip this gate.
     """
-    if not is_rel37_authoritative(sections):
+    required = bool(is_rel37_authoritative(sections)) or rel37_generation_adopted(
+        diagnostic,
+        applied_route=bool(adopted),
+        compiler_used=compiler_used,
+    )
+    if not required:
         return None
+    if rel37_model_payload_missing(sections):
+        return ['rel37_model_missing']
     model = load_model(sections)
     if model is None:
         return ['rel37_model_unreadable']

@@ -33,8 +33,9 @@ os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(_TMP, 'rel37_06.db')
 os.environ['OPENAI_API_KEY'] = ''
 os.environ['ANTHROPIC_API_KEY'] = ''
 os.environ['GOOGLE_API_KEY'] = ''
-os.environ['REL2_SKIP_EXPORT_EVIDENCE'] = '1'
 os.environ['REL37_DATA_AI_DT_COMPILER'] = '1'
+# Required persist/export acceptance. Do not enable the evidence bypass.
+os.environ.pop('REL2_SKIP_EXPORT_EVIDENCE', None)
 
 import app as app_mod  # noqa: E402
 

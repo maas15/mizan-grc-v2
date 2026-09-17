@@ -28,7 +28,6 @@ _ENV_KEYS = (
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY',
     'REL2_SKIP_EXPORT_EVIDENCE', 'REL37_DATA_AI_DT_COMPILER', 'TESTING',
 )
-_ENV_BEFORE = {key: os.environ.get(key) for key in _ENV_KEYS}
 
 _TMP = tempfile.mkdtemp(prefix='test_rel37_guide_persist_')
 os.environ['ADMIN_PASSWORD'] = 'test-admin-password'
@@ -41,6 +40,8 @@ os.environ['GOOGLE_API_KEY'] = ''
 os.environ['REL37_DATA_AI_DT_COMPILER'] = '1'
 os.environ['TESTING'] = '1'
 os.environ.pop('REL2_SKIP_EXPORT_EVIDENCE', None)
+_ENV_BEFORE = {key: os.environ.get(key) for key in _ENV_KEYS}
+_ENV_BEFORE['REL2_SKIP_EXPORT_EVIDENCE'] = None
 
 import openai  # noqa: E402
 import app as app_mod  # noqa: E402
@@ -56,12 +57,22 @@ from release_engine_v3.rel37_apply import (  # noqa: E402
     REL37_MODEL_KEY,
     is_rel37_authoritative,
     load_model,
+    rel37_generation_adopted,
     rel37_guide_completeness_persist_result,
     rel37_request_model_consistent,
+    restore_adopted_rel37_model,
 )
-from release_engine_v3.rel37_early_authority import attach_rel37_early_authority  # noqa: E402
+from release_engine_v3.rel37_canonical_document import CanonicalDocument  # noqa: E402
+from release_engine_v3.rel37_early_authority import (  # noqa: E402
+    Rel37ModelValidationFailed,
+    attach_rel37_early_authority,
+    confirm_rel37_final_persist,
+)
 from release_engine_v3.rel37_export_content_parity import extract_pdf_text  # noqa: E402
-from release_engine_v3.rel37_live_attach import stamp_rel37_keys  # noqa: E402
+from release_engine_v3.rel37_live_attach import (  # noqa: E402
+    should_skip_legacy_richness_gates,
+    stamp_rel37_keys,
+)
 from release_engine_v3.rel37_preview_section_contract import public_status_sections  # noqa: E402
 from release_engine_v3.rel37_selection import rel37_supported_selection  # noqa: E402
 
@@ -523,7 +534,7 @@ class Rel37GuideCompletenessPersistTests(unittest.TestCase):
         self.assertTrue(early.applied)
         self.assertTrue(early.model.gap_guides)
 
-    def test_08_negative_missing_and_invalid_guides_block(self):
+    def _mutated_guides(self, mutator):
         early = attach_rel37_early_authority(
             {'vision': 'thin'},
             domain='data', lang='en', document_type='strategy',
@@ -531,51 +542,68 @@ class Rel37GuideCompletenessPersistTests(unittest.TestCase):
             explicit_selection=True,
             org_name=UI_REQUEST['org_name'],
         )
-        model = early.model
-        payload = model.to_dict()
+        payload = early.model.to_dict()
+        mutator(payload)
+        model = CanonicalDocument.from_dict(payload)
+        model.compute_hashes()
         sections = dict(early.sections)
+        sections[REL37_MODEL_KEY] = json.dumps(model.to_dict(), ensure_ascii=False)
+        sections[REL37_HASH_KEY] = model.model_hash
+        return sections
 
-        missing_gap = dict(sections)
-        cut = dict(payload)
-        cut['gap_guides'] = list(cut['gap_guides'])[:-1]
-        missing_gap[REL37_MODEL_KEY] = json.dumps(cut, ensure_ascii=False)
-        missing_gap[REL37_HASH_KEY] = model.model_hash
+    def test_08_negative_missing_and_invalid_guides_block(self):
+        missing_gap = self._mutated_guides(
+            lambda payload: payload.__setitem__(
+                'gap_guides', list(payload['gap_guides'])[:-1]))
         blockers = rel37_guide_completeness_persist_result(
             missing_gap, domain='data', lang='en', document_type='strategy',
             org_name=UI_REQUEST['org_name'],
             selected_frameworks=UI_REQUEST['frameworks'])
         self.assertTrue(blockers, blockers)
         self.assertTrue(any('gap_guide' in str(b) for b in blockers), blockers)
+        self.assertFalse(any('hash' in str(b) for b in blockers), blockers)
 
-        missing_kpi = dict(sections)
-        cut = dict(payload)
-        cut['kpi_guides'] = list(cut['kpi_guides'])[:-1]
-        missing_kpi[REL37_MODEL_KEY] = json.dumps(cut, ensure_ascii=False)
+        missing_kpi = self._mutated_guides(
+            lambda payload: payload.__setitem__(
+                'kpi_guides', list(payload['kpi_guides'])[:-1]))
         blockers = rel37_guide_completeness_persist_result(
             missing_kpi, domain='data', lang='en', document_type='strategy',
             org_name=UI_REQUEST['org_name'],
             selected_frameworks=UI_REQUEST['frameworks'])
         self.assertTrue(any('kpi_guide' in str(b) for b in blockers), blockers)
+        self.assertFalse(any('hash' in str(b) for b in blockers), blockers)
 
-        empty_steps = dict(sections)
-        cut = dict(payload)
-        cut['gap_guides'][0]['steps'] = []
-        empty_steps[REL37_MODEL_KEY] = json.dumps(cut, ensure_ascii=False)
+        def _empty_steps(payload):
+            payload['gap_guides'][0]['steps'] = []
+
+        empty_steps = self._mutated_guides(_empty_steps)
         blockers = rel37_guide_completeness_persist_result(
             empty_steps, domain='data', lang='en', document_type='strategy',
             org_name=UI_REQUEST['org_name'],
             selected_frameworks=UI_REQUEST['frameworks'])
         self.assertTrue(any('steps_missing' in str(b) for b in blockers), blockers)
+        self.assertFalse(any('hash' in str(b) for b in blockers), blockers)
 
-        orphan = dict(sections)
-        cut = dict(payload)
-        cut['gap_guides'][0]['number'] = 99
-        orphan[REL37_MODEL_KEY] = json.dumps(cut, ensure_ascii=False)
+        def _orphan(payload):
+            payload['gap_guides'][0]['number'] = 99
+
+        orphan = self._mutated_guides(_orphan)
         blockers = rel37_guide_completeness_persist_result(
             orphan, domain='data', lang='en', document_type='strategy',
             org_name=UI_REQUEST['org_name'],
             selected_frameworks=UI_REQUEST['frameworks'])
         self.assertTrue(any('association' in str(b) for b in blockers), blockers)
+        self.assertFalse(any('hash' in str(b) for b in blockers), blockers)
+
+        def _duplicate(payload):
+            payload['gap_guides'][1]['number'] = payload['gap_guides'][0]['number']
+
+        duplicate = self._mutated_guides(_duplicate)
+        blockers = rel37_guide_completeness_persist_result(
+            duplicate, domain='data', lang='en', document_type='strategy',
+            org_name=UI_REQUEST['org_name'],
+            selected_frameworks=UI_REQUEST['frameworks'])
+        self.assertTrue(any('duplicate' in str(b) for b in blockers), blockers)
 
         forged = {
             REL37_APPLIED_KEY: 'true',
@@ -587,7 +615,14 @@ class Rel37GuideCompletenessPersistTests(unittest.TestCase):
             forged, domain='data', lang='en', document_type='strategy',
             selected_frameworks=UI_REQUEST['frameworks']))
 
-        mismatch = dict(sections)
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        mismatch = dict(early.sections)
         mismatch[REL37_HASH_KEY] = '0' * 64
         blockers = rel37_guide_completeness_persist_result(
             mismatch, domain='data', lang='en', document_type='strategy',
@@ -596,7 +631,7 @@ class Rel37GuideCompletenessPersistTests(unittest.TestCase):
         self.assertTrue(any('hash' in str(b) for b in blockers), blockers)
 
         wrong_domain = rel37_guide_completeness_persist_result(
-            sections, domain='cyber', lang='en', document_type='strategy',
+            early.sections, domain='cyber', lang='en', document_type='strategy',
             org_name=UI_REQUEST['org_name'],
             selected_frameworks=['NCA ECC'])
         self.assertTrue(wrong_domain)
@@ -667,6 +702,222 @@ class Rel37GuideCompletenessPersistTests(unittest.TestCase):
         missing_payload = missing.get_json(silent=True) or {}
         self.assertIn(missing.status_code, (400, 403, 422), missing_payload)
         self.assertFalse((missing.data or b'').startswith(b'%PDF'))
+
+    def test_12_supported_selection_alone_does_not_skip(self):
+        self.assertTrue(rel37_supported_selection(
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True).supported)
+        self.assertFalse(should_skip_legacy_richness_gates(
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            sections={'vision': 'thin', 'gaps': _thin_section('gaps', with_headings=True),
+                      'kpis': _thin_section('kpis', with_headings=True)}))
+        self.assertFalse(rel37_generation_adopted(None))
+        self.assertFalse(rel37_generation_adopted({}))
+        self.assertTrue(rel37_generation_adopted({'compiler_used': True}))
+        self.assertTrue(rel37_generation_adopted({}, applied_route=True))
+
+    def test_13_lost_model_after_adoption_blocks_helper(self):
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        self.assertTrue(early.applied)
+        self.assertTrue(early.compiler_used)
+        self.assertIn('Implementation Guide', early.sections.get('gaps') or '')
+        self.assertIn('KPI Assessment Guidelines', early.sections.get('kpis') or '')
+        lost = dict(early.sections)
+        lost.pop(REL37_MODEL_KEY, None)
+        self.assertFalse(is_rel37_authoritative(lost))
+        self.assertFalse(should_skip_legacy_richness_gates(
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True, sections=lost))
+        blockers = rel37_guide_completeness_persist_result(
+            lost,
+            domain='data', lang='en', document_type='strategy',
+            org_name=UI_REQUEST['org_name'],
+            selected_frameworks=UI_REQUEST['frameworks'],
+            adopted=True,
+            diagnostic=early.diagnostic,
+        )
+        self.assertEqual(blockers, ['rel37_model_missing'], blockers)
+
+    def test_14_lost_model_null_empty_unreadable(self):
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        identity = dict(
+            domain='data', lang='en', document_type='strategy',
+            org_name=UI_REQUEST['org_name'],
+            selected_frameworks=UI_REQUEST['frameworks'],
+            adopted=True,
+            diagnostic=early.diagnostic,
+        )
+        for raw in (None, '', '   ', {}, []):
+            secs = dict(early.sections)
+            secs[REL37_MODEL_KEY] = raw
+            self.assertEqual(
+                rel37_guide_completeness_persist_result(secs, **identity),
+                ['rel37_model_missing'],
+                raw,
+            )
+        unreadable = dict(early.sections)
+        unreadable[REL37_MODEL_KEY] = '{not-json'
+        self.assertEqual(
+            rel37_guide_completeness_persist_result(unreadable, **identity),
+            ['rel37_model_unreadable'],
+        )
+
+    def test_15_flags_stripped_trusted_adoption_still_blocks(self):
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        stripped = dict(early.sections)
+        stripped.pop(REL37_APPLIED_KEY, None)
+        stripped.pop(REL37_MODEL_KEY, None)
+        stripped.pop(REL37_HASH_KEY, None)
+        self.assertFalse(is_rel37_authoritative(stripped))
+        self.assertTrue(rel37_generation_adopted(early.diagnostic))
+        blockers = rel37_guide_completeness_persist_result(
+            stripped,
+            domain='data', lang='en', document_type='strategy',
+            org_name=UI_REQUEST['org_name'],
+            selected_frameworks=UI_REQUEST['frameworks'],
+            adopted=False,
+            diagnostic=early.diagnostic,
+        )
+        self.assertEqual(blockers, ['rel37_model_missing'], blockers)
+
+    def test_16_lost_model_worker_path_no_row(self):
+        from release_engine_v3 import rel37_apply
+
+        real = rel37_apply.rel37_guide_completeness_persist_result
+        seen = {}
+
+        def _strip_then_real(sections, **kwargs):
+            secs = dict(sections or {})
+            seen['headings_gaps'] = 'Implementation Guide' in (
+                secs.get('gaps') or '')
+            seen['headings_kpis'] = 'KPI Assessment Guidelines' in (
+                secs.get('kpis') or '')
+            seen['had_model'] = bool(secs.get(REL37_MODEL_KEY))
+            seen['adopted'] = kwargs.get('adopted')
+            seen['compiler_used'] = (kwargs.get('diagnostic') or {}).get(
+                'compiler_used')
+            secs.pop(REL37_MODEL_KEY, None)
+            result = real(secs, **kwargs)
+            seen['helper'] = result
+            return result
+
+        provider = _Provider('thin')
+        client, headers, uid, _role, _login = _register_login(
+            'rel3716lost', 'Rel37user1', 'rel3716lost@example.com')
+        before = _saved_row(uid)
+        with patch.object(
+                rel37_apply, 'rel37_guide_completeness_persist_result',
+                _strip_then_real):
+            _http, _tid, status = _run_async(
+                client, headers, UI_REQUEST, provider)
+        self.assertEqual(seen.get('helper'), ['rel37_model_missing'], seen)
+        self.assertTrue(seen.get('headings_gaps'), seen)
+        self.assertTrue(seen.get('headings_kpis'), seen)
+        self.assertTrue(seen.get('had_model'), seen)
+        self.assertTrue(seen.get('adopted') or seen.get('compiler_used'), seen)
+        err = str(status.get('error') or '')
+        result = status.get('result') if isinstance(status.get('result'), dict) else {}
+        err = err or str(result.get('error') or '')
+        self.assertEqual(err, 'rel37_model_validation_failed', status)
+        self.assertEqual(seen.get('helper'), ['rel37_model_missing'])
+        self.assertNotEqual(status.get('status'), 'done', status)
+        self.assertEqual(_saved_row(uid), before)
+
+    def test_17_confirm_final_persist_refuses_lost_model(self):
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        lost = dict(early.sections)
+        lost.pop(REL37_MODEL_KEY, None)
+        with self.assertRaises(Rel37ModelValidationFailed) as ctx:
+            confirm_rel37_final_persist(
+                lost,
+                content=early.content,
+                domain='data',
+                domain_input='Data Management',
+                lang='en',
+                document_type='strategy',
+                selected_frameworks=UI_REQUEST['frameworks'],
+                explicit_selection=True,
+                org_name=UI_REQUEST['org_name'],
+                early_diagnostic=early.diagnostic,
+            )
+        self.assertEqual(ctx.exception.blockers, ['rel37_model_missing'])
+
+    def test_18_forged_client_authority_without_trusted_adoption(self):
+        forged = {
+            REL37_APPLIED_KEY: 'true',
+            REL37_HASH_KEY: '0' * 64,
+            'gaps': _thin_section('gaps', with_headings=True),
+            'kpis': _thin_section('kpis', with_headings=True),
+            '_rel37_selection_supported': 'true',
+            '_rel37_selection_reason': 'supported_selection',
+        }
+        self.assertFalse(is_rel37_authoritative(forged))
+        self.assertFalse(rel37_generation_adopted(
+            {'_rel37_applied': True, 'client_authority': True}))
+        self.assertIsNone(rel37_guide_completeness_persist_result(
+            forged, domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks']))
+
+    def test_19_stale_overlay_restores_only_from_valid_early_model(self):
+        early = attach_rel37_early_authority(
+            {'vision': 'thin'},
+            domain='data', lang='en', document_type='strategy',
+            selected_frameworks=UI_REQUEST['frameworks'],
+            explicit_selection=True,
+            org_name=UI_REQUEST['org_name'],
+        )
+        overlay = {
+            'vision': _thin_section('vision'),
+            'gaps': _thin_section('gaps', with_headings=True),
+            'kpis': _thin_section('kpis', with_headings=True),
+            REL37_APPLIED_KEY: False,
+        }
+        self.assertTrue(rel37_generation_adopted(early.diagnostic))
+        self.assertEqual(
+            rel37_guide_completeness_persist_result(
+                overlay, domain='data', lang='en', document_type='strategy',
+                org_name=UI_REQUEST['org_name'],
+                selected_frameworks=UI_REQUEST['frameworks'],
+                adopted=True, diagnostic=early.diagnostic),
+            ['rel37_model_missing'])
+        restored = restore_adopted_rel37_model(overlay, early.model)
+        self.assertTrue(is_rel37_authoritative(restored))
+        self.assertEqual(
+            rel37_guide_completeness_persist_result(
+                restored, domain='data', lang='en', document_type='strategy',
+                org_name=UI_REQUEST['org_name'],
+                selected_frameworks=UI_REQUEST['frameworks'],
+                adopted=True, diagnostic=early.diagnostic),
+            [])
+        self.assertEqual(restore_adopted_rel37_model(overlay, None), overlay)
 
 
 if __name__ == '__main__':

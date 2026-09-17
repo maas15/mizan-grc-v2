@@ -67092,6 +67092,7 @@ The confidence score is based on a comprehensive assessment of the organization'
         # confidence_score_missing_in_richness against pre-compiler LLM text.
         _rel37_early_diag = None
         _rel37_authoritative_route = False
+        _rel37_generation_adopted = False
         try:
             from release_engine_v3.rel37_early_authority import (
                 Rel37ModelValidationFailed as _Rel37EarlyValFailed,
@@ -67120,6 +67121,11 @@ The confidence score is based on a comprehensive assessment of the organization'
                 task_id=data.get('task_id'),
             )
             _rel37_early_diag = _rel37_early_result.diagnostic
+            _rel37_generation_adopted = bool(
+                _rel37_early_result.applied
+                or _rel37_early_result.compiler_used
+                or (_rel37_early_diag or {}).get('compiler_used')
+            )
             if _rel37_early_result.applied:
                 sections = _rel37_early_result.sections
                 content = sections.get('content', content)
@@ -67518,6 +67524,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                     or (data or {}).get('org_name')
                     or ''),
                 selected_frameworks=_frameworks_raw,
+                adopted=bool(locals().get('_rel37_generation_adopted')),
+                diagnostic=locals().get('_rel37_early_diag') or {},
             )
             if _rel37_typed_guides:
                 print(
@@ -67553,6 +67561,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                 f'{_rel37_guide_gate_exc!r}',
                 flush=True,
             )
+            if locals().get('_rel37_generation_adopted'):
+                return jsonify({
+                    'success': False,
+                    'strategy_id': None,
+                    'error': 'rel37_model_validation_failed',
+                    'error_code': 'rel37_model_validation_failed',
+                    'blockers': ['rel37_guide_gate_error'],
+                }), 422
             _rel37_typed_guides = None
         _remaining_core = _prcy65_critical_core_tech_issue_tags(
             _quality_issues_post)
@@ -73887,6 +73903,10 @@ The confidence score is based on a comprehensive assessment of the organization'
                                                 or (data or {}).get('org_name')
                                                 or ''),
                                             selected_frameworks=_frameworks_raw,
+                                            adopted=bool(
+                                                locals().get('_rel37_generation_adopted')),
+                                            diagnostic=locals().get(
+                                                '_rel37_early_diag') or {},
                                         )
                                         if _rel37_pdpl_ok is not None and not _rel37_pdpl_ok:
                                             _rel37_pdpl_model = _rel37_pdpl_load(
@@ -77051,10 +77071,24 @@ The confidence score is based on a comprehensive assessment of the organization'
                     from release_engine_v3.rel37_apply import (
                         load_model as _rel37_load_post,
                         rel37_guide_completeness_persist_result as _rel37_guide_post,
+                        rel37_model_payload_missing as _rel37_missing_post,
+                        restore_adopted_rel37_model as _rel37_restore_post,
                     )
                     from release_engine_v3.rel37_live_attach import (
                         stamp_rel37_keys as _rel37_stamp_post,
                     )
+                    _rel37_early_keep = locals().get('_rel37_early_result')
+                    if (
+                            locals().get('_rel37_generation_adopted')
+                            and _rel37_early_keep is not None
+                            and getattr(_rel37_early_keep, 'model', None) is not None
+                            and _rel37_missing_post(sections)
+                    ):
+                        # Intermediate overlays may drop authority keys.
+                        # Restore the already-validated in-progress model;
+                        # do not compile a replacement.
+                        sections = _rel37_restore_post(
+                            sections, _rel37_early_keep.model)
                     _rel37_post_guides = _rel37_guide_post(
                         sections,
                         domain=_dcode or domain,
@@ -77065,6 +77099,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                             or (data or {}).get('org_name')
                             or ''),
                         selected_frameworks=_frameworks_raw,
+                        adopted=bool(locals().get('_rel37_generation_adopted')),
+                        diagnostic=locals().get('_rel37_early_diag') or {},
                     )
                     if _rel37_post_guides:
                         print(
@@ -77092,6 +77128,14 @@ The confidence score is based on a comprehensive assessment of the organization'
                         f'{_rel37_post_guide_exc!r}',
                         flush=True,
                     )
+                    if locals().get('_rel37_generation_adopted'):
+                        return jsonify({
+                            'success': False,
+                            'strategy_id': None,
+                            'error': 'rel37_model_validation_failed',
+                            'error_code': 'rel37_model_validation_failed',
+                            'blockers': ['rel37_guide_gate_error'],
+                        }), 422
                 if (doc_subtype != 'board' and _remaining_so_final
                         and not _skip_so_final
                         and not _rel37_skip_legacy_save):

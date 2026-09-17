@@ -412,6 +412,17 @@ def confirm_rel37_final_persist(
         early_diagnostic: Optional[Dict[str, Any]] = None,
 ) -> Rel37EarlyAuthorityResult:
     """Re-validate at the persist hook and mark final_persist_attach_seen."""
+    from release_engine_v3.rel37_apply import (
+        rel37_generation_adopted,
+        rel37_model_payload_missing,
+        load_model,
+    )
+    if rel37_generation_adopted(early_diagnostic):
+        incoming = dict(sections or {})
+        if rel37_model_payload_missing(incoming):
+            raise Rel37ModelValidationFailed(['rel37_model_missing'])
+        if load_model(incoming) is None:
+            raise Rel37ModelValidationFailed(['rel37_model_unreadable'])
     live = attach_rel37_before_save(
         sections,
         content=content,

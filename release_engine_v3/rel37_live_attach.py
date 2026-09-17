@@ -160,19 +160,10 @@ def should_skip_legacy_richness_gates(
         return False
     if is_rel37_authoritative(sections):
         return True
-    explicit = infer_explicit_selection(
-        selected_frameworks, explicit_selection, request)
-    selection, _reason = live_support_reason(
-        domain=domain,
-        lang=lang,
-        document_type=document_type,
-        selected_frameworks=selected_frameworks
-        if selected_frameworks is not None
-        else (request or {}).get('frameworks')
-        or (request or {}).get('selected_frameworks'),
-        explicit_selection=explicit,
-    )
-    return bool(selection.supported)
+    # Supported selection alone must not skip validation. A generation
+    # that adopted REL37 but lost its model is handled by the typed
+    # persist gate using trusted worker state, not this skip.
+    return False
 
 
 def rel37_legacy_audit_defects(sections: Optional[Dict[str, Any]]) -> List[tuple]:
