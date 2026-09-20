@@ -297,6 +297,52 @@ def _norm(value: Any) -> str:
     return re.sub(r'\s+', ' ', str(value or '')).strip()
 
 
+def _layout_norm(value: Any) -> str:
+    """Whitespace, presentation forms, and mixed-script word boundaries.
+
+    Does not drop Latin tokens or rewrite their identity.
+    """
+    import unicodedata
+    text = unicodedata.normalize('NFKC', str(value or '')).replace('\x00', '')
+    text = re.sub(r'([A-Za-z0-9])(?=[\u0600-\u06FF])', r'\1 ', text)
+    text = re.sub(r'([\u0600-\u06FF])(?=[A-Za-z0-9])', r'\1 ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+_MIXED_RUN_RE = re.compile(
+    r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF،؛؟ـ\s]+'
+    r'|[^\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF،؛؟ـ\s]+'
+)
+
+
+def _undo_visual_rtl_line(line: str) -> str:
+    """Recover logical run order from a visual-LTR extraction of RTL text.
+
+    Arabic-only lines stay unchanged. Latin-only lines stay unchanged.
+    A mixed line is also kept in its original form by the caller.
+    """
+    text = str(line or '')
+    if not any('\u0600' <= ch <= '\u06FF' for ch in text):
+        return text
+    if not any(ch.isascii() and (ch.isalpha() or ch.isdigit()) for ch in text):
+        return text
+    runs = [run for run in _MIXED_RUN_RE.findall(text) if run]
+    if len(runs) <= 1:
+        return text
+    return ''.join(reversed(runs))
+
+
+def _section_compare_blob(section: str) -> str:
+    """Layout-normalized section including visual and logical mixed-line forms."""
+    pieces: List[str] = []
+    for line in str(section or '').splitlines():
+        pieces.append(line)
+        undone = _undo_visual_rtl_line(line)
+        if undone != line:
+            pieces.append(undone)
+    return _layout_norm('\n'.join(pieces))
+
+
 def _ordered_subsequence(want: Sequence[str], have: Sequence[str]) -> bool:
     """True when expected cells appear on the same row in order.
 
@@ -765,23 +811,31 @@ def _paragraph_pdf_blockers(
     Latin tokens keep identity and order. Layout may collapse whitespace.
     ASCII-drop equality is not accepted.
     """
-    want = _norm(para)
-    have = _norm(section)
+    want = _layout_norm(para)
+    have = _section_compare_blob(section)
     if not want:
         return []
     blockers: List[str] = []
     want_lat = _semantic_latin_tokens(para)
-    have_lat = _semantic_latin_tokens(section)
+    have_lat = _semantic_latin_tokens(have)
     if want_lat:
         missing = [token for token in want_lat if token not in have_lat]
         if missing:
             for token in missing:
                 blockers.append(
                     f'pdf_environment_latin_missing:{idx}:{token}')
-        elif not _ordered_latin_match(want_lat, have_lat):
-            blockers.append(f'pdf_environment_latin_order:{idx}')
-        vis_lat = _semantic_latin_tokens(visible)
-        act_lat = _semantic_latin_tokens(actual)
+        else:
+            raw_lat = _semantic_latin_tokens(_layout_norm(section))
+            undone_lat = _semantic_latin_tokens(
+                _layout_norm('\n'.join(
+                    _undo_visual_rtl_line(line)
+                    for line in str(section or '').splitlines())))
+            if not (
+                    _ordered_latin_match(want_lat, raw_lat)
+                    or _ordered_latin_match(want_lat, undone_lat)):
+                blockers.append(f'pdf_environment_latin_order:{idx}')
+        vis_lat = _semantic_latin_tokens(_section_compare_blob(visible))
+        act_lat = _semantic_latin_tokens(_section_compare_blob(actual))
         vis_need = [token for token in want_lat if token in vis_lat]
         act_need = [token for token in want_lat if token in act_lat]
         if act_need and vis_need != act_need:

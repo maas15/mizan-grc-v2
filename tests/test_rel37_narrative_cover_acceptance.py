@@ -886,6 +886,27 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
                 self.assertFalse(corrected, name)
             self.assertEqual(corrected, accept, name)
 
+    def test_helper_accepts_visual_rtl_mixed_line(self):
+        from release_engine_v3.rel37_export_content_parity import (
+            _paragraph_in_pdf_section,
+        )
+        compiled = (
+            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
+            'NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة '
+            'البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.')
+        visual = (
+            '، مع ضغطPDPL  وحماية بيانات شخصية وفقNDMO تعمل الجهة في '
+            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق\n'
+            'متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق '
+            'أصحاب البيانات.\n'
+            'NDMO PDPL')
+        self.assertTrue(_paragraph_in_pdf_section(compiled, visual))
+        self.assertFalse(_paragraph_in_pdf_section(
+            compiled, visual.replace('NDMO', '').replace('PDPL', '')))
+        swapped_visual = visual.replace('NDMO', '§TMP§').replace(
+            'PDPL', 'NDMO').replace('§TMP§', 'PDPL')
+        self.assertFalse(_paragraph_in_pdf_section(compiled, swapped_visual))
+
     def _env_pdf(self, env_paras, **kwargs):
         return _pdf_owned(
             org_name='جهة',
@@ -900,6 +921,42 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         good = self._env_pdf([EXPECTED_AR_ENV])
         self.assertTrue(good.startswith(b'%PDF'))
         self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+
+    def test_environment_visual_rtl_mixed_line_accepted(self):
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen.canvas import Canvas
+        compiled = (
+            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
+            'NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة '
+            'البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.')
+        visual_body = [
+            '، مع ضغطPDPL  وحماية بيانات شخصية وفقNDMO تعمل الجهة في '
+            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق',
+            'متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق '
+            'أصحاب البيانات.',
+            'NDMO PDPL',
+        ]
+        buf = io.BytesIO()
+        canv = Canvas(buf, pagesize=A4)
+        canv.setFont('Helvetica', 10)
+        canv.drawString(36, 800, 'Organization org')
+        canv.drawString(36, 786, 'Sector Banking')
+        canv.showPage()
+        canv.setFont('Helvetica', 10)
+        canv.drawString(36, 800, ENV_HEAD_EN)
+        y = 786
+        for line in visual_body:
+            _emit_actual_text(canv, line)
+            canv.setFont('Helvetica', 10)
+            latin = __import__('re').findall(r'[A-Za-z][A-Za-z0-9_-]*', line)
+            if latin:
+                canv.drawString(36, y, ' '.join(latin))
+            _end_actual_text(canv)
+            y -= 14
+        canv.save()
+        raw = buf.getvalue()
+        model = _EnvModel(compiled)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, raw), [])
 
     def test_missing_acronym_rejected(self):
         model = _EnvModel(EXPECTED_AR_ENV)
