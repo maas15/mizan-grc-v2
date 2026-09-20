@@ -28,6 +28,7 @@ from release_engine_v3.rel37_coverage_registry import (
     families_for_request,
     resolve_selected_frameworks,
 )
+from release_engine_v3.rel37_sector_context import sector_runtime_diagnostics
 from release_engine_v3.rel37_schema_registry import SCHEMA_VERSION
 
 _PILLARS = {
@@ -291,12 +292,24 @@ def _vision_prose(domain: str, lang: str, org_name: str) -> str:
     )
 
 
-def _environment_prose(domain: str, lang: str, org_name: str) -> str:
+def _environment_prose(
+        domain: str, lang: str, org_name: str, sector: str = '') -> str:
+    from release_engine_v3.rel37_sector_context import (
+        operating_context_clause,
+        present_sector_label,
+    )
+
     name = org_name or ('الجهة' if lang == 'ar' else 'the organization')
+    context = operating_context_clause(sector, lang)
+    presented = present_sector_label(sector, lang)
     if lang == 'ar':
+        lead = (
+            f'تعمل {name} {context}، ضمن'
+            if context else f'تعمل {name} في'
+        )
         if domain == 'data':
             p1 = (
-                f'تعمل {name} في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO '
+                f'{lead} بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO '
                 f'وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات '
                 f'والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.'
             )
@@ -307,7 +320,7 @@ def _environment_prose(domain: str, lang: str, org_name: str) -> str:
             )
         elif domain == 'ai':
             p1 = (
-                f'تعمل {name} في بيئة تتطلب امتثال إطار SDAIA للذكاء الاصطناعي '
+                f'{lead} بيئة تتطلب امتثال إطار SDAIA للذكاء الاصطناعي '
                 f'المسؤول، بما في ذلك سجل النماذج ومخاطر النموذج والإشراف البشري '
                 f'وجاهزية البيانات قبل الإطلاق.'
             )
@@ -317,7 +330,7 @@ def _environment_prose(domain: str, lang: str, org_name: str) -> str:
             )
         else:
             p1 = (
-                f'تعمل {name} في بيئة حكومة رقمية تتطلب امتثال إطار DGA '
+                f'{lead} بيئة حكومة رقمية تتطلب امتثال إطار DGA '
                 f'وتشغيل الخدمات الرقمية وقابلية التشغيل البيني وتحسين تجربة المستفيد '
                 f'عبر رحلة متصلة.'
             )
@@ -325,10 +338,16 @@ def _environment_prose(domain: str, lang: str, org_name: str) -> str:
                 'تشمل المحركات نشر واجهات API، اكتمال رحلات المستفيدين للخدمات '
                 'ذات الأولوية، والالتزام بمستوى الخدمة المستهدف دون انقطاع رقمي.'
             )
+        if presented and presented not in p1:
+            p1 = f'{p1} القطاع المختار هو {presented}.'
         return p1 + '\n\n' + p2
+    if context:
+        lead = f'{name} operates {context} under'
+    else:
+        lead = f'{name} operates under'
     if domain == 'data':
         p1 = (
-            f'{name} operates under national data-governance expectations from NDMO '
+            f'{lead} national data-governance expectations from NDMO '
             f'and personal-data duties from PDPL, with rising pressure on catalog '
             f'coverage, quality, consent, and data-subject rights.'
         )
@@ -338,7 +357,7 @@ def _environment_prose(domain: str, lang: str, org_name: str) -> str:
         )
     elif domain == 'ai':
         p1 = (
-            f'{name} operates under SDAIA responsible-AI expectations, including a '
+            f'{lead} SDAIA responsible-AI expectations, including a '
             f'model registry, model-risk assessment, human oversight, and data readiness.'
         )
         p2 = (
@@ -347,13 +366,15 @@ def _environment_prose(domain: str, lang: str, org_name: str) -> str:
         )
     else:
         p1 = (
-            f'{name} operates under DGA digital-government expectations, including '
+            f'{lead} DGA digital-government expectations, including '
             f'digital services, interoperability, and a connected beneficiary experience.'
         )
         p2 = (
             'Operating drivers include published APIs, complete beneficiary journeys '
             'for priority services, and adherence to the target digital service level.'
         )
+    if presented and presented not in p1:
+        p1 = f'{p1} The selected sector is {presented}.'
     return p1 + '\n\n' + p2
 
 
@@ -446,6 +467,7 @@ def compile_strategy_model(request: Optional[Dict[str, Any]] = None) -> Canonica
     domain = normalize_domain_code(str(payload.get('domain') or ''), default='')
     lang = 'ar' if str(payload.get('lang') or 'ar').lower().startswith('ar') else 'en'
     org_name = str(payload.get('org_name') or payload.get('organization') or '')
+    sector = str(payload.get('sector') or '').strip()
     families = list(DOMAIN_FAMILIES.get(domain, ()))
     if domain == 'data':
         families = families + list(_DATA_SUPPORT)
@@ -618,9 +640,11 @@ def compile_strategy_model(request: Optional[Dict[str, Any]] = None) -> Canonica
         lang=lang,
         selected_frameworks=selected,
         org_name=org_name,
+        sector=sector,
         task_id=str(payload.get('task_id') or payload.get('strategy_id') or ''),
         vision=_vision_prose(domain, lang, org_name),
-        environment_narrative=_environment_prose(domain, lang, org_name),
+        environment_narrative=_environment_prose(domain, lang, org_name, sector),
+        runtime_diagnostics=sector_runtime_diagnostics(sector, lang),
         strategic_objectives=tuple(so_rows),
         pillars=pillars,
         pillar_initiatives=tuple(initiatives),

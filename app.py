@@ -56725,16 +56725,15 @@ def validate_strategy_fail_closed(sections, lang, diag_model=None):
     # ── F. Generic environment (no sector/framework mentions) ──
     if env_txt and diag_model:
         sector_val = (diag_model.get('sector') or '').strip()
+        org_name_val = (diag_model.get('org_name') or '').strip()
         frameworks_val = diag_model.get('frameworks', []) or []
         # Ignore these generic/default sector/framework values that
-        # wouldn't distinguish the strategy.
-        _generic_sectors = {
-            'General', 'general', 'حكومي', 'Government',
-            'Not specified', 'غير محدد',
-        }
-        if (sector_val and sector_val not in _generic_sectors
-                and sector_val.lower() not in env_txt.lower()
-                and sector_val not in env_txt):
+        # wouldn't distinguish the strategy. A hit that exists only
+        # inside org_name does not satisfy the environment check.
+        from release_engine_v3.rel37_sector_context import (
+            environment_mentions_requested_sector as _env_has_sector,
+        )
+        if not _env_has_sector(env_txt, sector_val, org_name_val):
             defects.append((
                 'environment_missing_sector_reference',
                 f'environment section does not mention sector '
@@ -67227,6 +67226,7 @@ The confidence score is based on a comprehensive assessment of the organization'
                 explicit_selection=data.get('explicit_selection'),
                 strategy_id=data.get('strategy_id') or data.get('id'),
                 task_id=data.get('task_id'),
+                request=data if isinstance(data, dict) else {},
             )
             _rel37_early_diag = _rel37_early_result.diagnostic
             _rel37_generation_adopted = bool(

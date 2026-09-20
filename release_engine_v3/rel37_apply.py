@@ -856,6 +856,7 @@ def apply_rel37_to_sections(
     payload.setdefault('domain', domain)
     payload.setdefault('lang', _normalize_lang(lang))
     payload.setdefault('org_name', org_name or payload.get('org_name') or '')
+    payload.setdefault('sector', str(payload.get('sector') or ''))
     payload.setdefault('task_id', task_id)
     payload['selected_frameworks'] = list(selection.normalized_frameworks)
     payload['selected_frameworks_original'] = list(

@@ -37,6 +37,7 @@ HASH_EXCLUDED_FIELDS = frozenset({
     'missing_families',
     'task_id',
     'runtime_diagnostics',
+    'sector',
     'validation_timestamps',
     'generated_timestamps',
     'export_debug',
@@ -245,6 +246,7 @@ class CanonicalDocument:
     lang: str = 'ar'
     selected_frameworks: Tuple[str, ...] = ()
     org_name: str = ''
+    sector: str = ''
     task_id: str = ''
     vision: str = ''
     environment_narrative: str = ''
@@ -281,6 +283,7 @@ class CanonicalDocument:
             'lang': self.lang,
             'selected_frameworks': list(self.selected_frameworks),
             'org_name': self.org_name,
+            'sector': self.sector,
             'task_id': self.task_id,
             'vision': self.vision,
             'environment_narrative': self.environment_narrative,
@@ -533,6 +536,7 @@ class CanonicalDocument:
             lang=str(data.get('lang') or 'ar'),
             selected_frameworks=tuple(data.get('selected_frameworks') or ()),
             org_name=str(data.get('org_name') or ''),
+            sector=str(data.get('sector') or ''),
             task_id=str(data.get('task_id') or ''),
             vision=str(data.get('vision') or ''),
             environment_narrative=str(data.get('environment_narrative') or ''),

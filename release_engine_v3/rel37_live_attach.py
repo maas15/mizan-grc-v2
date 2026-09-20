@@ -531,6 +531,7 @@ def attach_rel37_before_save(
         payload['domain'] = domain_resolved or selection.domain
         payload['lang'] = lang_n
         payload['org_name'] = org_name or payload.get('org_name') or ''
+        payload['sector'] = str(payload.get('sector') or request.get('sector') or '')
         payload['task_id'] = diag['task_id']
         payload['selected_frameworks'] = list(selection.normalized_frameworks)
         model = compile_for_domain(payload['domain'], payload)
