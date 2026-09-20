@@ -497,6 +497,9 @@ def _visible_reconciled_to_actual(visible: str, actual: str) -> Tuple[str, str]:
     act = _layout_norm(actual)
     if not vis:
         return vis, 'visible_empty'
+    if not act and _is_mixed_arabic_latin(visible):
+        undone = _layout_norm(_undo_visible_lines(visible))
+        return undone, 'visible_visual_no_actual'
     if act and vis == act:
         return vis, 'same'
     vis_lines = [
@@ -1034,7 +1037,7 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
         heading_in_events = any(
             _env_boundary_line(event.get('text') or '') == 'heading'
             for event in events)
-        if stream_after:
+        if stream_after and (heading_in_events or not page_started):
             page_act = stream_after
         elif heading_page == index and not heading_in_events:
             # CID/shaped heading is visible in line boxes, not in the
@@ -1328,6 +1331,7 @@ def _paragraph_pdf_blockers(
             'same',
             'visible_visual_matches_actual',
             'visible_wraps_actual',
+            'visible_visual_no_actual',
     ):
         if _latin_vis_conflicts_act(
                 _latin_relation(vis_cmp), _latin_relation(act_cmp)):
@@ -1342,6 +1346,7 @@ def _paragraph_pdf_blockers(
                 'same',
                 'visible_visual_matches_actual',
                 'visible_wraps_actual',
+                'visible_visual_no_actual',
         ):
             targets = [act_cmp or vis_cmp]
         else:
