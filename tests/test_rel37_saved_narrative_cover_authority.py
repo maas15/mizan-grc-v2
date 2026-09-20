@@ -94,6 +94,14 @@ _UID = {'n': 800}
 
 
 class ImmediateThread:
+    """In-process stand-in used by the retained same-source sequence.
+
+    This is not the real worker/status/download thread path. Final-byte
+    contract coverage for the public async route uses a real
+    ``threading.Thread`` in
+    ``tests/test_rel37_narrative_cover_acceptance.py``.
+    """
+
     def __init__(self, target=None, args=(), kwargs=None, daemon=None):
         self.target = target
         self.args = args or ()
@@ -431,6 +439,7 @@ class SameSourceRouteSequenceTests(unittest.TestCase):
         self.assertEqual(model.domain, 'data')
 
     def test_browser_official_saved_id_repeat_sequence(self):
+        """Same-source sequence. ImmediateThread limitation is labeled above."""
         model = _load_live_model()
         before = model.model_hash
         saved = _persist(model, db_sector='Healthcare')

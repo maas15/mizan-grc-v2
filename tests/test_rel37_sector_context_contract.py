@@ -241,6 +241,16 @@ class SectorHelperTests(unittest.TestCase):
         # HASH_EXCLUDED raw Healthcare is not a narrative mention.
         self.assertNotEqual(
             cover_sector_from_hashed_narrative(ar, 'ar'), 'Healthcare')
+        incidental = (
+            'Healthcare Analytics operates in the Banking/Finance '
+            'sector operating context under NDMO.')
+        self.assertEqual(
+            cover_sector_from_hashed_narrative(incidental, 'en'),
+            'Banking/Finance')
+        self.assertEqual(
+            cover_sector_from_hashed_narrative(
+                'Healthcare Analytics reviews NDMO catalog coverage.', 'en'),
+            '')
 
 
 class CompilerContextTests(unittest.TestCase):

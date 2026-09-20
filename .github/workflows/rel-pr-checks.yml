@@ -63,6 +63,7 @@ jobs:
             tests/test_rel33_official_runner_capture.py \
             tests/test_rel37_export_content_parity.py \
             tests/test_rel37_saved_narrative_cover_authority.py \
+            tests/test_rel37_narrative_cover_acceptance.py \
             tests/test_rel37_sync_pdf_ownership.py \
             tests/test_rel37_acceptance_evidence_isolation.py \
             -q
@@ -101,6 +102,7 @@ jobs:
             tests/test_rel37_ui_request_type_contract.py \
             tests/test_rel37_export_content_parity.py \
             tests/test_rel37_saved_narrative_cover_authority.py \
+            tests/test_rel37_narrative_cover_acceptance.py \
             tests/test_rel37_guide_completeness_persist.py \
             tests/test_rel37_sector_context_contract.py \
             -q --tb=short
