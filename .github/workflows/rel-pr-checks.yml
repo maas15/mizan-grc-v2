@@ -43,6 +43,8 @@ jobs:
         run: |
           python -m py_compile app.py professional_strategy_render.py \
             release_engine_v3/rel37_apply.py \
+            release_engine_v3/rel37_compilers.py \
+            release_engine_v3/rel37_sector_context.py \
             release_engine_v3/rel32_docx_renderer.py \
             release_engine_v3/rel32_frozen_export_lock.py \
             release_engine_v3/rel31_authority.py
@@ -82,6 +84,7 @@ jobs:
             tests/test_rel37_early_authority.py \
             tests/test_rel37_preview_section_contract.py \
             tests/test_rel37_framework_label_canonicalization.py \
+            tests/test_rel37_sector_context_contract.py \
             -q --tb=short
 
       - name: pytest REL37 request, persist, and export contract
@@ -95,6 +98,7 @@ jobs:
             tests/test_rel37_ui_request_type_contract.py \
             tests/test_rel37_export_content_parity.py \
             tests/test_rel37_guide_completeness_persist.py \
+            tests/test_rel37_sector_context_contract.py \
             -q --tb=short
 
       - name: pytest REL37 sync PDF ownership
