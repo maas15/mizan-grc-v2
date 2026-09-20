@@ -45,9 +45,15 @@ def sections_from_frozen_artifact(
     """Build legacy section map for DOCX from frozen artifact only."""
     from release_engine_v3.section_models import section_to_markdown
 
+    legacy = dict(frozen.legacy_sections or {})
     sections = {
-        k: v for k, v in dict(frozen.legacy_sections or {}).items()
+        k: v for k, v in legacy.items()
         if isinstance(v, str) and not str(k).startswith('_')}
+    # REL37 authority keys are not visible markdown. Dropping them lets
+    # catalog compose replace saved relationships.
+    for key, value in legacy.items():
+        if str(key).startswith('_rel37_'):
+            sections[key] = value
     for canon_key, legacy_key in _CANON_TO_LEGACY:
         if str(sections.get(legacy_key) or '').strip():
             continue

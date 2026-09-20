@@ -72,13 +72,23 @@ def _bind_backend_sections(
     try:
         from release_engine_v3.rel37_apply import (
             is_rel37_authoritative,
+            overlay_rel37_authority,
+            rel37_sections_persist_blocked,
             remember_rel37_export_snapshot,
         )
-        if is_rel37_authoritative(sections):
-            backend['_rel37_source_sections'] = dict(sections)
+        authorized = overlay_rel37_authority(
+            sections,
+            art.get('_rel37_source_sections') or sections,
+        )
+        if rel37_sections_persist_blocked(authorized):
+            backend.pop('_rel37_source_sections', None)
+            backend['_rel37_render_blocked'] = authorized.get(
+                '_rel37_render_blocked')
+        elif is_rel37_authoritative(authorized):
+            backend['_rel37_source_sections'] = dict(authorized)
             remember_rel37_export_snapshot(
                 art.get('strategy_id') or art.get('artifact_id'),
-                sections,
+                authorized,
             )
     except Exception:  # noqa: BLE001
         pass

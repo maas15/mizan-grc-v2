@@ -6885,16 +6885,23 @@ def ensure_strategy_professional_model(
             from release_engine_v3.rel37_apply import (
                 REL37_RENDER_BLOCKED_KEY,
                 is_rel37_authoritative,
+                overlay_rel37_authority,
+                prefer_rel37_authority_candidate,
             )
             from release_engine_v3.rel37_professional_projection import (
                 Rel37RenderAuthorityError,
                 apply_rel37_projection_to_blocks,
                 load_validated_rel37_model,
             )
-            _src = (model.get('_rel37_source_sections')
-                    or (metadata or {}).get('_rel37_source_sections')
-                    or (sections if isinstance(sections, dict) else {})
-                    or {})
+            _src = prefer_rel37_authority_candidate(
+                model.get('_rel37_source_sections'),
+                (metadata or {}).get('_rel37_source_sections'),
+                sections if isinstance(sections, dict) else None,
+            )
+            _src = overlay_rel37_authority(
+                sections if isinstance(sections, dict) else _src,
+                _src,
+            )
             _claimed = bool(
                 is_rel37_authoritative(_src)
                 or _src.get(REL37_RENDER_BLOCKED_KEY))

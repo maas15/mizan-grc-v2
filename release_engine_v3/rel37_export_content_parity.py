@@ -234,6 +234,48 @@ def expected_rows(model: CanonicalDocument) -> Dict[str, List[List[str]]]:
     }
 
 
+def compare_traceability_association(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
+    """Number-keyed row/field check for saved traceability relationships."""
+    inv = inventory_docx_bytes(raw)
+    blockers: List[str] = []
+    expected_rows_list = [list(row.cells()) for row in model.traceability]
+    tables = inv.get('tables') or []
+
+    def _score(table: Sequence[Sequence[str]]) -> int:
+        score = 0
+        for exp in expected_rows_list:
+            want = [_norm(cell) for cell in exp]
+            for raw_row in table:
+                have = [_norm(cell) for cell in raw_row]
+                if want and have and have[0] == want[0]:
+                    score += sum(1 for cell in want if cell and cell in have)
+                    break
+        return score
+
+    ranked = sorted(tables, key=_score, reverse=True)
+    chosen = ranked[0] if ranked and _score(ranked[0]) else []
+    flat_rows = [[_norm(cell) for cell in row] for row in chosen]
+    for idx, expected in enumerate(expected_rows_list):
+        want = [_norm(cell) for cell in expected]
+        number = want[0] if want else ''
+        match = None
+        for have in flat_rows:
+            if have and have[0] == number:
+                match = have
+                break
+        if match is None:
+            blockers.append(
+                f'docx_missing_traceability_row:{idx}:{number}')
+            continue
+        if not _ordered_subsequence(want, match):
+            blockers.append(
+                f'docx_row_field_mismatch:traceability:{idx}:{number}')
+    return blockers
+
+
 def compare_model_to_docx(
         model: CanonicalDocument,
         raw: bytes,

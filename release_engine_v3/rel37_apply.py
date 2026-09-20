@@ -102,6 +102,130 @@ def is_rel37_authoritative(sections: Optional[Dict[str, Any]]) -> bool:
     return applied in ('1', 'true', 'yes', 'on') and bool(secs.get(REL37_MODEL_KEY))
 
 
+def rel37_private_authority_items(
+        sections: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Copy only validated ``_rel37_*`` metadata. Client extras stay inert."""
+    out: Dict[str, Any] = {}
+    for key, value in dict(sections or {}).items():
+        if str(key).startswith('_rel37_'):
+            out[key] = value
+    return out
+
+
+def rel37_hash_identity_blockers(
+        sections: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Server-side hash/identity tamper. Recomputing the hash cannot clear it."""
+    secs = sections or {}
+    claimed = bool(secs.get(REL37_MODEL_KEY) or is_rel37_authoritative(secs))
+    if not claimed:
+        return []
+    model = load_model(secs)
+    if model is None:
+        return ['rel37_model_unreadable']
+    errors: List[str] = []
+    stored_hash = str(secs.get(REL37_HASH_KEY) or '').strip()
+    recomputed = model.compute_model_hash()
+    if not model.model_hash:
+        errors.append('rel37_model_hash_missing')
+    elif recomputed != model.model_hash:
+        errors.append('rel37_model_hash_stale')
+    if stored_hash and model.model_hash and stored_hash != model.model_hash:
+        errors.append('rel37_model_hash_mismatch')
+    return errors
+
+
+def rel37_sections_persist_blocked(
+        sections: Optional[Dict[str, Any]],
+) -> bool:
+    if not isinstance(sections, dict) or not sections:
+        return False
+    if sections.get(REL37_RENDER_BLOCKED_KEY) or sections.get(
+            'rel37_authority_blocked'):
+        return True
+    return bool(rel37_hash_identity_blockers(sections))
+
+
+def overlay_rel37_authority(
+        target: Optional[Dict[str, Any]],
+        source: Optional[Dict[str, Any]] = None,
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = 'strategy',
+        org_name: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Restore authorized ``_rel37_*`` onto leftover/visible maps.
+
+    Only metadata from the current authorized source is retained. A stale
+    or tampered hash cannot be repaired by recomputing it. Client org,
+    language, and framework values do not mint or repair authority.
+    """
+    leftover = dict(target or {})
+    src = source if isinstance(source, dict) and source else leftover
+    blockers = rel37_hash_identity_blockers(src)
+    if blockers or src.get(REL37_RENDER_BLOCKED_KEY):
+        blocked = list(blockers)
+        raw = src.get(REL37_RENDER_BLOCKED_KEY)
+        if isinstance(raw, list):
+            blocked.extend(str(item) for item in raw)
+        elif raw:
+            blocked.append(str(raw))
+        out = dict(leftover)
+        out.update(rel37_authority_snapshot(src))
+        out[REL37_APPLIED_KEY] = False
+        out['rel37_authority_blocked'] = True
+        out[REL37_RENDER_BLOCKED_KEY] = list(dict.fromkeys(blocked)) or [
+            'rel37_render_blocked']
+        return out
+    if not is_rel37_authoritative(src):
+        return leftover
+    out = {
+        key: value for key, value in leftover.items()
+        if not str(key).startswith('_rel37_')
+        and key not in ('rel37_authority_blocked',)
+    }
+    out.update(rel37_private_authority_items(src))
+    model = load_model(out)
+    if model is None:
+        out[REL37_APPLIED_KEY] = False
+        out['rel37_authority_blocked'] = True
+        out[REL37_RENDER_BLOCKED_KEY] = ['rel37_model_unreadable']
+        return out
+    projected = model_to_sections(model)
+    for key, value in projected.items():
+        if str(key).startswith('_'):
+            continue
+        # Authorized model tables win over leftover/catalog maps.
+        # Metadata loss must not keep catalog-generated replacements.
+        if value not in (None, '') and str(value).strip():
+            out[key] = value
+    # Saved-source identity: the model's own fields, not the client request.
+    ok, errors = rel37_request_model_consistent(
+        out,
+        domain=domain or model.domain,
+        lang=lang or model.lang,
+        document_type=document_type or model.document_type,
+        org_name=model.org_name,
+        selected_frameworks=list(model.selected_frameworks or []),
+    )
+    hash_errors = [
+        item for item in errors
+        if 'hash' in str(item) or item == 'rel37_model_unreadable'
+    ]
+    if hash_errors:
+        out[REL37_APPLIED_KEY] = False
+        out['rel37_authority_blocked'] = True
+        out[REL37_RENDER_BLOCKED_KEY] = hash_errors
+        return out
+    _ = ok
+    _ = org_name
+    _ = selected_frameworks
+    return out
+
+
 _EXPORT_SNAPSHOTS: Dict[str, Dict[str, Any]] = {}
 
 

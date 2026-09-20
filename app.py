@@ -1210,20 +1210,106 @@ def _strip_privileged_export_fields(payload):
     return out
 
 
+def _export_claim_is_risk(data):
+    atype = str((data or {}).get('artifact_type') or '').strip().lower()
+    dtype = str((data or {}).get('document_type') or '').strip().lower()
+    return dtype in ('risk', 'risk_assessment') or atype in (
+        'risk', 'risk_assessment')
+
+
+def _claimed_export_ids(data):
+    payload = data or {}
+    return {
+        'strategy_id': _normalize_claimed_export_id(payload.get('strategy_id')),
+        'artifact_id': _normalize_claimed_export_id(payload.get('artifact_id')),
+        'risk_id': _normalize_claimed_export_id(payload.get('risk_id')),
+    }
+
+
 def _public_pdf_identifier_conflict(data):
-    sid = _normalize_claimed_export_id((data or {}).get('strategy_id'))
-    aid = _normalize_claimed_export_id((data or {}).get('artifact_id'))
+    ids = _claimed_export_ids(data)
+    sid = ids['strategy_id']
+    aid = ids['artifact_id']
+    rid = ids['risk_id']
+    if sid and rid:
+        return True
+    if _export_claim_is_risk(data):
+        if rid and aid and rid != aid:
+            return True
+        if sid and aid and sid != aid:
+            return True
+        return False
     return bool(sid and aid and sid != aid)
 
 
+def _frameworks_from_saved_sections(sections):
+    if not isinstance(sections, dict):
+        return []
+    raw = sections.get('_rel37_canonical_frameworks')
+    if isinstance(raw, (list, tuple)):
+        return [str(item) for item in raw if str(item).strip()]
+    try:
+        from release_engine_v3.rel37_apply import load_model
+        model = load_model(sections)
+    except Exception:  # noqa: BLE001
+        model = None
+    if model is not None:
+        return [str(item) for item in (model.selected_frameworks or []) if str(item).strip()]
+    return []
+
+
+def _apply_authorized_saved_identity(data, loaded, art_type):
+    """Bind the authorized server record. Client org/lang/fw do not alter it."""
+    if not isinstance(data, dict) or not isinstance(loaded, dict):
+        return
+    data['content'] = loaded.get('content') or ''
+    data['sections'] = loaded.get('sections') or {}
+    data['_rel37_source_sections'] = loaded.get('sections') or {}
+    loaded_id = loaded.get('id')
+    if str(art_type or '').strip().lower() in ('risk', 'risk_assessment'):
+        data['risk_id'] = loaded_id
+        data['artifact_id'] = loaded_id
+        data['artifact_type'] = 'risk'
+        data['document_type'] = 'risk'
+        data.pop('strategy_id', None)
+    else:
+        data['strategy_id'] = loaded_id
+        data['artifact_id'] = loaded_id
+    if loaded.get('org_name'):
+        data['org_name'] = loaded['org_name']
+    if loaded.get('lang'):
+        data['language'] = loaded['lang']
+    if loaded.get('domain'):
+        data['domain'] = loaded['domain']
+    frameworks = loaded.get('frameworks') or _frameworks_from_saved_sections(
+        loaded.get('sections'))
+    if frameworks:
+        data['selected_frameworks'] = list(frameworks)
+        data['frameworks'] = list(frameworks)
+
+
 def _load_authorized_saved_export_for_pdf(artifact_id, user_id, artifact_type):
-    """Load a saved strategy that the session principal already owns."""
+    """Load a saved artifact that the session principal already owns."""
     if not artifact_id or not user_id:
         return None
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
         return None
+    if str(artifact_type or '').strip().lower() in ('risk', 'risk_assessment'):
+        row = _load_risk_export_row(artifact_id, uid)
+        if not row:
+            return None
+        return {
+            'id': int(row.get('id') or artifact_id),
+            'content': row.get('content') or row.get('analysis') or '',
+            'sections': row.get('sections') or {},
+            'lang': row.get('language') or '',
+            'domain': row.get('domain') or '',
+            'org_name': row.get('org_name') or '',
+            'frameworks': [],
+            'artifact_type': 'risk',
+        }
     resolved = _resolve_numeric_strategy_id(artifact_id, uid)
     try:
         art_id = int(resolved or artifact_id)
@@ -1289,23 +1375,27 @@ def _bind_public_saved_pdf_export(data):
             'error': 'Export blocked — conflicting artifact identifiers.',
             'reason': 'conflicting_export_identifiers',
         }), 400
-    claimed = (
-        _normalize_claimed_export_id(data.get('strategy_id'))
-        or _normalize_claimed_export_id(data.get('artifact_id'))
-    )
+    art_type = _rel33_normalize_export_artifact_type(data)
+    ids = _claimed_export_ids(data)
+    if art_type == 'risk':
+        claimed = ids['risk_id'] or ids['artifact_id'] or ids['strategy_id']
+    else:
+        claimed = ids['strategy_id'] or ids['artifact_id']
     if not claimed:
         return None
     uid = session.get('user_id', 0)
     domain = data.get('domain') or ''
     lang = data.get('language') or 'en'
-    art_type = _rel33_normalize_export_artifact_type(data)
     _ctx, denied = _rel36_11_bind_saved_export_lookup(
         data, route='pdf', export_type='pdf',
         domain=domain, lang=lang, artifact_type=art_type,
         artifact_id=claimed)
     if denied is not None:
         return denied
-    if _ctx and _ctx.get('strategy_id'):
+    if art_type == 'risk':
+        if _ctx and _ctx.get('risk_id'):
+            claimed = str(_ctx['risk_id'])
+    elif _ctx and _ctx.get('strategy_id'):
         claimed = str(_ctx['strategy_id'])
         data['strategy_id'] = _ctx['strategy_id']
         data['artifact_id'] = _ctx['strategy_id']
@@ -1315,13 +1405,7 @@ def _bind_public_saved_pdf_export(data):
             'error': 'Export blocked — artifact not owned by current user.',
             'reason': 'cross_user_export_denied',
         }), 403
-    data['content'] = loaded['content']
-    data['sections'] = loaded['sections']
-    data['_rel37_source_sections'] = loaded['sections']
-    data['strategy_id'] = loaded['id']
-    data['artifact_id'] = loaded['id']
-    if loaded.get('org_name') and not str(data.get('org_name') or '').strip():
-        data['org_name'] = loaded['org_name']
+    _apply_authorized_saved_identity(data, loaded, art_type)
     return None
 
 
@@ -52090,10 +52174,29 @@ def _rel2_backend_callables(*, pipeline_cache=None):
         # caller-provided domain, then the backend artifact domain.
         _meta = dict(metadata or {})
         if isinstance(sections, dict) and not _meta.get('_rel37_source_sections'):
-            _meta['_rel37_source_sections'] = {
+            _rel37_only = {
                 k: v for k, v in sections.items()
                 if str(k).startswith('_rel37_')
-            } or sections
+            }
+            if _rel37_only:
+                _meta['_rel37_source_sections'] = _rel37_only
+        try:
+            from release_engine_v3.rel37_apply import (
+                overlay_rel37_authority,
+                rel37_hash_identity_blockers,
+                rel37_sections_persist_blocked,
+            )
+            _src = _meta.get('_rel37_source_sections') or sections
+            if isinstance(sections, dict):
+                sections = overlay_rel37_authority(sections, _src)
+                if (rel37_hash_identity_blockers(sections)
+                        or rel37_sections_persist_blocked(sections)):
+                    _meta['_rel37_source_sections'] = sections
+                    raise ValueError('rel37_hash_identity_blocked')
+        except ValueError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
         model = _build_professional_strategy_document_model(
             markdown,
             metadata=_meta,
@@ -52300,7 +52403,12 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                         'selected_frameworks': fw_labels or list(fws or []),
                         'sections': sections or {},
                         '_rel37_source_sections': _rel37_src,
-                        'strategy_id': meta.get('strategy_id') or '',
+                        'strategy_id': (
+                            '' if _dtype in ('risk', 'risk_assessment')
+                            else (meta.get('strategy_id') or '')),
+                        'risk_id': (
+                            meta.get('risk_id') or meta.get('artifact_id') or ''
+                            if _dtype in ('risk', 'risk_assessment') else ''),
                         'artifact_id': meta.get('artifact_id') or '',
                         '_rel33_compiler_frozen_authority': _rel33_frozen,
                     })
@@ -80879,8 +80987,11 @@ def api_generate_pdf_async():
                                   'for PDF export.'}), 400
 
     # ── Fail-closed gate on async path ───────────────────────────────────────
-    _art_id_a   = data.get('artifact_id') or data.get('strategy_id')
     _art_type_a = _rel33_normalize_export_artifact_type(data)
+    if _art_type_a == 'risk':
+        _art_id_a = data.get('risk_id') or data.get('artifact_id')
+    else:
+        _art_id_a = data.get('artifact_id') or data.get('strategy_id')
     _gen_mode_a = data.get('generation_mode', 'drafting')
     _rel3611_ctx, _rel3611_denied = _rel36_11_bind_saved_export_lookup(
         data, route='pdf-async', export_type='pdf',
@@ -80889,7 +81000,12 @@ def api_generate_pdf_async():
     if _rel3611_denied is not None:
         return _rel3611_denied
     if _rel3611_ctx:
-        if _rel3611_ctx.get('strategy_id'):
+        if _art_type_a == 'risk' and _rel3611_ctx.get('risk_id'):
+            _art_id_a = _rel3611_ctx['risk_id']
+            data['risk_id'] = _rel3611_ctx['risk_id']
+            data['artifact_id'] = _rel3611_ctx['risk_id']
+            data.pop('strategy_id', None)
+        elif _rel3611_ctx.get('strategy_id'):
             _art_id_a = _rel3611_ctx['strategy_id']
             data['strategy_id'] = _rel3611_ctx['strategy_id']
             data['artifact_id'] = _rel3611_ctx['strategy_id']
@@ -80902,13 +81018,19 @@ def api_generate_pdf_async():
                 'error': 'Export blocked — artifact not owned by current user.',
                 'reason': 'cross_user_export_denied',
             }), 403
-        content = (_loaded_async.get('content') or '').strip()
-        data['content'] = content
-        data['sections'] = _loaded_async.get('sections') or {}
-        data['_rel37_source_sections'] = data['sections']
-        data['strategy_id'] = _loaded_async['id']
-        data['artifact_id'] = _loaded_async['id']
+        _apply_authorized_saved_identity(data, _loaded_async, _art_type_a)
+        content = (data.get('content') or '').strip()
         _art_id_a = _loaded_async['id']
+        if data.get('org_name'):
+            org_name = str(data.get('org_name') or '').strip()
+        if data.get('language'):
+            lang = data.get('language') or lang
+        if data.get('domain'):
+            try:
+                domain = resolve_export_domain(
+                    data.get('domain'), _art_type_a)
+            except DomainResolutionError:
+                pass
     if not content:
         return jsonify({'error': 'No content'}), 400
     try:
@@ -81093,6 +81215,11 @@ def api_generate_pdf_async():
         'status': 'pending',
         'filename': filename,
         'user_id': session.get('user_id', 0),
+        'artifact_type': _art_type_a,
+        'artifact_id': _art_id_a,
+        'risk_id': data.get('risk_id') if _art_type_a == 'risk' else None,
+        'strategy_id': data.get('strategy_id') if _art_type_a != 'risk' else None,
+        'document_type': _rel33_export_document_type(_art_type_a),
     }
 
     _content  = content
@@ -81117,11 +81244,12 @@ def api_generate_pdf_async():
                            or data.get('frameworks') or [])
     _export_uid_pdf = session.get('user_id', 0)
     _export_strategy_id_pdf = (
-        data.get('strategy_id') or _art_id_a)
+        None if _art_type_a == 'risk' else (data.get('strategy_id') or _art_id_a))
     _export_risk_id_pdf = data.get('risk_id') or (
         _art_id_a if _art_type_a == 'risk' else None)
-    _export_numeric_sid_pdf = _resolve_numeric_strategy_id(
-        _export_strategy_id_pdf, _export_uid_pdf)
+    _export_numeric_sid_pdf = (
+        None if _art_type_a == 'risk'
+        else _resolve_numeric_strategy_id(_export_strategy_id_pdf, _export_uid_pdf))
     # REL3.3 staging-only diagnostic echo (gated). When requested + allowed,
     # capture the detailed evidence blocker into the export-status JSON.
     _debug_evidence_pdf = _rel33_debug_export_allowed(data)
@@ -81154,7 +81282,8 @@ def api_generate_pdf_async():
                       'document_type': _rel33_export_document_type(_art_type_inner),
                       'generation_mode': _gen_mode_inner,
                       'strategy_id': (
-                          _export_numeric_sid_pdf or _export_strategy_id_pdf),
+                          None if _art_type_inner == 'risk'
+                          else (_export_numeric_sid_pdf or _export_strategy_id_pdf)),
                       'risk_id': _export_risk_id_pdf,
                       # PR-5B.8S — forward selected frameworks so the
                       # composer's scope/methodology/traceability blocks
@@ -81280,6 +81409,12 @@ def api_generate_docx_async():
         data = request.get_json(force=True) or {}
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
+    data = _strip_privileged_export_fields(data)
+    if _public_pdf_identifier_conflict(data):
+        return jsonify({
+            'error': 'Export blocked — conflicting artifact identifiers.',
+            'reason': 'conflicting_export_identifiers',
+        }), 400
 
     content  = data.get('content', '').strip()
     filename = data.get('filename', 'document')
@@ -81296,12 +81431,12 @@ def api_generate_docx_async():
         return jsonify({'error': 'Missing or unsupported strategy domain '
                                   'for DOCX export.'}), 400
 
-    if not content:
-        return jsonify({'error': 'No content'}), 400
-
     # ── Fail-closed gate on async path ───────────────────────────────────────
-    _art_id_a   = data.get('artifact_id') or data.get('strategy_id')
     _art_type_a = _rel33_normalize_export_artifact_type(data)
+    if _art_type_a == 'risk':
+        _art_id_a = data.get('risk_id') or data.get('artifact_id')
+    else:
+        _art_id_a = data.get('artifact_id') or data.get('strategy_id')
     _gen_mode_a = data.get('generation_mode', 'drafting')
     _rel3611_ctx, _rel3611_denied = _rel36_11_bind_saved_export_lookup(
         data, route='docx-async', export_type='docx',
@@ -81310,11 +81445,33 @@ def api_generate_docx_async():
     if _rel3611_denied is not None:
         return _rel3611_denied
     if _rel3611_ctx:
-        if _rel3611_ctx.get('strategy_id'):
+        if _art_type_a == 'risk' and _rel3611_ctx.get('risk_id'):
+            _art_id_a = _rel3611_ctx['risk_id']
+            data['risk_id'] = _rel3611_ctx['risk_id']
+            data['artifact_id'] = _rel3611_ctx['risk_id']
+            data.pop('strategy_id', None)
+        elif _rel3611_ctx.get('strategy_id'):
             _art_id_a = _rel3611_ctx['strategy_id']
             data['strategy_id'] = _rel3611_ctx['strategy_id']
             data['artifact_id'] = _rel3611_ctx['strategy_id']
         lang = _rel3611_ctx.get('lang') or lang
+    if _art_id_a:
+        _loaded_docx = _load_authorized_saved_export_for_pdf(
+            _art_id_a, session.get('user_id', 0), _art_type_a)
+        if _loaded_docx is None:
+            return jsonify({
+                'error': 'Export blocked — artifact not owned by current user.',
+                'reason': 'cross_user_export_denied',
+            }), 403
+        _apply_authorized_saved_identity(data, _loaded_docx, _art_type_a)
+        content = (data.get('content') or content or '').strip()
+        _art_id_a = _loaded_docx['id']
+        if data.get('org_name'):
+            org_name = str(data.get('org_name') or '').strip()
+        if data.get('language'):
+            lang = data.get('language') or lang
+    if not content:
+        return jsonify({'error': 'No content'}), 400
     try:
         _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
         if not _gate_a['allowed']:
@@ -81516,6 +81673,11 @@ def api_generate_docx_async():
         'status': 'pending',
         'filename': filename,
         'user_id': session.get('user_id', 0),
+        'artifact_type': _art_type_a,
+        'artifact_id': _art_id_a,
+        'risk_id': data.get('risk_id') if _art_type_a == 'risk' else None,
+        'strategy_id': data.get('strategy_id') if _art_type_a != 'risk' else None,
+        'document_type': _rel33_export_document_type(_art_type_a),
     }
 
     _content  = content
@@ -84131,6 +84293,15 @@ def api_generate_docx():
                 from release_engine_v3.rel37_apply import (
                     rel37_bind_export_sections as _rel37_bind_docx,
                 )
+                from release_engine_v3.rel37_apply import (
+                    prefer_rel37_authority_candidate as _rel37_pref_docx,
+                    overlay_rel37_authority as _rel37_overlay_docx,
+                )
+                _prep_export_sections = _rel37_pref_docx(
+                    _prep_export_sections,
+                    data.get('_rel37_source_sections'),
+                    data.get('sections'),
+                )
                 _export_sections = _rel37_bind_docx(
                     _prep_export_sections,
                     _h2_export_sections,
@@ -84139,6 +84310,10 @@ def api_generate_docx():
                     document_type=_rel33_export_document_type(_art_type),
                     org_name=org_name,
                     selected_frameworks=_selected_fws_sync,
+                )
+                _export_sections = _rel37_overlay_docx(
+                    _export_sections,
+                    data.get('_rel37_source_sections') or _prep_export_sections,
                 )
             except Exception:  # noqa: BLE001
                 _export_sections = _h2_export_sections
@@ -84979,6 +85154,13 @@ def api_generate_pdf():
                     document_type=_rel33_export_document_type(_art_type_p),
                     org_name=org_name_pdf,
                     selected_frameworks=_selected_fws_pdf,
+                )
+                from release_engine_v3.rel37_apply import (
+                    overlay_rel37_authority as _rel37_overlay_pdf,
+                )
+                _pdf_sections_early = _rel37_overlay_pdf(
+                    _pdf_sections_early,
+                    data.get('_rel37_source_sections') or _prep_pdf_sections,
                 )
             except Exception:  # noqa: BLE001
                 _pdf_sections_early = _h2_pdf_sections
@@ -93343,6 +93525,45 @@ def _rel36_11_bind_saved_export_lookup(
         uid = int(uid or 0)
     except (TypeError, ValueError):
         uid = 0
+    art_type_n = str(artifact_type or '').strip().lower()
+    if art_type_n in ('risk', 'risk_assessment') or _export_claim_is_risk(data):
+        rid = data.get('risk_id') or artifact_id or data.get('artifact_id')
+        dtype = 'risk'
+        row_owner = 0
+        if rid and uid:
+            try:
+                _conn = get_db_direct()
+                _row = _conn.execute(
+                    'SELECT id, user_id FROM risks WHERE id = ?',
+                    (int(rid),),
+                ).fetchone()
+                _conn.close()
+                if _row:
+                    _keys = _row.keys() if hasattr(_row, 'keys') else []
+                    row_owner = int(_row['user_id'] if 'user_id' in _keys else 0)
+                    if row_owner and row_owner != uid:
+                        return None, (jsonify({
+                            'error': 'Export blocked — artifact not owned by current user.',
+                            'reason': 'cross_user_export_denied',
+                        }), 403)
+            except Exception as _own_e:  # noqa: BLE001
+                print(f'[REL36.11] risk owner lookup failed: {_own_e}', flush=True)
+        ctx = {
+            'risk_id': rid,
+            'artifact_id': rid,
+            'artifact_type': 'risk',
+            'document_type': 'risk',
+            'lang': lang,
+            'domain': domain,
+            'user_id': uid,
+            'row_owner': row_owner or uid,
+        }
+        if not uid:
+            return None, (jsonify({
+                'error': 'Export blocked — missing or invalid user.',
+                'reason': 'missing_or_invalid_user',
+            }), 403)
+        return ctx, None
     sid = data.get('strategy_id') or artifact_id
     dtype = (
         data.get('document_type')
