@@ -6419,7 +6419,6 @@ def enrich_professional_blocks(
             is_rel37_authoritative,
             load_model as _rel37_load_model,
             overlay_rel37_authority,
-            prefer_rel37_authority_candidate,
             rel37_authority_snapshot,
             rel37_skip_cyber_kpi_semantics,
         )
@@ -6440,27 +6439,18 @@ def enrich_professional_blocks(
                 or (metadata or {}).get('selected_frameworks')
                 or []),
         }
-        _src = prefer_rel37_authority_candidate(
-            model.get('_rel37_source_sections'),
-            (metadata or {}).get('_rel37_source_sections'),
-            content_sections if isinstance(content_sections, dict) else None,
-        )
-        _src = overlay_rel37_authority(
-            content_sections if isinstance(content_sections, dict) else _src,
-            _src,
-        )
-        if is_rel37_authoritative(_src):
-            content_sections = dict(_src)
-            try:
-                from release_engine_v3.rel37_render import model_to_sections as _rel37_m2s
-                _projected = _rel37_load_model(_src)
-                if _projected is not None:
-                    _rendered = _rel37_m2s(_projected)
-                    for _prose in ('environment', 'vision', 'pillars'):
-                        if str(_rendered.get(_prose) or '').strip():
-                            content_sections[_prose] = _rendered[_prose]
-            except Exception:  # noqa: BLE001
-                pass
+        _src = content_sections if isinstance(content_sections, dict) else {}
+        _meta_rel37 = (metadata or {}).get('_rel37_source_sections')
+        if not is_rel37_authoritative(_src) and is_rel37_authoritative(_meta_rel37):
+            _src = _meta_rel37
+            content_sections = dict(_meta_rel37)
+        if is_rel37_authoritative(_src) and isinstance(content_sections, dict):
+            _env_only = overlay_rel37_authority(content_sections, _src)
+            if str(_env_only.get('environment') or '').strip():
+                content_sections = dict(content_sections)
+                content_sections['environment'] = _env_only['environment']
+                _src = dict(_src)
+                _src['environment'] = _env_only['environment']
         _saved_model = _rel37_load_model(_src)
         if _saved_model is not None:
             _rel37_identity['org_name'] = (
@@ -6468,7 +6458,6 @@ def enrich_professional_blocks(
             if _saved_model.selected_frameworks:
                 _rel37_identity['selected_frameworks'] = list(
                     _saved_model.selected_frameworks)
-        _meta_rel37 = (metadata or {}).get('_rel37_source_sections')
         _claimed = bool(
             is_rel37_authoritative(_src)
             or (_src or {}).get(REL37_RENDER_BLOCKED_KEY)
