@@ -362,6 +362,48 @@ def _mutate_docx_cover_sector(raw: bytes, replacement: str) -> bytes:
     return buf.getvalue()
 
 
+_AR_TEST_FONT = {'name': None}
+
+
+def _ensure_ar_test_font():
+    if _AR_TEST_FONT['name']:
+        return _AR_TEST_FONT['name']
+    path = '/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf'
+    if not os.path.exists(path):
+        return None
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    pdfmetrics.registerFont(TTFont('NotoArTest', path))
+    _AR_TEST_FONT['name'] = 'NotoArTest'
+    return 'NotoArTest'
+
+
+def _emit_actual_text(canv, logical: str):
+    hex_text = 'FEFF' + str(logical or '').encode('utf-16-be').hex().upper()
+    canv._code.append(f'/Span <</ActualText <{hex_text}>>> BDC')
+
+
+def _end_actual_text(canv):
+    canv._code.append('EMC')
+
+
+def _draw_mixed(canv, x, y, text: str):
+    """Visible mixed Arabic/Latin. Latin tokens stay on Helvetica."""
+    import re as _re
+    ar = _ensure_ar_test_font()
+    canv.setFont('Helvetica', 10)
+    canv.drawString(x, y, str(text or ''))
+    cursor = x
+    for token in _re.findall(r'[A-Za-z][A-Za-z0-9_-]*|/', str(text or '')):
+        canv.setFont('Helvetica', 10)
+        canv.drawString(cursor, y - 1, token)
+        cursor += canv.stringWidth(token, 'Helvetica', 10) + 4
+    if ar and any('\u0600' <= ch <= '\u06FF' for ch in str(text or '')):
+        arabic = _re.sub(r'[A-Za-z][A-Za-z0-9._/-]*', ' ', str(text or ''))
+        canv.setFont(ar, 10)
+        canv.drawRightString(560, y, arabic)
+
+
 def _pdf_owned(
         *,
         org_name: str,
@@ -370,6 +412,9 @@ def _pdf_owned(
         env_paras: list,
         appendix_paras: list | None = None,
         extra_cover: str = '',
+        pre_env_heading: str = '',
+        pre_env_paras: list | None = None,
+        env_continue_paras: list | None = None,
 ) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen.canvas import Canvas
@@ -385,11 +430,24 @@ def _pdf_owned(
     if extra_cover:
         canv.drawString(36, y, extra_cover)
     canv.showPage()
+    if pre_env_heading or pre_env_paras:
+        y = height - 36
+        canv.setFont('Helvetica', 10)
+        canv.drawString(36, y, pre_env_heading or 'Executive Summary')
+        y -= 14
+        for para in pre_env_paras or []:
+            _emit_actual_text(canv, para)
+            _draw_mixed(canv, 36, y, para)
+            _end_actual_text(canv)
+            y -= 14
+        canv.showPage()
     y = height - 36
     canv.setFont('Helvetica', 10)
     canv.drawString(36, y, env_heading)
     y -= 14
     for para in env_paras:
+        _emit_actual_text(canv, para)
+        canv.setFont('Helvetica', 10)
         words = str(para).split()
         line = ''
         for word in words:
@@ -403,12 +461,36 @@ def _pdf_owned(
         if line:
             canv.drawString(36, y, line)
             y -= 12
+        import re as _re
+        latin = _re.findall(r'[A-Za-z][A-Za-z0-9_-]*|/', str(para))
+        if latin:
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, ' '.join(latin))
+            y -= 12
+        _end_actual_text(canv)
+    if env_continue_paras:
+        canv.showPage()
+        y = height - 36
+        for para in env_continue_paras:
+            _emit_actual_text(canv, para)
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, para)
+            import re as _re
+            latin = _re.findall(r'[A-Za-z][A-Za-z0-9_-]*|/', str(para))
+            if latin:
+                y -= 12
+                canv.drawString(36, y, ' '.join(latin))
+            _end_actual_text(canv)
+            y -= 14
     canv.showPage()
     y = height - 36
+    canv.setFont('Helvetica', 10)
     canv.drawString(36, y, 'Appendix')
     y -= 14
     for para in appendix_paras or []:
-        canv.drawString(36, y, str(para)[:110])
+        _emit_actual_text(canv, para)
+        _draw_mixed(canv, 36, y, str(para))
+        _end_actual_text(canv)
         y -= 12
     canv.save()
     return buf.getvalue()
@@ -738,6 +820,200 @@ class FinalRouteByteRefusalTests(unittest.TestCase):
         model = _load_json_model(LIVE_FIXTURE)
         self.assertEqual(model.model_hash, LIVE_HASH)
         self.assertEqual(model.compute_model_hash(), LIVE_HASH)
+
+
+EXPECTED_AR_ENV = (
+    'تعمل الجهة في سياق تشغيلي لقطاع بنوك/مالي، ضمن بيئة تنظيمية '
+    'تتطلب حوكمة بيانات وطنية وفق NDMO وحماية بيانات شخصية وفق PDPL.')
+REMOVED_LATIN = (
+    'تعمل الجهة في سياق تشغيلي لقطاع بنوك/مالي، ضمن بيئة تنظيمية '
+    'تتطلب حوكمة بيانات وطنية وفق  وحماية بيانات شخصية وفق .')
+SUBSTITUTED_LATIN = (
+    'تعمل الجهة في سياق تشغيلي لقطاع بنوك/مالي، ضمن بيئة تنظيمية '
+    'تتطلب حوكمة بيانات وطنية وفق ISO9001 وحماية بيانات شخصية وفق GDPR.')
+SWAPPED_LATIN = (
+    'تعمل الجهة في سياق تشغيلي لقطاع بنوك/مالي، ضمن بيئة تنظيمية '
+    'تتطلب حوكمة بيانات وطنية وفق PDPL وحماية بيانات شخصية وفق NDMO.')
+ORG_LATIN = EXPECTED_AR_ENV + ' AcmeBankGroup'
+ORG_LATIN_CHANGED = EXPECTED_AR_ENV + ' OtherHoldingsLLC'
+ENV_HEAD_EN = 'Business Environment and Drivers'
+
+
+def _baseline_ascii_drop(text: str) -> str:
+    """2691b50 fallback: strip every Latin token from both sides."""
+    import re as _re
+    from release_engine_v3.rel37_export_content_parity import _norm
+    return _norm(_re.sub(r'[A-Za-z][A-Za-z0-9._/-]*', ' ', text))
+
+
+class _EnvModel:
+    def __init__(self, narrative, lang='ar', domain='data', org='جهة'):
+        self.environment_narrative = narrative
+        self.lang = lang
+        self.domain = domain
+        self.org_name = org
+        self.model_hash = LIVE_HASH
+        self.sector = ''
+        self.selected_frameworks = []
+
+    def compute_model_hash(self):
+        return self.model_hash
+
+
+class FindingLatinTokenPdfTests(unittest.TestCase):
+    def test_helper_baseline_false_match_and_correction(self):
+        from release_engine_v3.rel37_export_content_parity import (
+            _paragraph_in_pdf_section,
+        )
+        cases = {
+            'unchanged': (EXPECTED_AR_ENV, EXPECTED_AR_ENV, True),
+            'removed': (EXPECTED_AR_ENV, REMOVED_LATIN, False),
+            'substituted': (EXPECTED_AR_ENV, SUBSTITUTED_LATIN, False),
+            'swapped': (EXPECTED_AR_ENV, SWAPPED_LATIN, False),
+            'org_changed': (ORG_LATIN, ORG_LATIN_CHANGED, False),
+        }
+        for name, (expected, observed, accept) in cases.items():
+            baseline = (
+                bool(_baseline_ascii_drop(expected))
+                and _baseline_ascii_drop(expected)
+                in _baseline_ascii_drop(observed))
+            corrected = _paragraph_in_pdf_section(expected, observed)
+            if name == 'unchanged':
+                self.assertTrue(baseline, name)
+                self.assertTrue(corrected, name)
+            else:
+                self.assertTrue(baseline, name)
+                self.assertFalse(corrected, name)
+            self.assertEqual(corrected, accept, name)
+
+    def _env_pdf(self, env_paras, **kwargs):
+        return _pdf_owned(
+            org_name='جهة',
+            cover_sector='بنوك/مالي',
+            env_heading=ENV_HEAD_EN,
+            env_paras=env_paras,
+            **kwargs,
+        )
+
+    def test_matching_mixed_script_pdf_positive(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertTrue(good.startswith(b'%PDF'))
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+
+    def test_missing_acronym_rejected(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = self._env_pdf([REMOVED_LATIN])
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(any('latin_missing' in item or 'narrative' in item
+                            for item in blockers), blockers)
+        self.assertFalse(any(
+            item in blockers for item in (
+                'pdf_extraction_unreliable',
+                'pdf_environment_section_unassociated',
+                'docx_bytes_missing')), blockers)
+
+    def test_substituted_acronym_rejected(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        blockers = compare_environment_narrative_to_pdf(
+            model, self._env_pdf([SUBSTITUTED_LATIN]))
+        self.assertTrue(any('latin_missing' in item or 'narrative' in item
+                            for item in blockers), blockers)
+
+    def test_token_position_swap_rejected(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        blockers = compare_environment_narrative_to_pdf(
+            model, self._env_pdf([SWAPPED_LATIN]))
+        self.assertTrue(any('latin_order' in item or 'narrative' in item
+                            for item in blockers), blockers)
+
+    def test_changed_latin_org_rejected(self):
+        model = _EnvModel(ORG_LATIN)
+        good = self._env_pdf([ORG_LATIN])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        blockers = compare_environment_narrative_to_pdf(
+            model, self._env_pdf([ORG_LATIN_CHANGED]))
+        self.assertTrue(any('latin_missing' in item or 'narrative' in item
+                            for item in blockers), blockers)
+
+    def test_earlier_page_is_not_environment(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = self._env_pdf(
+            ['تعمل الجهة في سياق تشغيلي لقطاع بنوك/مالي دون النص المحفوظ.'],
+            pre_env_heading='Executive Summary',
+            pre_env_paras=[EXPECTED_AR_ENV],
+        )
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(blockers, blockers)
+
+    def test_appendix_only_still_rejected(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = self._env_pdf(
+            ['Unrelated environment leftover paragraph.'],
+            appendix_paras=[EXPECTED_AR_ENV],
+        )
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(blockers, blockers)
+
+    def test_cover_only_still_rejected(self):
+        model = _EnvModel(EXPECTED_AR_ENV)
+        good = self._env_pdf([EXPECTED_AR_ENV])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = self._env_pdf(
+            ['Cover-only leftover environment.'],
+            extra_cover=EXPECTED_AR_ENV,
+        )
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(blockers, blockers)
+
+    def test_environment_continuation_accepted(self):
+        first, second = EXPECTED_AR_ENV, (
+            'تشمل المحركات التشغيلية اكتمال التصنيف وفق NDMO.')
+        model = _EnvModel(first + '\n\n' + second)
+        good = self._env_pdf([first], env_continue_paras=[second])
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+
+    def test_real_thread_refuses_latin_stripped_pdf(self):
+        model = _load_json_model(LIVE_FIXTURE)
+        self.assertEqual(model.model_hash, LIVE_HASH)
+        saved = _persist(model, db_sector='Healthcare')
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = self._env_pdf([REMOVED_LATIN])
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            result = _export(
+                saved, _official_body(saved), 'pdf', immediate=False)
+        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
+        self.assertNotEqual(result['download_http'], 200)
+        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        self.assertEqual(model.model_hash, LIVE_HASH)
+
+    def test_owner_positive_pdf_still_downloads(self):
+        model = _load_json_model(LIVE_FIXTURE)
+        saved = _persist(model, db_sector='Healthcare')
+        good = _export(saved, _official_body(saved), 'pdf')
+        self.assertEqual(good['download_http'], 200, good['status'])
+        self.assertTrue(good['bytes'].startswith(b'%PDF'))
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, good['bytes']), [])
+        self.assertEqual(model.model_hash, LIVE_HASH)
 
 
 if __name__ == '__main__':
