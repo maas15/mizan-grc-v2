@@ -41,7 +41,26 @@ jobs:
 
       - name: py_compile core modules
         run: |
-          python -m py_compile app.py professional_strategy_render.py
+          python -m py_compile app.py professional_strategy_render.py \
+            release_engine_v3/rel37_apply.py \
+            release_engine_v3/rel32_docx_renderer.py \
+            release_engine_v3/rel32_frozen_export_lock.py \
+            release_engine_v3/rel31_authority.py
+
+      - name: pytest REL37 export-contract suite
+        env:
+          REL2_SKIP_EXPORT_EVIDENCE: ''
+        run: |
+          unset REL2_SKIP_EXPORT_EVIDENCE || true
+          python -m pytest \
+            tests/test_rel37_official_export_differential.py \
+            tests/test_rel37_erm_typed_ownership.py \
+            tests/test_rel37_arabic_cell_association.py \
+            tests/test_rel33_official_runner_capture.py \
+            tests/test_rel37_export_content_parity.py \
+            tests/test_rel37_sync_pdf_ownership.py \
+            tests/test_rel37_acceptance_evidence_isolation.py \
+            -q
 
       - name: pytest REL32 gate suite
         run: |
