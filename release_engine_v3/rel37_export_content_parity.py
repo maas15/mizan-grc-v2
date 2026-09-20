@@ -541,6 +541,11 @@ def _visible_reconciled_to_actual(visible: str, actual: str) -> Tuple[str, str]:
         act_lat = _latin_relation(act)
         if vis_lat and act_lat and vis_lat == list(reversed(act_lat)):
             return act, 'visible_visual_matches_actual'
+        if vis_lat and act_lat and not _latin_vis_conflicts_act(vis_lat, act_lat):
+            return act, 'visible_visual_matches_actual'
+        if vis_lat and act_lat and _latin_forward_window(
+                vis_lat, list(reversed(act_lat))):
+            return act, 'visible_visual_matches_actual'
     return vis, 'visible_as_extracted'
 
 
@@ -1197,6 +1202,51 @@ def _semantic_latin_tokens(text: str) -> List[str]:
     return out
 
 
+def _latin_forward_window(
+        vis_lat: Sequence[str],
+        act_lat: Sequence[str],
+) -> bool:
+    """Visible tokens follow ActualText order, including wrap extras."""
+    act = list(act_lat)
+    vis = list(vis_lat)
+    if not vis:
+        return True
+    if not act:
+        return False
+    for start in range(len(act)):
+        idx = start
+        consumed = list(act[start:start])
+        extra = False
+        ok = True
+        for pos, token in enumerate(vis):
+            if extra:
+                if token not in consumed:
+                    ok = False
+                    break
+                continue
+            if idx < len(act) and token == act[idx]:
+                consumed.append(act[idx])
+                idx += 1
+                if idx >= len(act):
+                    extra = True
+                continue
+            if (
+                    pos == len(vis) - 1
+                    and idx < len(act)
+                    and len(token) >= 3
+                    and len(token) < len(act[idx])
+                    and act[idx].startswith(token)
+            ):
+                consumed.append(act[idx])
+                extra = True
+                continue
+            ok = False
+            break
+        if ok:
+            return True
+    return False
+
+
 def _latin_vis_conflicts_act(
         vis_lat: Sequence[str],
         act_lat: Sequence[str],
@@ -1208,28 +1258,13 @@ def _latin_vis_conflicts_act(
     """
     if not vis_lat:
         return False
-    if list(vis_lat) == list(act_lat):
+    vis = list(vis_lat)
+    act = list(act_lat)
+    if vis == act:
         return False
-    idx = 0
-    for pos, token in enumerate(vis_lat):
-        found = False
-        while idx < len(act_lat):
-            current = act_lat[idx]
-            idx += 1
-            if token == current:
-                found = True
-                break
-            if (
-                    pos == len(vis_lat) - 1
-                    and len(token) >= 3
-                    and len(token) < len(current)
-                    and current.startswith(token)
-            ):
-                found = True
-                break
-        if not found:
-            return True
-    return False
+    if _latin_forward_window(vis, act):
+        return False
+    return True
 
 
 def _ordered_latin_match(want: Sequence[str], have: Sequence[str]) -> bool:
