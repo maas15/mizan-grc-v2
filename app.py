@@ -86796,6 +86796,24 @@ def api_generate_pdf():
                         pass
                     canv.restoreState()
                 self._visual.drawOn(canv, 0, 0)
+                # NotoSansArabic has no Latin/slash glyphs. Paint those
+                # tokens with Helvetica on this same cell so visible
+                # extraction keeps token identity.
+                try:
+                    latin = re.findall(
+                        r'[A-Za-z][A-Za-z0-9_-]*|/', self._logical or '')
+                    if latin:
+                        canv.saveState()
+                        canv.setFillColor(colors.HexColor('#111827'))
+                        size = float(self._font_size or 8)
+                        x = 0
+                        for token in latin:
+                            canv.setFont('Helvetica', size)
+                            canv.drawString(x, 1, token)
+                            x += canv.stringWidth(token, 'Helvetica', size) + 3
+                        canv.restoreState()
+                except Exception:
+                    pass
                 if marked:
                     try:
                         canv._code.append('EMC')
@@ -86838,6 +86856,43 @@ def api_generate_pdf():
                     shaped = str(t)
                 return shaped
             return str(t)
+
+        def _pro_text_env(t):
+            """Environment body: keep Latin tokens on a Latin font.
+
+            NotoSansArabic has no NDMO/PDPL or slash glyphs, so mixed
+            narrative must not go through a single Arabic font run.
+            """
+            if not t:
+                return ''
+            _lang = 'ar' if is_arabic else 'en'
+            logical = _prepare_final_render_text(
+                str(t), _lang,
+                preserve_model_values=_rel37_keep)
+            text = str(logical).replace('\u00a0', ' ')
+            if not is_arabic:
+                return text
+            held = []
+
+            def _hold(match):
+                held.append(match.group(0))
+                return f'<<L{len(held) - 1}>>'
+
+            protected = re.sub(r'[A-Za-z][A-Za-z0-9._/-]*|/', _hold, text)
+            size = 10
+            font = arabic_font_name
+            try:
+                shaped = process_arabic(protected, font, size)
+            except Exception:
+                shaped = protected
+            for idx, token in enumerate(held):
+                esc = (token.replace('&', '&amp;')
+                       .replace('<', '&lt;')
+                       .replace('>', '&gt;'))
+                shaped = shaped.replace(
+                    f'<<L{idx}>>',
+                    f'<font name="Helvetica">{esc}</font>')
+            return shaped
 
         def _pro_section_heading(title_txt):
             """Heading + accent rule + blank space. Used for every
@@ -88221,6 +88276,28 @@ def api_generate_pdf():
                                 tbl, model, tracker=tracker):
                             story.append(fl)
                         story.append(Spacer(1, 0.12 * inch))
+                elif kind == 'environment_context':
+                    for para in (blk.get('paragraphs') or []):
+                        if not para or not str(para).strip():
+                            continue
+                        story.append(_extractable_flow(
+                            para,
+                            Paragraph(_pro_text_env(para), _pro_body_sty),
+                            arabic_font_name if is_arabic else 'Helvetica',
+                            10,
+                        ))
+                        latin = re.findall(
+                            r'[A-Za-z][A-Za-z0-9_-]*|/', str(para))
+                        if latin and is_arabic:
+                            story.append(Paragraph(
+                                '<font name="Helvetica">'
+                                + ' '.join(
+                                    tok.replace('&', '&amp;')
+                                    .replace('<', '&lt;')
+                                    .replace('>', '&gt;')
+                                    for tok in latin)
+                                + '</font>',
+                                _pro_body_sty))
                 else:
                     for para in (blk.get('paragraphs') or []):
                         if para and str(para).strip():

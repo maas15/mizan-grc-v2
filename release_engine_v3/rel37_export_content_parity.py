@@ -514,14 +514,6 @@ def _conflicting_cover_value(value: str) -> bool:
         _compact_sector_token(item) == compact for item in known)
 
 
-def _env_visual_stem(text: str) -> str:
-    blob = _norm(text)
-    for marker in ('في سياق تشغيلي', 'sector operating context'):
-        if marker.lower() in blob.lower() if marker.isascii() else marker in blob:
-            return marker
-    return blob[:32]
-
-
 def _normalize_cover_visual(text: str) -> str:
     """Recover logical Arabic from shaped cover glyphs without inventing words."""
     import unicodedata
@@ -554,54 +546,56 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
     if not meta.get('associated'):
         return '', detail
     collected: List[str] = []
+    visible_parts: List[str] = []
+    actual_parts: List[str] = []
     taking = False
     heading_page = None
     for page in pages:
         index = int(page.get('index') or 0)
         if index == 0:
             continue
-        lines = _page_lines(page)
-        if _looks_like_toc_page(lines) and not taking:
+        visible_lines = [
+            line.strip()
+            for line in str(page.get('visible') or '').splitlines()
+            if line.strip()
+        ]
+        if _looks_like_toc_page(visible_lines) and not taking:
             continue
-        for line in lines:
+        page_took = False
+        stop_page = False
+        for line in visible_lines:
             if _APPENDIX_RE.search(line) and len(line) < 80:
                 if taking:
                     taking = False
+                stop_page = True
                 break
             if _ENV_HEAD_RE.search(line) and len(line) < 120:
                 if _TOC_LINE_RE.match(line) and len(line) < 80:
                     continue
                 taking = True
                 heading_page = index
+                page_took = True
                 continue
             if taking and _ENV_NEXT_RE.search(line) and len(line) < 120:
                 taking = False
+                stop_page = True
                 break
             if taking:
                 collected.append(line)
+                page_took = True
+        if stop_page:
+            continue
+        if page_took:
+            actual = page.get('actual') or ''
+            if actual.strip():
+                collected.append(actual)
+                actual_parts.append(actual)
+            visible_parts.append(page.get('visible') or '')
     section = '\n'.join(collected)
-    if heading_page is not None:
-        heading = pages[heading_page]
-        heading_has_actual = bool((heading.get('actual') or '').strip())
-        stem = _env_visual_stem(section)
-        if stem and not heading_has_actual:
-            extras: List[str] = []
-            for page in pages:
-                index = int(page.get('index') or 0)
-                if index == 0 or index > heading_page:
-                    continue
-                if _looks_like_toc_page(_page_lines(page)):
-                    continue
-                actual = page.get('actual') or ''
-                if not actual.strip():
-                    continue
-                if stem in _norm(actual) or _norm(actual)[:40] in _norm(section):
-                    extras.append(actual)
-            if extras:
-                section = '\n'.join(extras + [section])
-                detail['environment_actualtext_pages'] = True
     detail['environment_heading_page'] = heading_page
     detail['environment_associated'] = heading_page is not None
+    detail['environment_visible'] = '\n'.join(visible_parts)
+    detail['environment_actual'] = '\n'.join(actual_parts)
     return section, detail
 
 
@@ -719,26 +713,87 @@ def compare_environment_narrative_to_pdf(
     blob = _norm(section)
     if not blob:
         return ['pdf_environment_text_empty']
+    visible = meta.get('environment_visible') or ''
+    actual = meta.get('environment_actual') or ''
     blockers: List[str] = []
     for idx, para in enumerate(environment_narrative_paragraphs(narrative)):
-        if not _paragraph_in_pdf_section(para, section):
-            blockers.append(f'pdf_environment_narrative_missing:{idx}')
+        blockers.extend(_paragraph_pdf_blockers(
+            idx, para, section, visible=visible, actual=actual))
     return blockers
 
 
-def _ascii_tokens_dropped(text: str) -> str:
-    """Arabic visual extractors often omit Latin acronyms from mixed runs."""
-    return _norm(re.sub(r'[A-Za-z][A-Za-z0-9._/-]*', ' ', text))
+_LATIN_TOKEN_RE = re.compile(r'[A-Za-z][A-Za-z0-9_-]*')
+
+
+def _latin_tokens(text: str) -> List[str]:
+    return _LATIN_TOKEN_RE.findall(str(text or ''))
+
+
+def _semantic_latin_tokens(text: str) -> List[str]:
+    """Identity-bearing Latin tokens, not ordinary wrapped English words."""
+    out: List[str] = []
+    for token in _latin_tokens(text):
+        if token.isupper() and len(token) >= 2:
+            out.append(token)
+        elif any(ch.isdigit() for ch in token) and any(ch.isalpha() for ch in token):
+            out.append(token)
+        elif len(token) >= 4 and sum(1 for ch in token if ch.isupper()) >= 2:
+            out.append(token)
+    return out
+
+
+def _ordered_latin_match(want: Sequence[str], have: Sequence[str]) -> bool:
+    if not want:
+        return True
+    idx = 0
+    for token in have:
+        if idx < len(want) and token == want[idx]:
+            idx += 1
+    return idx == len(want)
+
+
+def _paragraph_pdf_blockers(
+        idx: int,
+        para: str,
+        section: str,
+        *,
+        visible: str = '',
+        actual: str = '',
+) -> List[str]:
+    """Compare one saved paragraph inside the associated environment section.
+
+    Latin tokens keep identity and order. Layout may collapse whitespace.
+    ASCII-drop equality is not accepted.
+    """
+    want = _norm(para)
+    have = _norm(section)
+    if not want:
+        return []
+    blockers: List[str] = []
+    want_lat = _semantic_latin_tokens(para)
+    have_lat = _semantic_latin_tokens(section)
+    if want_lat:
+        missing = [token for token in want_lat if token not in have_lat]
+        if missing:
+            for token in missing:
+                blockers.append(
+                    f'pdf_environment_latin_missing:{idx}:{token}')
+        elif not _ordered_latin_match(want_lat, have_lat):
+            blockers.append(f'pdf_environment_latin_order:{idx}')
+        vis_lat = _semantic_latin_tokens(visible)
+        act_lat = _semantic_latin_tokens(actual)
+        vis_need = [token for token in want_lat if token in vis_lat]
+        act_need = [token for token in want_lat if token in act_lat]
+        if act_need and vis_need != act_need:
+            blockers.append(
+                f'pdf_environment_actual_visible_disagree:{idx}')
+    if want not in have:
+        blockers.append(f'pdf_environment_narrative_missing:{idx}')
+    return blockers
 
 
 def _paragraph_in_pdf_section(para: str, section: str) -> bool:
-    want = _norm(para)
-    have = _norm(section)
-    if want and want in have:
-        return True
-    want_v = _ascii_tokens_dropped(para)
-    have_v = _ascii_tokens_dropped(section)
-    return bool(want_v) and len(want_v) >= 24 and want_v in have_v
+    return not _paragraph_pdf_blockers(0, para, section)
 
 
 def compare_cover_sector_to_pdf(
