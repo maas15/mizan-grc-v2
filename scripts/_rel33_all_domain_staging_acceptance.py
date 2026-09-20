@@ -151,6 +151,51 @@ def _poll_deploy(timeout_s: int = 1200) -> Dict[str, Any]:
     return last
 
 
+_SECRET_PAYLOAD_KEYS = frozenset({
+    'password', 'csrf', 'csrf_token', 'x-csrftoken', 'authorization',
+    'cookie', 'session', 'content',
+})
+
+
+def _sanitize_runner_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {'payload_type': type(payload).__name__}
+    out: Dict[str, Any] = {}
+    for key, value in payload.items():
+        low = str(key).strip().lower()
+        if low in _SECRET_PAYLOAD_KEYS or 'password' in low or 'cookie' in low:
+            if low == 'content':
+                out['content_chars'] = len(str(value or ''))
+            else:
+                out[key] = 'redacted'
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out[key] = value
+        elif isinstance(value, (list, tuple)):
+            out[key] = [str(item) for item in list(value)[:12]]
+        else:
+            out[key] = type(value).__name__
+    return out
+
+
+def _runner_op(ops: Optional[List[Dict[str, Any]]], kind: str, **fields: Any) -> Dict[str, Any]:
+    rec = {'kind': kind}
+    rec.update(fields)
+    if ops is not None:
+        ops.append(rec)
+    return rec
+
+
+def _auth_identity_ref(session: requests.Session) -> Dict[str, str]:
+    user = os.environ.get('STAGING_USERNAME', 'admin').strip()
+    present = 'present' if session.cookies else 'absent'
+    return {
+        'username': user,
+        'authenticated_identity_ref': 'session_cookie',
+        'session_cookie': present,
+    }
+
+
 def _csrf_from_html(html: str) -> Optional[str]:
     for pat in (
         r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)',
@@ -221,11 +266,13 @@ def _poll_gen(
         tid: str,
         *,
         document_type: str = 'strategy',
+        ops: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     poll_path = (
         f'/api/risk-status/{tid}'
         if document_type == 'risk'
         else f'/api/strategy-status/{tid}')
+    _runner_op(ops, 'generate_poll_start', endpoint=poll_path, task_id=tid)
     deadline = time.time() + GEN_TIMEOUT
     null_streak = 0
     while time.time() < deadline:
@@ -234,13 +281,23 @@ def _poll_gen(
             raise RuntimeError('session expired during generation poll')
         data = r.json()
         status = data.get('status')
-        print('[gen]', tid[:8], status, data.get('progress_percent'), flush=True)
+        print('[gen]', tid, status, data.get('progress_percent'), flush=True)
         if status in ('done', 'error', 'not_found'):
+            _runner_op(
+                ops, 'generate_poll_terminal',
+                endpoint=poll_path,
+                task_id=tid,
+                status=status,
+                response=_sanitize_runner_payload(data),
+            )
             return data
         if status is None:
             null_streak += 1
             if null_streak >= 8:
-                return {'status': 'error', 'error': f'status_lost:{tid}'}
+                lost = {'status': 'error', 'error': f'status_lost:{tid}'}
+                _runner_op(ops, 'generate_poll_terminal', endpoint=poll_path,
+                           task_id=tid, status='error', response=lost)
+                return lost
         else:
             null_streak = 0
         time.sleep(15)
@@ -316,23 +373,45 @@ def _base_payload(case: Dict[str, str]) -> Dict[str, Any]:
     return payload
 
 
-def _generate_live(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any]:
+def _generate_live(
+        session: requests.Session,
+        case: Dict[str, str],
+        ops: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     payload = _base_payload(case)
     dtype = case['document_type']
     endpoint = '/api/generate-strategy-async'
     if dtype == 'risk':
         endpoint = '/api/generate-risk-async'
+    _runner_op(
+        ops, 'generate_request',
+        endpoint=endpoint,
+        payload=_sanitize_runner_payload(payload),
+        document_type=dtype,
+    )
     r = session.post(f'{BASE}{endpoint}', json=payload, timeout=90)
     if r.status_code >= 400 and dtype == 'risk':
-        r = session.post(f'{BASE}/api/generate-strategy-async', json=payload, timeout=90)
+        endpoint = '/api/generate-strategy-async'
+        r = session.post(f'{BASE}{endpoint}', json=payload, timeout=90)
+    try:
+        start = r.json()
+    except Exception:  # noqa: BLE001
+        start = {'raw': (r.text or '')[:400]}
+    tid = start.get('task_id') if isinstance(start, dict) else None
+    _runner_op(
+        ops, 'generate_create_response',
+        endpoint=endpoint,
+        http_status=r.status_code,
+        task_id=tid,
+        task_uuid=tid,
+        response=_sanitize_runner_payload(start if isinstance(start, dict) else {}),
+    )
     r.raise_for_status()
-    start = r.json()
     if start.get('limit_reached'):
         return {'status': 'error', 'error': start.get('error') or 'limit_reached'}
-    tid = start.get('task_id')
     if not tid:
         return {'status': 'error', 'error': f'no task_id: {start}'}
-    return _poll_gen(session, tid, document_type=dtype)
+    return _poll_gen(session, tid, document_type=dtype, ops=ops)
 
 
 def _export_live(
@@ -343,12 +422,13 @@ def _export_live(
         case: Dict[str, str],
         artifact_id: Any,
         out_path: Path,
+        ops: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload = {
         'content': content,
         'filename': f"rel33_{case['domain']}_{case['document_type']}",
         'language': 'ar',
-        'org_name': f"REL33 P1 {DOMAIN_LABELS.get(case['domain'], case['domain'])}",
+        'org_name': f"REL33 P1 {DOMAIN_LABELS.get(case['domain'], case['domain'])} Org",
         'sector': 'Government',
         'doc_type': DOC_TYPE_LABELS.get(
             case['document_type'], 'Strategy Document'),
@@ -369,7 +449,16 @@ def _export_live(
     else:
         payload['strategy_id'] = artifact_id
         payload['artifact_id'] = artifact_id
-    r = session.post(f'{BASE}/api/generate-{fmt}-async', json=payload, timeout=90)
+    endpoint = f'/api/generate-{fmt}-async'
+    _runner_op(
+        ops, 'export_request',
+        endpoint=endpoint,
+        fmt=fmt,
+        artifact_type=dtype,
+        artifact_id=artifact_id,
+        payload=_sanitize_runner_payload(payload),
+    )
+    r = session.post(f'{BASE}{endpoint}', json=payload, timeout=90)
     if r.status_code >= 400:
         try:
             body = r.json()
@@ -392,9 +481,30 @@ def _export_live(
                 if isinstance(body, dict) and body.get(_dk):
                     out[_dk] = body.get(_dk)
         return out
-    tid = r.json().get('task_id')
+    try:
+        created = r.json()
+    except Exception:  # noqa: BLE001
+        created = {}
+    tid = created.get('task_id')
+    _runner_op(
+        ops, 'export_create_response',
+        endpoint=endpoint,
+        fmt=fmt,
+        http_status=r.status_code,
+        task_id=tid,
+        task_uuid=tid,
+        response=_sanitize_runner_payload(created),
+    )
     done = _poll_export(
         session, tid, debug=_risk_debug)
+    _runner_op(
+        ops, 'export_poll_terminal',
+        endpoint=f'/api/export-status/{tid}',
+        fmt=fmt,
+        task_id=tid,
+        status=done.get('status'),
+        response=_sanitize_runner_payload(done),
+    )
     meta: Dict[str, Any] = {'task_id': tid, 'export_status': done}
     if done.get('status') == 'error':
         meta['export_return_allowed'] = False
@@ -407,6 +517,15 @@ def _export_live(
         return meta
     dr = session.get(f'{BASE}/api/export-download/{tid}', timeout=180)
     raw = dr.content
+    _runner_op(
+        ops, 'export_download',
+        endpoint=f'/api/export-download/{tid}',
+        fmt=fmt,
+        task_id=tid,
+        http_status=dr.status_code,
+        bytes=len(raw or b''),
+        path=str(out_path),
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(raw)
     meta.update({
@@ -441,12 +560,14 @@ def _local_hash_lock(
     os.environ.setdefault('SECRET_KEY', 'test-secret-key')
     os.environ.setdefault('DATABASE_URL', 'sqlite:///' + os.path.join(_tmp, 'test.db'))
     os.environ.setdefault('OPENAI_API_KEY', '')
-    os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
-    spec = importlib.util.spec_from_file_location('app', ROOT / 'app.py')
-    app_mod = importlib.util.module_from_spec(spec)
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        spec.loader.exec_module(app_mod)
+    _prev_skip = os.environ.get('REL2_SKIP_EXPORT_EVIDENCE')
+    os.environ['REL2_SKIP_EXPORT_EVIDENCE'] = '1'
+    try:
+        spec = importlib.util.spec_from_file_location('app', ROOT / 'app.py')
+        app_mod = importlib.util.module_from_spec(spec)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            spec.loader.exec_module(app_mod)
         from release_engine_v3.canonical_document import clear_artifact_registry
         from release_engine_v3.orchestrator import clear_rel3_caches
         from release_engine_v3.rel31_authority import (
@@ -558,7 +679,7 @@ def _local_hash_lock(
             gate = getattr(ev, 'gate', None) or {}
             if gate.get('legacy_path_used') is True:
                 legacy = True
-        return {
+        out = {
             'generation_save_allowed': bool(
                 contract.get('generation_save_allowed', True)),
             'canonical_hash_by_route': canon,
@@ -577,7 +698,14 @@ def _local_hash_lock(
             'kpi_main_schema': kpi_diag,
             'preview_dom_binding_passed': preview_dom_passed,
             'legacy_path_used': legacy,
+            'label': 'LOCAL_REPLAY',
         }
+        return out
+    finally:
+        if _prev_skip is None:
+            os.environ.pop('REL2_SKIP_EXPORT_EVIDENCE', None)
+        else:
+            os.environ['REL2_SKIP_EXPORT_EVIDENCE'] = _prev_skip
 
 
 def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any]:
@@ -617,11 +745,14 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         'script_blockers': [],
         'accepted': False,
         'blockers': [],
+        'runner_operations': [],
+        'auth_identity': _auth_identity_ref(session),
+        'local_replay': {},
     }
     app_blockers: List[str] = []
     script_blockers: List[str] = []
     try:
-        gen = _generate_live(session, case)
+        gen = _generate_live(session, case, ops=row['runner_operations'])
     except Exception as exc:  # noqa: BLE001
         row['app_blockers'] = [f'generation_failed:{exc}']
         row['blockers'] = row['app_blockers']
@@ -689,6 +820,7 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
         }
 
     lock = _local_hash_lock(sections, str(content), str(artifact_id or key), case)
+    row['local_replay'] = dict(lock or {})
     if not row['generation_save_allowed'] and lock.get('generation_save_allowed'):
         script_blockers.append('local_replay_save_mismatch_live_saved')
     row['frozen_export_lock_passed'] = bool(lock.get('export_lock_passed'))
@@ -718,10 +850,12 @@ def _run_route(session: requests.Session, case: Dict[str, str]) -> Dict[str, Any
     try:
         docx = _export_live(
             session, fmt='docx', content=str(content), case=case,
-            artifact_id=artifact_id, out_path=route_dir / 'export.docx')
+            artifact_id=artifact_id, out_path=route_dir / 'export.docx',
+            ops=row['runner_operations'])
         pdf = _export_live(
             session, fmt='pdf', content=str(content), case=case,
-            artifact_id=artifact_id, out_path=route_dir / 'export.pdf')
+            artifact_id=artifact_id, out_path=route_dir / 'export.pdf',
+            ops=row['runner_operations'])
     except Exception as exc:  # noqa: BLE001
         row['app_blockers'] = [f'export_failed:{exc}']
         row['blockers'] = row['app_blockers']
