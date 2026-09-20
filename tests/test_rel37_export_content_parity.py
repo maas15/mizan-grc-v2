@@ -163,16 +163,35 @@ def _pdf_from_model(model: CanonicalDocument) -> bytes:
     y -= 12
     canv.drawString(36, y, 'Sector —')
     y -= 12
+    env_heading = (
+        'البيئة التنظيمية والتهديدات' if model.lang == 'ar'
+        else 'Business Environment and Drivers')
+    canv.drawString(36, y, env_heading)
+    y -= 12
     for para in str(model.environment_narrative or '').split('\n\n'):
-        line = para.strip()[:120]
-        if not line:
+        words = para.strip().split()
+        if not words:
             continue
-        if y < 48:
-            canv.showPage()
-            canv.setFont('Helvetica', 8)
-            y = height - 36
-        canv.drawString(36, y, line)
-        y -= 10
+        line = ''
+        for word in words:
+            candidate = (line + ' ' + word).strip()
+            if len(candidate) > 96 and line:
+                if y < 48:
+                    canv.showPage()
+                    canv.setFont('Helvetica', 8)
+                    y = height - 36
+                canv.drawString(36, y, line)
+                y -= 10
+                line = word
+            else:
+                line = candidate
+        if line:
+            if y < 48:
+                canv.showPage()
+                canv.setFont('Helvetica', 8)
+                y = height - 36
+            canv.drawString(36, y, line)
+            y -= 10
     for family, rows in expected_rows(model).items():
         if family.startswith('_'):
             continue

@@ -858,10 +858,6 @@ def apply_rel37_to_sections(
         out[REL37_ORIGINAL_FW_KEY] = list(selection.selected_frameworks_original)
         out[REL37_CANONICAL_FW_KEY] = list(selection.selected_frameworks_canonical)
         return out, []
-    if is_rel37_authoritative(out) and not rel37_hash_identity_blockers(out):
-        # A validated saved model is already the content source. Do not
-        # compile a replacement environment from leftover/empty org.
-        return overlay_rel37_authority(out, out), []
     payload = dict(request or {})
     payload.setdefault('domain', domain)
     payload.setdefault('lang', _normalize_lang(lang))

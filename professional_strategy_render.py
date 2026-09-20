@@ -6451,6 +6451,16 @@ def enrich_professional_blocks(
         )
         if is_rel37_authoritative(_src):
             content_sections = dict(_src)
+            try:
+                from release_engine_v3.rel37_render import model_to_sections as _rel37_m2s
+                _projected = _rel37_load_model(_src)
+                if _projected is not None:
+                    _rendered = _rel37_m2s(_projected)
+                    for _prose in ('environment', 'vision', 'pillars'):
+                        if str(_rendered.get(_prose) or '').strip():
+                            content_sections[_prose] = _rendered[_prose]
+            except Exception:  # noqa: BLE001
+                pass
         _saved_model = _rel37_load_model(_src)
         if _saved_model is not None:
             _rel37_identity['org_name'] = (
