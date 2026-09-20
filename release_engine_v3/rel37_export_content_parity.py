@@ -33,9 +33,14 @@ _ENV_NEXT_RE = re.compile(
     r'الركائز الاستراتيجية|Strategic Pillars)',
     re.I,
 )
+_APPENDIX_RE = re.compile(
+    r'(Appendix|Annex|الملحق|الملاحق|ملحق)',
+    re.I,
+)
 _TOC_LINE_RE = re.compile(r'^\d{1,2}\s+\S')
 _COVER_LABELS = ('القطاع', 'Sector')
 _GENERIC_ENV_AR = 'تعمل الجهة في بيئة تنظيمية'
+_REL37_NARRATIVE_DOMAINS = frozenset({'data', 'ai', 'dt'})
 
 _AR_RE = re.compile(r'[\u0600-\u06FF]')
 _W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -131,13 +136,112 @@ def _normalize_extracted_pdf_text(text: str) -> str:
     return unicodedata.normalize('NFKC', text or '').replace('\x00', '')
 
 
-def _extract_pdf_actual_text(raw: bytes) -> Tuple[str, int]:
-    """Read producer-emitted PDF ActualText spans (UTF-16BE hex).
+def _decode_actual_text_hex(hx: str) -> str:
+    raw_hx = str(hx or '')
+    if raw_hx.upper().startswith('FEFF'):
+        raw_hx = raw_hx[4:]
+    try:
+        return bytes.fromhex(raw_hx).decode('utf-16-be')
+    except Exception:  # noqa: BLE001
+        return ''
 
-    This is file evidence, not a substitution of canonical model text.
-    ReportLab emits logical Arabic as ActualText while painting shaped
-    visual glyphs; pymupdf ``get_text()`` keeps the visual run.
+
+def _actual_text_spans_from_stream(stream: bytes) -> List[str]:
+    parts: List[str] = []
+    if not stream or b'ActualText' not in stream:
+        return parts
+    for match in re.finditer(br'/ActualText\s*<([0-9A-Fa-f]+)>', stream):
+        text = _decode_actual_text_hex(match.group(1).decode('ascii'))
+        if text:
+            parts.append(text)
+    return parts
+
+
+def _page_content_xrefs(page) -> List[int]:
+    xrefs: List[int] = []
+    try:
+        contents = page.get_contents() or []
+        if isinstance(contents, int):
+            contents = [contents]
+        xrefs.extend(int(item) for item in contents if item)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        xobjects = page.get_xobjects() or []
+        for item in xobjects:
+            if isinstance(item, int):
+                xrefs.append(item)
+                continue
+            if isinstance(item, (tuple, list)) and item:
+                xref = item[0]
+                if isinstance(xref, int):
+                    xrefs.append(xref)
+    except Exception:  # noqa: BLE001
+        pass
+    return list(dict.fromkeys(xrefs))
+
+
+def extract_pdf_pages(raw: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Page-bound visible text and ActualText. Never a global bag.
+
+    Visual evidence and ActualText stay separate on each page. Cover is
+    page 0. If page association cannot be established, ``associated`` is
+    false and callers must report an evidence failure instead of
+    accepting a document-wide substring.
     """
+    pages: List[Dict[str, Any]] = []
+    meta: Dict[str, Any] = {
+        'pages': 0,
+        'reliable': False,
+        'associated': False,
+        'extractor': '',
+        'actual_text_spans': 0,
+    }
+    if not raw.startswith(b'%PDF'):
+        return pages, meta
+    try:
+        import pymupdf
+        doc = pymupdf.open(stream=raw, filetype='pdf')
+        meta['pages'] = len(doc)
+        span_count = 0
+        for index, page in enumerate(doc):
+            visible = page.get_text() or ''
+            actual_parts: List[str] = []
+            for xref in _page_content_xrefs(page):
+                try:
+                    stream = doc.xref_stream(xref)
+                except Exception:  # noqa: BLE001
+                    continue
+                spans = _actual_text_spans_from_stream(stream)
+                span_count += len(spans)
+                actual_parts.extend(spans)
+            pages.append({
+                'index': index,
+                'visible': _normalize_extracted_pdf_text(visible),
+                'actual': _normalize_extracted_pdf_text('\n'.join(actual_parts)),
+            })
+        meta['actual_text_spans'] = span_count
+        meta['extractor'] = 'pymupdf+page-actualtext'
+        meta['associated'] = bool(pages)
+        meta['reliable'] = bool(pages) and any(
+            (item['visible'] or item['actual']).strip() for item in pages)
+        return pages, meta
+    except Exception as exc:  # noqa: BLE001
+        meta['extractor_error'] = type(exc).__name__
+        return pages, meta
+
+
+def _extract_pdf_actual_text(raw: bytes) -> Tuple[str, int]:
+    """Read producer-emitted PDF ActualText spans, page-associated first.
+
+    Global xref fallback is retained only for inventory/readability, not
+    for narrative or cover comparison.
+    """
+    pages, meta = extract_pdf_pages(raw)
+    associated = '\n'.join(
+        item['actual'] for item in pages if item.get('actual'))
+    if associated.strip():
+        return associated, int(meta.get('actual_text_spans') or 0)
     parts: List[str] = []
     try:
         import pymupdf
@@ -147,17 +251,7 @@ def _extract_pdf_actual_text(raw: bytes) -> Tuple[str, int]:
                 stream = doc.xref_stream(xref)
             except Exception:  # noqa: BLE001
                 continue
-            if not stream or b'ActualText' not in stream:
-                continue
-            for match in re.finditer(
-                    br'/ActualText\s*<([0-9A-Fa-f]+)>', stream):
-                hx = match.group(1).decode('ascii')
-                if hx.upper().startswith('FEFF'):
-                    hx = hx[4:]
-                try:
-                    parts.append(bytes.fromhex(hx).decode('utf-16-be'))
-                except Exception:  # noqa: BLE001
-                    continue
+            parts.extend(_actual_text_spans_from_stream(stream))
     except Exception:  # noqa: BLE001
         return '', 0
     return '\n'.join(parts), len(parts)
@@ -403,43 +497,209 @@ def compare_cover_sector_to_docx(
     return []
 
 
+def _compact_sector_token(value: str) -> str:
+    return re.sub(r'[\s/\-—–]+', '', _norm(value))
+
+
 def _conflicting_cover_value(value: str) -> bool:
     raw = _norm(value)
     if not raw or raw in ('—', '-', '\u2014'):
         return False
     known = {english for english, _arabic in UI_SECTOR_PAIRS}
     known.update(arabic for _english, arabic in UI_SECTOR_PAIRS)
-    return raw in known
+    if raw in known:
+        return True
+    compact = _compact_sector_token(raw)
+    return bool(compact) and any(
+        _compact_sector_token(item) == compact for item in known)
+
+
+def _env_visual_stem(text: str) -> str:
+    blob = _norm(text)
+    for marker in ('في سياق تشغيلي', 'sector operating context'):
+        if marker.lower() in blob.lower() if marker.isascii() else marker in blob:
+            return marker
+    return blob[:32]
+
+
+def _normalize_cover_visual(text: str) -> str:
+    """Recover logical Arabic from shaped cover glyphs without inventing words."""
+    import unicodedata
+    return unicodedata.normalize('NFKC', text or '').replace('\x00', '/')
+
+
+def _page_lines(page: Dict[str, Any]) -> List[str]:
+    blob = '\n'.join(
+        part for part in (page.get('actual') or '', page.get('visible') or '')
+        if part)
+    return [line.strip() for line in blob.splitlines() if line.strip()]
+
+
+def _looks_like_toc_page(lines: Sequence[str]) -> bool:
+    if not lines:
+        return False
+    toc_hits = sum(
+        1 for line in lines
+        if _TOC_LINE_RE.match(line) and len(line) < 80)
+    return toc_hits >= 3 and toc_hits >= max(1, len(lines) // 2)
+
+
+def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
+    """Environment-section text only: not cover, TOC, or appendix."""
+    pages, meta = extract_pdf_pages(raw)
+    detail = dict(meta)
+    if not pages:
+        detail['associated'] = False
+        return '', detail
+    if not meta.get('associated'):
+        return '', detail
+    collected: List[str] = []
+    taking = False
+    heading_page = None
+    for page in pages:
+        index = int(page.get('index') or 0)
+        if index == 0:
+            continue
+        lines = _page_lines(page)
+        if _looks_like_toc_page(lines) and not taking:
+            continue
+        for line in lines:
+            if _APPENDIX_RE.search(line) and len(line) < 80:
+                if taking:
+                    taking = False
+                break
+            if _ENV_HEAD_RE.search(line) and len(line) < 120:
+                if _TOC_LINE_RE.match(line) and len(line) < 80:
+                    continue
+                taking = True
+                heading_page = index
+                continue
+            if taking and _ENV_NEXT_RE.search(line) and len(line) < 120:
+                taking = False
+                break
+            if taking:
+                collected.append(line)
+    section = '\n'.join(collected)
+    if heading_page is not None:
+        heading = pages[heading_page]
+        heading_has_actual = bool((heading.get('actual') or '').strip())
+        stem = _env_visual_stem(section)
+        if stem and not heading_has_actual:
+            extras: List[str] = []
+            for page in pages:
+                index = int(page.get('index') or 0)
+                if index == 0 or index > heading_page:
+                    continue
+                if _looks_like_toc_page(_page_lines(page)):
+                    continue
+                actual = page.get('actual') or ''
+                if not actual.strip():
+                    continue
+                if stem in _norm(actual) or _norm(actual)[:40] in _norm(section):
+                    extras.append(actual)
+            if extras:
+                section = '\n'.join(extras + [section])
+                detail['environment_actualtext_pages'] = True
+    detail['environment_heading_page'] = heading_page
+    detail['environment_associated'] = heading_page is not None
+    return section, detail
+
+
+def _cover_value_matches(value: str, expected: str) -> bool:
+    aliases = sector_reference_aliases(expected)
+    raw = _norm(value)
+    if raw in aliases:
+        return True
+    compact = _compact_sector_token(value)
+    if not compact:
+        return False
+    return any(
+        alias in raw or _compact_sector_token(alias) == compact
+        for alias in aliases
+    )
+
+
+def _cover_label_aliases() -> Tuple[str, ...]:
+    aliases = []
+    for label in _COVER_LABELS:
+        aliases.append(label)
+        if label.isascii():
+            aliases.append(label.upper())
+            aliases.append(label.lower())
+            aliases.append(label.title())
+    return tuple(dict.fromkeys(aliases))
+
+
+def _labeled_cover_sector(text: str) -> Tuple[str, bool]:
+    """Return (value, field_found) for the labeled Sector/القطاع field.
+
+    A missing label is not a successful empty field. A found label with
+    no readable value is an unreadable field, not a neutral dash.
+    """
+    labels = _cover_label_aliases()
+    lines = [line.strip() for line in str(text or '').splitlines() if line.strip()]
+    for idx, line in enumerate(lines):
+        n = _norm(line)
+        for label in labels:
+            if n == label:
+                if idx + 1 < len(lines):
+                    nxt = _norm(lines[idx + 1])
+                    if nxt in labels:
+                        return '', True
+                    return nxt, True
+                return '', True
+            if n.startswith(label + ' ') or n.startswith(label + ':') or n.startswith(label + '\t'):
+                rest = n[len(label):].lstrip(' :|\t')
+                return rest, True
+            if n.startswith(label) and len(n) > len(label):
+                rest = n[len(label):].lstrip(' :|\t')
+                if rest:
+                    return rest, True
+    blob = _norm(text)
+    for label in labels:
+        pos = blob.find(label)
+        if pos < 0:
+            continue
+        after = blob[pos + len(label):].lstrip(' :|\t')
+        token = after.split(' ')[0] if after else ''
+        return token, True
+    return '', False
+
+
+def pdf_cover_sector_value(raw: bytes) -> Tuple[str, Dict[str, Any]]:
+    """Labeled cover-sector value from page 0 only."""
+    pages, meta = extract_pdf_pages(raw)
+    detail = dict(meta)
+    detail['field_found'] = False
+    detail['field_readable'] = False
+    if not pages or not meta.get('associated'):
+        return '', detail
+    cover = pages[0]
+    actual = cover.get('actual') or ''
+    visual = _normalize_cover_visual(cover.get('visible') or '')
+    value, found = _labeled_cover_sector(actual)
+    source = 'actual'
+    if not found:
+        value, found = _labeled_cover_sector(visual)
+        source = 'visible'
+    detail['field_found'] = found
+    detail['field_source'] = source if found else ''
+    detail['field_readable'] = bool(found and value)
+    detail['cover_page_index'] = 0
+    return value, detail
 
 
 def pdf_cover_and_body_text(raw: bytes) -> Tuple[str, str, Dict[str, Any]]:
-    """Keep cover visual evidence distinct from body ActualText."""
-    meta: Dict[str, Any] = {'pages': 0, 'reliable': False}
-    if not raw.startswith(b'%PDF'):
-        return '', '', meta
-    actual, actual_count = _extract_pdf_actual_text(raw)
-    meta['actual_text_spans'] = actual_count
+    """Keep cover visual evidence distinct from the environment section."""
+    pages, meta = extract_pdf_pages(raw)
     cover = ''
-    pages: List[str] = []
-    try:
-        import pymupdf
-        doc = pymupdf.open(stream=raw, filetype='pdf')
-        pages = [page.get_text() or '' for page in doc]
-        meta['pages'] = len(doc)
-        cover = pages[0] if pages else ''
-        meta['reliable'] = bool(pages)
-    except Exception as exc:  # noqa: BLE001
-        meta['extractor_error'] = type(exc).__name__
-    body = _normalize_extracted_pdf_text(actual)
-    if not body:
-        body = _normalize_extracted_pdf_text('\n'.join(pages))
-    env_page = ''
-    for page in pages[1:]:
-        if _ENV_HEAD_RE.search(page):
-            env_page = page
-            break
-    meta['environment_page_present'] = bool(env_page or ('سياق تشغيلي' in body))
-    return cover, body, meta
+    if pages:
+        cover = pages[0].get('visible') or ''
+    section, env_meta = pdf_environment_section_text(raw)
+    merged = dict(meta)
+    merged.update(env_meta)
+    merged['environment_page_present'] = bool(env_meta.get('environment_associated'))
+    return cover, section, merged
 
 
 def compare_environment_narrative_to_pdf(
@@ -449,10 +709,14 @@ def compare_environment_narrative_to_pdf(
     narrative = str(model.environment_narrative or '').strip()
     if not narrative:
         return []
-    _cover, body, meta = pdf_cover_and_body_text(raw)
-    if raw.startswith(b'%PDF') and not meta.get('reliable') and not body.strip():
+    section, meta = pdf_environment_section_text(raw)
+    if raw.startswith(b'%PDF') and not meta.get('reliable') and not section.strip():
         return ['pdf_extraction_unreliable']
-    blob = _norm(body)
+    if not meta.get('associated'):
+        return ['pdf_environment_section_unassociated']
+    if not meta.get('environment_associated'):
+        return ['pdf_environment_section_unassociated']
+    blob = _norm(section)
     if not blob:
         return ['pdf_environment_text_empty']
     blockers: List[str] = []
@@ -462,65 +726,44 @@ def compare_environment_narrative_to_pdf(
     return blockers
 
 
-def _first_cover_sector_window(text: str) -> str:
-    blob = str(text or '')
-    earliest = None
-    window = ''
-    for label in _COVER_LABELS:
-        idx = blob.find(label)
-        if idx < 0:
-            continue
-        if earliest is None or idx < earliest:
-            earliest = idx
-            window = blob[idx:idx + 96]
-    return window
-
-
-def _normalize_cover_visual(text: str) -> str:
-    """Recover logical Arabic from shaped cover glyphs without inventing words."""
-    import unicodedata
-    return unicodedata.normalize('NFKC', text or '').replace('\x00', '/')
-
-
 def compare_cover_sector_to_pdf(
         model: CanonicalDocument,
         raw: bytes,
 ) -> List[str]:
     expected = cover_sector_from_hashed_narrative(
         model.environment_narrative, model.lang)
-    cover, _body, _meta = pdf_cover_and_body_text(raw)
-    cover_n = _normalize_cover_visual(cover)
-    actual, _count = _extract_pdf_actual_text(raw)
-    cover_window = (
-        _first_cover_sector_window(actual)
-        or _first_cover_sector_window(cover_n)
-        or cover_n
-    )
+    value, meta = pdf_cover_sector_value(raw)
+    if raw.startswith(b'%PDF') and not meta.get('associated'):
+        return ['pdf_cover_sector_unassociated']
+    if not meta.get('field_found'):
+        if expected:
+            return ['pdf_cover_sector_unreadable']
+        return ['pdf_cover_sector_unreadable']
     if not expected:
-        if 'Healthcare' in cover_n or 'رعاية صحية' in cover_n:
-            return ['pdf_cover_sector_injected']
+        if _conflicting_cover_value(value):
+            return [f'pdf_cover_sector_injected:{value}']
         return []
-    aliases = sector_reference_aliases(expected)
-    if ('Healthcare' in cover_n or 'رعاية صحية' in cover_n) and (
-            'Healthcare' not in aliases and 'رعاية صحية' not in aliases):
-        return ['pdf_cover_sector_mismatch:Healthcare']
-    if any(alias in cover_window for alias in aliases):
-        return []
-    if any(alias in cover_n for alias in aliases):
-        return []
-    return ['pdf_cover_sector_mismatch']
+    if not value:
+        return ['pdf_cover_sector_unreadable']
+    if not _cover_value_matches(value, expected):
+        return [f'pdf_cover_sector_mismatch:{value}']
+    return []
 
 
 def hashed_narrative_requires_section_parity(model: CanonicalDocument) -> bool:
-    """Full environment-section parity is for saved operating-context prose.
+    """Required nonempty REL37 environment_narrative is compared.
 
-    Compiler-first REL33/AI/DT leftovers without that clause keep the
-    existing table/hash contract. Cover Healthcare injection is still
-    checked separately.
+    Applicability is the authorized REL37 model contract, not a keyword
+    test for ``سياق تشغيلي`` / ``operating context``. Empty narrative
+    follows the existing schema omission contract. Cyber/ERM/Global and
+    other non-REL37 domains are not selected here. The route gate still
+    requires ``is_rel37_authoritative`` before this helper runs.
     """
-    text = str(getattr(model, 'environment_narrative', '') or '')
-    lowered = text.lower()
-    return ('سياق تشغيلي' in text) or ('operating context' in lowered)
+    domain = str(getattr(model, 'domain', '') or '').strip().lower()
+    if domain not in _REL37_NARRATIVE_DOMAINS:
+        return False
+    text = str(getattr(model, 'environment_narrative', '') or '').strip()
+    return bool(text)
 
 
 def rel37_returned_bytes_blockers(

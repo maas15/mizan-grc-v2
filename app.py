@@ -1290,12 +1290,14 @@ def _apply_authorized_saved_identity(data, loaded, art_type):
 
 
 def _bind_rel37_cover_sector_from_hashed_narrative(data, sections):
-    """Cover sector comes from the hashed narrative, not raw provenance.
+    """Cover sector comes from the explicit hashed operating-context clause.
 
     ``model.sector`` is HASH_EXCLUDED and is never read here. A conflicting
     client or DB Healthcare value cannot change the cover while the hashed
-    environment_narrative stays unchanged. Legacy documents with no UI-pair
-    mention keep the existing neutral cover (empty → —).
+    environment_narrative stays unchanged. Org-name-only and incidental
+    UI-pair mentions are ignored. Legacy documents with no explicit clause,
+    or with conflicting explicit clauses, keep the existing neutral cover
+    (empty → —).
     """
     if not isinstance(data, dict) or not isinstance(sections, dict):
         return

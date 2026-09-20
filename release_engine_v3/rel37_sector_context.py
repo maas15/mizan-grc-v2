@@ -113,30 +113,61 @@ def environment_narrative_paragraphs(narrative: str) -> list:
     ]
 
 
-def cover_sector_from_hashed_narrative(narrative: str, lang: str) -> str:
-    """Cover sector from the hashed environment narrative only.
+def _explicit_operating_context_hits(narrative: str) -> list:
+    """UI-pair sectors named only by an explicit operating-context clause.
 
-    ``model.sector`` is HASH_EXCLUDED provenance and is not consulted.
-    A post-save raw provenance change therefore cannot silently change
-    the cover while the hashed body stays unchanged. Documents with no
-    UI-pair mention return '' so the existing legacy/neutral cover (—)
-    is used. Client Healthcare is never inferred.
+    Incidental mentions, including an org_name that contains a sector
+    label, are ignored. ``model.sector`` / client export sector are
+    never consulted. More than one distinct explicit clause is
+    ambiguous and yields no cover sector.
     """
     hay = str(narrative or '')
     if not hay.strip():
-        return ''
-    lang_n = 'ar' if str(lang or '').lower().startswith('ar') else 'en'
-    earliest = None
-    chosen = ''
+        return []
+    hay_l = hay.lower()
+    hits = []
+    seen = set()
     for english, arabic in UI_SECTOR_PAIRS:
-        for alias in (english, arabic):
-            idx = hay.find(alias)
-            if idx < 0:
-                continue
-            if earliest is None or idx < earliest:
-                earliest = idx
-                chosen = arabic if lang_n == 'ar' else english
-    return chosen
+        clauses = (
+            f'في سياق تشغيلي لقطاع {arabic}',
+            f'في سياق تشغيلي لقطاع {english}',
+            f'in the {english} sector operating context',
+            f'in the {arabic} sector operating context',
+        )
+        matched = False
+        for clause in clauses:
+            if any(ord(ch) > 127 for ch in clause):
+                if clause in hay:
+                    matched = True
+                    break
+            elif clause.lower() in hay_l:
+                matched = True
+                break
+        if matched and english not in seen:
+            seen.add(english)
+            hits.append((english, arabic))
+    return hits
+
+
+def cover_sector_from_hashed_narrative(narrative: str, lang: str) -> str:
+    """Cover sector from the explicit saved operating-context clause.
+
+    ``model.sector`` is HASH_EXCLUDED provenance and is not consulted.
+    A post-save raw provenance change therefore cannot silently change
+    the cover while the hashed body stays unchanged. Org-name-only and
+    incidental UI-pair mentions are ignored. Documents with no explicit
+    clause, or with two or more conflicting clauses, return '' so the
+    existing legacy/neutral cover (—) is used. The first competing
+    mention is never chosen. An explicit compiler clause identifies
+    cover context; it is not permission to skip narrative parity for
+    documents without that clause.
+    """
+    hits = _explicit_operating_context_hits(narrative)
+    if len(hits) != 1:
+        return ''
+    english, arabic = hits[0]
+    lang_n = 'ar' if str(lang or '').lower().startswith('ar') else 'en'
+    return arabic if lang_n == 'ar' else english
 
 
 def sector_runtime_diagnostics(sector: str, lang: str) -> Dict[str, str]:
