@@ -198,10 +198,29 @@ def overlay_rel37_authority(
     for key, value in projected.items():
         if str(key).startswith('_'):
             continue
-        # Authorized model tables win over leftover/catalog maps.
-        # Metadata loss must not keep catalog-generated replacements.
-        if value not in (None, '') and str(value).strip():
+        current = out.get(key)
+        current_text = '' if current in (None, '') else str(current).strip()
+        projected_text = '' if value in (None, '') else str(value).strip()
+        # Restore tables lost from leftover/frozen maps. Keep leftover
+        # text that already carries saved content (including ownership
+        # markers). Catalog replacements are empty or lack the model
+        # relationship cells; those still get projected.
+        if not current_text and projected_text:
             out[key] = value
+            continue
+        if key in ('traceability', 'roadmap') and projected_text:
+            model_cells = (
+                [list(row.cells()) for row in model.traceability]
+                if key == 'traceability'
+                else [list(row.cells()) for row in model.roadmap]
+            )
+            if model_cells:
+                first = [
+                    ' '.join(str(cell or '').split())
+                    for cell in model_cells[0][:3] if str(cell or '').strip()
+                ]
+                if first and not all(cell in current_text for cell in first):
+                    out[key] = value
     # Saved-source identity: the model's own fields, not the client request.
     ok, errors = rel37_request_model_consistent(
         out,
