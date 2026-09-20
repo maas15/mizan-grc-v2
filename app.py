@@ -1286,6 +1286,78 @@ def _apply_authorized_saved_identity(data, loaded, art_type):
     if frameworks:
         data['selected_frameworks'] = list(frameworks)
         data['frameworks'] = list(frameworks)
+    _bind_rel37_cover_sector_from_hashed_narrative(data, loaded.get('sections'))
+
+
+def _bind_rel37_cover_sector_from_hashed_narrative(data, sections):
+    """Cover sector comes from the hashed narrative, not raw provenance.
+
+    ``model.sector`` is HASH_EXCLUDED and is never read here. A conflicting
+    client or DB Healthcare value cannot change the cover while the hashed
+    environment_narrative stays unchanged. Legacy documents with no UI-pair
+    mention keep the existing neutral cover (empty → —).
+    """
+    if not isinstance(data, dict) or not isinstance(sections, dict):
+        return
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            load_model,
+        )
+        from release_engine_v3.rel37_sector_context import (
+            cover_sector_from_hashed_narrative,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not is_rel37_authoritative(sections):
+        return
+    model = load_model(sections)
+    if model is None:
+        return
+    lang_n = data.get('language') or model.lang or ''
+    data['sector'] = cover_sector_from_hashed_narrative(
+        model.environment_narrative, lang_n)
+
+
+def _rel37_gate_saved_export_bytes(
+        *,
+        docx_bytes=None,
+        pdf_bytes=None,
+        sections=None,
+        route='docx',
+        lang='ar',
+):
+    """Block released REL37 bytes with narrative/cover divergence.
+
+    Preview or the other format cannot substitute for the requested route.
+    Drafting saved exports still run this check.
+    """
+    _ = lang
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            load_model,
+        )
+        from release_engine_v3.rel37_export_content_parity import (
+            gate_rel37_returned_bytes,
+        )
+    except Exception:  # noqa: BLE001
+        return True, [], {}
+    if not is_rel37_authoritative(sections):
+        return True, [], {}
+    model = load_model(sections)
+    if model is None:
+        return True, [], {}
+    allowed, blockers = gate_rel37_returned_bytes(
+        model,
+        docx_bytes=docx_bytes or b'',
+        pdf_bytes=pdf_bytes or b'',
+        route=route,
+    )
+    return allowed, blockers, {
+        'rel37_returned_bytes_blockers': blockers,
+        'model_hash': model.model_hash,
+    }
 
 
 def _load_authorized_saved_export_for_pdf(artifact_id, user_id, artifact_type):
@@ -52913,6 +52985,36 @@ def _rel26_gate_export_bytes(
         if err not in gate['blocking_errors']:
             gate['blocking_errors'].append(err)
     allowed, errors = block_export_if_evidence_fails(gate)
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            load_model,
+        )
+        from release_engine_v3.rel37_export_content_parity import (
+            rel37_returned_bytes_blockers,
+        )
+        if is_rel37_authoritative(canonical_sections):
+            _rel37_model = load_model(canonical_sections)
+            if _rel37_model is not None:
+                extra = rel37_returned_bytes_blockers(
+                    _rel37_model,
+                    docx_bytes=docx_bytes or b'',
+                    pdf_bytes=pdf_bytes or b'',
+                    route=route,
+                )
+                if extra:
+                    allowed = False
+                    for err in extra:
+                        if err not in errors:
+                            errors.append(err)
+                        if err not in gate.get('blocking_errors', []):
+                            gate.setdefault('blocking_errors', []).append(err)
+                    gate['export_evidence_passed'] = False
+                    gate['export_return_allowed'] = False
+                    gate['actual_export_evidence_passed'] = False
+                    gate['rel37_returned_bytes_blockers'] = extra
+    except Exception:  # noqa: BLE001
+        pass
     return allowed, errors, gate
 
 
@@ -81025,6 +81127,7 @@ def api_generate_pdf_async():
             org_name = str(data.get('org_name') or '').strip()
         if data.get('language'):
             lang = data.get('language') or lang
+        sector = str(data.get('sector') or '').strip()
         if data.get('domain'):
             try:
                 domain = resolve_export_domain(
@@ -81229,6 +81332,8 @@ def api_generate_pdf_async():
     _sector   = sector
     _doc_type = doc_type
     _domain   = domain
+    _rel37_sections_inner = (
+        data.get('_rel37_source_sections') or data.get('sections') or {})
     _task_id  = task_id
     # PR-5B.7C.1: forward artifact metadata so the inner sync route can
     # re-resolve DB-canonical content authoritatively and apply the same
@@ -81363,6 +81468,21 @@ def api_generate_pdf_async():
 
             if not raw or len(raw) < 100:
                 raise ValueError(f"PDF generation returned empty/invalid content (got {len(raw)} bytes)")
+            _rel37_ok, _rel37_errs, _rel37_gate = _rel37_gate_saved_export_bytes(
+                pdf_bytes=raw,
+                sections=_rel37_sections_inner,
+                route='pdf',
+                lang=_lang,
+            )
+            if not _rel37_ok:
+                print(
+                    '[REL37-RETURNED-BYTES-GATE] PDF-async blocked '
+                    f'errors={_rel37_errs[:8]} gate={_rel37_gate}',
+                    flush=True,
+                )
+                raise ValueError(
+                    _rel37_errs[0] if _rel37_errs else (
+                        'rel37_returned_bytes_failed:pdf'))
 
             tmp = tempfile.NamedTemporaryFile(
                 suffix='.pdf', delete=False,
@@ -81470,6 +81590,7 @@ def api_generate_docx_async():
             org_name = str(data.get('org_name') or '').strip()
         if data.get('language'):
             lang = data.get('language') or lang
+        sector = str(data.get('sector') or '').strip()
     if not content:
         return jsonify({'error': 'No content'}), 400
     try:
@@ -81687,6 +81808,8 @@ def api_generate_docx_async():
     _sector   = sector
     _doc_type = doc_type
     _domain   = domain
+    _rel37_sections_inner = (
+        data.get('_rel37_source_sections') or data.get('sections') or {})
     _selected_fws = (data.get('selected_frameworks')
                      or data.get('frameworks') or [])
     _cyber_sealed_docx_inner = _cyber_sealed_docx_a
@@ -81899,6 +82022,21 @@ def api_generate_docx_async():
                     selected_frameworks=_selected_fws,
                     cyber_sealed_artifact=_cyber_sealed_docx_inner,
                 )
+            _rel37_ok, _rel37_errs, _rel37_gate = _rel37_gate_saved_export_bytes(
+                docx_bytes=raw,
+                sections=_rel37_sections_inner,
+                route='docx',
+                lang=_lang,
+            )
+            if not _rel37_ok:
+                print(
+                    '[REL37-RETURNED-BYTES-GATE] DOCX-async blocked '
+                    f'errors={_rel37_errs[:8]} gate={_rel37_gate}',
+                    flush=True,
+                )
+                raise ValueError(
+                    _rel37_errs[0] if _rel37_errs else (
+                        'rel37_returned_bytes_failed:docx'))
             tmp = tempfile.NamedTemporaryFile(
                 suffix='.docx', delete=False,
                 prefix=f'mizan_export_{_task_id}_'
@@ -84010,6 +84148,12 @@ def api_generate_docx():
     if not data:
         return jsonify({'error': 'No data received'}), 400
 
+    if not _is_internal_rel_export_request(data):
+        data = _strip_privileged_export_fields(data)
+        _saved_denied_docx = _bind_public_saved_pdf_export(data)
+        if _saved_denied_docx is not None:
+            return _saved_denied_docx
+
     content = data.get('content', '')
     filename = data.get('filename', 'document')
     lang = data.get('language', 'en')
@@ -84568,6 +84712,30 @@ def api_generate_docx():
                 offset += chunk_size
 
         safe_name = filename.replace('"', '').replace('\n', '').replace('\r', '')
+        _rel37_ok, _rel37_errs, _rel37_gate = _rel37_gate_saved_export_bytes(
+            docx_bytes=doc_bytes,
+            sections=(
+                data.get('_rel37_source_sections')
+                or data.get('sections')
+                or locals().get('_export_sections')
+                or {}),
+            route='docx',
+            lang=lang,
+        )
+        if not _rel37_ok:
+            print(
+                '[REL37-RETURNED-BYTES-GATE] DOCX blocked '
+                f'errors={_rel37_errs[:8]} gate={_rel37_gate}',
+                flush=True,
+            )
+            return jsonify({
+                'error': (
+                    'Export blocked — saved narrative/cover '
+                    'validation failed'),
+                'reason': 'rel37_returned_bytes_failed',
+                'blocking_errors': _rel37_errs[:12],
+                'gate': _rel37_gate,
+            }), 422
         try:
             from release_engine.export_evidence_validator import (
                 build_returned_file_fingerprint,
@@ -90395,11 +90563,35 @@ def api_generate_pdf():
                     },
                 }), 422
 
+        _pdf_bytes = buffer.getvalue()
+        _rel37_ok, _rel37_errs, _rel37_gate = _rel37_gate_saved_export_bytes(
+            pdf_bytes=_pdf_bytes,
+            sections=(
+                data.get('_rel37_source_sections')
+                or data.get('sections')
+                or locals().get('_rel3_pdf_sections')
+                or {}),
+            route='pdf',
+            lang=lang,
+        )
+        if not _rel37_ok:
+            print(
+                '[REL37-RETURNED-BYTES-GATE] PDF blocked '
+                f'errors={_rel37_errs[:8]} gate={_rel37_gate}',
+                flush=True,
+            )
+            return jsonify({
+                'error': (
+                    'Export blocked — saved narrative/cover '
+                    'validation failed'),
+                'reason': 'rel37_returned_bytes_failed',
+                'blocking_errors': _rel37_errs[:12],
+                'gate': _rel37_gate,
+            }), 422
         try:
             from release_engine.export_evidence_validator import (
                 build_returned_file_fingerprint,
             )
-            _pdf_bytes = buffer.getvalue()
             build_returned_file_fingerprint(
                 route_name='pdf',
                 strategy_id=str(_art_id_p or data.get('artifact_id') or ''),

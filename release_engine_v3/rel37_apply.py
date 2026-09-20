@@ -201,6 +201,12 @@ def overlay_rel37_authority(
         current = out.get(key)
         current_text = '' if current in (None, '') else str(current).strip()
         projected_text = '' if value in (None, '') else str(value).strip()
+        # Saved environment_narrative is the prose authority. A nonempty
+        # generic leftover paragraph (جهة / catalog filler) must not
+        # outrank it. Typed tables stay on the selective path below.
+        if key == 'environment' and projected_text:
+            out[key] = value
+            continue
         # Restore tables lost from leftover/frozen maps. Keep leftover
         # text that already carries saved content (including ownership
         # markers). Catalog replacements are empty or lack the model

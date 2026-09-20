@@ -15,6 +15,25 @@ from xml.etree import ElementTree as ET
 
 from release_engine_v3.rel37_canonical_document import CanonicalDocument
 from release_engine_v3.rel37_professional_projection import projection_tables
+from release_engine_v3.rel37_sector_context import (
+    UI_SECTOR_PAIRS,
+    cover_sector_from_hashed_narrative,
+    environment_narrative_paragraphs,
+    sector_reference_aliases,
+)
+
+_ENV_HEAD_RE = re.compile(
+    r'(البيئة التنظيمية والتهديدات|البيئة والمحركات|'
+    r'Business Environment|Environment and Drivers)',
+    re.I,
+)
+_ENV_NEXT_RE = re.compile(
+    r'(تحليل الفجوات|Gap Analysis|خارطة الطريق|Roadmap|'
+    r'الركائز الاستراتيجية|Strategic Pillars)',
+    re.I,
+)
+_COVER_LABELS = ('القطاع', 'Sector')
+_GENERIC_ENV_AR = 'تعمل الجهة في بيئة تنظيمية'
 
 _AR_RE = re.compile(r'[\u0600-\u06FF]')
 _W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -295,7 +314,222 @@ def compare_model_to_docx(
             if not _row_present(row, inv['tables']):
                 blockers.append(
                     f'docx_row_field_mismatch:{family}:{idx}:{_norm(row[0] if row else "")}')
+    blockers.extend(compare_environment_narrative_to_docx(model, raw))
+    blockers.extend(compare_cover_sector_to_docx(model, raw))
     return blockers
+
+
+def _section_after_heading(
+        paragraphs: Sequence[str],
+        heading_re: re.Pattern,
+        next_re: re.Pattern,
+) -> str:
+    taking = False
+    collected: List[str] = []
+    for para in paragraphs:
+        text = str(para or '').strip()
+        if not text:
+            continue
+        if heading_re.search(text) and len(text) < 120:
+            taking = True
+            continue
+        if taking and next_re.search(text) and len(text) < 120:
+            break
+        if taking:
+            collected.append(text)
+    return '\n'.join(collected)
+
+
+def docx_environment_section_text(raw: bytes) -> str:
+    inv = inventory_docx_bytes(raw)
+    return _section_after_heading(inv.get('paragraphs') or [], _ENV_HEAD_RE, _ENV_NEXT_RE)
+
+
+def docx_cover_sector_value(raw: bytes) -> str:
+    inv = inventory_docx_bytes(raw)
+    for table in inv.get('tables') or []:
+        for row in table:
+            if len(row) >= 2 and _norm(row[0]) in _COVER_LABELS:
+                return _norm(row[1])
+    return ''
+
+
+def compare_environment_narrative_to_docx(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
+    narrative = str(model.environment_narrative or '').strip()
+    if not narrative:
+        return []
+    section = docx_environment_section_text(raw)
+    blob = _norm(section)
+    if not blob:
+        return ['docx_environment_section_missing']
+    blockers: List[str] = []
+    for idx, para in enumerate(environment_narrative_paragraphs(narrative)):
+        if _norm(para) not in blob:
+            blockers.append(f'docx_environment_narrative_missing:{idx}')
+    if (
+            _GENERIC_ENV_AR in section
+            and _norm(narrative) not in blob
+            and 'سياق تشغيلي' in narrative
+            and 'سياق تشغيلي' not in section
+    ):
+        blockers.append('docx_environment_generic_leftover')
+    return blockers
+
+
+def compare_cover_sector_to_docx(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
+    expected = cover_sector_from_hashed_narrative(
+        model.environment_narrative, model.lang)
+    cover = docx_cover_sector_value(raw)
+    if not expected:
+        if _conflicting_cover_value(cover):
+            return ['docx_cover_sector_injected']
+        return []
+    if not cover:
+        return ['docx_cover_sector_missing']
+    aliases = sector_reference_aliases(expected)
+    if cover not in aliases and not any(alias in cover for alias in aliases):
+        return [f'docx_cover_sector_mismatch:{cover}']
+    return []
+
+
+def _conflicting_cover_value(value: str) -> bool:
+    raw = _norm(value)
+    if not raw or raw in ('—', '-', '\u2014'):
+        return False
+    known = {english for english, _arabic in UI_SECTOR_PAIRS}
+    known.update(arabic for _english, arabic in UI_SECTOR_PAIRS)
+    return raw in known
+
+
+def pdf_cover_and_body_text(raw: bytes) -> Tuple[str, str, Dict[str, Any]]:
+    """Keep cover visual evidence distinct from body ActualText."""
+    meta: Dict[str, Any] = {'pages': 0, 'reliable': False}
+    if not raw.startswith(b'%PDF'):
+        return '', '', meta
+    actual, actual_count = _extract_pdf_actual_text(raw)
+    meta['actual_text_spans'] = actual_count
+    cover = ''
+    pages: List[str] = []
+    try:
+        import pymupdf
+        doc = pymupdf.open(stream=raw, filetype='pdf')
+        pages = [page.get_text() or '' for page in doc]
+        meta['pages'] = len(doc)
+        cover = pages[0] if pages else ''
+        meta['reliable'] = bool(pages)
+    except Exception as exc:  # noqa: BLE001
+        meta['extractor_error'] = type(exc).__name__
+    body = _normalize_extracted_pdf_text(actual)
+    if not body:
+        body = _normalize_extracted_pdf_text('\n'.join(pages))
+    env_page = ''
+    for page in pages[1:]:
+        if _ENV_HEAD_RE.search(page):
+            env_page = page
+            break
+    meta['environment_page_present'] = bool(env_page or ('سياق تشغيلي' in body))
+    return cover, body, meta
+
+
+def compare_environment_narrative_to_pdf(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
+    narrative = str(model.environment_narrative or '').strip()
+    if not narrative:
+        return []
+    _cover, body, meta = pdf_cover_and_body_text(raw)
+    if raw.startswith(b'%PDF') and not meta.get('reliable') and not body.strip():
+        return ['pdf_extraction_unreliable']
+    blob = _norm(body)
+    if not blob:
+        return ['pdf_environment_text_empty']
+    blockers: List[str] = []
+    for idx, para in enumerate(environment_narrative_paragraphs(narrative)):
+        if _norm(para) not in blob:
+            blockers.append(f'pdf_environment_narrative_missing:{idx}')
+    return blockers
+
+
+def _first_cover_sector_window(text: str) -> str:
+    blob = str(text or '')
+    earliest = None
+    window = ''
+    for label in _COVER_LABELS:
+        idx = blob.find(label)
+        if idx < 0:
+            continue
+        if earliest is None or idx < earliest:
+            earliest = idx
+            window = blob[idx:idx + 96]
+    return window
+
+
+def compare_cover_sector_to_pdf(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
+    expected = cover_sector_from_hashed_narrative(
+        model.environment_narrative, model.lang)
+    cover, _body, _meta = pdf_cover_and_body_text(raw)
+    actual, _count = _extract_pdf_actual_text(raw)
+    cover_window = _first_cover_sector_window(actual) or _first_cover_sector_window(cover)
+    if not expected:
+        if 'Healthcare' in cover or 'رعاية صحية' in cover:
+            return ['pdf_cover_sector_injected']
+        return []
+    aliases = sector_reference_aliases(expected)
+    if ('Healthcare' in cover or 'رعاية صحية' in cover) and (
+            'Healthcare' not in aliases and 'رعاية صحية' not in aliases):
+        return ['pdf_cover_sector_mismatch:Healthcare']
+    if any(alias in cover_window for alias in aliases):
+        return []
+    if any(alias in cover for alias in aliases):
+        return []
+    return ['pdf_cover_sector_mismatch']
+
+
+def rel37_returned_bytes_blockers(
+        model: CanonicalDocument,
+        *,
+        docx_bytes: bytes = b'',
+        pdf_bytes: bytes = b'',
+        route: str = '',
+) -> List[str]:
+    """Route-local returned-byte blockers. Preview cannot substitute PDF."""
+    route_n = str(route or '').strip().lower()
+    blockers: List[str] = []
+    check_docx = route_n in ('', 'docx', 'docx-async') and docx_bytes
+    check_pdf = route_n in ('', 'pdf', 'pdf-async') and pdf_bytes
+    if route_n in ('docx', 'docx-async') and not docx_bytes:
+        blockers.append('docx_bytes_missing')
+    if route_n in ('pdf', 'pdf-async') and not pdf_bytes:
+        blockers.append('pdf_bytes_missing')
+    if check_docx:
+        blockers.extend(compare_environment_narrative_to_docx(model, docx_bytes))
+        blockers.extend(compare_cover_sector_to_docx(model, docx_bytes))
+    if check_pdf:
+        blockers.extend(compare_environment_narrative_to_pdf(model, pdf_bytes))
+        blockers.extend(compare_cover_sector_to_pdf(model, pdf_bytes))
+    return list(dict.fromkeys(blockers))
+
+
+def gate_rel37_returned_bytes(
+        model: CanonicalDocument,
+        *,
+        docx_bytes: bytes = b'',
+        pdf_bytes: bytes = b'',
+        route: str = '',
+) -> Tuple[bool, List[str]]:
+    blockers = rel37_returned_bytes_blockers(
+        model, docx_bytes=docx_bytes, pdf_bytes=pdf_bytes, route=route)
+    return not blockers, blockers
 
 
 def compare_model_to_text(
@@ -360,6 +594,8 @@ def evaluate_export_parity(
         pdf_blockers = ['pdf_extraction_unreliable']
     elif pdf_bytes:
         pdf_blockers = compare_model_to_text(model, pdf_text, route='pdf')
+        pdf_blockers.extend(compare_environment_narrative_to_pdf(model, pdf_bytes))
+        pdf_blockers.extend(compare_cover_sector_to_pdf(model, pdf_bytes))
     else:
         pdf_blockers = ['pdf_bytes_missing']
 

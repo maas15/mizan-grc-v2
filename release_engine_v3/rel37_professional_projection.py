@@ -213,6 +213,16 @@ def apply_rel37_projection_to_blocks(
     vis['tables'] = [tables['strategic_objectives']] if tables['strategic_objectives']['rows'] else []
     out['vision_objectives'] = vis
 
+    env = dict(out.get('environment_context') or {})
+    narrative = str(model.environment_narrative or '').strip()
+    if narrative:
+        from release_engine_v3.rel37_sector_context import (
+            environment_narrative_paragraphs,
+        )
+        env['paragraphs'] = environment_narrative_paragraphs(narrative)
+        env['content'] = narrative
+    out['environment_context'] = env
+
     pil = dict(out.get('strategic_pillars') or {})
     pillar_blocks: List[Dict[str, Any]] = []
     for pillar in model.pillars:

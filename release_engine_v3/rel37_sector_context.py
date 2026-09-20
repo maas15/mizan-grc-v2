@@ -103,6 +103,42 @@ def operating_context_clause(sector: str, lang: str) -> str:
     return f'in the {presented} sector operating context'
 
 
+def environment_narrative_paragraphs(narrative: str) -> list:
+    """Keep the persisted narrative intact; do not invent extra clauses."""
+    import re
+    return [
+        part.strip()
+        for part in re.split(r'\n\s*\n', str(narrative or '').strip())
+        if part.strip()
+    ]
+
+
+def cover_sector_from_hashed_narrative(narrative: str, lang: str) -> str:
+    """Cover sector from the hashed environment narrative only.
+
+    ``model.sector`` is HASH_EXCLUDED provenance and is not consulted.
+    A post-save raw provenance change therefore cannot silently change
+    the cover while the hashed body stays unchanged. Documents with no
+    UI-pair mention return '' so the existing legacy/neutral cover (—)
+    is used. Client Healthcare is never inferred.
+    """
+    hay = str(narrative or '')
+    if not hay.strip():
+        return ''
+    lang_n = 'ar' if str(lang or '').lower().startswith('ar') else 'en'
+    earliest = None
+    chosen = ''
+    for english, arabic in UI_SECTOR_PAIRS:
+        for alias in (english, arabic):
+            idx = hay.find(alias)
+            if idx < 0:
+                continue
+            if earliest is None or idx < earliest:
+                earliest = idx
+                chosen = arabic if lang_n == 'ar' else english
+    return chosen
+
+
 def sector_runtime_diagnostics(sector: str, lang: str) -> Dict[str, str]:
     raw = str(sector or '').strip()
     return {
