@@ -721,9 +721,24 @@ def compare_environment_narrative_to_pdf(
         return ['pdf_environment_text_empty']
     blockers: List[str] = []
     for idx, para in enumerate(environment_narrative_paragraphs(narrative)):
-        if _norm(para) not in blob:
+        if not _paragraph_in_pdf_section(para, section):
             blockers.append(f'pdf_environment_narrative_missing:{idx}')
     return blockers
+
+
+def _ascii_tokens_dropped(text: str) -> str:
+    """Arabic visual extractors often omit Latin acronyms from mixed runs."""
+    return _norm(re.sub(r'[A-Za-z][A-Za-z0-9._/-]*', ' ', text))
+
+
+def _paragraph_in_pdf_section(para: str, section: str) -> bool:
+    want = _norm(para)
+    have = _norm(section)
+    if want and want in have:
+        return True
+    want_v = _ascii_tokens_dropped(para)
+    have_v = _ascii_tokens_dropped(section)
+    return bool(want_v) and len(want_v) >= 24 and want_v in have_v
 
 
 def compare_cover_sector_to_pdf(
