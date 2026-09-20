@@ -38,6 +38,12 @@ _APPENDIX_RE = re.compile(
     re.I,
 )
 _TOC_LINE_RE = re.compile(r'^\d{1,2}\s+\S')
+_TOC_NUM_RE = re.compile(r'^\d{1,2}(\s+)?\S')
+_CHROME_RE = re.compile(
+    r'(CONFIDENTIAL|Prepared by Mizan|^\s*Page\s+\d+$|'
+    r'^\d{1,2}\s+[A-Za-z]+\s+\d{4}$)',
+    re.I,
+)
 _COVER_LABELS = ('القطاع', 'Sector')
 _GENERIC_ENV_AR = 'تعمل الجهة في بيئة تنظيمية'
 _REL37_NARRATIVE_DOMAINS = frozenset({'data', 'ai', 'dt'})
@@ -181,13 +187,138 @@ def _page_content_xrefs(page) -> List[int]:
     return list(dict.fromkeys(xrefs))
 
 
-def extract_pdf_pages(raw: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Page-bound visible text and ActualText. Never a global bag.
+def _unescape_pdf_literal(data: bytes) -> str:
+    out = bytearray()
+    idx = 0
+    while idx < len(data):
+        if data[idx] != 0x5C or idx + 1 >= len(data):
+            out.append(data[idx])
+            idx += 1
+            continue
+        nxt = data[idx + 1]
+        if nxt == 0x6E:
+            out.append(0x0A)
+        elif nxt == 0x72:
+            out.append(0x0D)
+        elif nxt == 0x74:
+            out.append(0x09)
+        elif 0x30 <= nxt <= 0x37:
+            octal = bytearray()
+            look = idx + 1
+            while look < len(data) and len(octal) < 3 and 0x30 <= data[look] <= 0x37:
+                octal.append(data[look])
+                look += 1
+            out.append(int(octal.decode('ascii'), 8) & 0xFF)
+            idx = look
+            continue
+        else:
+            out.append(nxt)
+        idx += 2
+    try:
+        return out.decode('latin-1')
+    except Exception:  # noqa: BLE001
+        return out.decode('utf-8', 'replace')
 
-    Visual evidence and ActualText stay separate on each page. Cover is
-    page 0. If page association cannot be established, ``associated`` is
-    false and callers must report an evidence failure instead of
-    accepting a document-wide substring.
+
+def _pdf_content_events(stream: bytes) -> List[Dict[str, str]]:
+    """Marked-content order: painted Tj strings and ActualText spans."""
+    events: List[Dict[str, str]] = []
+    idx = 0
+    data = stream or b''
+    while idx < len(data):
+        if data.startswith(b'/ActualText', idx):
+            match = re.match(br'/ActualText\s*<([0-9A-Fa-f]+)>', data[idx:])
+            if match:
+                events.append({
+                    'kind': 'actual',
+                    'text': _decode_actual_text_hex(match.group(1).decode('ascii')),
+                })
+                idx += match.end()
+                continue
+        if data[idx] == 0x28:
+            cursor = idx + 1
+            buf = bytearray()
+            while cursor < len(data):
+                if data[cursor] == 0x5C and cursor + 1 < len(data):
+                    buf.append(0x5C)
+                    buf.append(data[cursor + 1])
+                    cursor += 2
+                    continue
+                if data[cursor] == 0x29:
+                    break
+                buf.append(data[cursor])
+                cursor += 1
+            rest = data[cursor + 1:cursor + 16].lstrip()
+            if rest.startswith(b'Tj') or rest.startswith(b"'") or rest.startswith(b'"'):
+                events.append({
+                    'kind': 'visible',
+                    'text': _unescape_pdf_literal(bytes(buf)),
+                })
+            idx = cursor + 1
+            continue
+        idx += 1
+    return events
+
+
+def _page_line_blocks(page, *, ignore_actualtext: bool) -> List[Dict[str, Any]]:
+    import pymupdf
+    flags = int(getattr(pymupdf, 'TEXTFLAGS_DICT', 0) or 0)
+    ignore_at = int(getattr(pymupdf, 'TEXT_IGNORE_ACTUALTEXT', 0) or 0)
+    if ignore_actualtext and ignore_at:
+        flags |= ignore_at
+    payload = page.get_text('dict', flags=flags) or {}
+    blocks: List[Dict[str, Any]] = []
+    for block in payload.get('blocks') or []:
+        for line in block.get('lines') or []:
+            text = ''.join(
+                str(span.get('text') or '') for span in line.get('spans') or [])
+            bbox = line.get('bbox') or (0, 0, 0, 0)
+            if not str(text).strip():
+                continue
+            blocks.append({
+                'text': text,
+                'y0': float(bbox[1]),
+                'y1': float(bbox[3]),
+                'x0': float(bbox[0]),
+            })
+    return blocks
+
+
+def _align_painted_and_actual(
+        painted: Sequence[Dict[str, Any]],
+        logical: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    aligned: List[Dict[str, Any]] = []
+    used = set()
+    for item in painted:
+        match_idx = None
+        best = 1e9
+        for idx, other in enumerate(logical):
+            if idx in used:
+                continue
+            dist = abs(float(other['y0']) - float(item['y0'])) + (
+                abs(float(other['x0']) - float(item['x0'])) * 0.25)
+            if dist < best:
+                best = dist
+                match_idx = idx
+        actual = ''
+        if match_idx is not None and best <= 10:
+            actual = str(logical[match_idx].get('text') or '')
+            used.add(match_idx)
+        aligned.append({
+            'visible': item.get('text') or '',
+            'actual': actual,
+            'y0': item.get('y0'),
+            'y1': item.get('y1'),
+        })
+    return aligned
+
+
+def extract_pdf_pages(raw: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Page-bound painted text and ActualText. Never a global bag.
+
+    Painted text ignores ActualText. Logical ActualText is aligned to the
+    same line boxes. Cover is page 0.
     """
     pages: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {
@@ -204,14 +335,23 @@ def extract_pdf_pages(raw: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]
         doc = pymupdf.open(stream=raw, filetype='pdf')
         meta['pages'] = len(doc)
         span_count = 0
+        ignore_at = int(getattr(pymupdf, 'TEXT_IGNORE_ACTUALTEXT', 0) or 0)
+        text_flags = int(getattr(pymupdf, 'TEXTFLAGS_TEXT', 0) or 0) | ignore_at
         for index, page in enumerate(doc):
-            visible = page.get_text() or ''
+            if ignore_at:
+                visible = page.get_text('text', flags=text_flags) or ''
+            else:
+                visible = page.get_text() or ''
+            painted = _page_line_blocks(page, ignore_actualtext=True)
+            logical = _page_line_blocks(page, ignore_actualtext=False)
             actual_parts: List[str] = []
+            events: List[Dict[str, str]] = []
             for xref in _page_content_xrefs(page):
                 try:
                     stream = doc.xref_stream(xref)
                 except Exception:  # noqa: BLE001
                     continue
+                events.extend(_pdf_content_events(stream))
                 spans = _actual_text_spans_from_stream(stream)
                 span_count += len(spans)
                 actual_parts.extend(spans)
@@ -219,9 +359,11 @@ def extract_pdf_pages(raw: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]
                 'index': index,
                 'visible': _normalize_extracted_pdf_text(visible),
                 'actual': _normalize_extracted_pdf_text('\n'.join(actual_parts)),
+                'events': events,
+                'blocks': _align_painted_and_actual(painted, logical),
             })
         meta['actual_text_spans'] = span_count
-        meta['extractor'] = 'pymupdf+page-actualtext'
+        meta['extractor'] = 'pymupdf+page-actualtext+line-boxes'
         meta['associated'] = bool(pages)
         meta['reliable'] = bool(pages) and any(
             (item['visible'] or item['actual']).strip() for item in pages)
@@ -332,15 +474,74 @@ def _undo_visual_rtl_line(line: str) -> str:
     return ''.join(reversed(runs))
 
 
-def _section_compare_blob(section: str) -> str:
-    """Layout-normalized section including visual and logical mixed-line forms."""
-    pieces: List[str] = []
-    for line in str(section or '').splitlines():
-        pieces.append(line)
-        undone = _undo_visual_rtl_line(line)
-        if undone != line:
-            pieces.append(undone)
-    return _layout_norm('\n'.join(pieces))
+def _is_mixed_arabic_latin(text: str) -> bool:
+    raw = str(text or '')
+    has_ar = any('\u0600' <= ch <= '\u06FF' for ch in raw)
+    has_lat = any(ch.isascii() and ch.isalpha() for ch in raw)
+    return has_ar and has_lat
+
+
+def _undo_visible_lines(text: str) -> str:
+    return '\n'.join(
+        _undo_visual_rtl_line(line) for line in str(text or '').splitlines())
+
+
+def _visible_reconciled_to_actual(visible: str, actual: str) -> Tuple[str, str]:
+    """Reconcile painted visible to ActualText only from file evidence.
+
+    ActualText is never reversed. Pure English is never reversed.
+    Visible is converted only when mixed Arabic/Latin lines need
+    visual-to-logical conversion and that conversion matches ActualText.
+    """
+    vis = _layout_norm(visible)
+    act = _layout_norm(actual)
+    if not vis:
+        return vis, 'visible_empty'
+    if act and vis == act:
+        return vis, 'same'
+    vis_lines = [
+        _layout_norm(line)
+        for line in str(visible or '').splitlines()
+        if _layout_norm(line)
+    ]
+    if act and vis_lines and all(line in act for line in vis_lines):
+        return act, 'visible_wraps_actual'
+    act_compact = re.sub(r'[^A-Za-z0-9\u0600-\u06FF]+', '', act)
+    vis_compact = re.sub(
+        r'[^A-Za-z0-9\u0600-\u06FF]+', '', ''.join(vis_lines))
+    if act_compact and vis_compact:
+        pos = 0
+        wrap_ok = True
+        for ch in vis_compact:
+            nxt = act_compact.find(ch, pos)
+            if nxt < 0:
+                wrap_ok = False
+                break
+            pos = nxt + 1
+        if wrap_ok and not _latin_vis_conflicts_act(
+                _latin_relation(visible), _latin_relation(act)):
+            return act, 'visible_wraps_actual'
+    if act and _is_mixed_arabic_latin(visible):
+        undone = _layout_norm(_undo_visible_lines(visible))
+        if undone == act:
+            return undone, 'visible_visual_matches_actual'
+        undone_lines = [
+            _layout_norm(_undo_visual_rtl_line(line))
+            for line in str(visible or '').splitlines()
+            if _pdf_line(line)
+        ]
+        if undone_lines and all(line in act for line in undone_lines if line):
+            return act, 'visible_visual_matches_actual'
+        if (
+                _latin_relation(undone) == _latin_relation(act)
+                and (act in undone or undone in act)
+        ):
+            return act, 'visible_visual_matches_actual'
+        vis_lat = _latin_relation(visible)
+        act_lat = _latin_relation(act)
+        if vis_lat and act_lat and vis_lat == list(reversed(act_lat)):
+            return act, 'visible_visual_matches_actual'
+    return vis, 'visible_as_extracted'
 
 
 def _ordered_subsequence(want: Sequence[str], have: Sequence[str]) -> bool:
@@ -573,17 +774,178 @@ def _page_lines(page: Dict[str, Any]) -> List[str]:
     return [line.strip() for line in blob.splitlines() if line.strip()]
 
 
+def _pdf_line(value: Any) -> str:
+    import unicodedata
+    return unicodedata.normalize('NFKC', str(value or '')).replace('\x00', '').strip()
+
+
 def _looks_like_toc_page(lines: Sequence[str]) -> bool:
     if not lines:
         return False
-    toc_hits = sum(
-        1 for line in lines
-        if _TOC_LINE_RE.match(line) and len(line) < 80)
+    toc_hits = 0
+    for line in lines:
+        text = _pdf_line(line)
+        if text and _TOC_NUM_RE.match(text) and len(text) < 80:
+            toc_hits += 1
     return toc_hits >= 3 and toc_hits >= max(1, len(lines) // 2)
 
 
+def _is_running_chrome(line: str) -> bool:
+    text = _pdf_line(line)
+    return bool(text) and bool(_CHROME_RE.search(text))
+
+
+def _header_band(y0: Any) -> bool:
+    y = float(y0 or 0)
+    return y < 40 or y > 800
+
+
+def _complete_actual_spans(
+        fragments: Sequence[str],
+        stream_actuals: Sequence[str],
+) -> List[str]:
+    """Prefer whole ActualText spans over wrap-split line fragments.
+
+    A wrap-split or duplicated line box must not block a stream span
+    that already contains one substantial associated fragment.
+    """
+    parts = [_pdf_line(item) for item in fragments if _pdf_line(item)]
+    if not parts:
+        return []
+    completed: List[str] = []
+    seen = set()
+    for span in stream_actuals:
+        text = str(span or '').strip()
+        if not text:
+            continue
+        cspan = re.sub(r'\s+', '', _pdf_line(text))
+        if not cspan:
+            continue
+        for part in parts:
+            cpart = re.sub(r'\s+', '', part)
+            if len(cpart) < 12:
+                continue
+            if cpart in cspan or cspan in cpart:
+                key = cspan
+                if key not in seen:
+                    seen.add(key)
+                    completed.append(text)
+                break
+    return completed or parts
+
+
+def _env_boundary_line(line: str) -> str:
+    text = _pdf_line(line)
+    if not text:
+        return ''
+    if _APPENDIX_RE.search(text) and len(text) < 80:
+        return 'stop'
+    if _ENV_HEAD_RE.search(text) and len(text) < 120:
+        # Numbered TOC entries share heading words. They are not the body.
+        if _TOC_NUM_RE.match(text) and len(text) < 80:
+            return ''
+        return 'heading'
+    if _ENV_NEXT_RE.search(text) and len(text) < 120:
+        return 'next'
+    return ''
+
+
+def _block_boundary(block: Dict[str, Any]) -> str:
+    return (
+        _env_boundary_line(block.get('visible') or '')
+        or _env_boundary_line(block.get('actual') or '')
+    )
+
+
+def _stream_actual_after_heading(
+        events: Sequence[Dict[str, str]],
+        *,
+        already_taking: bool,
+) -> List[str]:
+    """ActualText after the heading in stream order. Never reverse it."""
+    taking = bool(already_taking)
+    collected: List[str] = []
+    for event in events:
+        text = _pdf_line(event.get('text') or '')
+        if not text:
+            continue
+        boundary = _env_boundary_line(text)
+        if boundary == 'heading':
+            taking = True
+            continue
+        if taking and boundary in ('next', 'stop'):
+            break
+        if taking and event.get('kind') == 'actual':
+            collected.append(str(event.get('text') or '').strip())
+    return [item for item in collected if item]
+
+
+def _drop_overlay_visible(
+        lines: Sequence[Any],
+        actual: str,
+) -> List[str]:
+    """Drop logical overlays and their same-line painted siblings.
+
+    ExtractableCell emits ActualText plus an invisible logical draw on
+    the same line box as the visual run. The overlay is not a second
+    narrative. Latin-only token paint of ActualText tokens is the same
+    identity, not a conflicting representation.
+    """
+    act = _layout_norm(actual)
+    act_lat = _latin_relation(act)
+    act_nodigit = re.sub(r'[0-9٠-٩٫.]', '', act)
+    bands: Dict[Any, List[str]] = {}
+    for item in lines:
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            y0, raw = item[0], item[1]
+        else:
+            y0, raw = 0, item
+        text = _pdf_line(raw)
+        if not text or _is_running_chrome(text):
+            continue
+        bands.setdefault(round(float(y0 or 0), 1), []).append(text)
+    kept: List[Tuple[float, str]] = []
+    for y_key, texts in bands.items():
+        # Same line box with a logical overlay plus painted run.
+        # A single painted line that matches ActualText is agreement,
+        # not an overlay to discard.
+        if act and len(texts) > 1 and any(
+                len(_layout_norm(text)) >= 12 and (
+                    _layout_norm(text) in act
+                    or (
+                        len(re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text))) >= 20
+                        and re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text))
+                        in act_nodigit
+                    )
+                )
+                for text in texts):
+            continue
+        for text in texts:
+            if act and not any('\u0600' <= ch <= '\u06FF' for ch in text):
+                line_lat = _latin_relation(text)
+                if line_lat and not _latin_vis_conflicts_act(line_lat, act_lat):
+                    continue
+                compact = re.sub(r'[^A-Za-z0-9]+', '', text)
+                act_c = re.sub(r'[^A-Za-z0-9]+', '', act)
+                if len(compact) >= 16 and compact in act_c:
+                    continue
+            ar_only = _layout_norm(re.sub(r'[A-Za-z0-9/._-]+', ' ', text))
+            if act and len(ar_only) >= 8 and ar_only in act:
+                line_lat = _latin_relation(text)
+                if not line_lat or all(token in act_lat for token in line_lat):
+                    continue
+            kept.append((float(y_key), text))
+    kept.sort(key=lambda item: item[0])
+    return [text for _y, text in kept]
+
+
 def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
-    """Environment-section text only: not cover, TOC, or appendix."""
+    """Environment-section text only: not cover, TOC, summary, or appendix.
+
+    Association is the content range after the environment heading and
+    before the next section. Whole-page ActualText is not borrowed.
+    Stream ActualText after the heading stays logical and is not reversed.
+    """
     pages, meta = extract_pdf_pages(raw)
     detail = dict(meta)
     if not pages:
@@ -596,47 +958,94 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
     actual_parts: List[str] = []
     taking = False
     heading_page = None
+    repeated_chrome: set = set()
     for page in pages:
         index = int(page.get('index') or 0)
         if index == 0:
             continue
         visible_lines = [
-            line.strip()
+            _pdf_line(line)
             for line in str(page.get('visible') or '').splitlines()
-            if line.strip()
+            if _pdf_line(line)
         ]
         if _looks_like_toc_page(visible_lines) and not taking:
             continue
+        blocks = list(page.get('blocks') or [])
+        if not blocks:
+            blocks = [
+                {'visible': line, 'actual': '', 'y0': idx}
+                for idx, line in enumerate(visible_lines)
+            ]
+        page_started = taking
+        page_vis: List[Any] = []
+        page_act_frags: List[str] = []
         page_took = False
-        stop_page = False
-        for line in visible_lines:
-            if _APPENDIX_RE.search(line) and len(line) < 80:
+        page_chrome: set = set()
+        for block in blocks:
+            visible = _pdf_line(block.get('visible') or '')
+            actual = _pdf_line(block.get('actual') or '')
+            y0 = block.get('y0') or 0
+            if visible and _header_band(y0):
+                page_chrome.add(visible)
+            if (
+                    visible
+                    and _header_band(y0)
+                    and (visible in repeated_chrome or _is_running_chrome(visible))
+            ):
+                continue
+            boundary = _block_boundary(block)
+            if boundary == 'stop':
                 if taking:
                     taking = False
-                stop_page = True
                 break
-            if _ENV_HEAD_RE.search(line) and len(line) < 120:
-                if _TOC_LINE_RE.match(line) and len(line) < 80:
-                    continue
+            if boundary == 'heading':
                 taking = True
                 heading_page = index
-                page_took = True
                 continue
-            if taking and _ENV_NEXT_RE.search(line) and len(line) < 120:
+            if taking and boundary == 'next':
                 taking = False
-                stop_page = True
                 break
             if taking:
-                collected.append(line)
                 page_took = True
-        if stop_page:
+                if visible and not _is_running_chrome(visible):
+                    page_vis.append((y0, visible))
+                if actual and not _is_running_chrome(actual):
+                    page_act_frags.append(actual)
+        repeated_chrome.update(page_chrome)
+        if not page_took:
             continue
-        if page_took:
-            actual = page.get('actual') or ''
-            if actual.strip():
-                collected.append(actual)
-                actual_parts.append(actual)
-            visible_parts.append(page.get('visible') or '')
+        events = list(page.get('events') or [])
+        stream_after = _stream_actual_after_heading(
+            events, already_taking=page_started)
+        stream_all = [
+            str(event.get('text') or '').strip()
+            for event in events
+            if event.get('kind') == 'actual' and str(event.get('text') or '').strip()
+        ]
+        vis_texts = [
+            item[1] if isinstance(item, (tuple, list)) else str(item)
+            for item in page_vis
+        ]
+        heading_in_events = any(
+            _env_boundary_line(event.get('text') or '') == 'heading'
+            for event in events)
+        if stream_after:
+            page_act = stream_after
+        elif heading_page == index and not heading_in_events:
+            # CID/shaped heading is visible in line boxes, not in the
+            # content-stream Tj inventory. Page ActualText on that page
+            # is the body; pre-heading AT is excluded when the heading
+            # itself appears in the stream (stream_after path).
+            page_act = stream_all
+        else:
+            page_act = _complete_actual_spans(
+                vis_texts + page_act_frags, stream_all)
+        page_vis = _drop_overlay_visible(page_vis, '\n'.join(page_act))
+        collected.extend(page_vis)
+        collected.extend(page_act)
+        if page_vis or page_act:
+            visible_parts.append('\n'.join(page_vis))
+            actual_parts.append('\n'.join(page_act))
     section = '\n'.join(collected)
     detail['environment_heading_page'] = heading_page
     detail['environment_associated'] = heading_page is not None
@@ -788,6 +1197,41 @@ def _semantic_latin_tokens(text: str) -> List[str]:
     return out
 
 
+def _latin_vis_conflicts_act(
+        vis_lat: Sequence[str],
+        act_lat: Sequence[str],
+) -> bool:
+    """True when visible latin identity/order contradicts ActualText.
+
+    A final wrap-split prefix (PDP from PDPL) is not a contradiction.
+    A swapped or substituted token is.
+    """
+    if not vis_lat:
+        return False
+    if list(vis_lat) == list(act_lat):
+        return False
+    idx = 0
+    for pos, token in enumerate(vis_lat):
+        found = False
+        while idx < len(act_lat):
+            current = act_lat[idx]
+            idx += 1
+            if token == current:
+                found = True
+                break
+            if (
+                    pos == len(vis_lat) - 1
+                    and len(token) >= 3
+                    and len(token) < len(current)
+                    and current.startswith(token)
+            ):
+                found = True
+                break
+        if not found:
+            return True
+    return False
+
+
 def _ordered_latin_match(want: Sequence[str], have: Sequence[str]) -> bool:
     if not want:
         return True
@@ -796,6 +1240,26 @@ def _ordered_latin_match(want: Sequence[str], have: Sequence[str]) -> bool:
         if idx < len(want) and token == want[idx]:
             idx += 1
     return idx == len(want)
+
+
+def _stream_usable(text: str, para: str) -> bool:
+    """False when a stream lost the script the paragraph actually uses."""
+    raw = str(text or '')
+    if not _layout_norm(raw):
+        return False
+    want_ar = any('\u0600' <= ch <= '\u06FF' for ch in para)
+    have_ar = any('\u0600' <= ch <= '\u06FF' for ch in raw)
+    want_lat = _semantic_latin_tokens(para)
+    have_lat = _semantic_latin_tokens(raw)
+    if want_ar and not have_ar:
+        return False
+    if want_lat and not have_lat:
+        return False
+    return True
+
+
+def _latin_relation(text: str) -> List[str]:
+    return _semantic_latin_tokens(_layout_norm(text))
 
 
 def _paragraph_pdf_blockers(
@@ -808,42 +1272,83 @@ def _paragraph_pdf_blockers(
 ) -> List[str]:
     """Compare one saved paragraph inside the associated environment section.
 
-    Latin tokens keep identity and order. Layout may collapse whitespace.
-    ASCII-drop equality is not accepted.
+    Visible and ActualText stay distinct. A match in one stream cannot
+    override a material disagreement in the other. Logical ActualText is
+    never reversed to create a match.
     """
     want = _layout_norm(para)
-    have = _section_compare_blob(section)
     if not want:
         return []
+    vis_raw = str(visible or '')
+    act_raw = str(actual or '')
+    if not vis_raw.strip() and not act_raw.strip():
+        vis_raw = str(section or '')
+        act_raw = str(section or '')
+    vis_use = _stream_usable(vis_raw, para)
+    act_use = _stream_usable(act_raw, para)
+    vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
+    act_cmp = _layout_norm(act_raw)
     blockers: List[str] = []
-    want_lat = _semantic_latin_tokens(para)
-    have_lat = _semantic_latin_tokens(have)
-    if want_lat:
-        missing = [token for token in want_lat if token not in have_lat]
-        if missing:
-            for token in missing:
-                blockers.append(
-                    f'pdf_environment_latin_missing:{idx}:{token}')
+    if vis_use and act_use and how not in (
+            'same',
+            'visible_visual_matches_actual',
+            'visible_wraps_actual',
+    ):
+        if _latin_vis_conflicts_act(
+                _latin_relation(vis_cmp), _latin_relation(act_cmp)):
+            blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+            return blockers
+        if vis_cmp != act_cmp:
+            blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+            return blockers
+    targets: List[str] = []
+    if vis_use and act_use:
+        if how in (
+                'same',
+                'visible_visual_matches_actual',
+                'visible_wraps_actual',
+        ):
+            targets = [act_cmp or vis_cmp]
         else:
-            raw_lat = _semantic_latin_tokens(_layout_norm(section))
-            undone_lat = _semantic_latin_tokens(
-                _layout_norm('\n'.join(
-                    _undo_visual_rtl_line(line)
-                    for line in str(section or '').splitlines())))
-            if not (
-                    _ordered_latin_match(want_lat, raw_lat)
-                    or _ordered_latin_match(want_lat, undone_lat)):
+            targets = [vis_cmp, act_cmp]
+    elif act_use:
+        targets = [act_cmp]
+    elif vis_use:
+        targets = [vis_cmp]
+    elif _layout_norm(section):
+        targets = [_layout_norm(section)]
+    else:
+        return [f'pdf_environment_narrative_unreadable:{idx}']
+    want_lat = _semantic_latin_tokens(para)
+    matched = False
+    for target in targets:
+        if want_lat:
+            have_lat = _latin_relation(target)
+            missing = [token for token in want_lat if token not in have_lat]
+            if missing:
+                continue
+            if not _ordered_latin_match(want_lat, have_lat):
+                continue
+        if want in target:
+            matched = True
+            break
+    if not matched:
+        if want_lat:
+            have_any = []
+            for target in targets:
+                have_any.extend(_latin_relation(target))
+            missing = [token for token in want_lat if token not in have_any]
+            if missing:
+                for token in missing:
+                    blockers.append(
+                        f'pdf_environment_latin_missing:{idx}:{token}')
+            elif not any(
+                    _ordered_latin_match(want_lat, _latin_relation(target))
+                    for target in targets):
                 blockers.append(f'pdf_environment_latin_order:{idx}')
-        vis_lat = _semantic_latin_tokens(_section_compare_blob(visible))
-        act_lat = _semantic_latin_tokens(_section_compare_blob(actual))
-        vis_need = [token for token in want_lat if token in vis_lat]
-        act_need = [token for token in want_lat if token in act_lat]
-        if act_need and vis_need != act_need:
-            blockers.append(
-                f'pdf_environment_actual_visible_disagree:{idx}')
-    if want not in have:
-        blockers.append(f'pdf_environment_narrative_missing:{idx}')
-    return blockers
+        if want not in ' '.join(targets):
+            blockers.append(f'pdf_environment_narrative_missing:{idx}')
+    return list(dict.fromkeys(blockers))
 
 
 def _paragraph_in_pdf_section(para: str, section: str) -> bool:

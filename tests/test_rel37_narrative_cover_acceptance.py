@@ -837,6 +837,67 @@ SWAPPED_LATIN = (
 ORG_LATIN = EXPECTED_AR_ENV + ' AcmeBankGroup'
 ORG_LATIN_CHANGED = EXPECTED_AR_ENV + ' OtherHoldingsLLC'
 ENV_HEAD_EN = 'Business Environment and Drivers'
+SPECIMEN_EN = 'NDMO is the first reference; PDPL is the second reference.'
+SPECIMEN_EN_CHANGED = 'PDPL is the first reference; NDMO is the second reference.'
+SPECIMEN_WRONG_ENV = 'The environment sentence is generic leftover prose.'
+
+
+def _specimen_env_pdf(
+        *,
+        env_visible: str,
+        env_actual: str | None,
+        summary_visible: str | None = None,
+        summary_actual: str | None = None,
+        same_page_summary: bool = False,
+        appendix_visible: str | None = None,
+        appendix_actual: str | None = None,
+        same_page_appendix: bool = False,
+) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen.canvas import Canvas
+    buf = io.BytesIO()
+    canv = Canvas(buf, pagesize=A4)
+    canv.setFont('Helvetica', 10)
+    canv.drawString(36, 800, 'Organization SpecimenOrg')
+    canv.drawString(36, 786, 'Sector Banking/Finance')
+    canv.showPage()
+    y = 800
+    canv.setFont('Helvetica', 10)
+    if summary_visible or summary_actual:
+        canv.drawString(36, y, 'Executive Summary')
+        y -= 16
+        if summary_actual:
+            _emit_actual_text(canv, summary_actual)
+        canv.drawString(36, y, summary_visible or summary_actual or '')
+        if summary_actual:
+            _end_actual_text(canv)
+        y -= 20
+        if not same_page_summary:
+            canv.showPage()
+            y = 800
+            canv.setFont('Helvetica', 10)
+    canv.drawString(36, y, ENV_HEAD_EN)
+    y -= 16
+    if env_actual:
+        _emit_actual_text(canv, env_actual)
+    canv.drawString(36, y, env_visible)
+    if env_actual:
+        _end_actual_text(canv)
+    y -= 20
+    if appendix_visible or appendix_actual:
+        if not same_page_appendix:
+            canv.showPage()
+            y = 800
+            canv.setFont('Helvetica', 10)
+        canv.drawString(36, y, 'Appendix')
+        y -= 16
+        if appendix_actual:
+            _emit_actual_text(canv, appendix_actual)
+        canv.drawString(36, y, appendix_visible or appendix_actual or '')
+        if appendix_actual:
+            _end_actual_text(canv)
+    canv.save()
+    return buf.getvalue()
 
 
 def _baseline_ascii_drop(text: str) -> str:
@@ -886,26 +947,28 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
                 self.assertFalse(corrected, name)
             self.assertEqual(corrected, accept, name)
 
-    def test_helper_accepts_visual_rtl_mixed_line(self):
+    def test_helper_does_not_reverse_wrong_logical_text(self):
         from release_engine_v3.rel37_export_content_parity import (
             _paragraph_in_pdf_section,
+            _paragraph_pdf_blockers,
         )
-        compiled = (
-            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
-            'NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة '
-            'البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.')
+        expected = 'NDMO هو المرجع المعتمد وليس PDPL'
+        observed = 'PDPL هو المرجع المعتمد وليس NDMO'
+        self.assertFalse(_paragraph_in_pdf_section(expected, observed))
+        blockers = _paragraph_pdf_blockers(
+            0, expected, observed, visible=observed, actual=observed)
+        self.assertTrue(blockers, blockers)
         visual = (
             '، مع ضغطPDPL  وحماية بيانات شخصية وفقNDMO تعمل الجهة في '
-            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق\n'
-            'متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق '
-            'أصحاب البيانات.\n'
-            'NDMO PDPL')
-        self.assertTrue(_paragraph_in_pdf_section(compiled, visual))
-        self.assertFalse(_paragraph_in_pdf_section(
-            compiled, visual.replace('NDMO', '').replace('PDPL', '')))
-        swapped_visual = visual.replace('NDMO', '§TMP§').replace(
-            'PDPL', 'NDMO').replace('§TMP§', 'PDPL')
-        self.assertFalse(_paragraph_in_pdf_section(compiled, swapped_visual))
+            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق')
+        logical = (
+            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
+            'NDMO وحماية بيانات شخصية وفق PDPL')
+        self.assertTrue(
+            not _paragraph_pdf_blockers(
+                0, logical, visual, visible=visual, actual=logical),
+            _paragraph_pdf_blockers(
+                0, logical, visual, visible=visual, actual=logical))
 
     def _env_pdf(self, env_paras, **kwargs):
         return _pdf_owned(
@@ -922,39 +985,18 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         self.assertTrue(good.startswith(b'%PDF'))
         self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
 
-    def test_environment_visual_rtl_mixed_line_accepted(self):
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen.canvas import Canvas
+    def test_environment_visual_rtl_reconciles_to_logical_actualtext(self):
         compiled = (
             'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
             'NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة '
             'البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.')
-        visual_body = [
+        visual = (
             '، مع ضغطPDPL  وحماية بيانات شخصية وفقNDMO تعمل الجهة في '
-            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق',
+            'بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
             'متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق '
-            'أصحاب البيانات.',
-            'NDMO PDPL',
-        ]
-        buf = io.BytesIO()
-        canv = Canvas(buf, pagesize=A4)
-        canv.setFont('Helvetica', 10)
-        canv.drawString(36, 800, 'Organization org')
-        canv.drawString(36, 786, 'Sector Banking')
-        canv.showPage()
-        canv.setFont('Helvetica', 10)
-        canv.drawString(36, 800, ENV_HEAD_EN)
-        y = 786
-        for line in visual_body:
-            _emit_actual_text(canv, line)
-            canv.setFont('Helvetica', 10)
-            latin = __import__('re').findall(r'[A-Za-z][A-Za-z0-9_-]*', line)
-            if latin:
-                canv.drawString(36, y, ' '.join(latin))
-            _end_actual_text(canv)
-            y -= 14
-        canv.save()
-        raw = buf.getvalue()
+            'أصحاب البيانات.')
+        raw = _specimen_env_pdf(
+            env_visible=visual, env_actual=compiled)
         model = _EnvModel(compiled)
         self.assertEqual(compare_environment_narrative_to_pdf(model, raw), [])
 
@@ -1070,6 +1112,109 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         self.assertTrue(good['bytes'].startswith(b'%PDF'))
         self.assertEqual(
             compare_environment_narrative_to_pdf(model, good['bytes']), [])
+        self.assertEqual(model.model_hash, LIVE_HASH)
+
+    def test_matching_specimen_accepted_before_negatives(self):
+        model = _EnvModel(SPECIMEN_EN, lang='en', org='SpecimenOrg')
+        good = _specimen_env_pdf(env_visible=SPECIMEN_EN, env_actual=SPECIMEN_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+
+    def test_changed_visible_correct_actualtext_rejected(self):
+        model = _EnvModel(SPECIMEN_EN, lang='en', org='SpecimenOrg')
+        good = _specimen_env_pdf(env_visible=SPECIMEN_EN, env_actual=SPECIMEN_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _specimen_env_pdf(
+            env_visible=SPECIMEN_EN_CHANGED, env_actual=SPECIMEN_EN)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(
+            any('actual_visible_disagree' in item for item in blockers),
+            blockers)
+
+    def test_both_changed_and_no_actualtext_rejected(self):
+        model = _EnvModel(SPECIMEN_EN, lang='en', org='SpecimenOrg')
+        good = _specimen_env_pdf(env_visible=SPECIMEN_EN, env_actual=SPECIMEN_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        both = _specimen_env_pdf(
+            env_visible=SPECIMEN_EN_CHANGED, env_actual=SPECIMEN_EN_CHANGED)
+        none = _specimen_env_pdf(
+            env_visible=SPECIMEN_EN_CHANGED, env_actual=None)
+        self.assertTrue(compare_environment_narrative_to_pdf(model, both))
+        self.assertTrue(compare_environment_narrative_to_pdf(model, none))
+
+    def test_same_page_summary_is_not_environment(self):
+        model = _EnvModel(SPECIMEN_EN, lang='en', org='SpecimenOrg')
+        good = _specimen_env_pdf(env_visible=SPECIMEN_EN, env_actual=SPECIMEN_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _specimen_env_pdf(
+            env_visible=SPECIMEN_WRONG_ENV, env_actual=SPECIMEN_WRONG_ENV,
+            summary_visible=SPECIMEN_EN, summary_actual=SPECIMEN_EN,
+            same_page_summary=True)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(blockers, blockers)
+        self.assertFalse(
+            any(item in blockers for item in (
+                'pdf_extraction_unreliable',
+                'pdf_environment_section_unassociated',
+                'docx_bytes_missing')), blockers)
+
+    def test_same_page_appendix_is_not_environment(self):
+        model = _EnvModel(SPECIMEN_EN, lang='en', org='SpecimenOrg')
+        good = _specimen_env_pdf(env_visible=SPECIMEN_EN, env_actual=SPECIMEN_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _specimen_env_pdf(
+            env_visible=SPECIMEN_WRONG_ENV, env_actual=SPECIMEN_WRONG_ENV,
+            appendix_visible=SPECIMEN_EN, appendix_actual=SPECIMEN_EN,
+            same_page_appendix=True)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self.assertTrue(blockers, blockers)
+
+    def test_real_thread_refuses_visible_actualtext_conflict(self):
+        model = _load_json_model(LIVE_FIXTURE)
+        self.assertEqual(model.model_hash, LIVE_HASH)
+        saved = _persist(model, db_sector='Healthcare')
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = _specimen_env_pdf(
+                    env_visible=SPECIMEN_EN_CHANGED, env_actual=SPECIMEN_EN)
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            result = _export(
+                saved, _official_body(saved), 'pdf', immediate=False)
+        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
+        self.assertNotEqual(result['download_http'], 200)
+        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        self.assertEqual(model.model_hash, LIVE_HASH)
+
+    def test_real_thread_refuses_same_page_summary_only(self):
+        model = _load_json_model(LIVE_FIXTURE)
+        saved = _persist(model, db_sector='Healthcare')
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = _specimen_env_pdf(
+                    env_visible=SPECIMEN_WRONG_ENV,
+                    env_actual=SPECIMEN_WRONG_ENV,
+                    summary_visible=SPECIMEN_EN,
+                    summary_actual=SPECIMEN_EN,
+                    same_page_summary=True)
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            result = _export(
+                saved, _official_body(saved), 'pdf', immediate=False)
+        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
+        self.assertNotEqual(result['download_http'], 200)
+        self.assertFalse(result['bytes'].startswith(b'%PDF'))
         self.assertEqual(model.model_hash, LIVE_HASH)
 
 
