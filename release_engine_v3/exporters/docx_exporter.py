@@ -82,6 +82,16 @@ def export_docx(
             backend=backend,
             artifact_dict=artifact_dict,
         )
+        try:
+            from release_engine_v3.rel37_apply import overlay_rel37_authority
+            sec_map = overlay_rel37_authority(
+                sec_map,
+                backend.get('_rel37_source_sections')
+                or (artifact_dict or {}).get('_rel37_source_sections')
+                or sec_map,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         emit_rel32_docx_renderer_diag(renderer_meta)
         if renderer_meta.get('blocking_errors'):
             blockers = list(renderer_meta['blocking_errors'])

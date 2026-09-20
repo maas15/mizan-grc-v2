@@ -104,6 +104,17 @@ def bind_rel32_docx_renderer_input(
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     """Force DOCX renderer content/sections from frozen artifact + RenderTree."""
     sections = sections_from_frozen_artifact(frozen, render_tree=render_tree)
+    try:
+        from release_engine_v3.rel37_apply import overlay_rel37_authority
+        authorized = (
+            backend.get('_rel37_source_sections')
+            or (artifact_dict or {}).get('_rel37_source_sections')
+            or (artifact_dict or {}).get('sections')
+            or {}
+        )
+        sections = overlay_rel37_authority(sections, authorized)
+    except Exception:  # noqa: BLE001
+        pass
     content = str(render_tree.markdown_view or '').strip()
     if not content:
         content = '\n\n'.join(

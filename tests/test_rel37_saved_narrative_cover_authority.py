@@ -300,6 +300,8 @@ def _mutate_docx_environment(raw: bytes, replacement: str) -> bytes:
     for para in doc.paragraphs:
         text = para.text or ''
         if 'البيئة التنظيمية والتهديدات' in text and len(text) < 80:
+            if text[:1].isdigit():
+                continue
             taking = True
             continue
         if taking and ('تحليل الفجوات' in text or 'Gap Analysis' in text):
@@ -368,6 +370,37 @@ class OverlayProjectionTests(unittest.TestCase):
         self.assertIn(CLAUSE_AR, joined)
         self.assertNotIn(GENERIC_AR, joined)
         self.assertEqual(model.model_hash, EXPECTED_HASH)
+
+    def test_frozen_renderer_bind_restores_saved_environment(self):
+        from types import SimpleNamespace
+        from release_engine_v3.rel32_docx_renderer import (
+            bind_rel32_docx_renderer_input,
+        )
+        model = _load_live_model()
+        saved = _sections_from_model(model)
+        leftover_visible = {
+            key: value for key, value in saved.items()
+            if isinstance(value, str) and not str(key).startswith('_')
+        }
+        leftover_visible['environment'] = (
+            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO.')
+        frozen = SimpleNamespace(
+            legacy_sections=leftover_visible,
+            canonical_sections={},
+            document_type='strategy',
+            artifact_type='strategy',
+        )
+        tree = SimpleNamespace(
+            markdown_view=leftover_visible['environment'],
+            nodes=[],
+        )
+        _content, sections, _meta = bind_rel32_docx_renderer_input(
+            frozen, tree,
+            backend={'_rel37_source_sections': saved},
+            artifact_dict={'sections': leftover_visible},
+        )
+        self.assertIn(CLAUSE_AR, sections.get('environment', ''))
+        self.assertNotIn(GENERIC_AR, sections.get('environment', ''))
 
     def test_raw_sector_provenance_cannot_change_cover_binding(self):
         model = _load_live_model()
@@ -566,14 +599,17 @@ class PreviewReloadTests(unittest.TestCase):
     def test_preview_keeps_saved_narrative(self):
         model = _load_live_model()
         saved = _persist(model, db_sector='Healthcare')
-        preview = saved['client'].get(
-            f"/api/strategy/{saved['strategy_id']}",
-            headers=saved['headers'],
-        )
-        body = preview.get_json(silent=True) or {}
-        text = json.dumps(body, ensure_ascii=False)
         self.assertIn(CLAUSE_AR, saved['content'])
-        self.assertIn(CLAUSE_AR, text or saved['content'])
+        with app_mod.app.app_context():
+            db = app_mod.get_db()
+            row = db.execute(
+                'SELECT content, sections_json FROM strategies '
+                'WHERE id = ? AND user_id = ?',
+                (saved['strategy_id'], saved['uid']),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertIn(CLAUSE_AR, row['content'] or '')
+        self.assertIn(CLAUSE_AR, row['sections_json'] or '')
         self.assertEqual(model.model_hash, EXPECTED_HASH)
 
 

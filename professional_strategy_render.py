@@ -6417,6 +6417,9 @@ def enrich_professional_blocks(
         from release_engine_v3.rel37_apply import (
             REL37_RENDER_BLOCKED_KEY,
             is_rel37_authoritative,
+            load_model as _rel37_load_model,
+            overlay_rel37_authority,
+            prefer_rel37_authority_candidate,
             rel37_authority_snapshot,
             rel37_skip_cyber_kpi_semantics,
         )
@@ -6437,11 +6440,25 @@ def enrich_professional_blocks(
                 or (metadata or {}).get('selected_frameworks')
                 or []),
         }
-        _src = content_sections if isinstance(content_sections, dict) else {}
+        _src = prefer_rel37_authority_candidate(
+            model.get('_rel37_source_sections'),
+            (metadata or {}).get('_rel37_source_sections'),
+            content_sections if isinstance(content_sections, dict) else None,
+        )
+        _src = overlay_rel37_authority(
+            content_sections if isinstance(content_sections, dict) else _src,
+            _src,
+        )
+        if is_rel37_authoritative(_src):
+            content_sections = dict(_src)
+        _saved_model = _rel37_load_model(_src)
+        if _saved_model is not None:
+            _rel37_identity['org_name'] = (
+                _saved_model.org_name or _rel37_identity['org_name'])
+            if _saved_model.selected_frameworks:
+                _rel37_identity['selected_frameworks'] = list(
+                    _saved_model.selected_frameworks)
         _meta_rel37 = (metadata or {}).get('_rel37_source_sections')
-        if not is_rel37_authoritative(_src) and is_rel37_authoritative(_meta_rel37):
-            _src = _meta_rel37
-            content_sections = dict(_meta_rel37)
         _claimed = bool(
             is_rel37_authoritative(_src)
             or (_src or {}).get(REL37_RENDER_BLOCKED_KEY)
@@ -6905,13 +6922,27 @@ def ensure_strategy_professional_model(
             _claimed = bool(
                 is_rel37_authoritative(_src)
                 or _src.get(REL37_RENDER_BLOCKED_KEY))
+            _ensure_org = str(model.get('org_name') or '')
+            _ensure_fws = list(model.get('selected_frameworks') or [])
+            try:
+                from release_engine_v3.rel37_apply import (
+                    load_model as _rel37_load_ensure,
+                )
+                _saved_ensure = _rel37_load_ensure(_src)
+                if _saved_ensure is not None:
+                    if _saved_ensure.org_name:
+                        _ensure_org = _saved_ensure.org_name
+                    if _saved_ensure.selected_frameworks:
+                        _ensure_fws = list(_saved_ensure.selected_frameworks)
+            except Exception:  # noqa: BLE001
+                pass
             _rel37_canon, _rel37_blockers = load_validated_rel37_model(
                 _src,
                 domain=str(model.get('domain') or domain or ''),
                 lang=lang_n,
                 document_type=str(model.get('document_type') or 'strategy'),
-                org_name=str(model.get('org_name') or ''),
-                selected_frameworks=list(model.get('selected_frameworks') or []),
+                org_name=_ensure_org,
+                selected_frameworks=_ensure_fws,
             )
             if _rel37_blockers and _claimed:
                 preserve_compiler_content = True

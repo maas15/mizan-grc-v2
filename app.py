@@ -81909,8 +81909,20 @@ def api_generate_docx_async():
                     _export_numeric_sid or _export_strategy_id or '')
                 if _art_type_a == 'risk':
                     _async_sid = str(_export_risk_id or _art_id_a or '')
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative as _rel37_auth_async,
+                        overlay_rel37_authority as _rel37_ov_async,
+                    )
+                    if _rel37_auth_async(_rel37_sections_inner):
+                        _async_sections = _rel37_ov_async(
+                            _async_sections, _rel37_sections_inner)
+                except Exception:  # noqa: BLE001
+                    pass
                 _async_art = {
                     'sections': _async_sections,
+                    '_rel37_source_sections': (
+                        _rel37_sections_inner or _async_sections),
                     'final_markdown': _async_content,
                     'domain': _domain,
                     'sealed': bool(_cyber_sealed_docx_inner or _async_sections),
@@ -83108,14 +83120,30 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     from release_engine_v3.rel37_apply import (
                         rel37_bind_export_sections as _rel37_bind_vis,
                     )
+                    _bind_org = org_name
+                    _bind_fws = list(selected_frameworks or [])
+                    try:
+                        from release_engine_v3.rel37_apply import (
+                            load_model as _rel37_load_bind,
+                        )
+                        _saved_bind = _rel37_load_bind(
+                            sections if isinstance(sections, dict) else {})
+                        if _saved_bind is not None:
+                            if _saved_bind.org_name:
+                                _bind_org = _saved_bind.org_name
+                            if _saved_bind.selected_frameworks:
+                                _bind_fws = list(
+                                    _saved_bind.selected_frameworks)
+                    except Exception:  # noqa: BLE001
+                        pass
                     _cy22_docx_sections = _rel37_bind_vis(
                         sections if isinstance(sections, dict) else {},
                         _cy22_docx_sections,
                         domain=domain,
                         lang='ar' if is_arabic else 'en',
                         document_type='strategy',
-                        org_name=org_name,
-                        selected_frameworks=selected_frameworks or [],
+                        org_name=_bind_org,
+                        selected_frameworks=_bind_fws,
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -83285,6 +83313,23 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     flush=True,
                 )
         try:
+            _compose_docx_sections = (
+                _cy22_docx_sections
+                if _cy22_docx_sections
+                else (sections if isinstance(sections, dict) else None)
+            )
+            try:
+                from release_engine_v3.rel37_apply import (
+                    overlay_rel37_authority as _rel37_ov_docx_compose,
+                )
+                if isinstance(_compose_docx_sections, dict):
+                    _compose_docx_sections = _rel37_ov_docx_compose(
+                        _compose_docx_sections,
+                        sections if isinstance(sections, dict) else (
+                            _compose_docx_sections),
+                    )
+            except Exception:  # noqa: BLE001
+                pass
             _docx_doc_model = _build_professional_strategy_document_model(
                 content,
                 metadata={
@@ -83294,9 +83339,10 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     'doc_type': doc_type,
                     'content':  content,
                     '_rel37_source_sections': (
-                        sections if isinstance(sections, dict) else {}),
+                        sections if isinstance(sections, dict) else (
+                            _compose_docx_sections or {})),
                 },
-                sections=_cy22_docx_sections or None,
+                sections=_compose_docx_sections,
                 selected_frameworks=selected_frameworks or [],
                 lang='ar' if is_arabic else 'en',
                 domain=domain,

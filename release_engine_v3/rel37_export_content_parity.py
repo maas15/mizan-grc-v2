@@ -24,7 +24,8 @@ from release_engine_v3.rel37_sector_context import (
 
 _ENV_HEAD_RE = re.compile(
     r'(البيئة التنظيمية والتهديدات|البيئة والمحركات|'
-    r'Business Environment|Environment and Drivers)',
+    r'Regulatory Environment|Business Environment|'
+    r'Environment and Drivers|Threat Landscape)',
     re.I,
 )
 _ENV_NEXT_RE = re.compile(
@@ -32,6 +33,7 @@ _ENV_NEXT_RE = re.compile(
     r'الركائز الاستراتيجية|Strategic Pillars)',
     re.I,
 )
+_TOC_LINE_RE = re.compile(r'^\d{1,2}\s+\S')
 _COVER_LABELS = ('القطاع', 'Sector')
 _GENERIC_ENV_AR = 'تعمل الجهة في بيئة تنظيمية'
 
@@ -330,6 +332,9 @@ def _section_after_heading(
         text = str(para or '').strip()
         if not text:
             continue
+        # Numbered TOC lines share heading words but are not the body.
+        if _TOC_LINE_RE.match(text) and len(text) < 80:
+            continue
         if heading_re.search(text) and len(text) < 120:
             taking = True
             continue
@@ -471,6 +476,12 @@ def _first_cover_sector_window(text: str) -> str:
     return window
 
 
+def _normalize_cover_visual(text: str) -> str:
+    """Recover logical Arabic from shaped cover glyphs without inventing words."""
+    import unicodedata
+    return unicodedata.normalize('NFKC', text or '').replace('\x00', '/')
+
+
 def compare_cover_sector_to_pdf(
         model: CanonicalDocument,
         raw: bytes,
@@ -478,19 +489,24 @@ def compare_cover_sector_to_pdf(
     expected = cover_sector_from_hashed_narrative(
         model.environment_narrative, model.lang)
     cover, _body, _meta = pdf_cover_and_body_text(raw)
+    cover_n = _normalize_cover_visual(cover)
     actual, _count = _extract_pdf_actual_text(raw)
-    cover_window = _first_cover_sector_window(actual) or _first_cover_sector_window(cover)
+    cover_window = (
+        _first_cover_sector_window(actual)
+        or _first_cover_sector_window(cover_n)
+        or cover_n
+    )
     if not expected:
-        if 'Healthcare' in cover or 'رعاية صحية' in cover:
+        if 'Healthcare' in cover_n or 'رعاية صحية' in cover_n:
             return ['pdf_cover_sector_injected']
         return []
     aliases = sector_reference_aliases(expected)
-    if ('Healthcare' in cover or 'رعاية صحية' in cover) and (
+    if ('Healthcare' in cover_n or 'رعاية صحية' in cover_n) and (
             'Healthcare' not in aliases and 'رعاية صحية' not in aliases):
         return ['pdf_cover_sector_mismatch:Healthcare']
     if any(alias in cover_window for alias in aliases):
         return []
-    if any(alias in cover for alias in aliases):
+    if any(alias in cover_n for alias in aliases):
         return []
     return ['pdf_cover_sector_mismatch']
 
