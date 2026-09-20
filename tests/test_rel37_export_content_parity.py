@@ -129,6 +129,14 @@ def _docx_from_model(model: CanonicalDocument) -> bytes:
     from docx import Document
     doc = Document()
     doc.add_paragraph(model.vision or model.org_name or 'REL37 fixture')
+    heading = (
+        'البيئة التنظيمية والتهديدات' if model.lang == 'ar'
+        else 'Business Environment and Drivers')
+    doc.add_paragraph(heading)
+    for para in str(model.environment_narrative or '').split('\n\n'):
+        if para.strip():
+            doc.add_paragraph(para.strip())
+    doc.add_paragraph('Gap Analysis')
     for family, rows in expected_rows(model).items():
         if family.startswith('_') or not rows:
             continue
@@ -153,6 +161,18 @@ def _pdf_from_model(model: CanonicalDocument) -> bytes:
     canv.setFont('Helvetica', 8)
     canv.drawString(36, y, f'{model.org_name} {model.domain} {model.lang}')
     y -= 12
+    canv.drawString(36, y, 'Sector —')
+    y -= 12
+    for para in str(model.environment_narrative or '').split('\n\n'):
+        line = para.strip()[:120]
+        if not line:
+            continue
+        if y < 48:
+            canv.showPage()
+            canv.setFont('Helvetica', 8)
+            y = height - 36
+        canv.drawString(36, y, line)
+        y -= 10
     for family, rows in expected_rows(model).items():
         if family.startswith('_'):
             continue

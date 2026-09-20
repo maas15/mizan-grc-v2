@@ -55,6 +55,7 @@ from release_engine_v3.rel37_early_authority import (  # noqa: E402
 )
 from release_engine_v3.rel37_render import model_to_sections, render  # noqa: E402
 from release_engine_v3.rel37_sector_context import (  # noqa: E402
+    cover_sector_from_hashed_narrative,
     environment_mentions_requested_sector,
     present_sector_label,
     request_sector,
@@ -223,6 +224,23 @@ class SectorHelperTests(unittest.TestCase):
         self.assertTrue(environment_mentions_requested_sector('no sector here', ''))
         self.assertEqual(_environment_prose('data', 'ar', 'جهة'), _environment_prose(
             'data', 'ar', 'جهة', ''))
+
+    def test_cover_sector_from_hashed_narrative_only(self):
+        ar = (
+            'تعمل منظمة بيانات نسبي ٣٧٫٢٠ في سياق تشغيلي لقطاع بنوك/مالي، '
+            'ضمن بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO.'
+        )
+        self.assertEqual(cover_sector_from_hashed_narrative(ar, 'ar'), 'بنوك/مالي')
+        self.assertEqual(
+            cover_sector_from_hashed_narrative(ar, 'en'), 'Banking/Finance')
+        self.assertEqual(cover_sector_from_hashed_narrative('', 'ar'), '')
+        self.assertEqual(
+            cover_sector_from_hashed_narrative(
+                'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات.', 'ar'),
+            '')
+        # HASH_EXCLUDED raw Healthcare is not a narrative mention.
+        self.assertNotEqual(
+            cover_sector_from_hashed_narrative(ar, 'ar'), 'Healthcare')
 
 
 class CompilerContextTests(unittest.TestCase):

@@ -49,6 +49,7 @@ from release_engine_v3.rel37_render import model_to_markdown  # noqa: E402
 ACCEPTANCE_MODULES = (
     'tests.test_rel37_ui_request_type_contract',
     'tests.test_rel37_export_content_parity',
+    'tests.test_rel37_saved_narrative_cover_authority',
     'tests.test_rel37_guide_completeness_persist',
     'tests.test_rel37_sync_pdf_ownership',
 )
@@ -60,6 +61,7 @@ CI_COMBINED_ORDER = (
     'tests.test_rel37_preview_section_contract',
     'tests.test_rel37_framework_label_canonicalization',
     'tests.test_rel37_export_content_parity',
+    'tests.test_rel37_saved_narrative_cover_authority',
     'tests.test_rel37_guide_completeness_persist',
 )
 SECOND_ORDER = (
