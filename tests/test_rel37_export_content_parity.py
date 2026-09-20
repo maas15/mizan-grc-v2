@@ -162,7 +162,9 @@ def _pdf_from_model(model: CanonicalDocument) -> bytes:
     canv.drawString(36, y, f'{model.org_name} {model.domain} {model.lang}')
     y -= 12
     canv.drawString(36, y, 'Sector —')
-    y -= 12
+    canv.showPage()
+    y = height - 36
+    canv.setFont('Helvetica', 8)
     env_heading = (
         'البيئة التنظيمية والتهديدات' if model.lang == 'ar'
         else 'Business Environment and Drivers')
