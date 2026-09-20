@@ -511,6 +511,18 @@ def compare_cover_sector_to_pdf(
     return ['pdf_cover_sector_mismatch']
 
 
+def hashed_narrative_requires_section_parity(model: CanonicalDocument) -> bool:
+    """Full environment-section parity is for saved operating-context prose.
+
+    Compiler-first REL33/AI/DT leftovers without that clause keep the
+    existing table/hash contract. Cover Healthcare injection is still
+    checked separately.
+    """
+    text = str(getattr(model, 'environment_narrative', '') or '')
+    lowered = text.lower()
+    return ('سياق تشغيلي' in text) or ('operating context' in lowered)
+
+
 def rel37_returned_bytes_blockers(
         model: CanonicalDocument,
         *,
@@ -527,11 +539,14 @@ def rel37_returned_bytes_blockers(
         blockers.append('docx_bytes_missing')
     if route_n in ('pdf', 'pdf-async') and not pdf_bytes:
         blockers.append('pdf_bytes_missing')
+    require_narrative = hashed_narrative_requires_section_parity(model)
     if check_docx:
-        blockers.extend(compare_environment_narrative_to_docx(model, docx_bytes))
+        if require_narrative:
+            blockers.extend(compare_environment_narrative_to_docx(model, docx_bytes))
         blockers.extend(compare_cover_sector_to_docx(model, docx_bytes))
     if check_pdf:
-        blockers.extend(compare_environment_narrative_to_pdf(model, pdf_bytes))
+        if require_narrative:
+            blockers.extend(compare_environment_narrative_to_pdf(model, pdf_bytes))
         blockers.extend(compare_cover_sector_to_pdf(model, pdf_bytes))
     return list(dict.fromkeys(blockers))
 
