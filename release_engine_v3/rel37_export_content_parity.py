@@ -597,6 +597,136 @@ def _arabic_word_overlap(text: str, actual: str) -> float:
     return sum(1 for word in words if word in have) / len(words)
 
 
+_LEADING_IDENTITY_RE = re.compile(
+    r'^(?:[A-Z]{2,}[A-Za-z0-9_-]*\s*)+'
+)
+
+
+def _split_visual_reverse_prefix(text: str, actual: str) -> List[str]:
+    """Separate a character-reversed leftover from later logical paint.
+
+    Official Arabic cells mash the extracted visual run onto the
+    invisible logical draw. The leftover is a presentation of ActualText,
+    not a new sentence. A logical sentence missing words is not split
+    away from itself because it is not a contiguous ActualText span.
+    """
+    raw = str(text or '')
+    act = _layout_norm(actual)
+    if len(raw) < 24 or not act:
+        return [raw] if raw else []
+    for index in range(8, len(raw) - 11):
+        prefix, rest = raw[:index], raw[index:]
+        rest_norm = _layout_norm(rest)
+        rest_core = _LEADING_IDENTITY_RE.sub('', rest_norm).strip()
+        if len(rest_core) < 16 or rest_core not in act:
+            continue
+        prefix_norm = _layout_norm(prefix)
+        prefix_rev = _layout_norm(prefix[::-1])
+        prefix_undo = _undo_extracted_arabic_visual(prefix)
+        visual = (
+                len(prefix_rev) >= 12
+                and (
+                    prefix_rev in act
+                    or rest_core.startswith(prefix_rev[:16])
+                    or prefix_rev.startswith(rest_core[:16])
+                )
+        ) or (
+                prefix_undo
+                and prefix_undo != prefix_norm
+                and (prefix_undo in act or rest_core.startswith(prefix_undo[:16]))
+        )
+        if visual and prefix_norm not in rest_core:
+            return [part for part in (prefix, rest) if _layout_norm(part)]
+    return [raw]
+
+
+def _overlay_line_fragments(text: str, actual: str) -> List[str]:
+    """Recover associated paint fragments from one extracted line."""
+    raw = str(text or '')
+    if not raw:
+        return []
+    parts: List[str] = []
+    for sentence in re.split(r'(?<=[.۔])(?=\S)', raw):
+        if not _layout_norm(sentence):
+            continue
+        parts.extend(_split_visual_reverse_prefix(sentence, actual))
+    return parts or [raw]
+
+
+def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
+    """True when the associated paint still has this paragraph's content."""
+    want = _layout_norm(para)
+    have = _layout_norm(painted)
+    if want and have and want in have:
+        return True
+    if want and have and _complete_layout_equivalent(painted, para):
+        return True
+    want_words = _content_words(para)
+    have_words = _content_words(painted)
+    if not want_words or not have_words:
+        return False
+    if not set(want_words) <= set(have_words):
+        return False
+    core = ' '.join(want_words[:6])
+    if core and core in have:
+        return True
+    prefix = want[:40] if len(want) >= 40 else want
+    return bool(prefix and prefix in have)
+
+
+def _unrelated_painted_sentence(painted: str, para: str, actual: str) -> bool:
+    """True when paint is a different sentence, not leftover presentation.
+
+    Visual-reversed leftovers of ActualText are not a new sentence.
+    A generic replacement sentence is.
+    """
+    have = _layout_norm(painted)
+    act = _layout_norm(actual)
+    if not have or not act:
+        return False
+    if _is_visual_presentation_of_actual(painted, act):
+        return False
+    if _complete_paragraph_in_painted(para, painted):
+        return False
+    if _incomplete_paragraph_painted(para, painted):
+        return False
+    extras = [
+        word for word in _content_words(painted)
+        if word not in set(_content_words(act))
+    ]
+    if not extras:
+        return False
+    recovered = sum(
+        1 for word in extras
+        if word[::-1] in set(_content_words(act))
+    )
+    if recovered / len(extras) >= 0.6:
+        return False
+    return len(have) >= 20
+
+
+def _incomplete_paragraph_painted(para: str, painted: str) -> bool:
+    """True when paint shows this paragraph but is missing content.
+
+    A contiguous fragment of the paragraph without its complete words is
+    incomplete. Scattered leftover characters or a different sentence are
+    not treated as this paragraph.
+    """
+    if _complete_paragraph_in_painted(para, painted):
+        return False
+    want = _layout_norm(para)
+    have = _layout_norm(painted)
+    if not want or not have:
+        return False
+    min_len = 12
+    limit = min(len(want), 80)
+    for length in range(limit, min_len - 1, -1):
+        for start in range(0, len(want) - length + 1):
+            if want[start:start + length] in have:
+                return True
+    return False
+
+
 def _is_visual_presentation_of_actual(text: str, actual: str) -> bool:
     """True when paint is a presentation form of ActualText, not a new sentence.
 
@@ -1029,7 +1159,8 @@ def _drop_overlay_visible(
         text = _pdf_line(raw)
         if not text or _is_running_chrome(text):
             continue
-        bands.setdefault(round(float(y0 or 0), 1), []).append(text)
+        fragments = _overlay_line_fragments(text, act) if act else [text]
+        bands.setdefault(round(float(y0 or 0), 1), []).extend(fragments)
     kept: List[Tuple[float, str]] = []
     for y_key, texts in bands.items():
         if act and len(texts) > 1 and any(
@@ -1472,7 +1603,13 @@ def _paragraph_pdf_blockers(
     act_use = _stream_usable(act_raw, para)
     vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
     act_cmp = _layout_norm(act_raw)
+    vis_complete = vis_use and _complete_paragraph_in_painted(para, vis_raw)
+    act_complete = act_use and _complete_paragraph_in_painted(para, act_raw)
+    vis_incomplete = vis_use and _incomplete_paragraph_painted(para, vis_raw)
     blockers: List[str] = []
+    if vis_use and act_use and vis_incomplete and act_complete:
+        blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+        return blockers
     if vis_use and act_use and how not in (
             'same',
             'visible_visual_matches_actual',
@@ -1483,9 +1620,16 @@ def _paragraph_pdf_blockers(
                 _latin_relation(vis_cmp), _latin_relation(act_cmp)):
             blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
             return blockers
-        if vis_cmp != act_cmp:
+        if vis_cmp != act_cmp and vis_incomplete:
             blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
             return blockers
+        if vis_cmp != act_cmp and _unrelated_painted_sentence(
+                vis_raw, para, act_raw):
+            blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+            return blockers
+        if vis_cmp != act_cmp and (
+                vis_complete or (act_complete and not vis_incomplete)):
+            how = 'visible_visual_matches_actual'
     targets: List[str] = []
     if vis_use and act_use:
         if how in (

@@ -1319,6 +1319,27 @@ class CompleteRepresentationPdfTests(unittest.TestCase):
             COMPLETE_EN, SPECIMEN_EN_CHANGED, SPECIMEN_EN_CHANGED)
         self.assertTrue(blockers, (how, blockers, vis))
 
+    def test_helper_mashed_visual_leftover_does_not_replace_complete_actual(self):
+        para = (
+            'تعمل منظمة بيانات عربي في سياق تشغيلي لقطاع حكومي، ضمن بيئة '
+            'تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO وحماية بيانات شخصية '
+            'وفق PDPL، مع ضغط متزايد على جودة البيانات والكتالوج وإدارة '
+            'الموافقات وحقوق أصحاب البيانات.'
+        )
+        mashed = (
+            'طو تانايب ةمكوح بلطتت ةيميظنت ةئيب نمض ،يموكح عاطقل يليغشت '
+            'قايس يف يبرع تانايب ةمظنم لمعتNDMO تعمل منظمة بيانات عربي في '
+            'سياق تشغيلي لقطاع حكومي، ضمن بيئة تنظيمية تتطلب حوكمة بيانات '
+            'وطنية وفق\n، مع ضغط متزايد على جودة البيانات والكتالوج وإدارة '
+            'الموافقات وحقوق أصحاب البيانات.PDPL وحماية بيانات شخصية وفق'
+            'NDMO PDPL'
+        )
+        vis, how, blockers = self._helper(para, mashed, para)
+        self.assertFalse(blockers, (how, blockers, vis))
+        vis, how, blockers = self._helper(
+            COMPLETE_EN, mashed + '\n' + PAINTED_EN_DELETED, COMPLETE_EN)
+        self._assert_narrative_blocker(blockers)
+
     def test_helper_refuses_incomplete_painted_subsequence(self):
         cases = (
             ('english_deletion', COMPLETE_EN, PAINTED_EN_DELETED, COMPLETE_EN),
