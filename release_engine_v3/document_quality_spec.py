@@ -1377,6 +1377,39 @@ def _rel37_typed_eligibility(
     if str(getattr(model, 'domain', '') or '') not in PHASE1_DOMAINS:
         blockers.append(f'domain_not_phase1:{getattr(model, "domain", "")}')
     blockers.extend(list(model.validate() or []))
+    from release_engine_v3.rel37_apply import REL37_SELECTION_REASON_KEY
+    from release_engine_v3.rel37_selection import rel37_supported_selection
+
+    model_fws = [
+        str(item).strip()
+        for item in (getattr(model, 'selected_frameworks', ()) or [])
+        if str(item).strip()
+    ]
+    stored_reason = str((sections or {}).get(REL37_SELECTION_REASON_KEY) or '')
+    explicit_model = bool(model_fws) or stored_reason == 'unsupported_empty_explicit'
+    model_sel = rel37_supported_selection(
+        domain=str(getattr(model, 'domain', '') or ''),
+        lang=str(getattr(model, 'lang', '') or 'ar'),
+        document_type=str(getattr(model, 'document_type', '') or 'strategy'),
+        selected_frameworks=model_fws or None,
+        explicit_selection=explicit_model,
+    )
+    if not model_sel.supported:
+        blockers.append(f'rel37_selection_unsupported:{model_sel.reason}')
+    if selected_frameworks:
+        caller_sel = rel37_supported_selection(
+            domain=str(domain or getattr(model, 'domain', '') or ''),
+            lang=str(lang or getattr(model, 'lang', '') or 'ar'),
+            document_type=str(
+                document_type
+                or getattr(model, 'document_type', '')
+                or 'strategy'),
+            selected_frameworks=list(selected_frameworks),
+            explicit_selection=True,
+        )
+        if not caller_sel.supported:
+            blockers.append(
+                f'rel37_caller_selection_unsupported:{caller_sel.reason}')
     consistent_kwargs: Dict[str, Any] = {}
     if domain:
         consistent_kwargs['domain'] = domain
@@ -1407,10 +1440,12 @@ def _evaluate_rel37_typed_tables(
     Arabic gap-phrase floors are not applied. The domain argument is the
     trusted caller domain already checked by eligibility; it is not ignored.
 
-    Pillar contract (compiler, not a new word-count floor): four pillars,
-    each with title/description/owner, and at least one PillarInitiativeRow
-    whose pillar_number matches that pillar. An empty initiative iteration
-    is pillar_initiatives_missing.
+    Pillar contract (compiler, not a new word-count floor): the established
+    minimum of four unique pillar identifiers, each with title/description/
+    owner, and at least one PillarInitiativeRow whose pillar_number matches
+    that pillar. Duplicate numbers cannot satisfy the minimum by list length.
+    An empty initiative iteration is pillar_initiatives_missing. No larger
+    minimum or exact maximum is imposed.
 
     Trace contract: traces keep compile_strategy_model registry source
     labels (gap[0], kpi[0], road[2]) while KPI descriptions and some
@@ -1463,6 +1498,9 @@ def _evaluate_rel37_typed_tables(
         int(getattr(row, 'number', 0) or 0)
         for row in pillars if int(getattr(row, 'number', 0) or 0) >= 1
     }
+    unique_pillar_count = len(pillar_nums)
+    if unique_pillar_count < 4:
+        pillar_defects.append(f'pillar_count_invalid:{unique_pillar_count}')
     for row in pillars:
         if not str(getattr(row, 'title', '') or '').strip():
             pillar_defects.append(
