@@ -58854,6 +58854,14 @@ def _ensure_arabic_pdf_font(required=False):
             print(f'[FONT-REG] Arabic PDF font registered: {font_path} '
                   f'(regular={_ARABIC_PDF_FONT_NAME}, '
                   f'bold={_ARABIC_PDF_FONT_BOLD})', flush=True)
+            if 'dejavu' in _os_fr.path.basename(font_path).lower():
+                print(
+                    '[FONT-REG] last-resort fallback: DejaVu. Arabic '
+                    'shaping may disagree with ActualText. Install Noto '
+                    'or run scripts/ensure_render_fonts.py to bundle '
+                    'Amiri (OFL). This is not an evidence exemption.',
+                    flush=True,
+                )
             return _ARABIC_PDF_FONT_NAME, _ARABIC_PDF_FONT_BOLD
         except Exception as fe:
             print(f'[FONT-REG] Failed to register {font_path}: {fe}',

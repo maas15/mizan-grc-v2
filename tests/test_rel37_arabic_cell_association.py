@@ -62,6 +62,7 @@ from release_engine_v3.rel37_apply import (  # noqa: E402
     serialize_model,
 )
 from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
+    _paragraph_pdf_blockers,
     arabic_char_count,
     compare_model_to_docx,
     compare_traceability_association,
@@ -70,6 +71,16 @@ from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
     inventory_docx_bytes,
 )
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections  # noqa: E402
+from tests._export_failure_diagnostics import (  # noqa: E402
+    StdoutCapture,
+    build_export_diagnostic,
+    persist_export_diagnostic,
+)
+
+_DEJAVU_FIXTURE = ROOT / 'tests' / 'fixtures' / 'rel37_clean_runner_dejavu_env.json'
+_REMOTE_FIRST_NODE_HASH = (
+    '97a4831fe99430c4bba90e7c4c38064aee20b559af7363298f3ad496000df5b3'
+)
 
 
 class ImmediateThread:
@@ -180,22 +191,39 @@ def _export(saved, *, org_name, fmt, include_content=True):
     }
     if include_content:
         body['content'] = saved['content']
-    with patch('threading.Thread', ImmediateThread):
-        resp = saved['client'].post(
-            f'/api/generate-{fmt}-async', json=body, headers=saved['headers'])
-    submit = resp.get_json(silent=True) or {}
-    tid = submit.get('task_id')
-    status = {}
-    if tid:
-        status = saved['client'].get(
-            f'/api/export-status/{tid}', headers=saved['headers']
-        ).get_json(silent=True) or {}
-    raw = b''
-    if tid and status.get('status') == 'done':
-        raw = saved['client'].get(
-            f'/api/export-download/{tid}', headers=saved['headers']
-        ).data or b''
-    return resp.status_code, submit, raw
+    captured = StdoutCapture()
+    with captured:
+        with patch('threading.Thread', ImmediateThread):
+            resp = saved['client'].post(
+                f'/api/generate-{fmt}-async', json=body, headers=saved['headers'])
+        submit = resp.get_json(silent=True) or {}
+        tid = submit.get('task_id')
+        status = {}
+        if tid:
+            status = saved['client'].get(
+                f'/api/export-status/{tid}', headers=saved['headers']
+            ).get_json(silent=True) or {}
+        raw = b''
+        if tid and status.get('status') == 'done':
+            raw = saved['client'].get(
+                f'/api/export-download/{tid}', headers=saved['headers']
+            ).data or b''
+    diagnostic = build_export_diagnostic(
+        submit_http=resp.status_code,
+        submit=submit,
+        status=status,
+        raw=raw,
+        stdout_text=captured.text,
+        model_hash=str(saved['model'].model_hash or ''),
+        font_path=str(getattr(app_mod, '_ARABIC_PDF_FONT_PATH', '') or ''),
+        fmt=fmt,
+    )
+    if fmt == 'pdf' and (not raw or status.get('status') == 'error'):
+        persist_export_diagnostic(
+            diagnostic,
+            f'{fmt}_{tid or "no_task"}_{diagnostic.get("model_hash", "")[:12]}',
+        )
+    return resp.status_code, diagnostic, raw
 
 
 class _Frozen:
@@ -333,6 +361,47 @@ class ArabicCellAssociationTests(unittest.TestCase):
             ),
             blockers,
         )
+
+    def test_compiled_fixture_hash_matches_remote_first_node(self):
+        model, _secs = _compile_ar()
+        self.assertEqual(model.model_hash, _REMOTE_FIRST_NODE_HASH)
+
+    def test_dejavu_captured_streams_refuse_paragraph_one(self):
+        fixture = json.loads(_DEJAVU_FIXTURE.read_text(encoding='utf-8'))
+        self.assertEqual(fixture['model_hash'], _REMOTE_FIRST_NODE_HASH)
+        visible = fixture['visible']
+        actual = fixture['actual']
+        paragraphs = fixture['paragraphs']
+        all_blockers = []
+        for idx, para in enumerate(paragraphs):
+            blockers = _paragraph_pdf_blockers(
+                idx, para, visible, visible=visible, actual=actual)
+            all_blockers.extend(blockers)
+        self.assertIn('pdf_environment_actual_visible_disagree:1', all_blockers)
+        self.assertFalse(
+            any('dejavu' in item.lower() for item in all_blockers),
+            all_blockers,
+        )
+        # ActualText-only must not pass when painted paragraph 1 is incomplete.
+        self.assertTrue(paragraphs[1] in actual)
+        self.assertNotEqual(visible, actual)
+
+    def test_matching_logical_streams_still_accept_same_paragraphs(self):
+        fixture = json.loads(_DEJAVU_FIXTURE.read_text(encoding='utf-8'))
+        logical = fixture['actual']
+        for idx, para in enumerate(fixture['paragraphs']):
+            blockers = _paragraph_pdf_blockers(
+                idx, para, logical, visible=logical, actual=logical)
+            self.assertEqual(blockers, [], (idx, blockers))
+
+    def test_swapped_framework_tokens_still_refused(self):
+        fixture = json.loads(_DEJAVU_FIXTURE.read_text(encoding='utf-8'))
+        para = fixture['paragraphs'][0]
+        swapped = para.replace('NDMO', 'PDPL_HOLD').replace(
+            'PDPL', 'NDMO').replace('PDPL_HOLD', 'PDPL')
+        blockers = _paragraph_pdf_blockers(
+            0, para, swapped, visible=swapped, actual=swapped)
+        self.assertTrue(blockers, blockers)
 
 
 if __name__ == '__main__':

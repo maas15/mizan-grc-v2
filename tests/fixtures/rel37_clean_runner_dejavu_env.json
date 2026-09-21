@@ -1,0 +1,31 @@
+{
+  "description": "Clean-runner DejaVu ArabicFont capture for Data AR compiled fixture 97a4831f. Visible paint is the extractor stream with ActualText ignored. ActualText is the logical marked-content stream. Paragraph index is 0-based enumerate(environment_narrative_paragraphs), so :1 is the second environment paragraph, not a page number.",
+  "model_hash": "97a4831fe99430c4bba90e7c4c38064aee20b559af7363298f3ad496000df5b3",
+  "font_file": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  "font_sha256": "ae7b7855e115a5966d8b1b3f80f254ccc117ec86f9965e202ee2940453837280",
+  "embedded_font": "AAAAAA+DejaVuSans",
+  "first_blocker": "pdf_environment_actual_visible_disagree:1",
+  "first_predicate": "vis_use && act_use && vis_incomplete && act_complete",
+  "paragraphs": [
+    "تعمل منظمة إدارة البيانات في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.",
+    "تشمل المحركات التشغيلية اكتمال التصنيف، ضبط دورة الحياة، توثيق المشاركة، وإخطار الحوادث ضمن المهلة النظامية، دون إدخال ضوابط سيبرانية خارج نطاق البيانات."
+  ],
+  "visible": "وحماية بيانات شخصية وفقNDMO تعمل منظمة إدارة البيانات في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق\nقفو ةينطو تانايب ةمكوح بلطتت ةيميظنت ةئيب يف تانايبلا ةرادإ ةمظنم لمعتNDMO انايب ةيامحو\nPDPL، .مع ضغط متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البياناتNDMO PDPL\nNDMO PDPL\nمض ثداوحلا راطخإو ،ةكراشملا قيثوت ،ةايحلا ةرود طبض ،فينصتلا لامتكا ةيليغشتلا تاكرحملا لمشت،تشمل المحركات التشغيلية اكتمال التصنيف، ضبط دورة الحياة، توثيق المشاركة، وإخطار الحوادث ضمن المهلة النظامية\nدون إدخال ضوابط سيبرانية خارج نطاق البيانات.",
+  "actual": "تعمل منظمة إدارة البيانات في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.\nتشمل المحركات التشغيلية اكتمال التصنيف، ضبط دورة الحياة، توثيق المشاركة، وإخطار الحوادث ضمن المهلة النظامية، دون إدخال ضوابط سيبرانية خارج نطاق البيانات.",
+  "paragraph_decisions": [
+    {
+      "idx": 0,
+      "vis_complete": true,
+      "act_complete": true,
+      "vis_incomplete": false,
+      "blockers": []
+    },
+    {
+      "idx": 1,
+      "vis_complete": false,
+      "act_complete": true,
+      "vis_incomplete": true,
+      "blockers": ["pdf_environment_actual_visible_disagree:1"]
+    }
+  ]
+}
