@@ -66,6 +66,7 @@ jobs:
             tests/test_rel37_narrative_cover_acceptance.py \
             tests/test_rel37_sync_pdf_ownership.py \
             tests/test_rel37_acceptance_evidence_isolation.py \
+            tests/test_rel33_required_smoke_quality_contract.py \
             -q
 
       - name: pytest REL32 gate suite
@@ -78,6 +79,7 @@ jobs:
             tests/test_rel32_preview_table_dom_binding.py \
             tests/test_enterprise_document_factory_foundation.py \
             tests/test_rel33_all_domain_document_quality_matrix.py \
+            tests/test_rel33_required_smoke_quality_contract.py \
             -q
 
       - name: pytest REL37 unit compilers

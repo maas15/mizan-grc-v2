@@ -1245,6 +1245,177 @@ def _evaluate_visible_route(
     return evidence
 
 
+def _rel37_claimed_model(
+        sections: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Any], Optional[List[str]]]:
+    """Load a claimed REL37 model. None, None = not claimed (use legacy)."""
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            load_model,
+            rel37_hash_identity_blockers,
+        )
+    except Exception:  # noqa: BLE001
+        return None, None
+    if not is_rel37_authoritative(sections):
+        return None, None
+    identity = list(rel37_hash_identity_blockers(sections) or [])
+    if identity:
+        return None, identity
+    model = load_model(sections)
+    if model is None:
+        return None, ['rel37_model_unreadable']
+    return model, []
+
+
+def _evaluate_rel37_typed_tables(
+        model: Any,
+        *,
+        domain: str,
+) -> Dict[str, Any]:
+    """Measure typed REL37 objectives, pillars, traces, risks, and roadmap.
+
+    Requires an identity-matched model. Empty objective / pillar / trace
+    fields still block. Legacy 6–8 SO and exact-gap string floors are not
+    applied to this representation.
+    """
+    blockers: List[str] = []
+    required = tuple(getattr(model, 'required_families', ()) or ())
+
+    so_rows = list(getattr(model, 'strategic_objectives', ()) or [])
+    so_covered = set()
+    for row in so_rows:
+        if not str(getattr(row, 'objective', '') or '').strip():
+            continue
+        so_covered.add(str(getattr(row, 'family', '') or '').strip())
+        so_covered.add(str(getattr(row, 'framework', '') or '').strip())
+        fam = str(getattr(row, 'family', '') or '')
+        if fam.endswith('_compliance'):
+            so_covered.add(fam.split('_', 1)[0].upper())
+    so_missing = [fam for fam in required if fam not in so_covered]
+    if so_missing:
+        blockers.extend(f'so_family_missing:{fam}' for fam in so_missing[:8])
+    so_ok = not so_missing and bool(so_rows)
+
+    pillars = list(getattr(model, 'pillars', ()) or [])
+    inits = list(getattr(model, 'pillar_initiatives', ()) or [])
+    pillar_defects: List[str] = []
+    if len(pillars) < 4:
+        pillar_defects.append(f'pillar_count_invalid:{len(pillars)}')
+    for row in inits:
+        init = str(getattr(row, 'initiative', '') or '').strip()
+        desc = str(getattr(row, 'description', '') or '').strip()
+        output = str(getattr(row, 'output', '') or '').strip()
+        owner = str(getattr(row, 'owner', '') or '').strip()
+        label = init[:30]
+        if not desc:
+            pillar_defects.append(f'weak_pillar_description:{label}')
+        if not output:
+            pillar_defects.append(f'missing_evidence_artifact:{label}')
+        if not owner:
+            pillar_defects.append(f'pillar_owner_missing:{label}')
+    blockers.extend(pillar_defects[:8])
+    pillars_ok = not pillar_defects
+
+    road_rows = list(getattr(model, 'roadmap', ()) or [])
+    road_covered = {
+        str(getattr(row, 'family', '') or '').strip()
+        for row in road_rows
+        if str(getattr(row, 'initiative', '') or '').strip()
+    }
+    road_missing = [fam for fam in required if fam not in road_covered]
+    road_ok = not road_missing
+    if not road_ok:
+        blockers.append('roadmap_canonical_invalid')
+
+    risk_rows = list(getattr(model, 'risks', ()) or [])
+    risk_defects: List[str] = []
+    if not risk_rows:
+        risk_defects.append('risk_count_invalid:0')
+    for row in risk_rows:
+        treatment = str(getattr(row, 'mitigation', '') or '').strip()
+        owner = str(getattr(row, 'owner', '') or '').strip()
+        if not treatment:
+            risk_defects.append('risk_treatment_too_short')
+        if not owner:
+            risk_defects.append(
+                'risk_missing_control_family:'
+                + str(getattr(row, 'risk', '') or '')[:30])
+    blockers.extend(risk_defects[:8])
+    risk_ok = not risk_defects
+
+    traces = list(getattr(model, 'traceability', ()) or [])
+    trace_covered = set()
+    for row in traces:
+        if not (
+                str(getattr(row, 'initiative', '') or '').strip()
+                and str(getattr(row, 'gap', '') or '').strip()
+                and str(getattr(row, 'kpi', '') or '').strip()):
+            continue
+        trace_covered.add(str(getattr(row, 'family', '') or '').strip())
+        trace_covered.add(str(getattr(row, 'framework', '') or '').strip())
+    missing_trace = [fam for fam in required if fam not in trace_covered]
+    if missing_trace:
+        blockers.extend(
+            f'trace_family_missing:{fam}' for fam in missing_trace[:6])
+    trace_ok = not missing_trace
+    _ = domain
+    return {
+        'blocking_errors': list(dict.fromkeys(blockers)),
+        'section_results': {
+            'strategic_objectives': {
+                'passed': so_ok,
+                'row_count': len(so_rows),
+                'missing_families': so_missing,
+                'representation': 'rel37_typed',
+            },
+            'strategic_pillars': {
+                'passed': pillars_ok,
+                'titles_found': len(pillars),
+                'positive_model_defects': pillar_defects,
+                'representation': 'rel37_typed',
+            },
+            'roadmap': {
+                'passed': road_ok,
+                'row_count': len(road_rows),
+                'missing_families': road_missing,
+                'representation': 'rel37_typed',
+            },
+            'risk_register': {
+                'passed': risk_ok,
+                'schema_defects': risk_defects,
+                'risk_count': len(risk_rows),
+                'representation': 'rel37_typed',
+            },
+            'traceability': {
+                'passed': trace_ok,
+                'missing_families': missing_trace,
+                'representation': 'rel37_typed',
+            },
+        },
+        'risk_treatments': [
+            {
+                'risk': str(getattr(row, 'risk', '') or ''),
+                'treatment': str(getattr(row, 'mitigation', '') or ''),
+                'owner': str(getattr(row, 'owner', '') or ''),
+            }
+            for row in risk_rows
+        ],
+        'traceability_mapping_table': [
+            {
+                'family': str(getattr(row, 'family', '') or ''),
+                'expected_gap': str(getattr(row, 'gap', '') or ''),
+                'actual_gap': str(getattr(row, 'gap', '') or ''),
+                'passed': bool(
+                    str(getattr(row, 'initiative', '') or '').strip()
+                    and str(getattr(row, 'gap', '') or '').strip()
+                    and str(getattr(row, 'kpi', '') or '').strip()),
+            }
+            for row in traces
+        ],
+    }
+
+
 def _evaluate_canonical_sections(
         sections: Dict[str, str],
         *,
@@ -1254,6 +1425,57 @@ def _evaluate_canonical_sections(
         str(v) for v in (sections or {}).values() if isinstance(v, str))
     blockers: List[str] = []
     section_results: Dict[str, Any] = {}
+
+    rel37_model, rel37_identity = _rel37_claimed_model(sections)
+    if rel37_identity:
+        return {
+            'passed': False,
+            'blocking_errors': list(dict.fromkeys(rel37_identity)),
+            'section_results': {
+                'rel37_identity': {
+                    'passed': False,
+                    'blocking_errors': rel37_identity,
+                },
+            },
+            'risk_treatments': [],
+            'traceability_mapping_table': [],
+            'arabic_tokenization_report': {},
+        }
+    if rel37_model is not None:
+        typed = _evaluate_rel37_typed_tables(rel37_model, domain=domain)
+        blockers.extend(typed.get('blocking_errors') or [])
+        section_results.update(typed.get('section_results') or {})
+        kpi_text = (sections or {}).get('kpis', '') or blob
+        kpi_chk = check_kpi_canonical(kpi_text)
+        kpi_schema_defects = check_kpi_row_schema(kpi_text)
+        kpi_ok = bool(kpi_chk.get('exported_kpi_canonical_valid')) and not kpi_schema_defects
+        if not kpi_chk.get('exported_kpi_canonical_valid'):
+            blockers.extend(kpi_chk.get('defects') or ['kpi_canonical_invalid'])
+        blockers.extend(kpi_schema_defects[:6])
+        section_results['kpi_kri'] = {
+            'passed': kpi_ok,
+            'check': kpi_chk,
+            'row_schema_defects': kpi_schema_defects,
+            'canonical_row_count': len(kpi_chk.get('duplicate_metrics') or []) + (
+                kpi_chk.get('exported_kpi_table_count') or 0),
+        }
+        arabic_tok = check_arabic_tokenization_quality(blob)
+        arabic_ok = arabic_tok.get('passed', False)
+        if not arabic_ok:
+            blockers.append('arabic_canonical_invalid')
+        section_results['arabic'] = {
+            'passed': arabic_ok,
+            'tokenization': arabic_tok,
+        }
+        return {
+            'passed': not blockers,
+            'blocking_errors': list(dict.fromkeys(blockers)),
+            'section_results': section_results,
+            'risk_treatments': typed.get('risk_treatments') or [],
+            'traceability_mapping_table': typed.get(
+                'traceability_mapping_table') or [],
+            'arabic_tokenization_report': arabic_tok,
+        }
 
     vision = (sections or {}).get('vision', '') or ''
     so_rows = _count_so_objective_rows(vision)
