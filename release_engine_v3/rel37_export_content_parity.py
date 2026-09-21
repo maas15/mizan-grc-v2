@@ -574,7 +574,11 @@ def _undo_visible_lines(text: str) -> str:
 def _content_words(text: str) -> List[str]:
     """Layout-normalized words, punctuation split away. Digits stay."""
     cleaned = re.sub(r'[^\w\u0600-\u06FF%]+', ' ', _layout_norm(text))
-    return [word for word in cleaned.split() if word]
+    words: List[str] = []
+    for word in cleaned.split():
+        if re.sub(r'[\u060C\u061B\u061F\u0640]', '', word):
+            words.append(word)
+    return words
 
 
 def _undo_extracted_arabic_visual(text: str) -> str:
@@ -759,7 +763,9 @@ def _arabic_already_logical(painted: str, actual: str) -> bool:
         word for word in _content_words(painted)
         if any('\u0600' <= ch <= '\u06FF' for ch in word)
     ]
-    return bool(want) and _consume_complete_statement(want, have, set(want), actual)
+    complete, _extras = _walk_complete_statement(
+        want, have, set(want), actual, allow_out_of_order_spans=False)
+    return complete
 
 
 def _is_identity_latin_token(word: str) -> bool:
@@ -771,14 +777,88 @@ def _compact_letters(text: str) -> str:
     return re.sub(r'[^\w\u0600-\u06FF%]+', '', _layout_norm(text))
 
 
+def _bare_word(word: str) -> str:
+    """Word identity without layout punctuation. Digits and % stay."""
+    text = re.sub(r'[^\w\u0600-\u06FF%]+', '', str(word or ''))
+    return re.sub(r'[\u060C\u061B\u061F\u0640]', '', text)
+
+
+def _compact_without_identity(text: str) -> str:
+    """Ordered letters/digits after dropping identity Latin and punctuation.
+
+    Official leftover runs omit separately drawn Helvetica tokens. Skipping
+    those tokens is not permission to drop values or reorder the statement.
+    """
+    kept = [
+        _bare_word(word) for word in _content_words(text)
+        if _bare_word(word) and not _is_identity_latin_token(word)
+    ]
+    return ''.join(kept)
+
+
+def _arabic_words(text: str | Sequence[str]) -> List[str]:
+    words = text if isinstance(text, (list, tuple)) else _content_words(text)
+    return [
+        word for word in words
+        if any('\u0600' <= ch <= '\u06FF' for ch in word)
+    ]
+
+
+def _arabic_logical_subsequence(painted: str, actual: str) -> bool:
+    """True when painted Arabic words already occur in ActualText order."""
+    have = [_bare_word(word) for word in _arabic_words(painted)]
+    want = [_bare_word(word) for word in _arabic_words(actual)]
+    if not have or not want:
+        return False
+    idx = 0
+    for word in have:
+        while idx < len(want) and want[idx] != word:
+            idx += 1
+        if idx >= len(want):
+            return False
+        idx += 1
+    return True
+
+
+def _contiguous_span_index(run: Sequence[str], want: Sequence[str]) -> int:
+    """Start index in want when run is a contiguous 3+ word span."""
+    needles = [_bare_word(word) for word in run]
+    hay = [_bare_word(word) for word in want]
+    size = len(needles)
+    if size < 3 or any(not item for item in needles):
+        return -1
+    for index in range(len(hay) - size + 1):
+        if hay[index:index + size] == needles:
+            return index
+    return -1
+
+
+def _is_short_reverse_debris(word: str, known: Sequence[str] | set) -> bool:
+    """Two-letter reverse chip of a known word, not a free 2-letter match.
+
+    Official leftover extraction can leave the last two letters of a
+    reversed word. A two-letter particle that only occurs inside a longer
+    reverse is not debris.
+    """
+    compact = _bare_word(word)
+    if len(compact) != 2:
+        return False
+    for item in known:
+        rev = _bare_word(item)[::-1]
+        if len(rev) >= 3 and (rev.startswith(compact) or rev.endswith(compact)):
+            return True
+    return False
+
+
 def _is_reverse_fragment(word: str, known: Sequence[str] | set) -> bool:
-    compact = re.sub(r'[^\w\u0600-\u06FF%]+', '', str(word or ''))
+    compact = _bare_word(word)
     if not compact:
         return False
-    if compact[::-1] in set(known):
+    known_bare = {_bare_word(item) for item in known if _bare_word(item)}
+    if compact[::-1] in known_bare:
         return True
-    for item in known:
-        rev = str(item or '')[::-1]
+    for item in known_bare:
+        rev = item[::-1]
         if len(compact) >= 3 and len(rev) >= 3 and (
                 compact in rev or rev in compact):
             return True
@@ -791,16 +871,17 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
     raw = _layout_norm(text)
     if not raw or not act or raw == act or raw in act:
         return False
+    if _arabic_logical_subsequence(raw, act):
+        return False
     raw_rev = _layout_norm(str(text or '')[::-1])
-    act_c = _compact_letters(act)
+    act_c = _compact_without_identity(act)
+    raw_rev_c = _compact_without_identity(raw_rev)
     if raw_rev == act or (len(raw) >= 12 and raw_rev in act):
         return True
-    if len(_compact_letters(raw_rev)) >= 12 and _compact_letters(raw_rev) in act_c:
+    if len(raw_rev_c) >= 12 and raw_rev_c in act_c:
         return True
     candidates = (
-        _layout_norm(_undo_visible_lines(text)),
         _undo_extracted_arabic_visual(text),
-        _undo_extracted_arabic_visual(_undo_visible_lines(text)),
     )
     for candidate in candidates:
         if not candidate or candidate == raw:
@@ -809,11 +890,18 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
             return True
         if len(candidate) >= 12 and candidate in act:
             return True
-        if len(_compact_letters(candidate)) >= 12 and _compact_letters(candidate) in act_c:
+        cand_c = _compact_without_identity(candidate)
+        if len(cand_c) >= 12 and cand_c in act_c:
             return True
         if _content_words(candidate) == _content_words(act):
             return True
     return False
+
+
+def _advance_covered(idx: int, covered: Sequence[bool]) -> int:
+    while idx < len(covered) and covered[idx]:
+        idx += 1
+    return idx
 
 
 def _walk_complete_statement(
@@ -821,24 +909,36 @@ def _walk_complete_statement(
         have: Sequence[str],
         act_set: Sequence[str] | set,
         actual: str = '',
+        *,
+        allow_out_of_order_spans: bool = True,
 ) -> Tuple[bool, List[str]]:
-    """Walk have consuming want in order. Return (complete, extras)."""
+    """Walk have consuming want in order. Return (complete, extras).
+
+    A leftover visual run may omit separately drawn identity Latin.
+    A contiguous 3+ word ActualText span may appear out of wrap order.
+    Single-word relocation is not a span and does not reorder the statement.
+    """
     known = set(act_set)
     ref = _layout_norm(actual) or ' '.join(want)
+    want_words = list(want)
+    covered = [False] * len(want_words)
     idx = 0
     consumed: List[str] = []
     extras: List[str] = []
     i = 0
     while i < len(have):
         word = have[i]
-        if idx < len(want) and word == want[idx]:
-            consumed.append(word)
-            idx += 1
+        idx = _advance_covered(idx, covered)
+        if idx < len(want_words) and _bare_word(word) == _bare_word(want_words[idx]):
+            consumed.append(want_words[idx])
+            covered[idx] = True
+            idx = _advance_covered(idx + 1, covered)
             i += 1
             continue
-        if idx < len(want) and word[::-1] == want[idx]:
-            consumed.append(want[idx])
-            idx += 1
+        if idx < len(want_words) and _bare_word(word)[::-1] == _bare_word(want_words[idx]):
+            consumed.append(want_words[idx])
+            covered[idx] = True
+            idx = _advance_covered(idx + 1, covered)
             i += 1
             continue
         skipped = False
@@ -846,16 +946,36 @@ def _walk_complete_statement(
             run = have[i:end]
             if not run:
                 continue
-            if idx < len(want) and want[idx] in run:
+            if idx < len(want_words) and _bare_word(want_words[idx]) in {
+                    _bare_word(item) for item in run}:
                 continue
             if _is_visual_leftover_run(' '.join(run), ref):
                 extras.extend(run)
                 i = end
                 skipped = True
                 break
+            span_at = (
+                _contiguous_span_index(run, want_words)
+                if allow_out_of_order_spans else -1
+            )
+            if span_at >= 0 and not all(covered[span_at:span_at + len(run)]):
+                for offset in range(len(run)):
+                    covered[span_at + offset] = True
+                extras.extend(run)
+                idx = _advance_covered(idx, covered)
+                i = end
+                skipped = True
+                break
+            if allow_out_of_order_spans and _contiguous_span_index(
+                    run, _content_words(ref)) >= 0:
+                extras.extend(run)
+                i = end
+                skipped = True
+                break
         if skipped:
             continue
-        if word not in known and word[::-1] in known:
+        if _bare_word(word) not in {_bare_word(item) for item in known} and (
+                _bare_word(word)[::-1] in {_bare_word(item) for item in known}):
             extras.append(word)
             i += 1
             continue
@@ -863,15 +983,22 @@ def _walk_complete_statement(
             extras.append(word)
             i += 1
             continue
-        if _is_identity_latin_token(word) and word in known:
+        if _is_identity_latin_token(word) and (
+                word in known or word in _content_words(ref)):
             extras.append(word)
+            for pos, item in enumerate(want_words):
+                if not covered[pos] and item == word:
+                    covered[pos] = True
+                    break
+            idx = _advance_covered(idx, covered)
             i += 1
             continue
         extras.append(word)
         i += 1
-        if idx < len(want):
+        if idx < len(want_words):
             return False, extras
-    return idx == len(want), extras
+    idx = _advance_covered(idx, covered)
+    return idx == len(want_words) and all(covered), extras
 
 
 def _consume_complete_statement(
@@ -915,14 +1042,47 @@ def _extras_are_accounted(
     ]
     if leftovers and _is_visual_leftover_run(' '.join(leftovers), actual):
         return True
+    act_words = _content_words(actual)
+    residue: List[str] = []
+    i = 0
+    extra_words = list(extras)
+    while i < len(extra_words):
+        skipped = False
+        for end in range(len(extra_words), i, -1):
+            run = extra_words[i:end]
+            if _is_visual_leftover_run(' '.join(run), actual):
+                i = end
+                skipped = True
+                break
+            if _contiguous_span_index(run, act_words) >= 0:
+                i = end
+                skipped = True
+                break
+        if skipped:
+            continue
+        residue.append(extra_words[i])
+        i += 1
+    if not residue:
+        return True
+    if all(
+            word in known
+            or word[::-1] in known
+            or _is_identity_latin_token(word)
+            or _is_reverse_fragment(word, known)
+            or _is_visual_leftover_run(word, actual)
+            or _is_short_reverse_debris(word, known)
+            for word in residue
+    ):
+        return True
     return False
 
 
-def _ordered_statement_present(para: str, painted: str) -> bool:
+def _ordered_statement_present(para: str, painted: str, actual: str = '') -> bool:
     """True when the complete ordered statement survives justified mapping."""
     want = _content_words(para)
     if not want:
         return False
+    ref = actual or para
     sources = [painted, _undo_extracted_arabic_visual(painted)]
     arabic_already_logical = _arabic_already_logical(painted, para)
     if not arabic_already_logical:
@@ -938,12 +1098,14 @@ def _ordered_statement_present(para: str, painted: str) -> bool:
     known = set(want)
     for source in sources:
         if _consume_complete_statement(
-                want, _content_words(source), known, para):
+                want, _content_words(source), known, ref):
             return True
     return False
 
 
-def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
+def _complete_paragraph_in_painted(
+        para: str, painted: str, actual: str = '',
+) -> bool:
     """True when the associated paint still has this paragraph's content.
 
     The complete ordered statement must remain. Sharing an opening
@@ -955,7 +1117,7 @@ def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
         return True
     if want and have and _complete_layout_equivalent(painted, para):
         return True
-    return _ordered_statement_present(para, painted)
+    return _ordered_statement_present(para, painted, actual)
 
 
 def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
@@ -988,8 +1150,11 @@ def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
                 and word[::-1] not in act_set
                 and not _is_identity_latin_token(word)
                 and not _is_reverse_fragment(word, act_set)
+                and not _is_short_reverse_debris(word, act_set)
             ]
             if not extras:
+                return True
+            if _is_visual_leftover_run(' '.join(extras), act):
                 return True
             if len(_layout_norm(remainder)) < 20 and not _semantic_latin_tokens(remainder):
                 return True
@@ -1028,14 +1193,16 @@ def _unrelated_painted_sentence(painted: str, para: str, actual: str) -> bool:
     return len(have) >= 20
 
 
-def _incomplete_paragraph_painted(para: str, painted: str) -> bool:
+def _incomplete_paragraph_painted(
+        para: str, painted: str, actual: str = '',
+) -> bool:
     """True when paint shows this paragraph but is missing content.
 
     A contiguous fragment of the paragraph without its complete words is
     incomplete. Scattered leftover characters or a different sentence are
     not treated as this paragraph.
     """
-    if _complete_paragraph_in_painted(para, painted):
+    if _complete_paragraph_in_painted(para, painted, actual):
         return False
     want = _layout_norm(para)
     have = _layout_norm(painted)
@@ -1983,9 +2150,12 @@ def _paragraph_pdf_blockers(
     act_use = _stream_usable(act_raw, para)
     vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
     act_cmp = _layout_norm(act_raw)
-    vis_complete = vis_use and _complete_paragraph_in_painted(para, vis_raw)
-    act_complete = act_use and _complete_paragraph_in_painted(para, act_raw)
-    vis_incomplete = vis_use and _incomplete_paragraph_painted(para, vis_raw)
+    vis_complete = vis_use and _complete_paragraph_in_painted(
+        para, vis_raw, act_raw)
+    act_complete = act_use and _complete_paragraph_in_painted(
+        para, act_raw, act_raw)
+    vis_incomplete = vis_use and _incomplete_paragraph_painted(
+        para, vis_raw, act_raw)
     leftover_ok = _leftover_visual_of_actual(vis_raw, para, act_raw)
     blockers: List[str] = []
     if vis_use and act_use and vis_incomplete and act_complete:
@@ -2000,8 +2170,13 @@ def _paragraph_pdf_blockers(
         vis_for_latin = vis_cmp
         if not _arabic_already_logical(vis_raw, para):
             vis_for_latin = _layout_norm(_undo_visible_lines(vis_raw)) or vis_cmp
-        if _latin_vis_conflicts_act(
-                _latin_relation(vis_for_latin), _latin_relation(act_cmp)):
+        vis_lat = _latin_relation(vis_for_latin)
+        act_lat = _latin_relation(act_cmp)
+        latin_conflict = _latin_vis_conflicts_act(vis_lat, act_lat)
+        if latin_conflict and vis_complete and leftover_ok and _ordered_latin_match(
+                act_lat, vis_lat):
+            latin_conflict = False
+        if latin_conflict:
             blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
             return blockers
         if vis_cmp != act_cmp and vis_incomplete:
@@ -2054,10 +2229,12 @@ def _paragraph_pdf_blockers(
         if want in target:
             matched = True
             break
-        if vis_complete and leftover_ok and _ordered_statement_present(para, target):
+        if vis_complete and leftover_ok and _ordered_statement_present(
+                para, target, act_raw):
             matched = True
             break
-    if not matched and vis_complete and leftover_ok and _ordered_statement_present(para, vis_raw):
+    if not matched and vis_complete and leftover_ok and _ordered_statement_present(
+            para, vis_raw, act_raw):
         matched = True
     if not matched:
         if want_lat:

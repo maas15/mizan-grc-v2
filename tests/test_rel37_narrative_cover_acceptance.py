@@ -1468,6 +1468,26 @@ NUM_AR_EXP = 'تبلغ القيمة المستهدفة للمؤشر 100% وفق 
 NUM_AR_VIS = 'تبلغ القيمة المستهدفة للمؤشر 10% وفق NDMO.'
 CONTRA_EXTRA = (
     'A second painted sentence assigns the same work to a different owner.')
+COMPILED_AR_P0 = (
+    'تعمل منظمة إدارة البيانات في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
+    'NDMO وحماية بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات '
+    'والكتالوج وإدارة الموافقات وحقوق أصحاب البيانات.')
+COMPILED_AR_P1 = (
+    'تشمل المحركات التشغيلية اكتمال التصنيف، ضبط دورة الحياة، توثيق '
+    'المشاركة، وإخطار الحوادث ضمن المهلة النظامية، دون إدخال ضوابط سيبرانية '
+    'خارج نطاق البيانات.')
+COMPILED_AR_MASH = (
+    'فو ةيصخش تانايب ةيامحو  قفو ةينطو تانايب ةمكوح بلطتت ةيميظنت ةئيب يف '
+    'تانايبلا ةرادإ ةمظنم لمعت،PDPL  وحماية بيانات شخصية وفقNDMO تعمل منظمة '
+    'إدارة البيانات في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق\n'
+    'مع ضغط متزايد على جودة البيانات والكتالوج وإدارة الموافقات وحقوق أصحاب '
+    'البيانات.NDMO PDPL\n'
+    'NDMO PDPL\n'
+    'هملا نمض ثداوحلا راطخإو ،ةكراشملا قيثوت ،ةايحلا ةرود طبض ،فينصتلا '
+    'لامتكا ةيليغشتلا تاكرحملا لمشت\n'
+    'تشمل المحركات التشغيلية اكتمال التصنيف، ضبط دورة الحياة، توثيق '
+    'المشاركة، وإخطار الحوادث ضمن المهلة النظامية، دون\n'
+    'إدخال ضوابط سيبرانية خارج نطاق البيانات.')
 
 
 def _emit_hidden_logical(canv, logical: str):
@@ -1601,6 +1621,16 @@ class OrderedCompleteAndOverlayProvenanceTests(unittest.TestCase):
         vis, how, blockers = self._helper(
             COMPLETE_EN, SPECIMEN_EN_CHANGED, SPECIMEN_EN_CHANGED)
         self.assertTrue(blockers, (how, blockers, vis))
+
+    def test_helper_compiled_wrap_fragments_keep_ordered_statement(self):
+        actual = COMPILED_AR_P0 + '\n' + COMPILED_AR_P1
+        vis, how, blockers = self._helper(COMPILED_AR_P0, COMPILED_AR_MASH, actual)
+        self.assertFalse(blockers, (how, blockers, vis))
+        vis, how, blockers = self._helper(COMPILED_AR_P1, COMPILED_AR_MASH, actual)
+        self.assertFalse(blockers, (how, blockers, vis))
+        vis, how, blockers = self._helper(
+            ORDER_AR_EXP, COMPILED_AR_MASH + '\n' + ORDER_AR_VIS, ORDER_AR_EXP)
+        self._assert_narrative_blocker(blockers)
 
     def test_numeric_overlay_classification_retains_painted(self):
         from release_engine_v3.rel37_export_content_parity import (
