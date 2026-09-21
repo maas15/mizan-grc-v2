@@ -256,6 +256,22 @@ def _pdf_content_events(stream: bytes) -> List[Dict[str, str]]:
                 })
             idx = cursor + 1
             continue
+        if data[idx] == 0x3C:
+            match = re.match(br'<([0-9A-Fa-f]+)>', data[idx:])
+            if match:
+                rest = data[idx + match.end():idx + match.end() + 16].lstrip()
+                hex_body = match.group(1).decode('ascii')
+                if (
+                        rest.startswith(b'Tj')
+                        and hex_body.upper().startswith('FEFF')
+                ):
+                    events.append({
+                        'kind': 'visible',
+                        'text': _decode_actual_text_hex(hex_body),
+                        'logical_paint': True,
+                    })
+                idx += match.end()
+                continue
         idx += 1
     return events
 
@@ -486,12 +502,155 @@ def _undo_visible_lines(text: str) -> str:
         _undo_visual_rtl_line(line) for line in str(text or '').splitlines())
 
 
+def _content_words(text: str) -> List[str]:
+    """Layout-normalized words, punctuation split away. Digits stay."""
+    cleaned = re.sub(r'[^\w\u0600-\u06FF%]+', ' ', _layout_norm(text))
+    return [word for word in cleaned.split() if word]
+
+
+def _undo_extracted_arabic_visual(text: str) -> str:
+    """Logical words from LTR-extracted Arabic presentation order.
+
+    Each Arabic word is un-reversed, then Arabic words are restored
+    right-to-left. Latin tokens keep their extracted identity.
+    """
+    arabic: List[str] = []
+    latin: List[str] = []
+    for word in _layout_norm(text).split():
+        if any('\u0600' <= ch <= '\u06FF' for ch in word):
+            arabic.append(word[::-1])
+        else:
+            latin.append(word)
+    if not arabic:
+        return _layout_norm(text)
+    return _layout_norm(' '.join(list(reversed(arabic)) + latin))
+
+
+def _same_complete_words(painted: str, actual: str) -> bool:
+    want = _content_words(painted)
+    have = _content_words(actual)
+    return bool(want) and bool(have) and sorted(want) == sorted(have)
+
+
+def _complete_layout_equivalent(painted: str, actual: str) -> bool:
+    """True only when painted content is the complete associated text.
+
+    Whitespace, line boundaries, presentation forms, and a proven
+    mixed-script visual-to-logical conversion may differ. A line
+    occurring somewhere in ActualText, a character subsequence, Latin
+    token identity/order, a prefix, or a forward window is not enough.
+    """
+    vis = _layout_norm(painted)
+    act = _layout_norm(actual)
+    if vis and act and vis == act:
+        return True
+    if not (vis and act):
+        return False
+    candidates = [
+        _layout_norm(_undo_visible_lines(painted)),
+        _undo_extracted_arabic_visual(painted),
+        _undo_extracted_arabic_visual(_undo_visible_lines(painted)),
+    ]
+    if act in candidates:
+        return True
+    if any(_same_complete_words(candidate, act) for candidate in candidates if candidate):
+        if _is_mixed_arabic_latin(painted) or any(
+                '\u0600' <= ch <= '\u06FF' for ch in painted):
+            return True
+    if _is_mixed_arabic_latin(painted):
+        vis_lat = _latin_relation(painted)
+        act_lat = _latin_relation(act)
+        latin_ok = vis_lat == act_lat or vis_lat == list(reversed(act_lat))
+        if latin_ok and _same_complete_words(vis, act):
+            return True
+        if latin_ok and _content_words(act) and set(_content_words(act)).issubset(
+                set(_content_words(vis))):
+            return True
+    return False
+
+
+def _token_only_latin_overlay(text: str) -> bool:
+    """Latin identity tokens only; not an ordinary painted sentence."""
+    vis = _layout_norm(text)
+    if not vis or any('\u0600' <= ch <= '\u06FF' for ch in vis):
+        return False
+    line_lat = _latin_relation(vis)
+    if not line_lat:
+        return False
+    return all(
+        (word in line_lat) or not any(ch.isalpha() for ch in word)
+        for word in vis.split()
+    )
+
+
+def _arabic_word_overlap(text: str, actual: str) -> float:
+    words = [
+        word for word in _content_words(text)
+        if any('\u0600' <= ch <= '\u06FF' for ch in word)
+    ]
+    have = {
+        word for word in _content_words(actual)
+        if any('\u0600' <= ch <= '\u06FF' for ch in word)
+    }
+    if not words:
+        return 0.0
+    return sum(1 for word in words if word in have) / len(words)
+
+
+def _is_visual_presentation_of_actual(text: str, actual: str) -> bool:
+    """True when paint is a presentation form of ActualText, not a new sentence.
+
+    Character-reversed Arabic, digit-shaped twins, and mixed visual-order
+    fragments of ActualText are overlays. A logical sentence that is only
+    missing words or digits is not.
+    """
+    act = _layout_norm(actual)
+    raw = _layout_norm(text)
+    if not raw or not act:
+        return False
+    if raw in act or _complete_layout_equivalent(text, act):
+        return True
+    undone_runs = _layout_norm(_undo_visible_lines(text))
+    if undone_runs and undone_runs != raw and undone_runs in act:
+        return True
+    if (
+            _is_mixed_arabic_latin(text)
+            and len(raw) < 32
+            and not re.search(r'\s', raw)
+            and set(_content_words(text)) <= set(_content_words(act))
+    ):
+        return True
+    if any('\u0600' <= ch <= '\u06FF' for ch in raw):
+        raw_nodigit = re.sub(r'[0-9٠-٩٫.]', '', raw)
+        act_nodigit = re.sub(r'[0-9٠-٩٫.]', '', act)
+        if len(raw_nodigit) >= 20 and raw_nodigit in act_nodigit:
+            return True
+    undone = _undo_extracted_arabic_visual(text)
+    raw_overlap = _arabic_word_overlap(text, act)
+    undone_overlap = _arabic_word_overlap(undone, act)
+    if raw_overlap < 0.4 and undone_overlap >= 0.85:
+        return True
+    if _is_mixed_arabic_latin(text):
+        vis_lat = _latin_relation(text)
+        act_lat = _latin_relation(act)
+        if (
+                vis_lat
+                and act_lat
+                and vis_lat != act_lat
+                and vis_lat == list(reversed(act_lat))
+        ):
+            return True
+    return False
+
+
 def _visible_reconciled_to_actual(visible: str, actual: str) -> Tuple[str, str]:
     """Reconcile painted visible to ActualText only from file evidence.
 
     ActualText is never reversed. Pure English is never reversed.
-    Visible is converted only when mixed Arabic/Latin lines need
-    visual-to-logical conversion and that conversion matches ActualText.
+    Painted text and logical ActualText stay separately attributable.
+    Visible is converted only when the complete associated paint matches
+    ActualText after layout normalization or proven visual-to-logical
+    conversion. Incomplete paint is not replaced by ActualText.
     """
     vis = _layout_norm(visible)
     act = _layout_norm(actual)
@@ -501,54 +660,12 @@ def _visible_reconciled_to_actual(visible: str, actual: str) -> Tuple[str, str]:
         undone = _layout_norm(_undo_visible_lines(visible))
         return undone, 'visible_visual_no_actual'
     if act and vis == act:
+        raw_visible = str(visible or '')
+        if '\n' in raw_visible:
+            return vis, 'visible_wraps_actual'
         return vis, 'same'
-    vis_lines = [
-        _layout_norm(line)
-        for line in str(visible or '').splitlines()
-        if _layout_norm(line)
-    ]
-    if act and vis_lines and all(line in act for line in vis_lines):
-        return act, 'visible_wraps_actual'
-    act_compact = re.sub(r'[^A-Za-z0-9\u0600-\u06FF]+', '', act)
-    vis_compact = re.sub(
-        r'[^A-Za-z0-9\u0600-\u06FF]+', '', ''.join(vis_lines))
-    if act_compact and vis_compact:
-        pos = 0
-        wrap_ok = True
-        for ch in vis_compact:
-            nxt = act_compact.find(ch, pos)
-            if nxt < 0:
-                wrap_ok = False
-                break
-            pos = nxt + 1
-        if wrap_ok and not _latin_vis_conflicts_act(
-                _latin_relation(visible), _latin_relation(act)):
-            return act, 'visible_wraps_actual'
-    if act and _is_mixed_arabic_latin(visible):
-        undone = _layout_norm(_undo_visible_lines(visible))
-        if undone == act:
-            return undone, 'visible_visual_matches_actual'
-        undone_lines = [
-            _layout_norm(_undo_visual_rtl_line(line))
-            for line in str(visible or '').splitlines()
-            if _pdf_line(line)
-        ]
-        if undone_lines and all(line in act for line in undone_lines if line):
-            return act, 'visible_visual_matches_actual'
-        if (
-                _latin_relation(undone) == _latin_relation(act)
-                and (act in undone or undone in act)
-        ):
-            return act, 'visible_visual_matches_actual'
-        vis_lat = _latin_relation(visible)
-        act_lat = _latin_relation(act)
-        if vis_lat and act_lat and vis_lat == list(reversed(act_lat)):
-            return act, 'visible_visual_matches_actual'
-        if vis_lat and act_lat and not _latin_vis_conflicts_act(vis_lat, act_lat):
-            return act, 'visible_visual_matches_actual'
-        if vis_lat and act_lat and _latin_forward_window(
-                vis_lat, list(reversed(act_lat))):
-            return act, 'visible_visual_matches_actual'
+    if act and _complete_layout_equivalent(visible, act):
+        return act, 'visible_visual_matches_actual'
     return vis, 'visible_as_extracted'
 
 
@@ -892,12 +1009,13 @@ def _drop_overlay_visible(
         lines: Sequence[Any],
         actual: str,
 ) -> List[str]:
-    """Drop logical overlays and their same-line painted siblings.
+    """Drop logical overlays; keep incomplete painted sentences.
 
     ExtractableCell emits ActualText plus an invisible logical draw on
-    the same line box as the visual run. The overlay is not a second
-    narrative. Latin-only token paint of ActualText tokens is the same
-    identity, not a conflicting representation.
+    the same line box as the visual run. Token-only Latin paint of
+    ActualText tokens is the same identity, not a conflicting
+    representation. An ordinary sentence missing words or digits is not
+    an overlay merely because acronyms agree or characters are a prefix.
     """
     act = _layout_norm(actual)
     act_lat = _latin_relation(act)
@@ -914,28 +1032,33 @@ def _drop_overlay_visible(
         bands.setdefault(round(float(y0 or 0), 1), []).append(text)
     kept: List[Tuple[float, str]] = []
     for y_key, texts in bands.items():
-        # Same line box with a logical overlay plus painted run.
-        # A single painted line that matches ActualText is agreement,
-        # not an overlay to discard.
         if act and len(texts) > 1 and any(
                 len(_layout_norm(text)) >= 12 and (
-                    _layout_norm(text) in act
+                    _complete_layout_equivalent(text, act)
+                    or _layout_norm(text) == act
                     or (
                         len(re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text))) >= 20
-                        and re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text))
-                        in act_nodigit
+                        and _same_complete_words(
+                            re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text)),
+                            act_nodigit)
                     )
                 )
                 for text in texts):
             continue
         for text in texts:
+            if act and _is_visual_presentation_of_actual(text, act):
+                continue
             if act and not any('\u0600' <= ch <= '\u06FF' for ch in text):
                 line_lat = _latin_relation(text)
-                if line_lat and not _latin_vis_conflicts_act(line_lat, act_lat):
+                if (
+                        line_lat
+                        and _token_only_latin_overlay(text)
+                        and not _latin_vis_conflicts_act(line_lat, act_lat)
+                ):
                     continue
                 compact = re.sub(r'[^A-Za-z0-9]+', '', text)
                 act_c = re.sub(r'[^A-Za-z0-9]+', '', act)
-                if len(compact) >= 16 and compact in act_c:
+                if len(compact) >= 16 and compact == act_c:
                     continue
             ar_only = _layout_norm(re.sub(r'[A-Za-z0-9/._-]+', ' ', text))
             if act and len(ar_only) >= 8 and ar_only in act:
@@ -1019,6 +1142,29 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
                     page_vis.append((y0, visible))
                 if actual and not _is_running_chrome(actual):
                     page_act_frags.append(actual)
+        events_early = list(page.get('events') or [])
+        heading_seen = any(
+            _env_boundary_line(event.get('text') or '') == 'heading'
+            for event in events_early)
+        taking_event = heading_seen or page_started
+        for event in events_early:
+            text = _pdf_line(event.get('text') or '')
+            if not text:
+                continue
+            boundary = _env_boundary_line(text)
+            if boundary == 'heading':
+                taking_event = True
+                continue
+            if taking_event and boundary in ('next', 'stop'):
+                break
+            if (
+                    taking_event
+                    and event.get('kind') == 'visible'
+                    and event.get('logical_paint')
+                    and not _is_running_chrome(text)
+            ):
+                page_took = True
+                page_vis.append((0, text))
         repeated_chrome.update(page_chrome)
         if not page_took:
             continue

@@ -452,7 +452,7 @@ def _pdf_owned(
         line = ''
         for word in words:
             candidate = (line + ' ' + word).strip()
-            if len(candidate) > 96 and line:
+            if canv.stringWidth(candidate, 'Helvetica', 10) > 480 and line:
                 canv.drawString(36, y, line)
                 y -= 12
                 line = word
@@ -462,7 +462,8 @@ def _pdf_owned(
             canv.drawString(36, y, line)
             y -= 12
         import re as _re
-        latin = _re.findall(r'[A-Za-z][A-Za-z0-9_-]*|/', str(para))
+        from release_engine_v3.rel37_export_content_parity import _semantic_latin_tokens
+        latin = _semantic_latin_tokens(para)
         if latin:
             canv.setFont('Helvetica', 10)
             canv.drawString(36, y, ' '.join(latin))
@@ -475,8 +476,8 @@ def _pdf_owned(
             _emit_actual_text(canv, para)
             canv.setFont('Helvetica', 10)
             canv.drawString(36, y, para)
-            import re as _re
-            latin = _re.findall(r'[A-Za-z][A-Za-z0-9_-]*|/', str(para))
+            from release_engine_v3.rel37_export_content_parity import _semantic_latin_tokens
+            latin = _semantic_latin_tokens(para)
             if latin:
                 y -= 12
                 canv.drawString(36, y, ' '.join(latin))
@@ -1216,6 +1217,217 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         self.assertNotEqual(result['download_http'], 200)
         self.assertFalse(result['bytes'].startswith(b'%PDF'))
         self.assertEqual(model.model_hash, LIVE_HASH)
+
+
+COMPLETE_EN = 'NDMO is not approved for unrestricted sharing.'
+PAINTED_EN_DELETED = 'NDMO is approved for unrestricted sharing.'
+COMPLETE_AR = 'الجهة لا تشارك البيانات وفق PDPL.'
+PAINTED_AR_DELETED = 'الجهة تشارك البيانات وفق PDPL.'
+COMPLETE_NUM = 'NDMO requires a target of 100%.'
+PAINTED_NUM_CHANGED = 'NDMO requires a target of 10%.'
+WRAP_EN = 'NDMO is the first reference; PDPL is the second reference.'
+
+
+def _complete_repr_pdf(visible: str, actual: str) -> bytes:
+    """Test-owned readable PDF with independently painted vs ActualText."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen.canvas import Canvas
+    buf = io.BytesIO()
+    canv = Canvas(buf, pagesize=A4)
+    canv.setFont('Helvetica', 10)
+    canv.drawString(36, 800, 'Organization SpecimenOrg')
+    canv.drawString(36, 786, 'Sector Banking/Finance')
+    canv.showPage()
+    y = 800
+    canv.setFont('Helvetica', 10)
+    canv.drawString(36, y, ENV_HEAD_EN)
+    y -= 16
+    if actual:
+        _emit_actual_text(canv, actual)
+    logical_paint = str(visible or '')
+    if logical_paint:
+        hex_text = 'FEFF' + logical_paint.encode('utf-16-be').hex().upper()
+        canv._code.append(f'<{hex_text}> Tj')
+    lines = str(visible or '').splitlines() or ['']
+    for line in lines:
+        if any('\u0600' <= ch <= '\u06FF' for ch in line):
+            import re as _re
+            latin = _re.findall(r'[A-Za-z][A-Za-z0-9%._-]*', line)
+            if latin:
+                canv.setFont('Helvetica', 10)
+                canv.drawString(36, y, ' '.join(latin))
+                y -= 14
+            ar_font = _ensure_ar_test_font()
+            arabic = _re.sub(r'[A-Za-z0-9%._/-]+', ' ', line)
+            if ar_font and arabic.strip():
+                canv.setFont(ar_font, 10)
+                canv.drawRightString(560, y, arabic.strip())
+                y -= 14
+            elif arabic.strip():
+                canv.setFont('Helvetica', 10)
+                canv.drawString(36, y, arabic.strip())
+                y -= 14
+        else:
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, line)
+            y -= 14
+    if actual:
+        _end_actual_text(canv)
+    canv.save()
+    return buf.getvalue()
+
+
+class CompleteRepresentationPdfTests(unittest.TestCase):
+    def _helper(self, expected, painted, actual):
+        from release_engine_v3.rel37_export_content_parity import (
+            _paragraph_pdf_blockers,
+            _visible_reconciled_to_actual,
+        )
+        vis_cmp, how = _visible_reconciled_to_actual(painted, actual)
+        blockers = _paragraph_pdf_blockers(
+            0, expected, painted, visible=painted, actual=actual)
+        return vis_cmp, how, blockers
+
+    def _assert_narrative_blocker(self, blockers):
+        self.assertTrue(
+            any(
+                'actual_visible_disagree' in item
+                or 'narrative_missing' in item
+                or 'latin_missing' in item
+                or 'latin_order' in item
+                for item in blockers
+            ),
+            blockers,
+        )
+        self.assertFalse(any(
+            item in blockers for item in (
+                'pdf_extraction_unreliable',
+                'pdf_environment_section_unassociated',
+                'docx_bytes_missing',
+                'pdf_bytes_missing',
+            )), blockers)
+
+    def test_helper_complete_content_controls(self):
+        vis, how, blockers = self._helper(WRAP_EN, WRAP_EN, WRAP_EN)
+        self.assertEqual(how, 'same')
+        self.assertFalse(blockers, (how, blockers, vis))
+        wrapped = 'NDMO is the first reference;\nPDPL is the second reference.'
+        vis, how, blockers = self._helper(WRAP_EN, wrapped, WRAP_EN)
+        self.assertIn(how, ('same', 'visible_wraps_actual'))
+        self.assertFalse(blockers, (how, blockers, vis))
+        vis, how, blockers = self._helper(
+            COMPLETE_EN, SPECIMEN_EN_CHANGED, SPECIMEN_EN_CHANGED)
+        self.assertTrue(blockers, (how, blockers, vis))
+
+    def test_helper_refuses_incomplete_painted_subsequence(self):
+        cases = (
+            ('english_deletion', COMPLETE_EN, PAINTED_EN_DELETED, COMPLETE_EN),
+            ('arabic_deletion', COMPLETE_AR, PAINTED_AR_DELETED, COMPLETE_AR),
+            ('numeric_change', COMPLETE_NUM, PAINTED_NUM_CHANGED, COMPLETE_NUM),
+        )
+        for name, expected, painted, actual in cases:
+            vis, how, blockers = self._helper(expected, painted, actual)
+            self.assertNotEqual(
+                how,
+                'visible_wraps_actual',
+                (name, how, vis),
+            )
+            self.assertNotEqual(vis, expected, (name, vis, how))
+            self._assert_narrative_blocker(blockers)
+
+    def test_matching_pdf_positive_before_each_painted_mutation(self):
+        for expected, lang in (
+                (COMPLETE_EN, 'en'),
+                (COMPLETE_AR, 'ar'),
+                (COMPLETE_NUM, 'en'),
+                (WRAP_EN, 'en'),
+        ):
+            model = _EnvModel(expected, lang=lang, org='SpecimenOrg')
+            good = _complete_repr_pdf(expected, expected)
+            self.assertTrue(good.startswith(b'%PDF'))
+            self.assertEqual(
+                compare_environment_narrative_to_pdf(model, good), [],
+                expected)
+
+    def test_painted_english_negation_removed_actualtext_correct(self):
+        model = _EnvModel(COMPLETE_EN, lang='en', org='SpecimenOrg')
+        good = _complete_repr_pdf(COMPLETE_EN, COMPLETE_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _complete_repr_pdf(PAINTED_EN_DELETED, COMPLETE_EN)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self._assert_narrative_blocker(blockers)
+
+    def test_painted_arabic_negation_removed_actualtext_correct(self):
+        model = _EnvModel(COMPLETE_AR, lang='ar', org='SpecimenOrg')
+        good = _complete_repr_pdf(COMPLETE_AR, COMPLETE_AR)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _complete_repr_pdf(PAINTED_AR_DELETED, COMPLETE_AR)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self._assert_narrative_blocker(blockers)
+
+    def test_painted_numeric_target_changed_actualtext_correct(self):
+        model = _EnvModel(COMPLETE_NUM, lang='en', org='SpecimenOrg')
+        good = _complete_repr_pdf(COMPLETE_NUM, COMPLETE_NUM)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+        mutated = _complete_repr_pdf(PAINTED_NUM_CHANGED, COMPLETE_NUM)
+        blockers = compare_environment_narrative_to_pdf(model, mutated)
+        self._assert_narrative_blocker(blockers)
+
+    def test_valid_wrap_mixed_script_and_continuation_still_accepted(self):
+        wrap_vis = 'NDMO is the first reference;\nPDPL is the second reference.'
+        model = _EnvModel(WRAP_EN, lang='en', org='SpecimenOrg')
+        wrapped = _complete_repr_pdf(wrap_vis, WRAP_EN)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, wrapped), [])
+        mixed = (
+            'تعمل الجهة في بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق '
+            'NDMO وحماية بيانات شخصية وفق PDPL.')
+        mixed_model = _EnvModel(mixed, lang='ar', org='جهة')
+        mixed_pdf = _complete_repr_pdf(mixed, mixed)
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(mixed_model, mixed_pdf), [])
+        first, second = EXPECTED_AR_ENV, (
+            'تشمل المحركات التشغيلية اكتمال التصنيف وفق NDMO.')
+        cont_model = _EnvModel(first + '\n\n' + second)
+        continued = _pdf_owned(
+            org_name='جهة',
+            cover_sector='بنوك/مالي',
+            env_heading=ENV_HEAD_EN,
+            env_paras=[first],
+            env_continue_paras=[second],
+        )
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(cont_model, continued), [])
+
+    def test_real_thread_owner_positive_and_painted_mutation_refused(self):
+        model = _load_json_model(LIVE_FIXTURE)
+        self.assertEqual(model.model_hash, LIVE_HASH)
+        saved = _persist(model, db_sector='Healthcare')
+        good = _export(
+            saved, _official_body(saved), 'pdf', immediate=False)
+        self.assertEqual(good['download_http'], 200, good['status'])
+        self.assertTrue(good['bytes'].startswith(b'%PDF'))
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, good['bytes']), [])
+        self.assertEqual(model.model_hash, LIVE_HASH)
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = _complete_repr_pdf(
+                    PAINTED_EN_DELETED, COMPLETE_EN)
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            result = _export(
+                saved, _official_body(saved), 'pdf', immediate=False)
+        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
+        self.assertNotEqual(result['download_http'], 200)
+        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        self.assertEqual(model.model_hash, LIVE_HASH)
+        self.assertEqual(model.compute_model_hash(), LIVE_HASH)
 
 
 if __name__ == '__main__':
