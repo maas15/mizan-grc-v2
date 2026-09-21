@@ -1466,20 +1466,15 @@ OWNER_VIS = (
     'and Alice for review.')
 NUM_AR_EXP = 'تبلغ القيمة المستهدفة للمؤشر 100% وفق NDMO.'
 NUM_AR_VIS = 'تبلغ القيمة المستهدفة للمؤشر 10% وفق NDMO.'
-CONTRA_EXTRA = 'The appendix restates an unrelated sharing obligation.'
+CONTRA_EXTRA = (
+    'A second painted sentence assigns the same work to a different owner.')
 
 
 def _emit_hidden_logical(canv, logical: str):
     canv._code.append('q')
     canv._code.append('3 Tr')
-    ar = _ensure_ar_test_font()
-    text = str(logical or '')
-    if ar and any('\u0600' <= ch <= '\u06FF' for ch in text):
-        canv.setFont(ar, 10)
-        canv.drawRightString(560, 2, text)
-    else:
-        canv.setFont('Helvetica', 10)
-        canv.drawString(36, 2, text)
+    hex_text = 'FEFF' + str(logical or '').encode('utf-16-be').hex().upper()
+    canv._code.append(f'<{hex_text}> Tj')
     canv._code.append('Q')
 
 

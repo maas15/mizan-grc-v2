@@ -139,7 +139,10 @@ def _normalize_extracted_pdf_text(text: str) -> str:
     Latin glyphs inside Arabic runs.
     """
     import unicodedata
-    return unicodedata.normalize('NFKC', text or '').replace('\x00', '')
+    cleaned = unicodedata.normalize('NFKC', text or '').replace('\x00', '')
+    if cleaned.startswith('\ufeff'):
+        cleaned = cleaned[1:]
+    return cleaned.replace('\ufeff', '')
 
 
 def _decode_actual_text_hex(hx: str) -> str:
@@ -617,14 +620,20 @@ def _complete_layout_equivalent(painted: str, actual: str) -> bool:
         return True
     if not (vis and act):
         return False
-    candidates = [
-        _layout_norm(_undo_visible_lines(painted)),
-        _undo_extracted_arabic_visual(painted),
-        _undo_extracted_arabic_visual(_undo_visible_lines(painted)),
-    ]
+    candidates = [_undo_extracted_arabic_visual(painted)]
+    if not _arabic_already_logical(painted, actual):
+        candidates.extend((
+            _layout_norm(_undo_visible_lines(painted)),
+            _undo_extracted_arabic_visual(_undo_visible_lines(painted)),
+        ))
     act_words = _content_words(act)
     if not act_words:
         return False
+    if (
+            not _arabic_already_logical(painted, actual)
+            and _mixed_script_layout_equivalent(painted, actual)
+    ):
+        return True
     for candidate in candidates:
         if not candidate:
             continue
@@ -719,6 +728,221 @@ def _overlay_line_fragments(text: str, actual: str) -> List[str]:
     return parts or [raw]
 
 
+def _non_identity_words(text: str) -> List[str]:
+    return [
+        word for word in _content_words(text)
+        if not _is_identity_latin_token(word)
+    ]
+
+
+def _mixed_script_layout_equivalent(painted: str, actual: str) -> bool:
+    """Arabic visual undo plus independent Latin identity/order.
+
+    Helvetica identity tokens are a separate draw. They do not license
+    ignoring the surrounding ordered Arabic statement or values.
+    """
+    undone = _undo_extracted_arabic_visual(painted)
+    if _non_identity_words(undone) != _non_identity_words(actual):
+        return False
+    if not _non_identity_words(actual):
+        return False
+    return _latin_relation(painted) == _latin_relation(actual)
+
+
+def _arabic_already_logical(painted: str, actual: str) -> bool:
+    """True when Arabic words are already logical, so run-undo must not rewrite Latin order."""
+    want = [
+        word for word in _content_words(actual)
+        if any('\u0600' <= ch <= '\u06FF' for ch in word)
+    ]
+    have = [
+        word for word in _content_words(painted)
+        if any('\u0600' <= ch <= '\u06FF' for ch in word)
+    ]
+    return bool(want) and _consume_complete_statement(want, have, set(want), actual)
+
+
+def _is_identity_latin_token(word: str) -> bool:
+    tokens = _semantic_latin_tokens(word)
+    return tokens == [word]
+
+
+def _compact_letters(text: str) -> str:
+    return re.sub(r'[^\w\u0600-\u06FF%]+', '', _layout_norm(text))
+
+
+def _is_reverse_fragment(word: str, known: Sequence[str] | set) -> bool:
+    compact = re.sub(r'[^\w\u0600-\u06FF%]+', '', str(word or ''))
+    if not compact:
+        return False
+    if compact[::-1] in set(known):
+        return True
+    for item in known:
+        rev = str(item or '')[::-1]
+        if len(compact) >= 3 and len(rev) >= 3 and (
+                compact in rev or rev in compact):
+            return True
+    return False
+
+
+def _is_visual_leftover_run(text: str, actual: str) -> bool:
+    """True when a run is a visual conversion of ActualText, not the logical run."""
+    act = _layout_norm(actual)
+    raw = _layout_norm(text)
+    if not raw or not act or raw == act or raw in act:
+        return False
+    raw_rev = _layout_norm(str(text or '')[::-1])
+    act_c = _compact_letters(act)
+    if raw_rev == act or (len(raw) >= 12 and raw_rev in act):
+        return True
+    if len(_compact_letters(raw_rev)) >= 12 and _compact_letters(raw_rev) in act_c:
+        return True
+    candidates = (
+        _layout_norm(_undo_visible_lines(text)),
+        _undo_extracted_arabic_visual(text),
+        _undo_extracted_arabic_visual(_undo_visible_lines(text)),
+    )
+    for candidate in candidates:
+        if not candidate or candidate == raw:
+            continue
+        if candidate == act:
+            return True
+        if len(candidate) >= 12 and candidate in act:
+            return True
+        if len(_compact_letters(candidate)) >= 12 and _compact_letters(candidate) in act_c:
+            return True
+        if _content_words(candidate) == _content_words(act):
+            return True
+    return False
+
+
+def _walk_complete_statement(
+        want: Sequence[str],
+        have: Sequence[str],
+        act_set: Sequence[str] | set,
+        actual: str = '',
+) -> Tuple[bool, List[str]]:
+    """Walk have consuming want in order. Return (complete, extras)."""
+    known = set(act_set)
+    ref = _layout_norm(actual) or ' '.join(want)
+    idx = 0
+    consumed: List[str] = []
+    extras: List[str] = []
+    i = 0
+    while i < len(have):
+        word = have[i]
+        if idx < len(want) and word == want[idx]:
+            consumed.append(word)
+            idx += 1
+            i += 1
+            continue
+        if idx < len(want) and word[::-1] == want[idx]:
+            consumed.append(want[idx])
+            idx += 1
+            i += 1
+            continue
+        skipped = False
+        for end in range(len(have), i, -1):
+            run = have[i:end]
+            if not run:
+                continue
+            if idx < len(want) and want[idx] in run:
+                continue
+            if _is_visual_leftover_run(' '.join(run), ref):
+                extras.extend(run)
+                i = end
+                skipped = True
+                break
+        if skipped:
+            continue
+        if word not in known and word[::-1] in known:
+            extras.append(word)
+            i += 1
+            continue
+        if word in consumed and word in known:
+            extras.append(word)
+            i += 1
+            continue
+        if _is_identity_latin_token(word) and word in known:
+            extras.append(word)
+            i += 1
+            continue
+        extras.append(word)
+        i += 1
+        if idx < len(want):
+            return False, extras
+    return idx == len(want), extras
+
+
+def _consume_complete_statement(
+        want: Sequence[str],
+        have: Sequence[str],
+        act_set: Sequence[str] | set,
+        actual: str = '',
+) -> bool:
+    """Consume want in order. Skip leftover visual runs and duplicate identity.
+
+    An interrupting word that changes the statement fails. A complete
+    bag, opening clause, or prefix is not enough.
+    """
+    complete, _extras = _walk_complete_statement(want, have, act_set, actual)
+    return complete
+
+
+def _extras_are_accounted(
+        extras: Sequence[str],
+        act_set: Sequence[str] | set,
+        actual: str,
+) -> bool:
+    known = set(act_set)
+    if not extras:
+        return True
+    if all(
+            word in known
+            or word[::-1] in known
+            or _is_identity_latin_token(word)
+            or _is_reverse_fragment(word, known)
+            or _is_visual_leftover_run(word, actual)
+            for word in extras
+    ):
+        return True
+    extra_text = ' '.join(extras)
+    if _is_visual_leftover_run(extra_text, actual):
+        return True
+    leftovers = [
+        word for word in extras
+        if word not in known and not _is_identity_latin_token(word)
+    ]
+    if leftovers and _is_visual_leftover_run(' '.join(leftovers), actual):
+        return True
+    return False
+
+
+def _ordered_statement_present(para: str, painted: str) -> bool:
+    """True when the complete ordered statement survives justified mapping."""
+    want = _content_words(para)
+    if not want:
+        return False
+    sources = [painted, _undo_extracted_arabic_visual(painted)]
+    arabic_already_logical = _arabic_already_logical(painted, para)
+    if not arabic_already_logical:
+        sources.extend((
+            _undo_visible_lines(painted),
+            _undo_extracted_arabic_visual(_undo_visible_lines(painted)),
+        ))
+    if (
+            not arabic_already_logical
+            and _mixed_script_layout_equivalent(painted, para)
+    ):
+        return True
+    known = set(want)
+    for source in sources:
+        if _consume_complete_statement(
+                want, _content_words(source), known, para):
+            return True
+    return False
+
+
 def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
     """True when the associated paint still has this paragraph's content.
 
@@ -731,7 +955,7 @@ def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
         return True
     if want and have and _complete_layout_equivalent(painted, para):
         return True
-    return False
+    return _ordered_statement_present(para, painted)
 
 
 def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
@@ -743,13 +967,43 @@ def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
         return False
     if _complete_layout_equivalent(painted, para) or _complete_layout_equivalent(painted, act):
         return True
-    remainder = have
-    if want and want in have:
-        start = have.find(want)
-        remainder = (have[:start] + have[start + len(want):]).strip()
-    if not remainder:
+    if not _arabic_already_logical(painted, para) and _mixed_script_layout_equivalent(painted, act or para):
         return True
-    return bool(act) and _is_visual_presentation_of_actual(remainder, act)
+    sources = [have, _undo_extracted_arabic_visual(painted)]
+    if not _arabic_already_logical(painted, para):
+        sources.append(_layout_norm(_undo_visible_lines(painted)))
+    act_set = set(_content_words(actual) or _content_words(para))
+    for source in sources:
+        if want and source and want in source:
+            remainder = (
+                source[:source.find(want)] + source[source.find(want) + len(want):]
+            ).strip()
+            if not remainder:
+                return True
+            if _is_visual_presentation_of_actual(remainder, act):
+                return True
+            extras = [
+                word for word in _content_words(remainder)
+                if word not in act_set
+                and word[::-1] not in act_set
+                and not _is_identity_latin_token(word)
+                and not _is_reverse_fragment(word, act_set)
+            ]
+            if not extras:
+                return True
+            if len(_layout_norm(remainder)) < 20 and not _semantic_latin_tokens(remainder):
+                return True
+    want_words = _content_words(para)
+    if not want_words:
+        return False
+    ref = actual or para
+    for source in sources:
+        have_words = _content_words(source)
+        complete, extras = _walk_complete_statement(
+            want_words, have_words, act_set, ref)
+        if complete and _extras_are_accounted(extras, act_set, ref):
+            return True
+    return False
 
 
 def _unrelated_painted_sentence(painted: str, para: str, actual: str) -> bool:
@@ -1089,9 +1343,30 @@ def _page_lines(page: Dict[str, Any]) -> List[str]:
     return [line.strip() for line in blob.splitlines() if line.strip()]
 
 
+def _is_unreadable_paint_fragment(text: str) -> bool:
+    """True when a line is failed hex/CID decode, not readable paint."""
+    raw = str(text or '')
+    if not raw.strip():
+        return True
+    letters = sum(
+        1 for ch in raw
+        if ch.isalpha() or '\u0600' <= ch <= '\u06FF'
+    )
+    controls = sum(
+        1 for ch in raw
+        if ord(ch) < 32 or 0x01 <= ord(ch) <= 0x08 or 0x80 <= ord(ch) <= 0x9F
+    )
+    return controls > 0 and controls >= max(1, letters // 2)
+
+
 def _pdf_line(value: Any) -> str:
     import unicodedata
-    return unicodedata.normalize('NFKC', str(value or '')).replace('\x00', '').strip()
+    text = unicodedata.normalize('NFKC', str(value or '')).replace('\x00', '').strip()
+    if text.startswith('\ufeff'):
+        text = text[1:].strip()
+    if text.startswith('þÿ'):
+        text = text[2:].strip()
+    return text
 
 
 def _looks_like_toc_page(lines: Sequence[str]) -> bool:
@@ -1246,16 +1521,25 @@ def _drop_overlay_visible(
         _layout_norm(item) for item in _hidden_logicals_from_events(events)
         if _layout_norm(item)
     ]
+    displayed_norms = {
+        _layout_norm(str(event.get('text') or ''))
+        for event in events
+        if event.get('kind') == 'visible'
+        and not event.get('non_displayed')
+        and _layout_norm(str(event.get('text') or ''))
+    }
     kept: List[Tuple[float, str]] = []
+    kept_norms: set = set()
     for item in lines:
         if isinstance(item, (tuple, list)) and len(item) >= 2:
             y0, raw = item[0], item[1]
         else:
             y0, raw = 0, item
         text = _pdf_line(raw)
-        if not text or _is_running_chrome(text):
+        if not text or _is_running_chrome(text) or _is_unreadable_paint_fragment(text):
             continue
         reason = _hidden_overlay_reason(text, hidden_norms)
+        tn = _layout_norm(text)
         if reason:
             remainder = _strip_proven_hidden_span(text, hidden_norms)
             if excluded is not None:
@@ -1265,8 +1549,13 @@ def _drop_overlay_visible(
                 excluded.append(record)
             if remainder:
                 kept.append((float(y0 or 0), remainder))
+                kept_norms.add(_layout_norm(remainder))
+            elif tn in displayed_norms and tn not in kept_norms:
+                kept.append((float(y0 or 0), text))
+                kept_norms.add(tn)
             continue
         kept.append((float(y0 or 0), text))
+        kept_norms.add(tn)
     kept.sort(key=lambda item: item[0])
     return [text for _y, text in kept]
 
@@ -1363,10 +1652,16 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
                     taking_event
                     and event.get('kind') == 'visible'
                     and event.get('logical_paint')
+                    and not event.get('non_displayed')
                     and not _is_running_chrome(text)
             ):
-                page_took = True
-                page_vis.append((0, text))
+                already = {
+                    _layout_norm(item[1] if isinstance(item, (tuple, list)) else item)
+                    for item in page_vis
+                }
+                if _layout_norm(text) not in already:
+                    page_took = True
+                    page_vis.append((0, text))
         repeated_chrome.update(page_chrome)
         if not page_took:
             continue
@@ -1702,8 +1997,11 @@ def _paragraph_pdf_blockers(
             'visible_wraps_actual',
             'visible_visual_no_actual',
     ):
+        vis_for_latin = vis_cmp
+        if not _arabic_already_logical(vis_raw, para):
+            vis_for_latin = _layout_norm(_undo_visible_lines(vis_raw)) or vis_cmp
         if _latin_vis_conflicts_act(
-                _latin_relation(vis_cmp), _latin_relation(act_cmp)):
+                _latin_relation(vis_for_latin), _latin_relation(act_cmp)):
             blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
             return blockers
         if vis_cmp != act_cmp and vis_incomplete:
@@ -1729,7 +2027,8 @@ def _paragraph_pdf_blockers(
         ):
             targets = [act_cmp or vis_cmp]
         elif vis_complete and leftover_ok:
-            targets = [vis_cmp]
+            undone = _layout_norm(_undo_visible_lines(vis_raw))
+            targets = [item for item in (undone, vis_cmp) if item]
         else:
             targets = [vis_cmp]
     elif not vis_raw.strip() and act_use:
@@ -1755,6 +2054,11 @@ def _paragraph_pdf_blockers(
         if want in target:
             matched = True
             break
+        if vis_complete and leftover_ok and _ordered_statement_present(para, target):
+            matched = True
+            break
+    if not matched and vis_complete and leftover_ok and _ordered_statement_present(para, vis_raw):
+        matched = True
     if not matched:
         if want_lat:
             have_any = []
