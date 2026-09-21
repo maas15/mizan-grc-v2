@@ -20,13 +20,19 @@ jobs:
       SECRET_KEY: test-secret-key
       DATABASE_URL: sqlite:////tmp/mizan_rel_pr_checks.db
       OPENAI_API_KEY: ''
-      REL37_EXPORT_DIAG_DIR: ${{ runner.temp }}/rel37_export_diagnostics
       # REL2_SKIP_EXPORT_EVIDENCE is intentionally unset. Required
       # returned-byte and ownership acceptance must execute real gates.
       # Individual legacy unit files may setdefault the skip locally;
       # those files do not satisfy export-acceptance.
     steps:
       - uses: actions/checkout@v4
+
+      - name: Initialize export diagnostic directory
+        shell: bash
+        run: |
+          diag_dir="${RUNNER_TEMP:?}/rel37_export_diagnostics"
+          mkdir -p "$diag_dir"
+          printf 'REL37_EXPORT_DIAG_DIR=%s\n' "$diag_dir" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
