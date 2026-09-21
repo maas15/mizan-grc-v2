@@ -581,3 +581,20 @@ def ensure_test_env() -> None:
     os.environ.setdefault('REL2_SKIP_EXPORT_EVIDENCE', '1')
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+
+
+def ensure_required_acceptance_env() -> None:
+    """Required all-domains smoke setup. Must not enable evidence bypass."""
+    tmp = tempfile.mkdtemp(prefix='rel33_required_')
+    os.environ.setdefault('ADMIN_PASSWORD', 'test-admin-password')
+    os.environ.setdefault('SECRET_KEY', 'test-secret-key')
+    os.environ.setdefault(
+        'DATABASE_URL', 'sqlite:///' + os.path.join(tmp, 'test.db'))
+    os.environ.setdefault('OPENAI_API_KEY', '')
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    skip = os.environ.get('REL2_SKIP_EXPORT_EVIDENCE')
+    if str(skip or '').strip() == '1':
+        raise RuntimeError(
+            'REL2_SKIP_EXPORT_EVIDENCE=1 is not allowed during required '
+            'all-domains smoke acceptance setup')

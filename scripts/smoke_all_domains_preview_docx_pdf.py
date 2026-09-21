@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,14 +13,23 @@ sys.path.insert(0, str(ROOT))
 from release_engine_v3.rel33_authority import REL33_P1_ROUTES, route_key
 from release_engine_v3.rel33_quality_matrix import (
     emit_rel33_matrix_report,
-    ensure_test_env,
+    ensure_required_acceptance_env,
     run_rel33_quality_case,
     run_rel33_quality_matrix,
 )
 
 
+def _assert_required_smoke_evidence_not_skipped() -> None:
+    skip = os.environ.get('REL2_SKIP_EXPORT_EVIDENCE')
+    if str(skip or '').strip() == '1':
+        raise RuntimeError(
+            'REL2_SKIP_EXPORT_EVIDENCE=1 is not allowed after required '
+            'all-domains smoke setup/imports')
+
+
 def main() -> int:
-    ensure_test_env()
+    ensure_required_acceptance_env()
+    _assert_required_smoke_evidence_not_skipped()
     cases = list(REL33_P1_ROUTES)
     rows = []
     for case in cases:
