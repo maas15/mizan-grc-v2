@@ -2553,17 +2553,39 @@ def apply_rel31_authoritative_contract(
                 pdf_text = ''
                 if pdf_bytes:
                     pdf_text = extract_pdf_visible_text(pdf_bytes)
+                quality_sections = dict(art.get('sections') or {})
+                adopted_rel37 = False
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative,
+                    )
+                    adopted_rel37 = is_rel37_authoritative(quality_sections)
+                except Exception:  # noqa: BLE001
+                    adopted_rel37 = False
+                # Adopted REL37 is the quality source. A rebuilt/recompiled
+                # artifact must not silently replace it with a weaker fallback.
                 dq = evaluate_document_quality(
-                    canonical_artifact=built,
-                    legacy_sections=dict(
-                        getattr(built, 'legacy_sections', None)
-                        or art.get('sections') or {}),
+                    canonical_artifact=(
+                        None if adopted_rel37 else built),
+                    legacy_sections=(
+                        quality_sections if adopted_rel37 else dict(
+                            getattr(built, 'legacy_sections', None)
+                            or quality_sections)),
                     render_tree=tree,
                     extracted_preview_text=preview_export.preview_text or '',
                     extracted_docx_text=docx_text,
                     extracted_pdf_text=pdf_text,
                     pdf_bytes=pdf_bytes,
                     domain=domain,
+                    lang=lang,
+                    document_type=str(
+                        (art.get('contract_meta') or {}).get('document_type')
+                        or art.get('document_type') or 'strategy'),
+                    selected_frameworks=(
+                        (art.get('contract_meta') or {}).get(
+                            'selected_frameworks')
+                        or art.get('selected_frameworks')
+                        or None),
                 )
                 art['rel31_document_quality'] = dq
                 dq_ok = bool(dq.get('passed'))
@@ -2578,9 +2600,12 @@ def apply_rel31_authoritative_contract(
                     preview_export, preview_ev = rel3_export_with_evidence(
                         'preview', built, backend=backend)
                     break
-                if _dq_pass < (_dq_max_passes - 1) and (
-                        _rel31_dq_repairable(blockers, dq, docx_ev)
-                        or _rel31_dq_needs_repair(dq)):
+                if (
+                        _dq_pass < (_dq_max_passes - 1)
+                        and not adopted_rel37
+                        and (
+                            _rel31_dq_repairable(blockers, dq, docx_ev)
+                            or _rel31_dq_needs_repair(dq))):
                     from release_engine.export_evidence_validator import (
                         repair_for_actual_export_defects,
                     )

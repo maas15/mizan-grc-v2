@@ -1248,7 +1248,7 @@ def _evaluate_visible_route(
 def _rel37_claimed_model(
         sections: Optional[Dict[str, Any]],
 ) -> Tuple[Optional[Any], Optional[List[str]]]:
-    """Load a claimed REL37 model. None, None = not claimed (use legacy)."""
+    """Hash/load only. Does not prove typed-quality eligibility."""
     try:
         from release_engine_v3.rel37_apply import (
             is_rel37_authoritative,
@@ -1268,98 +1268,361 @@ def _rel37_claimed_model(
     return model, []
 
 
+def _rel37_registry_required_families(
+        model: Any,
+        selected_frameworks: Optional[List[str]] = None,
+) -> List[str]:
+    from release_engine_v3.rel37_coverage_registry import families_for_request
+
+    payload = {
+        'selected_frameworks': list(
+            selected_frameworks
+            if selected_frameworks is not None
+            else (getattr(model, 'selected_frameworks', ()) or ())),
+    }
+    return [
+        spec.family_id
+        for spec in families_for_request(str(getattr(model, 'domain', '')), payload)
+    ]
+
+
+def _rel37_family_keys(row: Any) -> set:
+    keys = {
+        str(getattr(row, 'family', '') or '').strip(),
+        str(getattr(row, 'framework', '') or '').strip(),
+        str(getattr(row, 'pillar_family', '') or '').strip(),
+    }
+    fam = str(getattr(row, 'family', '') or '')
+    if fam.endswith('_compliance'):
+        keys.add(fam.split('_', 1)[0].upper())
+    return {k for k in keys if k}
+
+
+def _rel37_family_spec_index() -> Dict[str, Any]:
+    """Established compiler FamilySpec rows, including support families."""
+    from release_engine_v3.rel37_coverage_registry import DOMAIN_FAMILIES
+    from release_engine_v3.rel37_compilers import _DATA_SUPPORT, _DT_SUPPORT
+
+    index: Dict[str, Any] = {}
+    for specs in list(DOMAIN_FAMILIES.values()) + [_DATA_SUPPORT, _DT_SUPPORT]:
+        for spec in specs:
+            index[str(getattr(spec, 'family_id', '') or '')] = spec
+    return index
+
+
+def _rel37_spec_for_families(fams: set, index: Dict[str, Any]) -> Any:
+    for key in fams:
+        spec = index.get(key)
+        if spec is not None:
+            return spec
+        if str(key).endswith('_compliance'):
+            spec = index.get(str(key).split('_', 1)[0].upper())
+            if spec is not None:
+                return spec
+    return None
+
+
+def _rel37_registry_source_labels(spec: Any, lang: str) -> Dict[str, str]:
+    """Labels compile_strategy_model writes onto traces before row mutation."""
+    ar = str(lang or '').lower().startswith('ar')
+    kpi = spec.kpi_ar if ar else spec.kpi_en
+    road = spec.roadmap_ar if ar else spec.roadmap_en
+    gap = spec.gap_ar if ar else spec.gap_en
+    return {
+        'gap': str(gap[0] if gap else ''),
+        'kpi': str(kpi[0] if kpi else ''),
+        'initiative': str(road[2] if road and len(road) > 2 else ''),
+    }
+
+
+def _rel37_typed_eligibility(
+        sections: Optional[Dict[str, Any]],
+        *,
+        domain: str = '',
+        lang: str = '',
+        document_type: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Tuple[Optional[Any], Optional[List[str]]]:
+    """Decide whether typed REL37 quality may replace legacy floors.
+
+    None, None — not claimed; caller keeps legacy.
+    None, blockers — claimed but ineligible; fail closed, no legacy fallback.
+    model, [] — identity-matched, validated, and applicable.
+    """
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            load_model,
+            rel37_hash_identity_blockers,
+            rel37_request_model_consistent,
+        )
+        from release_engine_v3.rel37_schema_registry import (
+            PHASE1_DOMAINS,
+            SCHEMA_VERSION,
+        )
+    except Exception:  # noqa: BLE001
+        return None, None
+    if not is_rel37_authoritative(sections):
+        return None, None
+    blockers: List[str] = list(rel37_hash_identity_blockers(sections) or [])
+    model = load_model(sections)
+    if model is None:
+        return None, list(dict.fromkeys(blockers or ['rel37_model_unreadable']))
+    if str(getattr(model, 'schema_version', '') or '') != SCHEMA_VERSION:
+        blockers.append(
+            f'schema_version_invalid:{getattr(model, "schema_version", "")}')
+    if str(getattr(model, 'document_type', '') or '') != 'strategy':
+        blockers.append(
+            f'document_type_invalid:{getattr(model, "document_type", "")}')
+    if str(getattr(model, 'domain', '') or '') not in PHASE1_DOMAINS:
+        blockers.append(f'domain_not_phase1:{getattr(model, "domain", "")}')
+    blockers.extend(list(model.validate() or []))
+    consistent_kwargs: Dict[str, Any] = {}
+    if domain:
+        consistent_kwargs['domain'] = domain
+    if lang:
+        consistent_kwargs['lang'] = lang
+    if document_type:
+        consistent_kwargs['document_type'] = document_type
+    if selected_frameworks:
+        consistent_kwargs['selected_frameworks'] = list(selected_frameworks)
+    _ok, identity = rel37_request_model_consistent(
+        sections, **consistent_kwargs)
+    blockers.extend(identity)
+    blockers = list(dict.fromkeys(blockers))
+    if blockers:
+        return None, blockers
+    return model, []
+
+
 def _evaluate_rel37_typed_tables(
         model: Any,
         *,
-        domain: str,
+        domain: str = '',
+        selected_frameworks: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Measure typed REL37 objectives, pillars, traces, risks, and roadmap.
+    """Measure typed REL37 fields and actual row associations.
 
-    Requires an identity-matched model. Empty objective / pillar / trace
-    fields still block. Legacy 6–8 SO and exact-gap string floors are not
-    applied to this representation.
+    Registry families are the required set. Legacy max-eight SO and exact
+    Arabic gap-phrase floors are not applied. The domain argument is the
+    trusted caller domain already checked by eligibility; it is not ignored.
+
+    Pillar contract (compiler, not a new word-count floor): four pillars,
+    each with title/description/owner, and at least one PillarInitiativeRow
+    whose pillar_number matches that pillar. An empty initiative iteration
+    is pillar_initiatives_missing.
+
+    Trace contract: traces keep compile_strategy_model registry source
+    labels (gap[0], kpi[0], road[2]) while KPI descriptions and some
+    roadmap initiatives are later mutated. There is no gap_id/kpi_id.
+    Association therefore requires the referenced text to resolve to an
+    actual same-family Gap/KPI/Roadmap row, or to that family's established
+    FamilySpec source label together with a same-family row. Matching a
+    concrete row from a different family is a swap, not an association.
     """
+    _ = domain
     blockers: List[str] = []
-    required = tuple(getattr(model, 'required_families', ()) or ())
+    required = _rel37_registry_required_families(
+        model, selected_frameworks=selected_frameworks)
+    spec_index = _rel37_family_spec_index()
+    model_lang = str(getattr(model, 'lang', '') or '')
 
     so_rows = list(getattr(model, 'strategic_objectives', ()) or [])
-    so_covered = set()
+    so_numbers = [
+        int(getattr(row, 'number', 0) or 0) for row in so_rows]
+    if so_numbers and (
+            len(so_numbers) != len(set(so_numbers)) or any(n < 1 for n in so_numbers)):
+        blockers.append('so_numbering_invalid')
+    so_covered: set = set()
+    so_field_defects: List[str] = []
     for row in so_rows:
-        if not str(getattr(row, 'objective', '') or '').strip():
+        fams = _rel37_family_keys(row)
+        fields = {
+            'objective': str(getattr(row, 'objective', '') or '').strip(),
+            'target': str(getattr(row, 'target', '') or '').strip(),
+            'rationale': str(getattr(row, 'rationale', '') or '').strip(),
+            'timeframe': str(getattr(row, 'timeframe', '') or '').strip(),
+        }
+        missing_fields = [name for name, value in fields.items() if not value]
+        label = next(iter(fams), str(getattr(row, 'number', '')))
+        if missing_fields:
+            so_field_defects.extend(
+                f'so_row_incomplete:{label}:{name}' for name in missing_fields)
             continue
-        so_covered.add(str(getattr(row, 'family', '') or '').strip())
-        so_covered.add(str(getattr(row, 'framework', '') or '').strip())
-        fam = str(getattr(row, 'family', '') or '')
-        if fam.endswith('_compliance'):
-            so_covered.add(fam.split('_', 1)[0].upper())
+        so_covered.update(fams)
+    blockers.extend(so_field_defects[:8])
     so_missing = [fam for fam in required if fam not in so_covered]
     if so_missing:
         blockers.extend(f'so_family_missing:{fam}' for fam in so_missing[:8])
-    so_ok = not so_missing and bool(so_rows)
+    so_ok = not so_missing and not so_field_defects and bool(so_rows)
 
     pillars = list(getattr(model, 'pillars', ()) or [])
     inits = list(getattr(model, 'pillar_initiatives', ()) or [])
     pillar_defects: List[str] = []
-    if len(pillars) < 4:
-        pillar_defects.append(f'pillar_count_invalid:{len(pillars)}')
+    pillar_nums = {
+        int(getattr(row, 'number', 0) or 0)
+        for row in pillars if int(getattr(row, 'number', 0) or 0) >= 1
+    }
+    for row in pillars:
+        if not str(getattr(row, 'title', '') or '').strip():
+            pillar_defects.append(
+                f'pillar_title_missing:{getattr(row, "number", "")}')
+        if not str(getattr(row, 'description', '') or '').strip():
+            pillar_defects.append(
+                f'pillar_description_missing:{getattr(row, "number", "")}')
+        if not str(getattr(row, 'owner', '') or '').strip():
+            pillar_defects.append(
+                f'pillar_owner_missing:{getattr(row, "number", "")}')
+    if not inits:
+        pillar_defects.append('pillar_initiatives_missing')
+    associated_by_pillar: Dict[int, int] = {num: 0 for num in pillar_nums}
     for row in inits:
+        pnum = int(getattr(row, 'pillar_number', 0) or 0)
+        if pnum not in pillar_nums:
+            pillar_defects.append(f'pillar_initiative_orphan:{pnum}')
+        else:
+            associated_by_pillar[pnum] = associated_by_pillar.get(pnum, 0) + 1
         init = str(getattr(row, 'initiative', '') or '').strip()
         desc = str(getattr(row, 'description', '') or '').strip()
         output = str(getattr(row, 'output', '') or '').strip()
         owner = str(getattr(row, 'owner', '') or '').strip()
-        label = init[:30]
+        label = init[:30] if init else f'pillar:{pnum}'
+        if not init:
+            pillar_defects.append(f'pillar_initiative_name_missing:{pnum}')
         if not desc:
             pillar_defects.append(f'weak_pillar_description:{label}')
         if not output:
             pillar_defects.append(f'missing_evidence_artifact:{label}')
         if not owner:
             pillar_defects.append(f'pillar_owner_missing:{label}')
-    blockers.extend(pillar_defects[:8])
+    for pnum, count in associated_by_pillar.items():
+        if count < 1:
+            pillar_defects.append(f'pillar_initiatives_missing:{pnum}')
+    blockers.extend(list(dict.fromkeys(pillar_defects))[:12])
     pillars_ok = not pillar_defects
 
     road_rows = list(getattr(model, 'roadmap', ()) or [])
-    road_covered = {
-        str(getattr(row, 'family', '') or '').strip()
-        for row in road_rows
-        if str(getattr(row, 'initiative', '') or '').strip()
-    }
+    road_covered: set = set()
+    road_defects: List[str] = []
+    for row in road_rows:
+        fields = {
+            'phase': str(getattr(row, 'phase', '') or '').strip(),
+            'period': str(getattr(row, 'period', '') or '').strip(),
+            'initiative': str(getattr(row, 'initiative', '') or '').strip(),
+            'owner': str(getattr(row, 'owner', '') or '').strip(),
+            'deliverable': str(getattr(row, 'deliverable', '') or '').strip(),
+        }
+        missing_fields = [name for name, value in fields.items() if not value]
+        fams = _rel37_family_keys(row)
+        if missing_fields:
+            road_defects.extend(
+                f'roadmap_row_incomplete:{next(iter(fams), "")}:{name}'
+                for name in missing_fields)
+            continue
+        road_covered.update(fams)
     road_missing = [fam for fam in required if fam not in road_covered]
-    road_ok = not road_missing
+    road_ok = not road_missing and not road_defects
     if not road_ok:
         blockers.append('roadmap_canonical_invalid')
+        blockers.extend(road_defects[:6])
 
     risk_rows = list(getattr(model, 'risks', ()) or [])
     risk_defects: List[str] = []
     if not risk_rows:
         risk_defects.append('risk_count_invalid:0')
     for row in risk_rows:
-        treatment = str(getattr(row, 'mitigation', '') or '').strip()
-        owner = str(getattr(row, 'owner', '') or '').strip()
-        if not treatment:
+        fields = {
+            'risk': str(getattr(row, 'risk', '') or '').strip(),
+            'impact': str(getattr(row, 'impact', '') or '').strip(),
+            'mitigation': str(getattr(row, 'mitigation', '') or '').strip(),
+            'owner': str(getattr(row, 'owner', '') or '').strip(),
+        }
+        if not fields['mitigation']:
             risk_defects.append('risk_treatment_too_short')
-        if not owner:
+        if not fields['risk']:
+            risk_defects.append('risk_label_missing')
+        if not fields['impact']:
+            risk_defects.append('risk_impact_missing')
+        if not fields['owner']:
             risk_defects.append(
-                'risk_missing_control_family:'
-                + str(getattr(row, 'risk', '') or '')[:30])
+                'risk_missing_control_family:' + fields['risk'][:30])
     blockers.extend(risk_defects[:8])
     risk_ok = not risk_defects
 
     traces = list(getattr(model, 'traceability', ()) or [])
-    trace_covered = set()
+    gaps = list(getattr(model, 'gaps', ()) or [])
+    kpis = list(getattr(model, 'kpis', ()) or [])
+    gap_by_label = {}
+    for gap in gaps:
+        label = str(getattr(gap, 'gap_label', '') or '').strip()
+        if label:
+            gap_by_label.setdefault(label, []).append(gap)
+    kpi_by_desc = {}
+    for kpi in kpis:
+        desc = str(getattr(kpi, 'description', '') or '').strip()
+        if desc:
+            kpi_by_desc.setdefault(desc, []).append(kpi)
+    road_by_init = {}
+    for road in road_rows:
+        init = str(getattr(road, 'initiative', '') or '').strip()
+        if init:
+            road_by_init.setdefault(init, []).append(road)
+    trace_covered: set = set()
+    trace_table: List[Dict[str, Any]] = []
     for row in traces:
-        if not (
-                str(getattr(row, 'initiative', '') or '').strip()
-                and str(getattr(row, 'gap', '') or '').strip()
-                and str(getattr(row, 'kpi', '') or '').strip()):
-            continue
-        trace_covered.add(str(getattr(row, 'family', '') or '').strip())
-        trace_covered.add(str(getattr(row, 'framework', '') or '').strip())
+        fams = _rel37_family_keys(row)
+        gap_text = str(getattr(row, 'gap', '') or '').strip()
+        kpi_text = str(getattr(row, 'kpi', '') or '').strip()
+        init_text = str(getattr(row, 'initiative', '') or '').strip()
+        gap_matches = gap_by_label.get(gap_text) or []
+        kpi_matches = kpi_by_desc.get(kpi_text) or []
+        road_matches = road_by_init.get(init_text) or []
+        gap_same = [
+            g for g in gap_matches if _rel37_family_keys(g) & fams]
+        kpi_same = [
+            k for k in kpi_matches if _rel37_family_keys(k) & fams]
+        road_same = [
+            r for r in road_matches if _rel37_family_keys(r) & fams]
+        spec = _rel37_spec_for_families(fams, spec_index)
+        source = _rel37_registry_source_labels(spec, model_lang) if spec else {}
+        if not gap_same and gap_text and gap_text == source.get('gap'):
+            gap_same = [g for g in gaps if _rel37_family_keys(g) & fams]
+        if not kpi_same and kpi_text and kpi_text == source.get('kpi'):
+            kpi_same = [k for k in kpis if _rel37_family_keys(k) & fams]
+        if not road_same and init_text and init_text == source.get('initiative'):
+            road_same = [r for r in road_rows if _rel37_family_keys(r) & fams]
+        associated = bool(gap_same and kpi_same and road_same)
+        if associated:
+            trace_covered.update(fams)
+        else:
+            if not gap_same:
+                blockers.append(
+                    f'trace_gap_unassociated:{next(iter(fams), "")}')
+            if not kpi_same:
+                blockers.append(
+                    f'trace_kpi_unassociated:{next(iter(fams), "")}')
+            if init_text and not road_same:
+                blockers.append(
+                    f'trace_initiative_unassociated:{next(iter(fams), "")}')
+        matched_gap = gap_same[0] if gap_same else None
+        matched_kpi = kpi_same[0] if kpi_same else None
+        trace_table.append({
+            'family': next(iter(fams), ''),
+            'trace_gap': gap_text,
+            'matched_gap_family': next(
+                iter(_rel37_family_keys(matched_gap)), '') if matched_gap else '',
+            'trace_kpi': kpi_text,
+            'matched_kpi_family': next(
+                iter(_rel37_family_keys(matched_kpi)), '') if matched_kpi else '',
+            'passed': associated,
+        })
     missing_trace = [fam for fam in required if fam not in trace_covered]
     if missing_trace:
         blockers.extend(
             f'trace_family_missing:{fam}' for fam in missing_trace[:6])
-    trace_ok = not missing_trace
-    _ = domain
+    trace_ok = not missing_trace and not any(
+        str(b).startswith('trace_') and 'unassociated' in str(b)
+        for b in blockers)
     return {
         'blocking_errors': list(dict.fromkeys(blockers)),
         'section_results': {
@@ -1367,6 +1630,7 @@ def _evaluate_rel37_typed_tables(
                 'passed': so_ok,
                 'row_count': len(so_rows),
                 'missing_families': so_missing,
+                'field_defects': so_field_defects,
                 'representation': 'rel37_typed',
             },
             'strategic_pillars': {
@@ -1390,6 +1654,7 @@ def _evaluate_rel37_typed_tables(
             'traceability': {
                 'passed': trace_ok,
                 'missing_families': missing_trace,
+                'mapping_table': trace_table,
                 'representation': 'rel37_typed',
             },
         },
@@ -1401,40 +1666,39 @@ def _evaluate_rel37_typed_tables(
             }
             for row in risk_rows
         ],
-        'traceability_mapping_table': [
-            {
-                'family': str(getattr(row, 'family', '') or ''),
-                'expected_gap': str(getattr(row, 'gap', '') or ''),
-                'actual_gap': str(getattr(row, 'gap', '') or ''),
-                'passed': bool(
-                    str(getattr(row, 'initiative', '') or '').strip()
-                    and str(getattr(row, 'gap', '') or '').strip()
-                    and str(getattr(row, 'kpi', '') or '').strip()),
-            }
-            for row in traces
-        ],
+        'traceability_mapping_table': trace_table,
     }
 
 
 def _evaluate_canonical_sections(
         sections: Dict[str, str],
         *,
-        domain: str = 'cyber') -> Dict[str, Any]:
+        domain: str = 'cyber',
+        lang: str = '',
+        document_type: str = '',
+        selected_frameworks: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Positive model on canonical section markdown (pre-export)."""
     blob = '\n\n'.join(
         str(v) for v in (sections or {}).values() if isinstance(v, str))
     blockers: List[str] = []
     section_results: Dict[str, Any] = {}
 
-    rel37_model, rel37_identity = _rel37_claimed_model(sections)
-    if rel37_identity:
+    rel37_model, rel37_eligibility = _rel37_typed_eligibility(
+        sections,
+        domain=domain,
+        lang=lang,
+        document_type=document_type,
+        selected_frameworks=selected_frameworks,
+    )
+    if rel37_eligibility:
         return {
             'passed': False,
-            'blocking_errors': list(dict.fromkeys(rel37_identity)),
+            'blocking_errors': list(dict.fromkeys(rel37_eligibility)),
             'section_results': {
-                'rel37_identity': {
+                'rel37_eligibility': {
                     'passed': False,
-                    'blocking_errors': rel37_identity,
+                    'blocking_errors': rel37_eligibility,
                 },
             },
             'risk_treatments': [],
@@ -1442,7 +1706,11 @@ def _evaluate_canonical_sections(
             'arabic_tokenization_report': {},
         }
     if rel37_model is not None:
-        typed = _evaluate_rel37_typed_tables(rel37_model, domain=domain)
+        typed = _evaluate_rel37_typed_tables(
+            rel37_model,
+            domain=domain,
+            selected_frameworks=selected_frameworks,
+        )
         blockers.extend(typed.get('blocking_errors') or [])
         section_results.update(typed.get('section_results') or {})
         kpi_text = (sections or {}).get('kpis', '') or blob
@@ -1630,6 +1898,9 @@ def evaluate_document_quality(
         extracted_pdf_text: str = '',
         pdf_bytes: bytes = b'',
         domain: str = 'cyber',
+        lang: str = '',
+        document_type: str = '',
+        selected_frameworks: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Single authority compiler for strategy document quality."""
     from release_engine_v3.domain_codes import normalize_domain_code
@@ -1641,7 +1912,13 @@ def evaluate_document_quality(
         elif isinstance(canonical_artifact, dict):
             sections.update(dict(canonical_artifact.get('sections') or {}))
 
-    canonical_eval = _evaluate_canonical_sections(sections, domain=dcode)
+    canonical_eval = _evaluate_canonical_sections(
+        sections,
+        domain=dcode,
+        lang=lang,
+        document_type=document_type,
+        selected_frameworks=selected_frameworks,
+    )
     canonical_kpis = (sections or {}).get('kpis', '') or ''
 
     peer_counts: Dict[str, int] = {}
