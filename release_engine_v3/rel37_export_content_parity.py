@@ -220,21 +220,66 @@ def _unescape_pdf_literal(data: bytes) -> str:
         return out.decode('utf-8', 'replace')
 
 
-def _pdf_content_events(stream: bytes) -> List[Dict[str, str]]:
-    """Marked-content order: painted Tj strings and ActualText spans."""
-    events: List[Dict[str, str]] = []
+def _pdf_content_events(stream: bytes) -> List[Dict[str, Any]]:
+    """Marked-content order: painted Tj strings and ActualText spans.
+
+    Text render mode 3 is a non-displayed logical layer. That provenance
+    is carried on the event. Matching ActualText is not enough to call
+    a painted line an overlay.
+    """
+    events: List[Dict[str, Any]] = []
     idx = 0
     data = stream or b''
+    render_mode = 0
+    stack: List[int] = [0]
+    current_actual = ''
+    span_has_tr3 = False
+
+    def _ws_before(pos: int) -> bool:
+        return pos == 0 or data[pos - 1] in b' \t\r\n'
+
     while idx < len(data):
         if data.startswith(b'/ActualText', idx):
             match = re.match(br'/ActualText\s*<([0-9A-Fa-f]+)>', data[idx:])
             if match:
+                current_actual = _decode_actual_text_hex(
+                    match.group(1).decode('ascii'))
                 events.append({
                     'kind': 'actual',
-                    'text': _decode_actual_text_hex(match.group(1).decode('ascii')),
+                    'text': current_actual,
                 })
                 idx += match.end()
                 continue
+        if data.startswith(b'EMC', idx) and _ws_before(idx):
+            if span_has_tr3 and current_actual:
+                events.append({
+                    'kind': 'hidden_logical',
+                    'text': current_actual,
+                    'reason': 'non_displayed_render_mode_3',
+                })
+            current_actual = ''
+            span_has_tr3 = False
+            idx += 3
+            continue
+        tr = re.match(br'(\d+)\s+Tr\b', data[idx:idx + 8])
+        if tr and _ws_before(idx):
+            render_mode = int(tr.group(1))
+            if render_mode == 3:
+                span_has_tr3 = True
+            idx += tr.end()
+            continue
+        if data[idx:idx + 1] == b'q' and _ws_before(idx) and (
+                idx + 1 >= len(data) or data[idx + 1] in b' \t\r\n'):
+            stack.append(render_mode)
+            idx += 1
+            continue
+        if data[idx:idx + 1] == b'Q' and _ws_before(idx) and (
+                idx + 1 >= len(data) or data[idx + 1] in b' \t\r\n'):
+            render_mode = stack.pop() if stack else 0
+            if not stack:
+                stack = [0]
+            idx += 1
+            continue
         if data[idx] == 0x28:
             cursor = idx + 1
             buf = bytearray()
@@ -253,6 +298,8 @@ def _pdf_content_events(stream: bytes) -> List[Dict[str, str]]:
                 events.append({
                     'kind': 'visible',
                     'text': _unescape_pdf_literal(bytes(buf)),
+                    'non_displayed': render_mode == 3,
+                    'render_mode': render_mode,
                 })
             idx = cursor + 1
             continue
@@ -269,11 +316,30 @@ def _pdf_content_events(stream: bytes) -> List[Dict[str, str]]:
                         'kind': 'visible',
                         'text': _decode_actual_text_hex(hex_body),
                         'logical_paint': True,
+                        'non_displayed': render_mode == 3,
+                        'render_mode': render_mode,
                     })
                 idx += match.end()
                 continue
         idx += 1
     return events
+
+
+def _hidden_logicals_from_events(events: Sequence[Dict[str, Any]]) -> List[str]:
+    """Logical strings proven non-displayed by render mode 3 in-file."""
+    hidden: List[str] = []
+    for event in events:
+        text = str(event.get('text') or '').strip()
+        if not text:
+            continue
+        if event.get('kind') == 'hidden_logical':
+            hidden.append(text)
+            continue
+        if event.get('kind') == 'visible' and event.get('non_displayed'):
+            if any('\u0600' <= ch <= '\u06FF' for ch in text) or any(
+                    ch.isalpha() for ch in text):
+                hidden.append(text)
+    return hidden
 
 
 def _page_line_blocks(page, *, ignore_actualtext: bool) -> List[Dict[str, Any]]:
@@ -527,18 +593,23 @@ def _undo_extracted_arabic_visual(text: str) -> str:
 
 
 def _same_complete_words(painted: str, actual: str) -> bool:
+    """True when layout-normalized words match identity, multiplicity, and order.
+
+    A complete bag of words is not a complete ordered statement.
+    """
     want = _content_words(painted)
     have = _content_words(actual)
-    return bool(want) and bool(have) and sorted(want) == sorted(have)
+    return bool(want) and bool(have) and want == have
 
 
 def _complete_layout_equivalent(painted: str, actual: str) -> bool:
     """True only when painted content is the complete associated text.
 
     Whitespace, line boundaries, presentation forms, and a proven
-    mixed-script visual-to-logical conversion may differ. A line
-    occurring somewhere in ActualText, a character subsequence, Latin
-    token identity/order, a prefix, or a forward window is not enough.
+    mixed-script visual-to-logical conversion may differ. Sorted word
+    lists, set inclusion, opening-word prefixes, overlap percentages,
+    digit deletion, and acronym membership without the surrounding
+    sentence are not enough.
     """
     vis = _layout_norm(painted)
     act = _layout_norm(actual)
@@ -551,20 +622,15 @@ def _complete_layout_equivalent(painted: str, actual: str) -> bool:
         _undo_extracted_arabic_visual(painted),
         _undo_extracted_arabic_visual(_undo_visible_lines(painted)),
     ]
-    if act in candidates:
-        return True
-    if any(_same_complete_words(candidate, act) for candidate in candidates if candidate):
-        if _is_mixed_arabic_latin(painted) or any(
-                '\u0600' <= ch <= '\u06FF' for ch in painted):
+    act_words = _content_words(act)
+    if not act_words:
+        return False
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate == act:
             return True
-    if _is_mixed_arabic_latin(painted):
-        vis_lat = _latin_relation(painted)
-        act_lat = _latin_relation(act)
-        latin_ok = vis_lat == act_lat or vis_lat == list(reversed(act_lat))
-        if latin_ok and _same_complete_words(vis, act):
-            return True
-        if latin_ok and _content_words(act) and set(_content_words(act)).issubset(
-                set(_content_words(vis))):
+        if _content_words(candidate) == act_words:
             return True
     return False
 
@@ -654,53 +720,56 @@ def _overlay_line_fragments(text: str, actual: str) -> List[str]:
 
 
 def _complete_paragraph_in_painted(para: str, painted: str) -> bool:
-    """True when the associated paint still has this paragraph's content."""
+    """True when the associated paint still has this paragraph's content.
+
+    The complete ordered statement must remain. Sharing an opening
+    clause, a word bag, or a character prefix is not enough.
+    """
     want = _layout_norm(para)
     have = _layout_norm(painted)
     if want and have and want in have:
         return True
     if want and have and _complete_layout_equivalent(painted, para):
         return True
-    want_words = _content_words(para)
-    have_words = _content_words(painted)
-    if not want_words or not have_words:
+    return False
+
+
+def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
+    """True when extra paint besides the complete paragraph is leftover visual of AT."""
+    have = _layout_norm(painted)
+    want = _layout_norm(para)
+    act = _layout_norm(actual)
+    if not have:
         return False
-    if not set(want_words) <= set(have_words):
-        return False
-    core = ' '.join(want_words[:6])
-    if core and core in have:
+    if _complete_layout_equivalent(painted, para) or _complete_layout_equivalent(painted, act):
         return True
-    prefix = want[:40] if len(want) >= 40 else want
-    return bool(prefix and prefix in have)
+    remainder = have
+    if want and want in have:
+        start = have.find(want)
+        remainder = (have[:start] + have[start + len(want):]).strip()
+    if not remainder:
+        return True
+    return bool(act) and _is_visual_presentation_of_actual(remainder, act)
 
 
 def _unrelated_painted_sentence(painted: str, para: str, actual: str) -> bool:
     """True when paint is a different sentence, not leftover presentation.
 
     Visual-reversed leftovers of ActualText are not a new sentence.
-    A generic replacement sentence is.
+    A complete statement plus contradictory additional visible text is.
     """
     have = _layout_norm(painted)
-    act = _layout_norm(actual)
-    if not have or not act:
+    if not have:
         return False
-    if _is_visual_presentation_of_actual(painted, act):
+    if _leftover_visual_of_actual(painted, para, actual):
         return False
     if _complete_paragraph_in_painted(para, painted):
-        return False
-    if _incomplete_paragraph_painted(para, painted):
-        return False
+        return True
     extras = [
         word for word in _content_words(painted)
-        if word not in set(_content_words(act))
+        if word not in set(_content_words(actual))
     ]
     if not extras:
-        return False
-    recovered = sum(
-        1 for word in extras
-        if word[::-1] in set(_content_words(act))
-    )
-    if recovered / len(extras) >= 0.6:
         return False
     return len(have) >= 20
 
@@ -728,47 +797,38 @@ def _incomplete_paragraph_painted(para: str, painted: str) -> bool:
 
 
 def _is_visual_presentation_of_actual(text: str, actual: str) -> bool:
-    """True when paint is a presentation form of ActualText, not a new sentence.
+    """True when paint is a proven visual form of ActualText.
 
-    Character-reversed Arabic, digit-shaped twins, and mixed visual-order
-    fragments of ActualText are overlays. A logical sentence that is only
-    missing words or digits is not.
+    Character-reversed leftover and mixed visual-order conversion of the
+    same complete statement may match. Digit deletion, overlap
+    percentages, set crumbs, and reversed acronym membership do not.
+    This is leftover classification, not permission to drop a line.
     """
     act = _layout_norm(actual)
     raw = _layout_norm(text)
     if not raw or not act:
         return False
-    if raw in act or _complete_layout_equivalent(text, act):
+    if raw == act or _complete_layout_equivalent(text, act):
         return True
-    undone_runs = _layout_norm(_undo_visible_lines(text))
-    if undone_runs and undone_runs != raw and undone_runs in act:
+    if raw in act and len(raw) >= 12:
         return True
-    if (
-            _is_mixed_arabic_latin(text)
-            and len(raw) < 32
-            and not re.search(r'\s', raw)
-            and set(_content_words(text)) <= set(_content_words(act))
-    ):
+    raw_rev = _layout_norm(str(text or '')[::-1])
+    if raw_rev == act:
         return True
-    if any('\u0600' <= ch <= '\u06FF' for ch in raw):
-        raw_nodigit = re.sub(r'[0-9٠-٩٫.]', '', raw)
-        act_nodigit = re.sub(r'[0-9٠-٩٫.]', '', act)
-        if len(raw_nodigit) >= 20 and raw_nodigit in act_nodigit:
+    if act and raw_rev in act and len(raw) >= 12:
+        return True
+    candidates = [
+        _layout_norm(_undo_visible_lines(text)),
+        _undo_extracted_arabic_visual(text),
+        _undo_extracted_arabic_visual(_undo_visible_lines(text)),
+    ]
+    act_words = _content_words(act)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate == act or _content_words(candidate) == act_words:
             return True
-    undone = _undo_extracted_arabic_visual(text)
-    raw_overlap = _arabic_word_overlap(text, act)
-    undone_overlap = _arabic_word_overlap(undone, act)
-    if raw_overlap < 0.4 and undone_overlap >= 0.85:
-        return True
-    if _is_mixed_arabic_latin(text):
-        vis_lat = _latin_relation(text)
-        act_lat = _latin_relation(act)
-        if (
-                vis_lat
-                and act_lat
-                and vis_lat != act_lat
-                and vis_lat == list(reversed(act_lat))
-        ):
+        if candidate != raw and candidate in act and len(candidate) >= 12:
             return True
     return False
 
@@ -1135,22 +1195,58 @@ def _stream_actual_after_heading(
     return [item for item in collected if item]
 
 
+def _hidden_overlay_reason(text: str, hidden_norms: Sequence[str]) -> str:
+    """File-proven non-displayed logical, not a text-guessed overlay."""
+    tn = _layout_norm(text)
+    if not tn:
+        return ''
+    for hidden in hidden_norms:
+        if not hidden:
+            continue
+        if tn == hidden:
+            return 'non_displayed_render_mode_3'
+        if hidden in tn and len(hidden) >= 12:
+            return 'non_displayed_render_mode_3_span'
+    return ''
+
+
+def _strip_proven_hidden_span(text: str, hidden_norms: Sequence[str]) -> str:
+    """Remove a file-proven hidden logical span; keep surviving paint."""
+    raw = str(text or '')
+    norm = _layout_norm(raw)
+    for hidden in hidden_norms:
+        if not hidden:
+            continue
+        if hidden in raw:
+            remainder = _layout_norm(raw.replace(hidden, ' ', 1))
+            if remainder and remainder != hidden:
+                return remainder
+        if hidden in norm:
+            remainder = _layout_norm(norm.replace(hidden, ' ', 1))
+            if remainder and remainder != hidden:
+                return remainder
+    return ''
+
+
 def _drop_overlay_visible(
         lines: Sequence[Any],
         actual: str,
+        *,
+        events: Sequence[Dict[str, Any]] = (),
+        excluded: Optional[List[Dict[str, str]]] = None,
 ) -> List[str]:
-    """Drop logical overlays; keep incomplete painted sentences.
+    """Drop only file-proven non-displayed logicals; keep painted sentences.
 
-    ExtractableCell emits ActualText plus an invisible logical draw on
-    the same line box as the visual run. Token-only Latin paint of
-    ActualText tokens is the same identity, not a conflicting
-    representation. An ordinary sentence missing words or digits is not
-    an overlay merely because acronyms agree or characters are a prefix.
+    A line is not a harmless overlay merely because it matches, reverses,
+    or differs only in digits from ActualText. Geometry or a shared
+    y-position is not permission to discard conflicting paint.
     """
-    act = _layout_norm(actual)
-    act_lat = _latin_relation(act)
-    act_nodigit = re.sub(r'[0-9٠-٩٫.]', '', act)
-    bands: Dict[Any, List[str]] = {}
+    del actual  # ActualText text-guess is not overlay provenance.
+    hidden_norms = [
+        _layout_norm(item) for item in _hidden_logicals_from_events(events)
+        if _layout_norm(item)
+    ]
+    kept: List[Tuple[float, str]] = []
     for item in lines:
         if isinstance(item, (tuple, list)) and len(item) >= 2:
             y0, raw = item[0], item[1]
@@ -1159,44 +1255,18 @@ def _drop_overlay_visible(
         text = _pdf_line(raw)
         if not text or _is_running_chrome(text):
             continue
-        fragments = _overlay_line_fragments(text, act) if act else [text]
-        bands.setdefault(round(float(y0 or 0), 1), []).extend(fragments)
-    kept: List[Tuple[float, str]] = []
-    for y_key, texts in bands.items():
-        if act and len(texts) > 1 and any(
-                len(_layout_norm(text)) >= 12 and (
-                    _complete_layout_equivalent(text, act)
-                    or _layout_norm(text) == act
-                    or (
-                        len(re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text))) >= 20
-                        and _same_complete_words(
-                            re.sub(r'[0-9٠-٩٫.]', '', _layout_norm(text)),
-                            act_nodigit)
-                    )
-                )
-                for text in texts):
+        reason = _hidden_overlay_reason(text, hidden_norms)
+        if reason:
+            remainder = _strip_proven_hidden_span(text, hidden_norms)
+            if excluded is not None:
+                record = {'text': text, 'reason': reason}
+                if remainder:
+                    record['remainder'] = remainder
+                excluded.append(record)
+            if remainder:
+                kept.append((float(y0 or 0), remainder))
             continue
-        for text in texts:
-            if act and _is_visual_presentation_of_actual(text, act):
-                continue
-            if act and not any('\u0600' <= ch <= '\u06FF' for ch in text):
-                line_lat = _latin_relation(text)
-                if (
-                        line_lat
-                        and _token_only_latin_overlay(text)
-                        and not _latin_vis_conflicts_act(line_lat, act_lat)
-                ):
-                    continue
-                compact = re.sub(r'[^A-Za-z0-9]+', '', text)
-                act_c = re.sub(r'[^A-Za-z0-9]+', '', act)
-                if len(compact) >= 16 and compact == act_c:
-                    continue
-            ar_only = _layout_norm(re.sub(r'[A-Za-z0-9/._-]+', ' ', text))
-            if act and len(ar_only) >= 8 and ar_only in act:
-                line_lat = _latin_relation(text)
-                if not line_lat or all(token in act_lat for token in line_lat):
-                    continue
-            kept.append((float(y_key), text))
+        kept.append((float(y0 or 0), text))
     kept.sort(key=lambda item: item[0])
     return [text for _y, text in kept]
 
@@ -1218,6 +1288,7 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
     collected: List[str] = []
     visible_parts: List[str] = []
     actual_parts: List[str] = []
+    overlay_excluded: List[Dict[str, str]] = []
     taking = False
     heading_page = None
     repeated_chrome: set = set()
@@ -1325,7 +1396,12 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
         else:
             page_act = _complete_actual_spans(
                 vis_texts + page_act_frags, stream_all)
-        page_vis = _drop_overlay_visible(page_vis, '\n'.join(page_act))
+        page_vis = _drop_overlay_visible(
+            page_vis,
+            '\n'.join(page_act),
+            events=events,
+            excluded=overlay_excluded,
+        )
         collected.extend(page_vis)
         collected.extend(page_act)
         if page_vis or page_act:
@@ -1336,6 +1412,12 @@ def pdf_environment_section_text(raw: bytes) -> Tuple[str, Dict[str, Any]]:
     detail['environment_associated'] = heading_page is not None
     detail['environment_visible'] = '\n'.join(visible_parts)
     detail['environment_actual'] = '\n'.join(actual_parts)
+    detail['overlay_excluded'] = overlay_excluded
+    detail['hidden_logicals'] = [
+        item for page in pages
+        for item in _hidden_logicals_from_events(page.get('events') or [])
+        if item
+    ]
     return section, detail
 
 
@@ -1596,9 +1678,12 @@ def _paragraph_pdf_blockers(
         return []
     vis_raw = str(visible or '')
     act_raw = str(actual or '')
-    if not vis_raw.strip() and not act_raw.strip():
+    streams_omitted = not vis_raw.strip() and not act_raw.strip()
+    if streams_omitted:
         vis_raw = str(section or '')
         act_raw = str(section or '')
+    elif not vis_raw.strip() and act_raw.strip():
+        return [f'pdf_environment_painted_unestablished:{idx}']
     vis_use = _stream_usable(vis_raw, para)
     act_use = _stream_usable(act_raw, para)
     vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
@@ -1606,6 +1691,7 @@ def _paragraph_pdf_blockers(
     vis_complete = vis_use and _complete_paragraph_in_painted(para, vis_raw)
     act_complete = act_use and _complete_paragraph_in_painted(para, act_raw)
     vis_incomplete = vis_use and _incomplete_paragraph_painted(para, vis_raw)
+    leftover_ok = _leftover_visual_of_actual(vis_raw, para, act_raw)
     blockers: List[str] = []
     if vis_use and act_use and vis_incomplete and act_complete:
         blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
@@ -1627,9 +1713,12 @@ def _paragraph_pdf_blockers(
                 vis_raw, para, act_raw):
             blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
             return blockers
-        if vis_cmp != act_cmp and (
-                vis_complete or (act_complete and not vis_incomplete)):
-            how = 'visible_visual_matches_actual'
+        if vis_cmp != act_cmp and not vis_complete:
+            blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+            return blockers
+        if vis_cmp != act_cmp and vis_complete and not leftover_ok:
+            blockers.append(f'pdf_environment_actual_visible_disagree:{idx}')
+            return blockers
     targets: List[str] = []
     if vis_use and act_use:
         if how in (
@@ -1639,8 +1728,12 @@ def _paragraph_pdf_blockers(
                 'visible_visual_no_actual',
         ):
             targets = [act_cmp or vis_cmp]
+        elif vis_complete and leftover_ok:
+            targets = [vis_cmp]
         else:
-            targets = [vis_cmp, act_cmp]
+            targets = [vis_cmp]
+    elif not vis_raw.strip() and act_use:
+        return [f'pdf_environment_painted_unestablished:{idx}']
     elif act_use:
         targets = [act_cmp]
     elif vis_use:
