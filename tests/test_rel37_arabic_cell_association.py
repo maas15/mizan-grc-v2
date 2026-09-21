@@ -78,8 +78,12 @@ from tests._export_failure_diagnostics import (  # noqa: E402
 )
 
 _DEJAVU_FIXTURE = ROOT / 'tests' / 'fixtures' / 'rel37_clean_runner_dejavu_env.json'
+_AMIRI_DT_FIXTURE = ROOT / 'tests' / 'fixtures' / 'rel37_clean_runner_amiri_dt_env.json'
 _REMOTE_FIRST_NODE_HASH = (
     '97a4831fe99430c4bba90e7c4c38064aee20b559af7363298f3ad496000df5b3'
+)
+_DT_AR_HASH = (
+    '190e32b6d70b560cb6b7dc38562a4419ce79fd717d6c3a59b72ae0af33c108ca'
 )
 
 
@@ -393,6 +397,22 @@ class ArabicCellAssociationTests(unittest.TestCase):
             blockers = _paragraph_pdf_blockers(
                 idx, para, logical, visible=logical, actual=logical)
             self.assertEqual(blockers, [], (idx, blockers))
+
+    def test_amiri_dt_captured_streams_refuse_paragraph_one(self):
+        fixture = json.loads(_AMIRI_DT_FIXTURE.read_text(encoding='utf-8'))
+        self.assertEqual(fixture['model_hash'], _DT_AR_HASH)
+        visible = fixture['visible']
+        actual = fixture['actual']
+        all_blockers = []
+        for idx, para in enumerate(fixture['paragraphs']):
+            all_blockers.extend(_paragraph_pdf_blockers(
+                idx, para, visible, visible=visible, actual=actual))
+        self.assertIn('pdf_environment_actual_visible_disagree:1', all_blockers)
+        self.assertFalse(
+            any('amiri' in item.lower() or 'dejavu' in item.lower()
+                for item in all_blockers),
+            all_blockers,
+        )
 
     def test_swapped_framework_tokens_still_refused(self):
         fixture = json.loads(_DEJAVU_FIXTURE.read_text(encoding='utf-8'))

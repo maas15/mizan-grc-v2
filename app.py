@@ -58763,7 +58763,7 @@ def _ensure_arabic_pdf_font(required=False):
                 ('Helvetica', 'Helvetica-Bold') with a warning log.
 
     Font search order:
-      1. Noto Sans Arabic / Noto Naskh Arabic (preferred)
+      1. Noto Sans Arabic / Noto Naskh Arabic (preferred OS or bundled)
       2. Amiri (bundled fallback)
       3. DejaVu Sans (generic with Arabic support)
       4. Liberation Sans
@@ -58792,8 +58792,8 @@ def _ensure_arabic_pdf_font(required=False):
         '/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf',
         '/usr/share/fonts/opentype/noto/NotoSansArabic-Regular.ttf',
         '/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf',
-        'static/fonts/Amiri-Regular.ttf',
         'static/fonts/NotoSansArabic-Regular.ttf',
+        'static/fonts/Amiri-Regular.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',

@@ -1,0 +1,14 @@
+{
+  "description": "Clean-runner Amiri ArabicFont capture for DT AR compiled fixture 190e32b6. Visible paint is the extractor stream with ActualText ignored. ActualText is the logical marked-content stream. Paragraph index is 0-based enumerate(environment_narrative_paragraphs), so :1 is the second environment paragraph, not a page number. Bundled Noto accepts this same model; Amiri remains a fallback, not an exemption.",
+  "model_hash": "190e32b6d70b560cb6b7dc38562a4419ce79fd717d6c3a59b72ae0af33c108ca",
+  "font_file": "static/fonts/Amiri-Regular.ttf",
+  "embedded_font": "Amiri-Regular",
+  "first_blocker": "pdf_environment_actual_visible_disagree:1",
+  "first_predicate": "vis_use && act_use && vis_incomplete && act_complete",
+  "paragraphs": [
+    "تعمل منظمة تحول رقمي في بيئة حكومة رقمية تتطلب امتثال إطار DGA وتشغيل الخدمات الرقمية وقابلية التشغيل البيني وتحسين تجربة المستفيد عبر رحلة متصلة.",
+    "تشمل المحركات نشر واجهات API، اكتمال رحلات المستفيدين للخدمات ذات الأولوية، والالتزام بمستوى الخدمة المستهدف دون انقطاع رقمي."
+  ],
+  "visible": "راطإ لاثتما بلطتت ةيمقر ةموكح ةئيب يف يمقر لوحت ةمظنم لمعتDGA يغشتلا ةيلباقو ةيمقرلا تامدخلا ليغشتو\nوتشغيل الخدمات الرقمية وقابلية التشغيل البيني وتحسين تجربة المستفيد عبرDGA تعمل منظمة تحول رقمي في بيئة حكومة رقمية تتطلب امتثال إطار\nرحلة متصلة.DGA\nDGA\nتاهجاو رشن تاكرحملا لمشتAPI، هتسملا ةمدخلا ىوتسمب مازتلالاو ،ةيولوألا تاذ تامدخلل نيديفتسملا تالحر لامتكا\n، اكتمال رحلات المستفيدين للخدمات ذات الأولوية، والالتزام بمستوى الخدمة المستهدف دون انقطاعAPI تشمل المحركات نشر واجهات\nرقمي.API\nAPI",
+  "actual": "تعمل منظمة تحول رقمي في بيئة حكومة رقمية تتطلب امتثال إطار DGA وتشغيل الخدمات الرقمية وقابلية التشغيل البيني وتحسين تجربة المستفيد عبر رحلة متصلة.\nتشمل المحركات نشر واجهات API، اكتمال رحلات المستفيدين للخدمات ذات الأولوية، والالتزام بمستوى الخدمة المستهدف دون انقطاع رقمي."
+}

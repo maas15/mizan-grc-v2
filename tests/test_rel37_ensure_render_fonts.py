@@ -27,8 +27,17 @@ class EnsureRenderFontsTests(unittest.TestCase):
             mod.AMIRI_SHA256,
             'ab391c4147d054c48976e98322ad0eefe1427aa0e0502a12a4c75d80a70cfcd7',
         )
+        self.assertEqual(
+            mod.NOTO_SHA256,
+            'ceea25b464a656dc3b26849bab9356740401af62aedf1bfa8b7f0d9b75925b1b',
+        )
         self.assertIn(mod.AMIRI_COMMIT, mod.URL)
         self.assertGreaterEqual(mod.AMIRI_MIN_BYTES, 400000)
+        names = [item['name'] for item in mod.FONTS]
+        self.assertEqual(
+            names,
+            ['NotoSansArabic-Regular.ttf', 'Amiri-Regular.ttf'],
+        )
         self.assertTrue(mod.URL.startswith('https://raw.githubusercontent.com/google/fonts/'))
 
     def test_verify_rejects_checksum_mismatch_and_short_file(self):
@@ -55,12 +64,17 @@ class EnsureRenderFontsTests(unittest.TestCase):
         text = APP.read_text(encoding='utf-8')
         self.assertIn('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', text)
         self.assertIn('static/fonts/Amiri-Regular.ttf', text)
+        bundled_noto = text.find("'static/fonts/NotoSansArabic-Regular.ttf'")
+        bundled_amiri = text.find("'static/fonts/Amiri-Regular.ttf'")
+        self.assertGreater(bundled_noto, 0)
+        self.assertGreater(bundled_amiri, 0)
         self.assertLess(
             text.find('NotoSansArabic-Regular.ttf'),
-            text.find('static/fonts/Amiri-Regular.ttf'),
+            bundled_amiri,
         )
+        self.assertLess(bundled_noto, bundled_amiri)
         self.assertLess(
-            text.find('static/fonts/Amiri-Regular.ttf'),
+            bundled_amiri,
             text.find('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
         )
         self.assertIn('last-resort fallback: DejaVu', text)
