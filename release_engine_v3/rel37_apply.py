@@ -252,34 +252,99 @@ def overlay_rel37_authority(
 
 
 _EXPORT_SNAPSHOTS: Dict[str, Dict[str, Any]] = {}
+_SNAPSHOT_RISK_TYPES = frozenset(('risk', 'risk_assessment'))
+_SNAPSHOT_STRATEGY_TYPES = frozenset(('strategy', 'strategy document'))
+
+
+def _normalize_snapshot_artifact_type(artifact_type: object) -> str:
+    raw = str(artifact_type or '').strip().lower()
+    if raw in _SNAPSHOT_RISK_TYPES:
+        return 'risk'
+    if raw in _SNAPSHOT_STRATEGY_TYPES:
+        return 'strategy'
+    return raw
+
+
+def _normalize_snapshot_owner(owner: object) -> str:
+    raw = str(owner or '').strip()
+    if raw in ('', '0', 'none', 'None'):
+        return ''
+    return raw
+
+
+def rel37_export_snapshot_keys(
+        strategy_id: object = '',
+        *,
+        model_hash: object = '',
+        artifact_type: object = '',
+        owner: object = '',
+) -> List[str]:
+    """Typed+owner cache keys. A bare numeric id or hash is never a key."""
+    atype = _normalize_snapshot_artifact_type(artifact_type)
+    owner_key = _normalize_snapshot_owner(owner)
+    if not atype or not owner_key or atype == 'risk':
+        return []
+    keys: List[str] = []
+    sid = str(strategy_id or '').strip()
+    if sid:
+        keys.append(f'{atype}:{owner_key}:{sid}')
+    stored_hash = str(model_hash or '').strip()
+    if stored_hash:
+        keys.append(f'{atype}:{owner_key}:hash:{stored_hash}')
+    return keys
 
 
 def remember_rel37_export_snapshot(
         strategy_id: object,
         sections: Optional[Dict[str, Any]],
+        *,
+        artifact_type: object = '',
+        owner: object = '',
 ) -> None:
-    """Keep an identity-carrying snapshot for the in-process PDF re-entry."""
+    """Keep an identity-carrying snapshot for the in-process PDF re-entry.
+
+    Storage is bound to the already-authorized typed artifact and owner.
+    A numeric id or content hash alone is not authorization. Native ERM
+    risk requests never store or satisfy a strategy snapshot.
+    Missing type or owner refuses to store. Legacy bare keys are not written.
+    """
     if not is_rel37_authoritative(sections):
         return
     payload = dict(sections or {})
-    sid = str(strategy_id or '').strip()
-    if sid:
-        _EXPORT_SNAPSHOTS[sid] = payload
     stored_hash = str(payload.get(REL37_HASH_KEY) or '').strip()
-    if stored_hash:
-        _EXPORT_SNAPSHOTS[f'hash:{stored_hash}'] = payload
+    keys = rel37_export_snapshot_keys(
+        strategy_id,
+        model_hash=stored_hash,
+        artifact_type=artifact_type,
+        owner=owner,
+    )
+    if not keys:
+        return
+    for key in keys:
+        _EXPORT_SNAPSHOTS[key] = payload
 
 
 def recall_rel37_export_snapshot(
         strategy_id: object = '',
         *,
         model_hash: object = '',
+        artifact_type: object = '',
+        owner: object = '',
 ) -> Dict[str, Any]:
-    for key in (
-            str(strategy_id or '').strip(),
-            f'hash:{str(model_hash or "").strip()}' if model_hash else '',
-    ):
-        if key and key in _EXPORT_SNAPSHOTS:
+    """Recall only the same typed artifact and owner.
+
+    A strategy snapshot cannot satisfy a risk request. Missing type or
+    owner, or a risk-typed request, returns empty. Numeric-id and
+    hash-only lookups are not authorized.
+    """
+    keys = rel37_export_snapshot_keys(
+        strategy_id,
+        model_hash=model_hash,
+        artifact_type=artifact_type,
+        owner=owner,
+    )
+    for key in keys:
+        if key in _EXPORT_SNAPSHOTS:
             return dict(_EXPORT_SNAPSHOTS[key])
     return {}
 

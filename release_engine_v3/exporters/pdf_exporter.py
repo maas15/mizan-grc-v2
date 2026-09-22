@@ -133,7 +133,18 @@ def export_pdf(
             )
             _pdf_sections = prefer_rel37_authority_candidate(
                 recall_rel37_export_snapshot(
-                    _sid, model_hash=render_tree.canonical_hash),
+                    _sid,
+                    model_hash=render_tree.canonical_hash,
+                    artifact_type=(
+                        document_type
+                        or backend.get('document_type')
+                        or backend.get('artifact_type')
+                    ),
+                    owner=(
+                        backend.get('_rel32_export_user_id')
+                        or backend.get('user_id')
+                    ),
+                ),
                 backend.get('_rel37_source_sections'),
                 backend.get('_rel31_frozen_sections'),
                 _split_secs,
@@ -153,6 +164,7 @@ def export_pdf(
                 'sections': _pdf_sections,
                 'metadata': {
                     'document_type': document_type,
+                    'artifact_type': document_type,
                     'org_name': org_name,
                     'sector': sector,
                     'selected_frameworks': selected_frameworks or [],
@@ -161,6 +173,10 @@ def export_pdf(
                     'artifact_id': render_tree.artifact_id,
                     'canonical_hash': render_tree.canonical_hash,
                     'model_hash': render_tree.canonical_hash,
+                    'user_id': backend.get('_rel32_export_user_id')
+                    or backend.get('user_id'),
+                    '_rel32_export_user_id': backend.get(
+                        '_rel32_export_user_id') or backend.get('user_id'),
                 },
             }),
         )

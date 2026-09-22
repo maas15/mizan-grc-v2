@@ -89,6 +89,18 @@ def _bind_backend_sections(
             remember_rel37_export_snapshot(
                 art.get('strategy_id') or art.get('artifact_id'),
                 authorized,
+                artifact_type=(
+                    art.get('artifact_type')
+                    or art.get('document_type')
+                    or (art.get('contract_meta') or {}).get('document_type')
+                    or backend.get('document_type')
+                    or 'strategy'
+                ),
+                owner=(
+                    art.get('_rel32_export_user_id')
+                    or backend.get('_rel32_export_user_id')
+                    or art.get('user_id')
+                ),
             )
     except Exception:  # noqa: BLE001
         pass

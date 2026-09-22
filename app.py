@@ -52410,10 +52410,18 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                         rel37_authority_snapshot as _rel37_snap_be,
                         recall_rel37_export_snapshot as _rel37_recall_be,
                     )
+                    _be_dtype = str(
+                        meta.get('document_type')
+                        or meta.get('artifact_type')
+                        or '').strip().lower()
                     _recalled = _rel37_recall_be(
                         meta.get('strategy_id') or meta.get('artifact_id'),
                         model_hash=meta.get('canonical_hash')
-                        or meta.get('model_hash'))
+                        or meta.get('model_hash'),
+                        artifact_type=_be_dtype,
+                        owner=meta.get('_rel32_export_user_id')
+                        or meta.get('user_id'),
+                    )
                     if not _rel37_auth_be(sections) and _rel37_auth_be(_recalled):
                         sections = dict(_recalled)
                     if _rel37_auth_be(sections):
@@ -90604,7 +90612,15 @@ def api_generate_pdf():
                     data.get('sections'),
                     _rel37_recall_ev(
                         data.get('strategy_id') or _art_id_p,
-                        model_hash=data.get('canonical_hash')),
+                        model_hash=data.get('canonical_hash'),
+                        artifact_type=(
+                            data.get('artifact_type')
+                            or data.get('document_type')
+                            or _art_type_p
+                        ),
+                        owner=session.get('user_id')
+                        or data.get('_rel32_export_user_id'),
+                    ),
                     _split_strategy_sections_by_h2(content or '') or {},
                 )
             except Exception:  # noqa: BLE001

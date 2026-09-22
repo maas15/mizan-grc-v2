@@ -6495,6 +6495,19 @@ def enrich_professional_blocks(
                     or (metadata or {}).get('strategy_id')
                     or (metadata or {}).get('artifact_id'),
                     _src,
+                    artifact_type=(
+                        model.get('document_type')
+                        or model.get('artifact_type')
+                        or (metadata or {}).get('document_type')
+                        or (metadata or {}).get('artifact_type')
+                        or 'strategy'
+                    ),
+                    owner=(
+                        model.get('_rel32_export_user_id')
+                        or (metadata or {}).get('_rel32_export_user_id')
+                        or (metadata or {}).get('user_id')
+                        or model.get('user_id')
+                    ),
                 )
             except Exception:  # noqa: BLE001
                 pass
