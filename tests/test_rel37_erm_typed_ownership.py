@@ -242,8 +242,8 @@ def _collision_fixture():
 A_ORG = 'REL37.07 Data EN UI Org'
 A_NARRATIVE_MARK = 'classification completeness'
 B_SCENARIO_MARK = 'سيناريو مخاطر تشغيلية'
-B_TREATMENT_MARK = 'خطة استمرارية الأعمال'
-B_KRI_MARK = 'نسبة المخاطر المعالجة'
+B_TREATMENT_MARK = 'مالك المخاطر'
+B_KRI_MARK = 'زمن التعافي'
 _CORRUPT_RISK_MD = (
     '## 1. وصف السيناريو\n'
     'نص سيناريو بدون جداول المعالجة أو التقييم.\n'
