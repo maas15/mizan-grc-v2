@@ -617,11 +617,44 @@ def _undo_visible_lines(text: str) -> str:
         _undo_visual_rtl_line(line) for line in str(text or '').splitlines())
 
 
+_DECIMAL_GUARD = '\u241E'
+_DECIMAL_NUMBER_RE = re.compile(
+    r'(?<![\w])(\d+)[.\u066B](\d+)(?![\w])'
+)
+_COMPLETE_DECIMAL_RE = re.compile(r'^\d+[.\u066B]\d+%?$')
+
+
+def _protect_numeric_decimals(text: str) -> str:
+    """Keep complete numeric identity, including decimal components."""
+    return _DECIMAL_NUMBER_RE.sub(
+        lambda match: f'{match.group(1)}{_DECIMAL_GUARD}{match.group(2)}',
+        str(text or ''),
+    )
+
+
+def _restore_numeric_decimals(text: str) -> str:
+    return str(text or '').replace(_DECIMAL_GUARD, '.')
+
+
+def _is_complete_numeric_value(word: str) -> bool:
+    raw = str(word or '').strip()
+    if raw.endswith('%') and raw[:-1]:
+        raw = raw[:-1]
+    return bool(_COMPLETE_DECIMAL_RE.match(raw))
+
+
 def _content_words(text: str) -> List[str]:
-    """Layout-normalized words, punctuation split away. Digits stay."""
-    cleaned = re.sub(r'[^\w\u0600-\u06FF%]+', ' ', _layout_norm(text))
+    """Layout-normalized words, punctuation split away. Digits stay.
+
+    A decimal value such as ``10.33`` stays one token. Splitting it into
+    ``10`` and ``33`` would let leftover identity digits authorize a
+    changed quantitative value.
+    """
+    cleaned = _protect_numeric_decimals(_layout_norm(text))
+    cleaned = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', ' ', cleaned)
     words: List[str] = []
     for word in cleaned.split():
+        word = _restore_numeric_decimals(word)
         if re.sub(r'[\u060C\u061B\u061F\u0640]', '', word):
             words.append(word)
     return words
@@ -824,18 +857,24 @@ def _compact_letters(text: str) -> str:
 
 
 def _bare_word(word: str) -> str:
-    """Word identity without layout punctuation. Digits and % stay."""
-    text = re.sub(r'[^\w\u0600-\u06FF%]+', '', str(word or ''))
+    """Word identity without layout punctuation. Digits, decimals, and % stay."""
+    text = _protect_numeric_decimals(str(word or ''))
+    text = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', '', text)
+    text = _restore_numeric_decimals(text)
     return re.sub(r'[\u060C\u061B\u061F\u0640]', '', text)
 
 
 def _identity_digit_remnants(actual: str) -> set:
     """Leftover digits of omitted Helvetica identity tokens (REL33→33, P1→1).
 
-    These are presentation chips, not permission to drop narrative values.
+    These are presentation chips of mixed letter-digit identifiers.
+    They are not permission to drop a quantitative value, and a decimal
+    component is not a separate harmless chip.
     """
     remnants = set()
     for token in _semantic_latin_tokens(actual):
+        if not any(ch.isalpha() for ch in token):
+            continue
         digits = ''.join(ch for ch in token if ch.isdigit())
         if digits:
             remnants.add(digits)
@@ -843,18 +882,30 @@ def _identity_digit_remnants(actual: str) -> set:
 
 
 def _is_identity_digit_remnant(word: str, actual: str) -> bool:
+    """Standalone leftover identifier digits, never a complete numeric value."""
+    if _is_complete_numeric_value(word):
+        return False
     compact = _bare_word(word)
-    return bool(compact) and compact.isdigit() and compact in _identity_digit_remnants(actual)
+    if not compact or not compact.isdigit():
+        return False
+    return compact in _identity_digit_remnants(actual)
 
 
 def _is_helvetica_overlay_word(word: str) -> bool:
-    """True for separately drawn Latin overlay chips, including org words.
+    """True for separately drawn Latin overlay chips of identity tokens.
 
-    REL33/P1 stay identity tokens. Title-case org words such as Data,
-    Management, Org, Artificial, and Intelligence are the same overlay.
+    REL33/P1 stay identity tokens. Title-case org words that already
+    appear in ActualText may be leftover overlay chips. A quantitative
+    number, ``not``, or ``must`` is not discardable merely because it
+    is Latin or shares digits with an identifier.
     """
     compact = _bare_word(word)
     if not compact:
+        return False
+    if _is_complete_numeric_value(word) or compact.isdigit():
+        return False
+    lowered = compact.lower()
+    if lowered in {'not', 'must', 'no', 'never'}:
         return False
     if _is_identity_latin_token(compact):
         return True
