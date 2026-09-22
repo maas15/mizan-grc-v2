@@ -67,6 +67,7 @@ jobs:
         run: |
           unset REL2_SKIP_EXPORT_EVIDENCE || true
           python -m pytest \
+            tests/test_rel37_official_ar_pdf_export.py \
             tests/test_rel37_official_export_differential.py \
             tests/test_rel37_erm_typed_ownership.py \
             tests/test_rel37_arabic_cell_association.py \
