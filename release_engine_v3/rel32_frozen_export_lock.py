@@ -542,6 +542,25 @@ def resolve_frozen_artifact_for_export(
         'sections': _frozen_sections,
         '_rel37_source_sections': artifact_dict.get('_rel37_source_sections')
         or artifact_dict.get('sections'),
+        'strategy_id': artifact_dict.get('strategy_id'),
+        'artifact_id': artifact_dict.get('artifact_id'),
+        'artifact_type': (
+            artifact_dict.get('artifact_type')
+            or artifact_dict.get('document_type')
+            or backend.get('document_type')
+        ),
+        'document_type': (
+            artifact_dict.get('document_type')
+            or backend.get('document_type')
+        ),
+        '_rel32_export_user_id': (
+            artifact_dict.get('_rel32_export_user_id')
+            or backend.get('_rel32_export_user_id')
+        ),
+        'user_id': (
+            artifact_dict.get('user_id')
+            or backend.get('_rel32_export_user_id')
+        ),
     })
     backend['_rel32_frozen_export_lock_active'] = True
     backend['_rel32_frozen_canonical_hash'] = frozen.canonical_hash or ''

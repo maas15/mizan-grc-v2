@@ -294,6 +294,20 @@ def rel37_export_snapshot_keys(
     return keys
 
 
+def _snapshot_owner_from_request(owner: object = '') -> str:
+    """Use an explicit owner, else the already-authorized session principal."""
+    key = _normalize_snapshot_owner(owner)
+    if key:
+        return key
+    try:
+        from flask import has_request_context, session
+        if has_request_context():
+            return _normalize_snapshot_owner(session.get('user_id'))
+    except Exception:  # noqa: BLE001
+        return ''
+    return ''
+
+
 def remember_rel37_export_snapshot(
         strategy_id: object,
         sections: Optional[Dict[str, Any]],
@@ -316,7 +330,7 @@ def remember_rel37_export_snapshot(
         strategy_id,
         model_hash=stored_hash,
         artifact_type=artifact_type,
-        owner=owner,
+        owner=_snapshot_owner_from_request(owner),
     )
     if not keys:
         return
@@ -341,7 +355,7 @@ def recall_rel37_export_snapshot(
         strategy_id,
         model_hash=model_hash,
         artifact_type=artifact_type,
-        owner=owner,
+        owner=_snapshot_owner_from_request(owner),
     )
     for key in keys:
         if key in _EXPORT_SNAPSHOTS:
