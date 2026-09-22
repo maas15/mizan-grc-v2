@@ -6,8 +6,10 @@ async worker/status/download path is exercised with a real thread.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -56,11 +58,15 @@ from release_engine_v3.rel37_apply import (  # noqa: E402
 )
 from release_engine_v3.rel37_compilers import compile_for_domain  # noqa: E402
 from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
+    _content_words,
+    _identity_digit_remnants,
+    _is_identity_digit_remnant,
     _mixed_script_runs,
     _paragraph_pdf_blockers,
     _undo_visual_rtl_line,
     compare_environment_narrative_to_pdf,
     environment_narrative_paragraphs,
+    pdf_environment_section_text,
 )
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections  # noqa: E402
 
@@ -158,6 +164,89 @@ def _persist(model, *, domain_label, role='user'):
     }
 
 
+_NUMERIC_PARA = (
+    'تطبق REL33 P1 Data Management Org ضوابط NDMO لمدة 10 سنوات وفق PDPL.'
+)
+_NUMERIC_PARA_REL88 = _NUMERIC_PARA.replace('REL33', 'REL88')
+_NUMERIC_MUT_33 = _NUMERIC_PARA.replace('10 سنوات', '10.33 سنوات')
+_NUMERIC_MUT_88 = _NUMERIC_PARA.replace('10 سنوات', '10.88 سنوات')
+
+
+def _true_framework_swap(para: str, left='NDMO', right='PDPL') -> str:
+    mapping = {left: right, right: left}
+    pattern = re.compile(
+        r'\b(?:%s|%s)\b' % (re.escape(left), re.escape(right)))
+    return pattern.sub(lambda match: mapping[match.group(0)], para)
+
+
+def _assert_true_framework_swap(testcase, source, swapped, left='NDMO', right='PDPL'):
+    intended = (
+        source.replace(left, '\0L\0').replace(right, left).replace('\0L\0', right)
+    )
+    testcase.assertEqual(swapped, intended)
+    testcase.assertEqual(swapped.count(left), source.count(right))
+    testcase.assertEqual(swapped.count(right), source.count(left))
+    testcase.assertNotIn('HOLD', swapped)
+    testcase.assertNotIn('\x00', swapped)
+    arabic_src = re.sub(r'[A-Za-z0-9._-]+', '', source)
+    arabic_sw = re.sub(r'[A-Za-z0-9._-]+', '', swapped)
+    testcase.assertEqual(arabic_src, arabic_sw)
+
+
+def _numeric_env_pdf(visible: str, actual: str) -> bytes:
+    """Test-owned readable PDF with independently painted vs ActualText."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen.canvas import Canvas
+
+    font_path = '/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf'
+    if font_path and 'ArabicFont' not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont('ArabicFont', font_path))
+    buf = io.BytesIO()
+    canv = Canvas(buf, pagesize=A4)
+    canv.setFont('Helvetica', 10)
+    canv.drawString(36, 800, 'Organization REL33 P1 Data Management Org')
+    canv.drawString(36, 786, 'Sector Government')
+    canv.showPage()
+    y = 800
+    canv.setFont('Helvetica', 10)
+    canv.drawString(36, y, 'Business Environment and Drivers')
+    y -= 16
+    if actual:
+        hex_actual = 'FEFF' + actual.encode('utf-16-be').hex().upper()
+        canv._code.append('/Span << /ActualText <%s> >> BDC' % hex_actual)
+    logical_paint = str(visible or '')
+    if logical_paint:
+        hex_text = 'FEFF' + logical_paint.encode('utf-16-be').hex().upper()
+        canv._code.append(f'<{hex_text}> Tj')
+    lines = str(visible or '').splitlines() or ['']
+    for line in lines:
+        latin = re.findall(r'[A-Za-z][A-Za-z0-9%._-]*', line)
+        if latin:
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, ' '.join(latin))
+            y -= 14
+        arabic = re.sub(r'[A-Za-z0-9%._/-]+', ' ', line)
+        if arabic.strip() and 'ArabicFont' in pdfmetrics.getRegisteredFontNames():
+            canv.setFont('ArabicFont', 10)
+            canv.drawRightString(560, y, arabic.strip())
+            y -= 14
+        elif arabic.strip():
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, arabic.strip())
+            y -= 14
+        nums = re.findall(r'\d+(?:\.\d+)?', line)
+        if nums:
+            canv.setFont('Helvetica', 10)
+            canv.drawString(36, y, ' '.join(nums))
+            y -= 14
+    if actual:
+        canv._code.append('EMC')
+    canv.save()
+    return buf.getvalue()
+
+
 def _official_body(saved, *, fws):
     return {
         'content': saved['content'],
@@ -233,11 +322,17 @@ class OfficialMixedScriptRunTests(unittest.TestCase):
             'تعمل REL33 P1 Data Management Org في سياق تشغيلي لقطاع حكومي، '
             'ضمن بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO وحماية '
             'بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات.')
-        swapped = para.replace('NDMO', 'PDPL_HOLD').replace(
-            'PDPL', 'NDMO').replace('PDPL_HOLD', 'PDPL')
+        swapped = _true_framework_swap(para)
+        _assert_true_framework_swap(self, para, swapped)
         blockers = _paragraph_pdf_blockers(
             0, para, swapped, visible=swapped, actual=swapped)
         self.assertTrue(blockers, blockers)
+        self.assertFalse(any(
+            item in blockers for item in (
+                'pdf_bytes_missing', 'pdf_extraction_unreliable',
+                'pdf_environment_painted_unestablished:0',
+            )
+        ), blockers)
 
     def test_actual_text_only_still_unestablished(self):
         para = (
@@ -324,6 +419,132 @@ class OfficialArPdfExportTests(unittest.TestCase):
         self.assertTrue(result['bytes'].startswith(b'%PDF'), result['status'])
         self.assertEqual(
             compare_environment_narrative_to_pdf(model, result['bytes']), [])
+
+
+class OfficialNumericOverlayAssociationTests(unittest.TestCase):
+    """Identity digits must not authorize a changed quantitative value."""
+
+    def _helper(self, expected, painted, actual):
+        return _paragraph_pdf_blockers(
+            0, expected, painted, visible=painted, actual=actual)
+
+    def _content_blocker(self, blockers):
+        self.assertTrue(blockers, blockers)
+        forbidden = {
+            'pdf_bytes_missing',
+            'pdf_extraction_unreliable',
+            'pdf_environment_section_unassociated',
+        }
+        self.assertFalse(any(
+            item in forbidden or item.endswith('painted_unestablished:0')
+            for item in blockers
+        ), blockers)
+
+    def test_helper_a_b_accept_c_d_e_f_refuse(self):
+        wrap = _NUMERIC_PARA.replace('لمدة 10', 'لمدة\n10')
+        self.assertEqual(self._helper(_NUMERIC_PARA, _NUMERIC_PARA, _NUMERIC_PARA), [])
+        self.assertEqual(self._helper(_NUMERIC_PARA, wrap, _NUMERIC_PARA), [])
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_MUT_33, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_MUT_33, _NUMERIC_MUT_33))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_MUT_88, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA_REL88,
+            _NUMERIC_PARA_REL88.replace('10 سنوات', '10.33 سنوات'),
+            _NUMERIC_PARA_REL88))
+        self.assertEqual(_content_words(_NUMERIC_MUT_33).count('10.33'), 1)
+        self.assertNotIn('33', _content_words(_NUMERIC_MUT_33))
+        self.assertIn('33', _identity_digit_remnants(_NUMERIC_PARA))
+        self.assertFalse(_is_identity_digit_remnant('10.33', _NUMERIC_PARA))
+        self.assertTrue(_is_identity_digit_remnant('33', _NUMERIC_PARA))
+
+    def test_actual_pdf_visible_10_versus_10_33(self):
+        class _Model:
+            environment_narrative = _NUMERIC_PARA
+            lang = 'ar'
+            domain = 'data'
+            org_name = 'REL33 P1 Data Management Org'
+            model_hash = 'test-owned-numeric'
+            sector = 'Government'
+            selected_frameworks = ['NDMO', 'PDPL']
+
+        model = _Model()
+        good = _numeric_env_pdf(_NUMERIC_PARA, _NUMERIC_PARA)
+        self.assertTrue(good.startswith(b'%PDF'))
+        section, meta = pdf_environment_section_text(good)
+        self.assertTrue(meta.get('associated'), meta)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertIn('10', vis)
+        self.assertNotIn('10.33', vis)
+        self.assertIn('10', act)
+        self.assertNotIn('10.33', act)
+        self.assertEqual(compare_environment_narrative_to_pdf(model, good), [])
+
+        paint_only = _numeric_env_pdf(_NUMERIC_MUT_33, _NUMERIC_PARA)
+        section, meta = pdf_environment_section_text(paint_only)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertIn('10.33', vis)
+        self.assertNotIn('10.33', act)
+        self.assertIn('10', act)
+        blockers = compare_environment_narrative_to_pdf(model, paint_only)
+        self._content_blocker(blockers)
+
+        both = _numeric_env_pdf(_NUMERIC_MUT_33, _NUMERIC_MUT_33)
+        section, meta = pdf_environment_section_text(both)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertIn('10.33', vis)
+        self.assertIn('10.33', act)
+        blockers = compare_environment_narrative_to_pdf(model, both)
+        self._content_blocker(blockers)
+        del section
+
+    def test_real_thread_matching_owner_and_injected_numeric(self):
+        from unittest.mock import patch
+
+        domain, label, org, sector, fws = _CASES[0]
+        model = _compile(domain, org, sector, fws)
+        before = model.model_hash
+        saved = _persist(model, domain_label=label)
+        matching = _export(saved, _official_body(saved, fws=fws), 'pdf')
+        self.assertEqual(matching['status'].get('status'), 'done', matching['status'])
+        self.assertEqual(matching['download_http'], 200)
+        self.assertTrue(matching['bytes'].startswith(b'%PDF'))
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, matching['bytes']), [])
+        self.assertEqual(model.model_hash, before)
+        self.assertEqual(before, LIVE_HASHES['data'])
+
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+        corrupt = _numeric_env_pdf(_NUMERIC_MUT_33, _NUMERIC_PARA)
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = corrupt
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            refused = _export(saved, _official_body(saved, fws=fws), 'pdf')
+        self.assertNotEqual(refused['status'].get('status'), 'done', refused['status'])
+        self.assertNotEqual(refused['download_http'], 200)
+        self.assertFalse(refused['bytes'].startswith(b'%PDF'))
+        self.assertEqual(model.model_hash, before)
+
+    def test_leftover_identity_chips_still_associate(self):
+        para = (
+            'تعمل REL33 P1 Data Management Org في سياق تشغيلي لقطاع حكومي، '
+            'ضمن بيئة تنظيمية تتطلب حوكمة بيانات وطنية وفق NDMO وحماية '
+            'بيانات شخصية وفق PDPL، مع ضغط متزايد على جودة البيانات.')
+        leftover = para + ' 33 1 REL33 P1 Data Management Org'
+        self.assertEqual(
+            self._helper(para, leftover, para), [])
 
 
 if __name__ == '__main__':

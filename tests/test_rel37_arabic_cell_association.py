@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -404,8 +405,12 @@ class ArabicCellAssociationTests(unittest.TestCase):
         visible = fixture['visible']
         actual = fixture['actual']
         paragraphs = fixture['paragraphs']
-        # Full captured wrap now associates the same complete statement as
-        # Noto. The previous :1 was the mixed-script wrap false rejection.
+        # Classification from the captured representation, not a restored
+        # false rejection: the full captured Amiri wrap now associates the
+        # same complete statement as Noto. That is a changed positive. The
+        # leftover-only negative is a different constructed case: the
+        # paragraph-1 line containing "تشمل المحركات" is removed. These
+        # are not the same unchanged negative.
         full = []
         for idx, para in enumerate(paragraphs):
             full.extend(_paragraph_pdf_blockers(
@@ -414,6 +419,7 @@ class ArabicCellAssociationTests(unittest.TestCase):
         leftover_only = '\n'.join(
             line for line in visible.splitlines()
             if 'تشمل المحركات' not in line)
+        self.assertNotEqual(leftover_only, visible)
         leftover_blockers = _paragraph_pdf_blockers(
             1, paragraphs[1], leftover_only,
             visible=leftover_only, actual=actual)
@@ -427,11 +433,29 @@ class ArabicCellAssociationTests(unittest.TestCase):
     def test_swapped_framework_tokens_still_refused(self):
         fixture = json.loads(_DEJAVU_FIXTURE.read_text(encoding='utf-8'))
         para = fixture['paragraphs'][0]
-        swapped = para.replace('NDMO', 'PDPL_HOLD').replace(
-            'PDPL', 'NDMO').replace('PDPL_HOLD', 'PDPL')
+        mapping = {'NDMO': 'PDPL', 'PDPL': 'NDMO'}
+        pattern = re.compile(r'\b(?:NDMO|PDPL)\b')
+        swapped = pattern.sub(lambda match: mapping[match.group(0)], para)
+        intended = (
+            para.replace('NDMO', '\0L\0').replace('PDPL', 'NDMO').replace(
+                '\0L\0', 'PDPL')
+        )
+        self.assertEqual(swapped, intended)
+        self.assertEqual(swapped.count('NDMO'), para.count('PDPL'))
+        self.assertEqual(swapped.count('PDPL'), para.count('NDMO'))
+        self.assertNotIn('HOLD', swapped)
+        arabic_src = re.sub(r'[A-Za-z0-9._-]+', '', para)
+        arabic_sw = re.sub(r'[A-Za-z0-9._-]+', '', swapped)
+        self.assertEqual(arabic_src, arabic_sw)
         blockers = _paragraph_pdf_blockers(
             0, para, swapped, visible=swapped, actual=swapped)
         self.assertTrue(blockers, blockers)
+        self.assertFalse(any(
+            item in (
+                'pdf_bytes_missing', 'pdf_extraction_unreliable',
+            ) or item.endswith('painted_unestablished:0')
+            for item in blockers
+        ), blockers)
 
 
 if __name__ == '__main__':
