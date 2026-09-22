@@ -536,24 +536,70 @@ def _layout_norm(value: Any) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+_AR_RUN_CHAR_RE = re.compile(
+    r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF،؛؟ـ]'
+)
 _MIXED_RUN_RE = re.compile(
     r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF،؛؟ـ\s]+'
     r'|[^\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF،؛؟ـ\s]+'
 )
 
 
+def _mixed_run_kind(char: str) -> str:
+    if char.isspace() or char in '.,;:|/()-[]{}':
+        return 'sp'
+    if _AR_RUN_CHAR_RE.match(char):
+        return 'ar'
+    return 'lat'
+
+
+def _mixed_script_runs(text: str) -> List[str]:
+    """Same-script runs. Internal spaces stay with the current script.
+
+    Treating whitespace as Arabic split ``REL33 P1 Data Management Org``
+    into per-word runs and reversed them. Latin phrases stay one run.
+    """
+    runs: List[str] = []
+    buf: List[str] = []
+    current = None
+    pending_sp = ''
+    for char in str(text or ''):
+        kind = _mixed_run_kind(char)
+        if kind == 'sp':
+            pending_sp += char
+            continue
+        if current is None:
+            buf.append(pending_sp + char)
+            pending_sp = ''
+            current = kind
+            continue
+        if kind == current:
+            buf.append(pending_sp + char)
+            pending_sp = ''
+            continue
+        runs.append(''.join(buf))
+        buf = [pending_sp + char]
+        pending_sp = ''
+        current = kind
+    if buf:
+        runs.append(''.join(buf) + pending_sp)
+    elif pending_sp:
+        runs.append(pending_sp)
+    return [run for run in runs if run]
+
+
 def _undo_visual_rtl_line(line: str) -> str:
     """Recover logical run order from a visual-LTR extraction of RTL text.
 
     Arabic-only lines stay unchanged. Latin-only lines stay unchanged.
-    A mixed line is also kept in its original form by the caller.
+    Mixed lines reverse script runs, not words inside a Latin phrase.
     """
     text = str(line or '')
     if not any('\u0600' <= ch <= '\u06FF' for ch in text):
         return text
     if not any(ch.isascii() and (ch.isalpha() or ch.isdigit()) for ch in text):
         return text
-    runs = [run for run in _MIXED_RUN_RE.findall(text) if run]
+    runs = _mixed_script_runs(text)
     if len(runs) <= 1:
         return text
     return ''.join(reversed(runs))
@@ -783,15 +829,51 @@ def _bare_word(word: str) -> str:
     return re.sub(r'[\u060C\u061B\u061F\u0640]', '', text)
 
 
-def _compact_without_identity(text: str) -> str:
-    """Ordered letters/digits after dropping identity Latin and punctuation.
+def _identity_digit_remnants(actual: str) -> set:
+    """Leftover digits of omitted Helvetica identity tokens (REL33→33, P1→1).
 
-    Official leftover runs omit separately drawn Helvetica tokens. Skipping
-    those tokens is not permission to drop values or reorder the statement.
+    These are presentation chips, not permission to drop narrative values.
     """
+    remnants = set()
+    for token in _semantic_latin_tokens(actual):
+        digits = ''.join(ch for ch in token if ch.isdigit())
+        if digits:
+            remnants.add(digits)
+    return remnants
+
+
+def _is_identity_digit_remnant(word: str, actual: str) -> bool:
+    compact = _bare_word(word)
+    return bool(compact) and compact.isdigit() and compact in _identity_digit_remnants(actual)
+
+
+def _is_helvetica_overlay_word(word: str) -> bool:
+    """True for separately drawn Latin overlay chips, including org words.
+
+    REL33/P1 stay identity tokens. Title-case org words such as Data,
+    Management, Org, Artificial, and Intelligence are the same overlay.
+    """
+    compact = _bare_word(word)
+    if not compact:
+        return False
+    if _is_identity_latin_token(compact):
+        return True
+    return any(ch.isascii() and ch.isalpha() for ch in compact)
+
+
+def _compact_without_identity(text: str, actual: str = '') -> str:
+    """Ordered letters/digits after dropping Helvetica overlay and punctuation.
+
+    Official leftover runs omit separately drawn Helvetica tokens and may
+    keep only their leftover digits. Skipping those tokens is not
+    permission to drop values or reorder the statement.
+    """
+    remnants = _identity_digit_remnants(actual)
     kept = [
         _bare_word(word) for word in _content_words(text)
-        if _bare_word(word) and not _is_identity_latin_token(word)
+        if _bare_word(word)
+        and not _is_helvetica_overlay_word(word)
+        and _bare_word(word) not in remnants
     ]
     return ''.join(kept)
 
@@ -874,8 +956,8 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
     if _arabic_logical_subsequence(raw, act):
         return False
     raw_rev = _layout_norm(str(text or '')[::-1])
-    act_c = _compact_without_identity(act)
-    raw_rev_c = _compact_without_identity(raw_rev)
+    act_c = _compact_without_identity(act, act)
+    raw_rev_c = _compact_without_identity(raw_rev, act)
     if raw_rev == act or (len(raw) >= 12 and raw_rev in act):
         return True
     if len(raw_rev_c) >= 12 and raw_rev_c in act_c:
@@ -890,7 +972,7 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
             return True
         if len(candidate) >= 12 and candidate in act:
             return True
-        cand_c = _compact_without_identity(candidate)
+        cand_c = _compact_without_identity(candidate, act)
         if len(cand_c) >= 12 and cand_c in act_c:
             return True
         if _content_words(candidate) == _content_words(act):
@@ -993,6 +1075,10 @@ def _walk_complete_statement(
             idx = _advance_covered(idx, covered)
             i += 1
             continue
+        if _is_identity_digit_remnant(word, ref):
+            extras.append(word)
+            i += 1
+            continue
         extras.append(word)
         i += 1
         if idx < len(want_words):
@@ -1010,10 +1096,25 @@ def _consume_complete_statement(
     """Consume want in order. Skip leftover visual runs and duplicate identity.
 
     An interrupting word that changes the statement fails. A complete
-    bag, opening clause, or prefix is not enough.
+    bag, opening clause, or prefix is not enough. A later start at the
+    first expected word is allowed so a preceding leftover of another
+    environment paragraph does not hide a complete later paint.
     """
-    complete, _extras = _walk_complete_statement(want, have, act_set, actual)
-    return complete
+    if not want:
+        return False
+    starts = [0]
+    target = _bare_word(want[0])
+    for index, word in enumerate(have):
+        if index == 0:
+            continue
+        if _bare_word(word) == target:
+            starts.append(index)
+    for start in starts:
+        complete, _extras = _walk_complete_statement(
+            want, have[start:], act_set, actual)
+        if complete:
+            return True
+    return False
 
 
 def _extras_are_accounted(
@@ -1028,6 +1129,7 @@ def _extras_are_accounted(
             word in known
             or word[::-1] in known
             or _is_identity_latin_token(word)
+            or _is_identity_digit_remnant(word, actual)
             or _is_reverse_fragment(word, known)
             or _is_visual_leftover_run(word, actual)
             for word in extras
@@ -1068,6 +1170,7 @@ def _extras_are_accounted(
             word in known
             or word[::-1] in known
             or _is_identity_latin_token(word)
+            or _is_identity_digit_remnant(word, actual)
             or _is_reverse_fragment(word, known)
             or _is_visual_leftover_run(word, actual)
             or _is_short_reverse_debris(word, known)
@@ -1162,12 +1265,22 @@ def _leftover_visual_of_actual(painted: str, para: str, actual: str) -> bool:
     if not want_words:
         return False
     ref = actual or para
+    target = _bare_word(want_words[0])
     for source in sources:
         have_words = _content_words(source)
-        complete, extras = _walk_complete_statement(
-            want_words, have_words, act_set, ref)
-        if complete and _extras_are_accounted(extras, act_set, ref):
-            return True
+        starts = [0]
+        for index, word in enumerate(have_words):
+            if index == 0:
+                continue
+            if _bare_word(word) == target:
+                starts.append(index)
+        for start in starts:
+            complete, extras = _walk_complete_statement(
+                want_words, have_words[start:], act_set, ref)
+            prefix = have_words[:start]
+            accounted = list(prefix) + list(extras)
+            if complete and _extras_are_accounted(accounted, act_set, ref):
+                return True
     return False
 
 
@@ -2053,6 +2166,8 @@ def _latin_forward_window(
                 idx += 1
                 if idx >= len(act):
                     extra = True
+                continue
+            if token in consumed:
                 continue
             if (
                     pos == len(vis) - 1

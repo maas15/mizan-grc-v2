@@ -403,15 +403,25 @@ class ArabicCellAssociationTests(unittest.TestCase):
         self.assertEqual(fixture['model_hash'], _DT_AR_HASH)
         visible = fixture['visible']
         actual = fixture['actual']
-        all_blockers = []
-        for idx, para in enumerate(fixture['paragraphs']):
-            all_blockers.extend(_paragraph_pdf_blockers(
+        paragraphs = fixture['paragraphs']
+        # Full captured wrap now associates the same complete statement as
+        # Noto. The previous :1 was the mixed-script wrap false rejection.
+        full = []
+        for idx, para in enumerate(paragraphs):
+            full.extend(_paragraph_pdf_blockers(
                 idx, para, visible, visible=visible, actual=actual))
-        self.assertIn('pdf_environment_actual_visible_disagree:1', all_blockers)
+        self.assertEqual(full, [], full)
+        leftover_only = '\n'.join(
+            line for line in visible.splitlines()
+            if 'تشمل المحركات' not in line)
+        leftover_blockers = _paragraph_pdf_blockers(
+            1, paragraphs[1], leftover_only,
+            visible=leftover_only, actual=actual)
+        self.assertTrue(leftover_blockers, leftover_blockers)
         self.assertFalse(
             any('amiri' in item.lower() or 'dejavu' in item.lower()
-                for item in all_blockers),
-            all_blockers,
+                for item in leftover_blockers),
+            leftover_blockers,
         )
 
     def test_swapped_framework_tokens_still_refused(self):
