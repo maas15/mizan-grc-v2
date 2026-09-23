@@ -881,8 +881,27 @@ def _identity_digit_remnants(actual: str) -> set:
     return remnants
 
 
+def _is_quantitative_number_word(word: str) -> bool:
+    """True for a quantitative integer or decimal, not an identifier token.
+
+    ``10`` and ``10.33`` are values. ``REL33`` is not. A standalone
+    integer is real content until overlay provenance proves otherwise.
+    """
+    if _is_complete_numeric_value(word):
+        return True
+    compact = _bare_word(word)
+    if not compact or not compact.isdigit():
+        return False
+    return not _is_identity_latin_token(word)
+
+
 def _is_identity_digit_remnant(word: str, actual: str) -> bool:
-    """Standalone leftover identifier digits, never a complete numeric value."""
+    """Standalone leftover identifier digits, never a complete numeric value.
+
+    Text equality with digits inside REL33/P1 is not overlay provenance.
+    Callers must still refuse to skip a remnant that follows a consumed
+    quantitative number; that is a range or changed value.
+    """
     if _is_complete_numeric_value(word):
         return False
     compact = _bare_word(word)
@@ -920,12 +939,17 @@ def _compact_without_identity(text: str, actual: str = '') -> str:
     permission to drop values or reorder the statement.
     """
     remnants = _identity_digit_remnants(actual)
-    kept = [
-        _bare_word(word) for word in _content_words(text)
-        if _bare_word(word)
-        and not _is_helvetica_overlay_word(word)
-        and _bare_word(word) not in remnants
-    ]
+    kept: List[str] = []
+    for word in _content_words(text):
+        bare = _bare_word(word)
+        if not bare or _is_helvetica_overlay_word(word):
+            continue
+        if bare in remnants:
+            prev = kept[-1] if kept else ''
+            if prev and _is_quantitative_number_word(prev):
+                kept.append(bare)
+            continue
+        kept.append(bare)
     return ''.join(kept)
 
 
@@ -1127,9 +1151,11 @@ def _walk_complete_statement(
             i += 1
             continue
         if _is_identity_digit_remnant(word, ref):
-            extras.append(word)
-            i += 1
-            continue
+            prev_consumed = consumed[-1] if consumed else ''
+            if not _is_quantitative_number_word(prev_consumed):
+                extras.append(word)
+                i += 1
+                continue
         extras.append(word)
         i += 1
         if idx < len(want_words):
