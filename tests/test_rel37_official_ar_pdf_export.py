@@ -170,6 +170,9 @@ _NUMERIC_PARA = (
 _NUMERIC_PARA_REL88 = _NUMERIC_PARA.replace('REL33', 'REL88')
 _NUMERIC_MUT_33 = _NUMERIC_PARA.replace('10 سنوات', '10.33 سنوات')
 _NUMERIC_MUT_88 = _NUMERIC_PARA.replace('10 سنوات', '10.88 سنوات')
+_EN_DASH = '\u2013'
+_NUMERIC_RANGE_33 = _NUMERIC_PARA.replace('10 سنوات', f'10{_EN_DASH}33 سنوات')
+_NUMERIC_RANGE_88 = _NUMERIC_PARA.replace('10 سنوات', f'10{_EN_DASH}88 سنوات')
 
 
 def _true_framework_swap(para: str, left='NDMO', right='PDPL') -> str:
@@ -236,7 +239,7 @@ def _numeric_env_pdf(visible: str, actual: str) -> bytes:
             canv.setFont('Helvetica', 10)
             canv.drawString(36, y, arabic.strip())
             y -= 14
-        nums = re.findall(r'\d+(?:\.\d+)?', line)
+        nums = re.findall(r'\d+(?:\.\d+)?(?:\u2013\d+(?:\.\d+)?)?', line)
         if nums:
             canv.setFont('Helvetica', 10)
             canv.drawString(36, y, ' '.join(nums))
@@ -280,7 +283,7 @@ def _export(saved, body, fmt):
     raw = b''
     download_http = 0
     if tid:
-        deadline = time.time() + 90
+        deadline = time.time() + 180
         while time.time() < deadline:
             status = saved['client'].get(
                 f'/api/export-status/{tid}', headers=saved['headers']
@@ -440,22 +443,26 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             for item in blockers
         ), blockers)
 
-    def test_helper_a_b_accept_c_d_e_f_refuse(self):
+    def test_helper_a_b_accept_c_through_g_refuse(self):
         wrap = _NUMERIC_PARA.replace('لمدة 10', 'لمدة\n10')
         self.assertEqual(self._helper(_NUMERIC_PARA, _NUMERIC_PARA, _NUMERIC_PARA), [])
         self.assertEqual(self._helper(_NUMERIC_PARA, wrap, _NUMERIC_PARA), [])
         self._content_blocker(self._helper(
             _NUMERIC_PARA, _NUMERIC_MUT_33, _NUMERIC_PARA))
         self._content_blocker(self._helper(
-            _NUMERIC_PARA, _NUMERIC_MUT_33, _NUMERIC_MUT_33))
+            _NUMERIC_PARA, _NUMERIC_RANGE_33, _NUMERIC_PARA))
         self._content_blocker(self._helper(
-            _NUMERIC_PARA, _NUMERIC_MUT_88, _NUMERIC_PARA))
+            _NUMERIC_PARA, _NUMERIC_RANGE_33, _NUMERIC_RANGE_33))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_RANGE_88, _NUMERIC_PARA))
         self._content_blocker(self._helper(
             _NUMERIC_PARA_REL88,
-            _NUMERIC_PARA_REL88.replace('10 سنوات', '10.33 سنوات'),
+            _NUMERIC_PARA_REL88.replace('10 سنوات', f'10{_EN_DASH}33 سنوات'),
             _NUMERIC_PARA_REL88))
         self.assertEqual(_content_words(_NUMERIC_MUT_33).count('10.33'), 1)
         self.assertNotIn('33', _content_words(_NUMERIC_MUT_33))
+        self.assertEqual(_content_words(_NUMERIC_RANGE_33).count('10'), 1)
+        self.assertEqual(_content_words(_NUMERIC_RANGE_33).count('33'), 1)
         self.assertIn('33', _identity_digit_remnants(_NUMERIC_PARA))
         self.assertFalse(_is_identity_digit_remnant('10.33', _NUMERIC_PARA))
         self.assertTrue(_is_identity_digit_remnant('33', _NUMERIC_PARA))
@@ -501,9 +508,26 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertIn('10.33', act)
         blockers = compare_environment_narrative_to_pdf(model, both)
         self._content_blocker(blockers)
+
+        range_paint = _numeric_env_pdf(_NUMERIC_RANGE_33, _NUMERIC_PARA)
+        section, meta = pdf_environment_section_text(range_paint)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertTrue('10.33' not in vis and ('10–33' in vis or '10-33' in vis or '33' in vis), vis)
+        self.assertNotIn(_EN_DASH.join(('10', '33')), act)
+        self.assertIn('10', act)
+        self._content_blocker(compare_environment_narrative_to_pdf(model, range_paint))
+        range_both = _numeric_env_pdf(_NUMERIC_RANGE_33, _NUMERIC_RANGE_33)
+        self._content_blocker(compare_environment_narrative_to_pdf(model, range_both))
         del section
 
-    def test_real_thread_matching_owner_and_injected_numeric(self):
+    def test_real_thread_rejects_foreign_numeric_pdf(self):
+        """Official Data source vs a different numeric paragraph PDF.
+
+        This is a mismatched-document refusal, not a same-source numeric
+        mutation. Baseline already refused it; it is not a downloadable
+        bad-file bypass that this change fixed.
+        """
         from unittest.mock import patch
 
         domain, label, org, sector, fws = _CASES[0]
@@ -536,6 +560,119 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertNotEqual(refused['download_http'], 200)
         self.assertFalse(refused['bytes'].startswith(b'%PDF'))
         self.assertEqual(model.model_hash, before)
+
+    def _owned_numeric_model(self):
+        domain, label, org, sector, fws = _CASES[0]
+        model = _compile(domain, org, sector, fws)
+        official_hash = model.model_hash
+        model.environment_narrative = (
+            model.environment_narrative.rstrip() + '\n\n' + _NUMERIC_PARA)
+        model.compute_hashes()
+        self.assertNotEqual(model.model_hash, official_hash)
+        self.assertNotEqual(model.model_hash, LIVE_HASHES['data'])
+        self.assertIn(_NUMERIC_PARA, model.environment_narrative)
+        return model, label, fws
+
+    def _inject_export(self, saved, fws, raw):
+        from unittest.mock import patch
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+
+        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                           route='pdf', lang='ar'):
+            if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
+                pdf_bytes = raw
+            return real_gate(
+                docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
+                sections=sections, route=route, lang=lang)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+            return _export(saved, _official_body(saved, fws=fws), 'pdf')
+
+    def test_real_thread_same_source_numeric_mutations(self):
+        from release_engine_v3.rel37_export_content_parity import (
+            gate_rel37_returned_bytes,
+        )
+
+        model, label, fws = self._owned_numeric_model()
+        before = model.model_hash
+        saved = _persist(model, domain_label=label)
+        matching = _export(saved, _official_body(saved, fws=fws), 'pdf')
+        self.assertEqual(matching['status'].get('status'), 'done', matching['status'])
+        self.assertEqual(matching['download_http'], 200)
+        self.assertTrue(matching['bytes'].startswith(b'%PDF'))
+        blockers = compare_environment_narrative_to_pdf(model, matching['bytes'])
+        self.assertEqual(blockers, [], blockers)
+        self.assertEqual(model.model_hash, before)
+
+        env = model.environment_narrative
+        same_layout = _numeric_env_pdf(env, env)
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, same_layout), [],
+            'constructed full-env PDF must match the saved source before mutation')
+        paint_decimal = _numeric_env_pdf(
+            env.replace('لمدة 10 سنوات', 'لمدة 10.33 سنوات'), env)
+        paint_range = _numeric_env_pdf(
+            env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'), env)
+        both_range = _numeric_env_pdf(
+            env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'),
+            env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'),
+        )
+        for name, raw in (
+                ('paint_10_33', paint_decimal),
+                ('paint_10_33_range', paint_range),
+                ('both_10_33_range', both_range),
+        ):
+            section, meta = pdf_environment_section_text(raw)
+            self.assertTrue(meta.get('associated'), (name, meta))
+            vis = str(meta.get('environment_visible') or '')
+            act = str(meta.get('environment_actual') or '')
+            if name == 'paint_10_33':
+                self.assertIn('10.33', vis)
+                self.assertNotIn('10.33', act)
+            else:
+                self.assertTrue('33' in vis, (name, vis))
+            cmp_blockers = compare_environment_narrative_to_pdf(model, raw)
+            self._content_blocker(cmp_blockers)
+            numeric_idx = None
+            for idx, para in enumerate(environment_narrative_paragraphs(env)):
+                if _NUMERIC_PARA in para or para == _NUMERIC_PARA:
+                    numeric_idx = idx
+                    break
+            self.assertIsNotNone(numeric_idx, env)
+            self.assertTrue(any(
+                item.endswith(f':{numeric_idx}')
+                and (
+                    'actual_visible_disagree' in item
+                    or 'narrative_missing' in item
+                    or 'narrative_incomplete' in item
+                )
+                for item in cmp_blockers
+            ), (name, numeric_idx, cmp_blockers))
+            allowed, gated = gate_rel37_returned_bytes(
+                model, pdf_bytes=raw, route='pdf')
+            self.assertFalse(allowed, (name, gated))
+            self.assertFalse(any(
+                item in gated for item in (
+                    'pdf_bytes_missing', 'pdf_extraction_unreliable',
+                    'docx_bytes_missing',
+                )
+            ), (name, gated))
+            self.assertTrue(any(
+                item.endswith(f':{numeric_idx}')
+                and (
+                    'actual_visible_disagree' in item
+                    or 'narrative_missing' in item
+                    or 'narrative_incomplete' in item
+                )
+                for item in gated
+            ), (name, numeric_idx, gated))
+            refused = self._inject_export(saved, fws, raw)
+            self.assertNotEqual(
+                refused['status'].get('status'), 'done', (name, refused['status']))
+            self.assertNotEqual(refused['download_http'], 200, name)
+            self.assertFalse(refused['bytes'].startswith(b'%PDF'), name)
+        self.assertEqual(model.model_hash, before)
+        del section
 
     def test_leftover_identity_chips_still_associate(self):
         para = (
