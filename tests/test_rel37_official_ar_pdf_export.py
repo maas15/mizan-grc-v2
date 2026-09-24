@@ -12,12 +12,16 @@ import os
 import re
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
+from rel37_export_observation import (  # noqa: E402
+    observe_export_task,
+    stop_if_worker_still_uncontrolled,
+)
 
 _ENV_KEYS = (
     'ADMIN_PASSWORD', 'SECRET_KEY', 'DATABASE_PATH', 'DATABASE_URL',
@@ -286,31 +290,59 @@ def _export(saved, body, fmt, *, timeout=180):
         f'/api/generate-{fmt}-async', json=payload, headers=saved['headers'])
     submit = resp.get_json(silent=True) or {}
     tid = submit.get('task_id')
-    status = {}
+
+    def _get_status():
+        return saved['client'].get(
+            f'/api/export-status/{tid}', headers=saved['headers']
+        ).get_json(silent=True) or {}
+
+    observed = observe_export_task(
+        _get_status if tid else (lambda: {}),
+        task_id=tid,
+        deadline_s=timeout,
+        poll_interval_s=0.2,
+    )
+    if observed['poll_timed_out']:
+        # Keep the original timeout. Drain so the next export in this
+        # process does not start while the worker is still alive.
+        drained = observe_export_task(
+            _get_status, task_id=tid, deadline_s=180, poll_interval_s=0.2)
+        stop_if_worker_still_uncontrolled(drained)
+    status = observed['last_status']
     raw = b''
-    download_http = 0
-    if tid:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            status = saved['client'].get(
-                f'/api/export-status/{tid}', headers=saved['headers']
-            ).get_json(silent=True) or {}
-            if status.get('status') in ('done', 'error'):
-                break
-            time.sleep(0.2)
-        if status.get('status') == 'done':
-            dl = saved['client'].get(
-                f'/api/export-download/{tid}', headers=saved['headers'])
-            download_http = dl.status_code
-            raw = dl.data or b''
+    download_requested = False
+    download_http = None
+    if observed['observed_terminal'] and status.get('status') == 'done':
+        download_requested = True
+        dl = saved['client'].get(
+            f'/api/export-download/{tid}', headers=saved['headers'])
+        download_http = dl.status_code
+        raw = dl.data or b''
     return {
         'submit_http': resp.status_code,
         'submit': submit,
         'status': status,
         'download_http': download_http,
+        'download_requested': download_requested,
         'bytes': raw,
         'task_id': tid,
+        'observed_terminal': observed['observed_terminal'],
+        'poll_timed_out': observed['poll_timed_out'],
+        'elapsed_s': observed['elapsed_s'],
+        'deadline_s': observed['deadline_s'],
+        'last_status': status,
     }
+
+
+def _require_terminal_route_refusal(testcase, result, context=None):
+    """Terminal error and no released PDF. Pending is not refusal."""
+    testcase.assertFalse(result.get('poll_timed_out'), (context, result))
+    testcase.assertTrue(result.get('observed_terminal'), (context, result))
+    testcase.assertEqual(
+        result['status'].get('status'), 'error', (context, result))
+    testcase.assertFalse(result.get('download_requested'), (context, result))
+    testcase.assertIsNone(result.get('download_http'), (context, result))
+    testcase.assertFalse((result.get('bytes') or b'').startswith(b'%PDF'), context)
 
 
 class OfficialMixedScriptRunTests(unittest.TestCase):
@@ -606,9 +638,7 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
 
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             refused = _export(saved, _official_body(saved, fws=fws), 'pdf')
-        self.assertNotEqual(refused['status'].get('status'), 'done', refused['status'])
-        self.assertNotEqual(refused['download_http'], 200)
-        self.assertFalse(refused['bytes'].startswith(b'%PDF'))
+        _require_terminal_route_refusal(self, refused, 'foreign_numeric')
         self.assertEqual(model.model_hash, before)
 
     def _owned_numeric_model(self):
@@ -760,10 +790,7 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
                 for item in gated
             ), (name, numeric_idx, gated))
             refused = self._substitute_candidate(saved, fws, raw)
-            self.assertNotEqual(
-                refused['status'].get('status'), 'done', (name, refused['status']))
-            self.assertNotEqual(refused['download_http'], 200, name)
-            self.assertFalse(refused['bytes'].startswith(b'%PDF'), name)
+            _require_terminal_route_refusal(self, refused, name)
             self.assertEqual(refused['candidate_sha'], refused['gate_input_sha'], name)
             self.assertNotEqual(refused['candidate_sha'], refused['downloaded_sha'], name)
             route_blockers = refused.get('gate_blockers') or []
@@ -904,14 +931,11 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             or 'narrative_incomplete' in item
             for item in gated
         ), gated)
-        # Extra+full-env leftover walks can exceed the default 180s poll.
-        # That pending result is a wait timeout, not a downloadable bypass.
+        # 420s is the existing extra-run observation cap. A nonterminal
+        # status at that cap is an observation timeout, not refusal.
         refused = self._substitute_candidate(
             saved, fws, route_wrong, timeout=420)
-        self.assertNotEqual(
-            refused['status'].get('status'), 'done', refused['status'])
-        self.assertNotEqual(refused['download_http'], 200)
-        self.assertFalse(refused['bytes'].startswith(b'%PDF'))
+        _require_terminal_route_refusal(self, refused, 'extra_run')
         self.assertEqual(refused['candidate_sha'], refused['gate_input_sha'])
         self.assertNotEqual(refused['candidate_sha'], refused['downloaded_sha'])
         self.assertTrue(any(

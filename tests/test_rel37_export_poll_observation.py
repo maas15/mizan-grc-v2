@@ -7,7 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rel37_export_observation import observe_export_task
+from rel37_export_observation import (
+    observe_export_task,
+    stop_if_worker_still_uncontrolled,
+)
 
 
 class _Clock:
@@ -70,6 +73,13 @@ class ExportObservationTests(unittest.TestCase):
         self.assertFalse(obs['download_requested'])
         self.assertGreaterEqual(obs['elapsed_s'], 3)
         self.assertEqual(obs['task_id'], 'task-pending')
+
+    def test_controlled_terminal_does_not_stop_process(self):
+        stop_if_worker_still_uncontrolled({
+            'poll_timed_out': False,
+            'task_id': 'task-done',
+            'last_status': {'status': 'done'},
+        })
 
 
 if __name__ == '__main__':

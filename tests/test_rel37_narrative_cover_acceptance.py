@@ -20,7 +20,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
-from rel37_export_observation import observe_export_task  # noqa: E402
+from rel37_export_observation import (  # noqa: E402
+    observe_export_task,
+    stop_if_worker_still_uncontrolled,
+)
 
 _ENV_KEYS = (
     'ADMIN_PASSWORD', 'SECRET_KEY', 'DATABASE_PATH', 'DATABASE_URL',
@@ -259,9 +262,10 @@ def _official_body(saved, *, sector='Healthcare', org_name=None):
     }
 
 
-# Real-worker official PDF builds were still pending at 45s and published
-# done afterward. The budget is set after the isolated timing record; it
-# is not a production timeout.
+# Isolated live-fixture worker reached terminal done in 21.6s, of which
+# comparison was 18.3s. Call-scoped memoization brought that comparison
+# to about 1s on the same PDF. 45s remains the real-worker observation
+# budget; it is not a production timeout.
 REAL_WORKER_OBSERVATION_S = 45
 
 
@@ -357,9 +361,20 @@ def _require_terminal_refusal(testcase, result):
     testcase.assertFalse(result.get('bytes', b'').startswith(b'PK'))
 
 
+def _drain_or_stop(saved, result):
+    """Wait out a recorded observation timeout before the next export.
+
+    A timeout stays a failed observation. If the worker is still
+    nonterminal after the drain bound, this test process stops.
+    """
+    if not result.get('poll_timed_out'):
+        return
+    drained = _drain_worker(saved, result.get('task_id'))
+    stop_if_worker_still_uncontrolled(drained)
+
+
 def _finish_refusal(testcase, saved, result):
-    if result.get('poll_timed_out'):
-        _drain_worker(saved, result.get('task_id'))
+    _drain_or_stop(saved, result)
     _require_terminal_refusal(testcase, result)
 
 
@@ -1477,8 +1492,7 @@ class CompleteRepresentationPdfTests(unittest.TestCase):
         saved = _persist(model, db_sector='Healthcare')
         good = _export(
             saved, _official_body(saved), 'pdf', immediate=False)
-        if good.get('poll_timed_out'):
-            _drain_worker(saved, good.get('task_id'))
+        _drain_or_stop(saved, good)
         _require_terminal_download(self, good)
         self.assertTrue(good['bytes'].startswith(b'%PDF'))
         self.assertEqual(
@@ -1853,8 +1867,7 @@ class OrderedCompleteAndOverlayProvenanceTests(unittest.TestCase):
         self.assertEqual(model.model_hash, LIVE_HASH)
         saved = _persist(model, db_sector='Healthcare')
         good = _export(saved, _official_body(saved), 'pdf', immediate=False)
-        if good.get('poll_timed_out'):
-            _drain_worker(saved, good.get('task_id'))
+        _drain_or_stop(saved, good)
         _require_terminal_download(self, good)
         self.assertTrue(good['bytes'].startswith(b'%PDF'))
         self.assertEqual(

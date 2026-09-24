@@ -6,6 +6,8 @@ an HTTP denial.
 """
 from __future__ import annotations
 
+import os
+import sys
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -50,3 +52,22 @@ def observe_export_task(
         'deadline_s': float(deadline_s),
         'download_requested': False,
     }
+
+
+def stop_if_worker_still_uncontrolled(observed: Dict[str, Any]) -> None:
+    """End this isolated test process if the worker is still nonterminal.
+
+    Production threads are not cancelled. The process exit is the bound
+    that keeps the next test from starting on a live worker.
+    """
+    if not observed.get('poll_timed_out'):
+        return
+    sys.stderr.write(
+        'UNCONTROLLED_WORKER task_id=%s last_status=%s elapsed_s=%s\n'
+        % (
+            observed.get('task_id'),
+            (observed.get('last_status') or {}).get('status'),
+            observed.get('elapsed_s'),
+        )
+    )
+    os._exit(3)
