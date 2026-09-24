@@ -14,15 +14,25 @@ jobs:
   rel-pr-checks:
     name: REL32 PR gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       ADMIN_PASSWORD: test-admin-password
       SECRET_KEY: test-secret-key
       DATABASE_URL: sqlite:////tmp/mizan_rel_pr_checks.db
       OPENAI_API_KEY: ''
-      REL2_SKIP_EXPORT_EVIDENCE: '1'
+      # REL2_SKIP_EXPORT_EVIDENCE is intentionally unset. Required
+      # returned-byte and ownership acceptance must execute real gates.
+      # Individual legacy unit files may setdefault the skip locally;
+      # those files do not satisfy export-acceptance.
     steps:
       - uses: actions/checkout@v4
+
+      - name: Initialize export diagnostic directory
+        shell: bash
+        run: |
+          diag_dir="${RUNNER_TEMP:?}/rel37_export_diagnostics"
+          mkdir -p "$diag_dir"
+          printf 'REL37_EXPORT_DIAG_DIR=%s\n' "$diag_dir" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
@@ -36,9 +46,41 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Ensure supported Arabic PDF font
+        run: python scripts/ensure_render_fonts.py
+
       - name: py_compile core modules
         run: |
-          python -m py_compile app.py professional_strategy_render.py
+          python -m py_compile app.py professional_strategy_render.py \
+            release_engine_v3/rel37_apply.py \
+            release_engine_v3/rel37_compilers.py \
+            release_engine_v3/rel37_sector_context.py \
+            release_engine_v3/rel37_export_content_parity.py \
+            release_engine_v3/rel37_professional_projection.py \
+            release_engine_v3/rel32_docx_renderer.py \
+            release_engine_v3/rel32_frozen_export_lock.py \
+            release_engine_v3/rel31_authority.py
+
+      - name: pytest REL37 export-contract suite
+        env:
+          REL2_SKIP_EXPORT_EVIDENCE: ''
+        run: |
+          unset REL2_SKIP_EXPORT_EVIDENCE || true
+          python -m pytest \
+            tests/test_rel37_official_ar_pdf_export.py \
+            tests/test_rel37_official_export_differential.py \
+            tests/test_rel37_erm_typed_ownership.py \
+            tests/test_rel37_arabic_cell_association.py \
+            tests/test_rel37_ensure_render_fonts.py \
+            tests/test_rel33_official_runner_capture.py \
+            tests/test_rel37_export_content_parity.py \
+            tests/test_rel37_saved_narrative_cover_authority.py \
+            tests/test_rel37_narrative_cover_acceptance.py \
+            tests/test_rel37_export_poll_observation.py \
+            tests/test_rel37_sync_pdf_ownership.py \
+            tests/test_rel37_acceptance_evidence_isolation.py \
+            tests/test_rel33_required_smoke_quality_contract.py \
+            -q
 
       - name: pytest REL32 gate suite
         run: |
@@ -50,7 +92,50 @@ jobs:
             tests/test_rel32_preview_table_dom_binding.py \
             tests/test_enterprise_document_factory_foundation.py \
             tests/test_rel33_all_domain_document_quality_matrix.py \
+            tests/test_rel33_required_smoke_quality_contract.py \
             -q
+
+      - name: pytest REL37 unit compilers
+        run: |
+          python -m pytest \
+            tests/test_rel37_deterministic_compilers.py \
+            tests/test_rel37_live_attach.py \
+            tests/test_rel37_early_authority.py \
+            tests/test_rel37_preview_section_contract.py \
+            tests/test_rel37_framework_label_canonicalization.py \
+            tests/test_rel37_sector_context_contract.py \
+            -q --tb=short
+
+      - name: pytest REL37 request, persist, and export contract
+        env:
+          REL2_SKIP_EXPORT_EVIDENCE: ''
+        run: |
+          unset REL2_SKIP_EXPORT_EVIDENCE
+          python -m pytest tests/test_rel37_ui_request_type_contract.py --collect-only -q
+          python -m pytest \
+            tests/test_rel37_acceptance_evidence_isolation.py \
+            tests/test_rel37_ui_request_type_contract.py \
+            tests/test_rel37_export_content_parity.py \
+            tests/test_rel37_saved_narrative_cover_authority.py \
+            tests/test_rel37_narrative_cover_acceptance.py \
+            tests/test_rel37_guide_completeness_persist.py \
+            tests/test_rel37_sector_context_contract.py \
+            -q --tb=short
+
+      - name: pytest REL37 sync PDF ownership
+        env:
+          REL2_SKIP_EXPORT_EVIDENCE: ''
+        run: |
+          unset REL2_SKIP_EXPORT_EVIDENCE
+          python -m pytest tests/test_rel37_sync_pdf_ownership.py -q --tb=short
+
+      - name: pytest Cyber and Auth/CSRF regressions
+        run: |
+          python -m pytest \
+            tests/test_rel36_9_english_cyber_live_stability.py \
+            tests/test_rel36_11_english_cyber_export_stability.py \
+            tests/test_rel36_12_english_cyber_presave_pillar_stability.py \
+            -q --tb=short
 
       - name: rel32 cyber AR export smoke
         run: python scripts/rel32_cyber_ar_export_smoke.py
@@ -60,3 +145,11 @@ jobs:
 
       - name: smoke document type matrix
         run: python scripts/smoke_document_type_matrix.py
+
+      - name: Upload sanitized export diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rel37-export-diagnostics
+          path: ${{ runner.temp }}/rel37_export_diagnostics/
+          if-no-files-found: ignore

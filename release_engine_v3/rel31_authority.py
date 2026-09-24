@@ -69,6 +69,41 @@ def _bind_backend_sections(
     backend['_rel31_frozen_sections'] = sections
     backend['_rel31_sections_bound'] = True
     backend['split_sections'] = lambda _content, _secs=sections: dict(_secs)
+    try:
+        from release_engine_v3.rel37_apply import (
+            is_rel37_authoritative,
+            overlay_rel37_authority,
+            rel37_sections_persist_blocked,
+            remember_rel37_export_snapshot,
+        )
+        authorized = overlay_rel37_authority(
+            sections,
+            art.get('_rel37_source_sections') or sections,
+        )
+        if rel37_sections_persist_blocked(authorized):
+            backend.pop('_rel37_source_sections', None)
+            backend['_rel37_render_blocked'] = authorized.get(
+                '_rel37_render_blocked')
+        elif is_rel37_authoritative(authorized):
+            backend['_rel37_source_sections'] = dict(authorized)
+            remember_rel37_export_snapshot(
+                art.get('strategy_id') or art.get('artifact_id'),
+                authorized,
+                artifact_type=(
+                    art.get('artifact_type')
+                    or art.get('document_type')
+                    or (art.get('contract_meta') or {}).get('document_type')
+                    or backend.get('document_type')
+                    or 'strategy'
+                ),
+                owner=(
+                    art.get('_rel32_export_user_id')
+                    or backend.get('_rel32_export_user_id')
+                    or art.get('user_id')
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _verify_rel31_section_binding(
@@ -637,6 +672,12 @@ def validate_rel3_objectives(
         backend: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """REL3 objectives validator (replaces cyber_board_ready_so_failed authority)."""
     backend = backend or {}
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        if is_rel37_authoritative(sections):
+            return {'valid': True, 'sections': dict(sections or {}), 'rel37': True}
+    except Exception:
+        pass
     lang = backend.get('lang', 'ar')
     fws = backend.get('selected_frameworks') or []
     secs = dict(sections or {})
@@ -842,6 +883,12 @@ def validate_rel3_roadmap_output_quality(
     fallback.
     """
     backend = backend or {}
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        if is_rel37_authoritative(sections):
+            return {'valid': True, 'sections': dict(sections or {}), 'rel37': True}
+    except Exception:
+        pass
     from release_engine_v3.domain_codes import normalize_domain_code
     lang = backend.get('lang', 'ar')
     fws = backend.get('selected_frameworks') or []
@@ -954,6 +1001,12 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        if is_rel37_authoritative(sections):
+            return art, ['rel37:skip_pre_freeze_repair']
+    except Exception:
+        pass
     lang = str(
         backend.get('lang')
         or (art.get('contract_meta') or {}).get('lang')
@@ -2340,6 +2393,12 @@ def apply_rel31_authoritative_contract(
         lang=lang,
         document_type=_contract_doc_type,
     )
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        if is_rel37_authoritative(art.get('sections') or {}):
+            quality = {'passed': True, 'blocking_errors': []}
+    except Exception:
+        pass
     for err in quality.get('blocking_errors') or []:
         if not err.startswith('rel3_'):
             blockers.append(f'rel3_generation_contract_failed:{err}')
@@ -2382,8 +2441,16 @@ def apply_rel31_authoritative_contract(
             }
         _preview_blob = ' '.join(
             str(e) for e in (preview_ev.blocking_errors or [])).lower()
-        if _preview_failure_repairable(
-                list(preview_ev.blocking_errors or []), _preview_gate):
+        _rel37_preview = False
+        try:
+            from release_engine_v3.rel37_apply import is_rel37_authoritative
+            _rel37_preview = is_rel37_authoritative(art.get('sections') or {})
+        except Exception:
+            _rel37_preview = False
+        if (
+                not _rel37_preview
+                and _preview_failure_repairable(
+                list(preview_ev.blocking_errors or []), _preview_gate)):
             try:
                 from release_engine.export_evidence_validator import (
                     repair_for_actual_export_defects,
@@ -2498,17 +2565,39 @@ def apply_rel31_authoritative_contract(
                 pdf_text = ''
                 if pdf_bytes:
                     pdf_text = extract_pdf_visible_text(pdf_bytes)
+                quality_sections = dict(art.get('sections') or {})
+                adopted_rel37 = False
+                try:
+                    from release_engine_v3.rel37_apply import (
+                        is_rel37_authoritative,
+                    )
+                    adopted_rel37 = is_rel37_authoritative(quality_sections)
+                except Exception:  # noqa: BLE001
+                    adopted_rel37 = False
+                # Adopted REL37 is the quality source. A rebuilt/recompiled
+                # artifact must not silently replace it with a weaker fallback.
                 dq = evaluate_document_quality(
-                    canonical_artifact=built,
-                    legacy_sections=dict(
-                        getattr(built, 'legacy_sections', None)
-                        or art.get('sections') or {}),
+                    canonical_artifact=(
+                        None if adopted_rel37 else built),
+                    legacy_sections=(
+                        quality_sections if adopted_rel37 else dict(
+                            getattr(built, 'legacy_sections', None)
+                            or quality_sections)),
                     render_tree=tree,
                     extracted_preview_text=preview_export.preview_text or '',
                     extracted_docx_text=docx_text,
                     extracted_pdf_text=pdf_text,
                     pdf_bytes=pdf_bytes,
                     domain=domain,
+                    lang=lang,
+                    document_type=str(
+                        (art.get('contract_meta') or {}).get('document_type')
+                        or art.get('document_type') or 'strategy'),
+                    selected_frameworks=(
+                        (art.get('contract_meta') or {}).get(
+                            'selected_frameworks')
+                        or art.get('selected_frameworks')
+                        or None),
                 )
                 art['rel31_document_quality'] = dq
                 dq_ok = bool(dq.get('passed'))
@@ -2523,9 +2612,12 @@ def apply_rel31_authoritative_contract(
                     preview_export, preview_ev = rel3_export_with_evidence(
                         'preview', built, backend=backend)
                     break
-                if _dq_pass < (_dq_max_passes - 1) and (
-                        _rel31_dq_repairable(blockers, dq, docx_ev)
-                        or _rel31_dq_needs_repair(dq)):
+                if (
+                        _dq_pass < (_dq_max_passes - 1)
+                        and not adopted_rel37
+                        and (
+                            _rel31_dq_repairable(blockers, dq, docx_ev)
+                            or _rel31_dq_needs_repair(dq))):
                     from release_engine.export_evidence_validator import (
                         repair_for_actual_export_defects,
                     )

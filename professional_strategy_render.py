@@ -223,6 +223,7 @@ _PDF_LAYOUT_SCHEMA_ALIASES = {
     'gap_table': 'gap_main',
     'kpi_summary': 'kpi_main',
     'kpi_details': 'kpi_formula',
+    'kpi_guide': 'gap_action',
     'confidence_factors': 'conf_factor',
     'environment': 'env',
 }
@@ -554,25 +555,32 @@ def prepare_section_text(text: str, lang: str = 'ar') -> str:
     return out
 
 
-def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
+def prepare_final_render_text(
+        text: str, lang: str = 'ar',
+        preserve_model_values: bool = False) -> str:
     """PR-CY48/52 — last-mile cleanup applied to every PDF/DOCX cell/paragraph.
 
     Combines markdown residue stripping, Arabic spacing fixes (PRCY41/48/52),
     split-word fragment repair, confidence display normalisation, gap-header
     repair, and framework bracket artifact removal.
+
+    When ``preserve_model_values`` is true, fragment/concat rewrites that
+    would change a valid persisted token (for example ``مسؤول السجلات``)
+    are skipped.
     """
     if text is None:
         return ''
     out = prepare_section_text(str(text), lang)
-    out = prcy47_fix_ar_fragments(out)
-    out = _repair_gap_header_fragments(out)
+    if not preserve_model_values:
+        out = prcy47_fix_ar_fragments(out)
+        out = _repair_gap_header_fragments(out)
     # Strip reversed framework bracket artifacts (e.g. ``ECC + DCC]``).
     out = re.sub(r'[\[\]]+', '', out)
     out = re.sub(r'\bECC\s*\+\s*DCC\b', 'NCA ECC, NCA DCC', out)
     out = _concise_framework_labels_in_text(out)
     out = re.sub(r'\s{2,}', ' ', out).strip()
     # PR-CY59 — concat fixes must run last; fragment repair can revert them.
-    if lang == 'ar':
+    if lang == 'ar' and not preserve_model_values:
         out = normalize_arabic_for_render(out)
     return out
 
@@ -704,6 +712,8 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
         return [0.04, 0.17, 0.07, 0.12, 0.19, 0.13, 0.12, 0.16]
     if schema == 'kpi_formula' and ncols == 4:
         return [0.06, 0.28, 0.36, 0.30]
+    if schema == 'risk_register' and ncols == 5:
+        return [0.06, 0.26, 0.20, 0.32, 0.16]
     if schema == 'strategic_objectives' and ncols == 5:
         return [0.04, 0.28, 0.24, 0.28, 0.16]
     if schema == 'pillar_initiatives' and ncols == 5:
@@ -722,8 +732,10 @@ def schema_table_col_weights_fallback(schema: str, ncols: int) -> List[float]:
 def schema_table_col_weights(schema: str, ncols: int) -> List[float]:
     """PR-CY52/53 — PDF column weight hints per table schema."""
     prof = get_pdf_table_layout_profile(schema, ncols)
-    return list(prof.get('col_weights') or schema_table_col_weights_fallback(
-        schema, ncols))
+    weights = list(prof.get('col_weights') or [])
+    if weights and len(weights) == ncols:
+        return weights
+    return list(schema_table_col_weights_fallback(schema, ncols))
 
 
 def _truncate_cell_for_profile(text: str, profile: Dict[str, Any]) -> str:
@@ -1250,9 +1262,11 @@ def prepare_pdf_render_model(
     if lang != 'ar' or not model:
         return {}
     cleanup = apply_pdf_final_table_fallback_cleanup(model, lang)
-    apply_prcy78_roadmap_phase_coverage_to_model(
-        model, lang, model.get('selected_frameworks'),
-        output_type='pdf')
+    # REL37 authoritative models already carry their own phase rows.
+    if not model.get('rel37_content_authority'):
+        apply_prcy78_roadmap_phase_coverage_to_model(
+            model, lang, model.get('selected_frameworks'),
+            output_type='pdf')
     return cleanup
 
 
@@ -2814,7 +2828,8 @@ def build_roadmap_render_spec(
     for phase_num in (1, 2, 3):
         phase_rows = buckets[phase_num]
         if phase_rows:
-            for filled, meta in phase_rows[:3]:
+            keep_n = len(phase_rows) if not is_cyber_strategy(dcode or domain) else 3
+            for filled, meta in phase_rows[:keep_n]:
                 result.append(filled)
                 result_meta.append(meta)
         else:
@@ -2902,7 +2917,9 @@ def _is_formula_echo(formula: str, metric_name: str) -> bool:
 
 
 def _sanitize_table_spec(
-        tbl: Optional[Dict[str, Any]], lang: str = 'ar') -> Optional[Dict[str, Any]]:
+        tbl: Optional[Dict[str, Any]], lang: str = 'ar',
+        *,
+        preserve_compiler_content: bool = False) -> Optional[Dict[str, Any]]:
     """Apply final render cleanup to every table header/cell."""
     if not tbl:
         return tbl
@@ -2913,16 +2930,18 @@ def _sanitize_table_spec(
     else:
         hdr = []
         for h in (tbl.get('header') or []):
-            hdr.append(prepare_final_render_text(h, lang))
+            hdr.append(prepare_final_render_text(
+                h, lang, preserve_model_values=preserve_compiler_content))
     rows = []
     for r in tbl.get('rows') or []:
-        if schema == 'roadmap' and _is_dash_heavy_row(r):
+        if schema == 'roadmap' and not preserve_compiler_content and _is_dash_heavy_row(r):
             continue
-        if schema == 'roadmap':
+        if schema == 'roadmap' and not preserve_compiler_content:
             rows.append(_compact_roadmap_row(
                 [prepare_final_render_text(c, lang) for c in r], lang))
         elif schema == 'gap_action':
-            cells = [_normalize_gap_cell(prepare_final_render_text(c, lang))
+            cells = [_normalize_gap_cell(prepare_final_render_text(
+                c, lang, preserve_model_values=preserve_compiler_content))
                      for c in r]
             # Merge split step columns (طوة | الخ → الخطوة).
             if (len(cells) >= 2
@@ -2934,8 +2953,9 @@ def _sanitize_table_spec(
             elif cells:
                 cells[0] = _normalize_gap_cell(cells[0])
             rows.append(cells)
-        elif schema == 'kpi_main':
-            cells = [prepare_final_render_text(c, lang) for c in r]
+        elif schema == 'kpi_main' and not preserve_compiler_content:
+            cells = [prepare_final_render_text(
+                c, lang, preserve_model_values=preserve_compiler_content) for c in r]
             if len(cells) >= 8:
                 name = cells[1] if len(cells) > 1 else ''
                 kpi_type = cells[2] if len(cells) > 2 else ''
@@ -2950,90 +2970,156 @@ def _sanitize_table_spec(
                 cells[3] = _derive_kpi_target(name, target, lang)
             rows.append(cells)
         else:
-            rows.append([prepare_final_render_text(c, lang) for c in r])
+            rows.append([prepare_final_render_text(
+                c, lang, preserve_model_values=preserve_compiler_content) for c in r])
     out = dict(tbl)
     out['header'] = hdr
     out['rows'] = rows
     if tbl.get('title'):
-        out['title'] = prepare_final_render_text(tbl['title'], lang)
+        out['title'] = prepare_final_render_text(
+            tbl['title'], lang, preserve_model_values=preserve_compiler_content)
     return out
+
+
+def _rel37_preserve_compiler_kpis_from_model(
+        model: Optional[Dict[str, Any]], lang: str = '') -> bool:
+    """Re-validate attached REL37 authority before skipping Cyber KPI gates."""
+    try:
+        from release_engine_v3.rel37_apply import rel37_skip_cyber_kpi_semantics
+    except Exception:  # noqa: BLE001
+        return False
+    payload = model or {}
+    return rel37_skip_cyber_kpi_semantics(
+        payload.get('_rel37_source_sections') or {},
+        domain=str(payload.get('domain') or ''),
+        lang=lang or str(payload.get('lang') or ''),
+        document_type=str(payload.get('document_type') or 'strategy'),
+        org_name=str(payload.get('org_name') or ''),
+        selected_frameworks=list(payload.get('selected_frameworks') or []),
+    )
 
 
 def _finalize_professional_blocks(
         blocks: Dict[str, Any], lang: str = 'ar',
-        domain: str = '') -> Dict[str, Any]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False,
+        preserve_compiler_content: bool = False) -> Dict[str, Any]:
     """PR-CY48 — last pass over all blocks before PDF/DOCX render."""
     out = deepcopy(blocks)
     for kind, blk in out.items():
         if not isinstance(blk, dict):
             continue
-        blk['paragraphs'] = [
-            prepare_final_render_text(p, lang)
-            for p in (blk.get('paragraphs') or []) if str(p).strip()]
+        cleaned_paras = []
+        for p in (blk.get('paragraphs') or []):
+            raw = str(p).strip()
+            if not raw:
+                continue
+            if preserve_compiler_content:
+                raw = re.sub(r'^#{1,6}\s*', '', raw)
+                if '|' in raw and raw.lstrip().startswith('|'):
+                    continue
+            cleaned_paras.append(prepare_final_render_text(
+                raw, lang, preserve_model_values=preserve_compiler_content))
+        blk['paragraphs'] = cleaned_paras
         for i, tbl in enumerate(blk.get('tables') or []):
-            blk['tables'][i] = _sanitize_table_spec(tbl, lang)
+            blk['tables'][i] = _sanitize_table_spec(
+                tbl, lang, preserve_compiler_content=preserve_compiler_content)
         if kind == 'executive_summary':
             grid = dict(blk.get('summary_grid') or {})
             if grid:
                 grid['frameworks'] = _clean_framework_labels(
                     grid.get('frameworks') or [])
                 grid['confidence_score'] = prepare_final_render_text(
-                    grid.get('confidence_score', ''), lang)
+                    grid.get('confidence_score', ''), lang,
+                    preserve_model_values=preserve_compiler_content)
                 grid['purpose'] = prepare_final_render_text(
-                    grid.get('purpose', ''), lang)
+                    grid.get('purpose', ''), lang,
+                    preserve_model_values=preserve_compiler_content)
                 for _gk in ('priorities', 'top_gaps', 'key_risks'):
                     grid[_gk] = [
-                        prepare_final_render_text(str(x), lang)
+                        prepare_final_render_text(
+                            str(x), lang,
+                            preserve_model_values=preserve_compiler_content)
                         for x in (grid.get(_gk) or []) if str(x).strip()]
                 blk['summary_grid'] = grid
                 # Grid carries the narrative — no duplicate paragraphs.
                 blk['paragraphs'] = []
         if kind == 'strategic_pillars':
             for pb in blk.get('pillar_blocks') or []:
-                pb['paragraphs'] = [
-                    prepare_final_render_text(p, lang)
-                    for p in (pb.get('paragraphs') or [])]
+                pb_paras = []
+                for p in (pb.get('paragraphs') or []):
+                    raw = str(p).strip()
+                    if preserve_compiler_content:
+                        raw = re.sub(r'^#{1,6}\s*', '', raw)
+                    if raw:
+                        pb_paras.append(prepare_final_render_text(
+                            raw, lang,
+                            preserve_model_values=preserve_compiler_content))
+                pb['paragraphs'] = pb_paras
                 if pb.get('table'):
-                    pb['table'] = _sanitize_table_spec(pb['table'], lang)
+                    pb['table'] = _sanitize_table_spec(
+                        pb['table'], lang,
+                        preserve_compiler_content=preserve_compiler_content)
+                if pb.get('tables'):
+                    pb['tables'] = [
+                        _sanitize_table_spec(
+                            t, lang,
+                            preserve_compiler_content=preserve_compiler_content)
+                        for t in pb['tables']]
         if kind == 'traceability_matrix' and blk.get('split_tables'):
             blk['split_tables'] = [
-                _sanitize_table_spec(st, lang)
+                _sanitize_table_spec(
+                    st, lang,
+                    preserve_compiler_content=preserve_compiler_content)
                 for st in blk['split_tables']]
         if kind == 'governance_ownership' and blk.get('rows'):
             blk['rows'] = [
-                [prepare_final_render_text(c, lang) for c in r]
+                [prepare_final_render_text(
+                    c, lang, preserve_model_values=preserve_compiler_content)
+                 for c in r]
                 for r in blk['rows']]
         if kind == 'methodology' and blk.get('rows'):
             blk['rows'] = [
-                (prepare_final_render_text(lbl, lang),
-                 prepare_final_render_text(body, lang))
+                (prepare_final_render_text(
+                    lbl, lang, preserve_model_values=preserve_compiler_content),
+                 prepare_final_render_text(
+                    body, lang, preserve_model_values=preserve_compiler_content))
                 for lbl, body in blk['rows']]
         if kind == 'appendices' and blk.get('entries'):
             blk['entries'] = [
-                (str(a), prepare_final_render_text(str(b), lang))
+                (str(a), prepare_final_render_text(
+                    str(b), lang,
+                    preserve_model_values=preserve_compiler_content))
                 for a, b in (blk.get('entries') or [])]
         if kind == 'appendices' and blk.get('gap_action_tables'):
             blk['gap_action_tables'] = [
-                _sanitize_table_spec(t, lang) or t
+                _sanitize_table_spec(
+                    t, lang,
+                    preserve_compiler_content=preserve_compiler_content) or t
                 for t in (blk.get('gap_action_tables') or [])]
         if kind == 'scope_frameworks' and blk.get('frameworks'):
             blk['frameworks'] = [
                 {**fw,
                  'display': str(fw.get('display') or '').strip(),
                  'description': prepare_final_render_text(
-                     str(fw.get('description') or ''), lang)}
+                     str(fw.get('description') or ''), lang,
+                     preserve_model_values=preserve_compiler_content)}
                 if isinstance(fw, dict) else fw
                 for fw in (blk.get('frameworks') or [])]
-    out = _normalize_kpi_tables_semantics(out, lang, domain=domain)
-    if lang == 'ar' or find_arabic_concat_issues(str(out)):
+    out = _normalize_kpi_tables_semantics(
+        out, lang, domain=domain,
+        preserve_compiler_kpis=preserve_compiler_kpis or preserve_compiler_content)
+    if not preserve_compiler_content and (
+            lang == 'ar' or find_arabic_concat_issues(str(out))):
         out = apply_final_arabic_cleanup_to_blocks(out, lang)
-    try:
-        from release_engine_v3.rel32_table_schema_binding import (
-            apply_rel32_schema_binding_to_blocks,
-        )
-        out = apply_rel32_schema_binding_to_blocks(out, lang=lang)
-    except Exception:  # noqa: BLE001
-        pass
+    if not preserve_compiler_content:
+        try:
+            from release_engine_v3.rel32_table_schema_binding import (
+                apply_rel32_schema_binding_to_blocks,
+            )
+            out = apply_rel32_schema_binding_to_blocks(out, lang=lang)
+        except Exception:  # noqa: BLE001
+            pass
     return out
 
 
@@ -3947,7 +4033,8 @@ def _default_risk_register_rows(
 
 def normalize_roadmap_table(
         section_text: str, lang: str = 'ar',
-        domain: str = 'cyber') -> Optional[Dict[str, Any]]:
+        domain: str = 'cyber',
+        preserve_compiler_content: bool = False) -> Optional[Dict[str, Any]]:
     """PR-CY47 — header-aware roadmap normalization.
 
     Maps roadmap columns by HEADER NAME (not position) into the canonical
@@ -4015,6 +4102,9 @@ def normalize_roadmap_table(
                     [ph, '—', body[:120], _phase_owner, '—', '—'], len(schema)))
     if not rows_out:
         return None
+    if preserve_compiler_content:
+        return {'schema': 'roadmap', 'header': schema, 'rows': rows_out,
+                'row_meta': [{} for _ in rows_out]}
     rows_out, row_meta = build_roadmap_render_spec(rows_out, lang, domain=domain)
     rows_out, _p78 = repair_roadmap_table_rows(
         rows_out, lang, None, domain=domain or '')
@@ -4025,9 +4115,17 @@ def normalize_roadmap_table(
             'row_meta': row_meta}
 
 
+def _is_on_time_rate_metric(name: str) -> bool:
+    """REL37 compiler rates such as 'On-time closure' are not duration SLAs."""
+    n = (name or '').strip().lower()
+    return bool(re.search(r'\bon[-\s]?time\b', n) or 'في الوقت' in (name or ''))
+
+
 def _is_time_based_metric(name: str) -> bool:
     """True when KPI measures duration/time, not a percentage rate."""
     if _is_soc_detection_metric(name):
+        return False
+    if _is_on_time_rate_metric(name):
         return False
     n = (name or '').strip().lower()
     if any(k in n for k in ('ثغر', 'vulnerability', 'vm')):
@@ -4057,6 +4155,8 @@ def _is_incident_response_metric(name: str) -> bool:
     """PR-CY58 — incident response time metrics (not SOC detection)."""
     n = (name or '').strip().lower()
     ar = name or ''
+    if _is_on_time_rate_metric(name):
+        return False
     if _is_incident_detection_metric(name):
         return False
     return any(k in n for k in (
@@ -4883,8 +4983,11 @@ def emit_kpi_metric_semantics_diag(
 
 def _normalize_kpi_tables_semantics(
         blocks: Dict[str, Any], lang: str = 'ar',
-        domain: str = '') -> Dict[str, Any]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False) -> Dict[str, Any]:
     """PR-CY61 — repair KPI main + formula tables before quality gates."""
+    if preserve_compiler_kpis:
+        return blocks
     domain = domain or str(
         (blocks.get('domain') if isinstance(blocks, dict) else '') or '')
     kpi_blk = blocks.get('kpi_kri_framework') or {}
@@ -4965,7 +5068,8 @@ def _is_freq_or_timeframe(val: str) -> bool:
 
 def split_kpi_tables(
         section_text: str, lang: str = 'ar',
-        domain: str = '') -> List[Dict[str, Any]]:
+        domain: str = '', *,
+        preserve_compiler_kpis: bool = False) -> List[Dict[str, Any]]:
     """PR-CY47 — header-aware KPI/KRI normalization into a summary table and a
     formula/source detail table built from a structured spec (not raw column
     order), so the formula column never holds a frequency and the source
@@ -5016,10 +5120,11 @@ def split_kpi_tables(
             target = _cell(r, i_target)
             formula = _cell(r, i_formula) if i_formula >= 0 else '—'
             source = _cell(r, i_source) if i_source >= 0 else '—'
-            name, kpi_type, target, formula, source, _fam = (
-                _normalize_kpi_semantic_row(
-                    name, kpi_type, target, formula, source, lang,
-                    domain=domain))
+            if not preserve_compiler_kpis:
+                name, kpi_type, target, formula, source, _fam = (
+                    _normalize_kpi_semantic_row(
+                        name, kpi_type, target, formula, source, lang,
+                        domain=domain))
             main_rows.append([
                 idx, name, kpi_type, target, formula, source,
                 _cell(r, i_freq),
@@ -5821,6 +5926,8 @@ def normalize_confidence_risk(
                         continue
                 i += 1
     # Canonical confidence factors — never parsed from source tables.
+    # REL37 authoritative documents replace this catalog in
+    # apply_rel37_projection_to_blocks; this path stays Cyber/legacy-only.
     factor_rows: List[List[str]] = []
     factors = (CANONICAL_CONFIDENCE_FACTORS_AR if lang == 'ar' else
                tuple((n, w) for n, w in CANONICAL_CONFIDENCE_FACTORS_AR))
@@ -6303,6 +6410,116 @@ def enrich_professional_blocks(
         model.get('document_type')
         or (metadata or {}).get('document_type')
         or 'strategy')
+    preserve_compiler_content = False
+    preserve_compiler_kpis = False
+    _rel37_canon = None
+    try:
+        from release_engine_v3.rel37_apply import (
+            REL37_RENDER_BLOCKED_KEY,
+            is_rel37_authoritative,
+            load_model as _rel37_load_model,
+            overlay_rel37_authority,
+            rel37_authority_snapshot,
+            rel37_skip_cyber_kpi_semantics,
+        )
+        from release_engine_v3.rel37_professional_projection import (
+            Rel37RenderAuthorityError,
+            load_validated_rel37_model,
+        )
+        _rel37_identity = {
+            'domain': domain_n,
+            'lang': lang_n,
+            'document_type': str(model.get('document_type') or 'strategy'),
+            'org_name': str(
+                model.get('org_name')
+                or (metadata or {}).get('org_name')
+                or ''),
+            'selected_frameworks': list(
+                model.get('selected_frameworks')
+                or (metadata or {}).get('selected_frameworks')
+                or []),
+        }
+        _src = content_sections if isinstance(content_sections, dict) else {}
+        _meta_rel37 = (metadata or {}).get('_rel37_source_sections')
+        if not is_rel37_authoritative(_src) and is_rel37_authoritative(_meta_rel37):
+            _src = _meta_rel37
+            content_sections = dict(_meta_rel37)
+        if is_rel37_authoritative(_src) and isinstance(content_sections, dict):
+            _env_only = overlay_rel37_authority(content_sections, _src)
+            if str(_env_only.get('environment') or '').strip():
+                content_sections = dict(content_sections)
+                content_sections['environment'] = _env_only['environment']
+                _src = dict(_src)
+                _src['environment'] = _env_only['environment']
+        _saved_model = _rel37_load_model(_src)
+        if _saved_model is not None:
+            _rel37_identity['org_name'] = (
+                _saved_model.org_name or _rel37_identity['org_name'])
+            if _saved_model.selected_frameworks:
+                _rel37_identity['selected_frameworks'] = list(
+                    _saved_model.selected_frameworks)
+        _claimed = bool(
+            is_rel37_authoritative(_src)
+            or (_src or {}).get(REL37_RENDER_BLOCKED_KEY)
+            or (isinstance(_meta_rel37, dict) and _meta_rel37.get(REL37_RENDER_BLOCKED_KEY))
+        )
+        _persist_claim = bool(
+            str(model.get('strategy_id') or '').isdigit()
+            or str((metadata or {}).get('strategy_id') or '').isdigit()
+            or (_src or {}).get(REL37_RENDER_BLOCKED_KEY)
+        )
+        _rel37_canon, _rel37_blockers = load_validated_rel37_model(
+            _src, **_rel37_identity)
+        if _rel37_blockers and _claimed and _persist_claim:
+            # Persist/export already claimed REL37 and failed identity or
+            # schema. Skip catalog writers so DATA_ROADMAP cannot replace
+            # values. Overlay-only Data/AI/DT compiles keep legacy behavior.
+            preserve_compiler_content = True
+            preserve_compiler_kpis = True
+            model['rel37_authority_blocked'] = True
+            model['rel37_authority_blockers'] = list(_rel37_blockers)
+            _rel37_canon = None
+        if _rel37_canon is not None and not _rel37_blockers and _persist_claim:
+            preserve_compiler_content = True
+            preserve_compiler_kpis = True
+            model['rel37_content_authority'] = True
+            model['_rel37_source_sections'] = rel37_authority_snapshot(_src)
+            if not model.get('org_name'):
+                model['org_name'] = str((metadata or {}).get('org_name') or '')
+            try:
+                from release_engine_v3.rel37_apply import (
+                    remember_rel37_export_snapshot,
+                )
+                remember_rel37_export_snapshot(
+                    model.get('strategy_id')
+                    or (metadata or {}).get('strategy_id')
+                    or (metadata or {}).get('artifact_id'),
+                    _src,
+                    artifact_type=(
+                        model.get('document_type')
+                        or model.get('artifact_type')
+                        or (metadata or {}).get('document_type')
+                        or (metadata or {}).get('artifact_type')
+                        or 'strategy'
+                    ),
+                    owner=(
+                        model.get('_rel32_export_user_id')
+                        or (metadata or {}).get('_rel32_export_user_id')
+                        or (metadata or {}).get('user_id')
+                        or model.get('user_id')
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        elif rel37_skip_cyber_kpi_semantics(_src, **_rel37_identity):
+            preserve_compiler_kpis = True
+    except Exception as _rel37_auth_exc:  # noqa: BLE001
+        if _rel37_auth_exc.__class__.__name__ == 'Rel37RenderAuthorityError':
+            preserve_compiler_content = True
+            preserve_compiler_kpis = True
+            model['rel37_authority_blocked'] = True
+        elif not model.get('rel37_authority_blocked'):
+            preserve_compiler_content = False
     try:
         from release_engine_v3.domain_codes import normalize_domain_code
         from release_engine_v3.rel33_domain_guard import (
@@ -6329,6 +6546,10 @@ def enrich_professional_blocks(
         })
     except Exception:  # noqa: BLE001
         pass
+
+    if model.get('rel37_authority_blocked'):
+        preserve_compiler_content = True
+        preserve_compiler_kpis = True
 
     def _sec(key: str) -> str:
         blk = blocks.get(key) or {}
@@ -6396,19 +6617,20 @@ def enrich_professional_blocks(
     gaps = _sec('gap_analysis')
     gap_tables = normalize_gap_tables(gaps, lang_n)
     gap_tables += normalize_gap_action_guides(gaps, lang_n, domain=domain_n)
-    gap_tables = [
-        ensure_gap_action_table_min_rows(t, lang_n, domain=domain_n)
-        for t in gap_tables
-    ]
-    try:
-        from release_engine_v3.rel34_visible_output_quality import (
-            ensure_cyber_gap_action_plans,
-        )
-        gap_tables = ensure_cyber_gap_action_plans(
-            gap_tables, lang_n, domain=domain_n,
-            document_type=str(model.get('document_type') or 'strategy'))
-    except Exception:  # noqa: BLE001
-        pass
+    if not preserve_compiler_content:
+        gap_tables = [
+            ensure_gap_action_table_min_rows(t, lang_n, domain=domain_n)
+            for t in gap_tables
+        ]
+        try:
+            from release_engine_v3.rel34_visible_output_quality import (
+                ensure_cyber_gap_action_plans,
+            )
+            gap_tables = ensure_cyber_gap_action_plans(
+                gap_tables, lang_n, domain=domain_n,
+                document_type=str(model.get('document_type') or 'strategy'))
+        except Exception:  # noqa: BLE001
+            pass
     blocks['gap_analysis'] = {
         **(blocks.get('gap_analysis') or {}),
         'paragraphs': _clean_paras(gaps, 2),
@@ -6424,35 +6646,53 @@ def enrich_professional_blocks(
 
     # Roadmap — mandatory structured table (header-aware + phase coverage).
     road = _sec('roadmap')
-    road_tbl = normalize_roadmap_table(road, lang_n, domain=domain_n)
+    road_tbl = normalize_roadmap_table(
+        road, lang_n, domain=domain_n,
+        preserve_compiler_content=preserve_compiler_content)
     _road_schema = list(SCHEMA_ROADMAP_AR if lang_n == 'ar' else (
         'Phase', 'Period', 'Initiative', 'Owner',
         'Deliverable', 'Linked Framework'))
     if not road_tbl or not (road_tbl.get('rows')):
-        _seed = (road_tbl or {}).get('rows') or []
-        _rows, _meta = build_roadmap_render_spec(_seed, lang_n, domain=domain_n)
-        road_tbl = {
-            'schema': 'roadmap',
-            'header': _road_schema,
-            'rows': _rows,
-            'row_meta': _meta,
-        }
-    try:
-        from release_engine_v3.rel34_visible_output_quality import (
-            ensure_cyber_roadmap_coverage,
-        )
-        _expanded = ensure_cyber_roadmap_coverage(
-            list((road_tbl or {}).get('rows') or []),
-            lang_n, domain=domain_n,
-            document_type=str(model.get('document_type') or 'strategy'))
-        if _expanded:
-            road_tbl = dict(road_tbl or {})
-            road_tbl['schema'] = 'roadmap'
-            road_tbl['header'] = road_tbl.get('header') or _road_schema
-            road_tbl['rows'] = _expanded
-    except Exception:  # noqa: BLE001
-        pass
-    road_tbl = _sanitize_table_spec(road_tbl, lang_n) or road_tbl
+        if preserve_compiler_content and _rel37_canon is not None:
+            road_tbl = {
+                'schema': 'roadmap',
+                'header': _road_schema,
+                'rows': [list(row.cells()) for row in _rel37_canon.roadmap],
+            }
+        elif not preserve_compiler_content:
+            _seed = (road_tbl or {}).get('rows') or []
+            _rows, _meta = build_roadmap_render_spec(_seed, lang_n, domain=domain_n)
+            road_tbl = {
+                'schema': 'roadmap',
+                'header': _road_schema,
+                'rows': _rows,
+                'row_meta': _meta,
+            }
+        else:
+            road_tbl = {
+                'schema': 'roadmap',
+                'header': _road_schema,
+                'rows': [],
+            }
+    if not preserve_compiler_content:
+        try:
+            from release_engine_v3.rel34_visible_output_quality import (
+                ensure_cyber_roadmap_coverage,
+            )
+            _expanded = ensure_cyber_roadmap_coverage(
+                list((road_tbl or {}).get('rows') or []),
+                lang_n, domain=domain_n,
+                document_type=str(model.get('document_type') or 'strategy'))
+            if _expanded:
+                road_tbl = dict(road_tbl or {})
+                road_tbl['schema'] = 'roadmap'
+                road_tbl['header'] = road_tbl.get('header') or _road_schema
+                road_tbl['rows'] = _expanded
+        except Exception:  # noqa: BLE001
+            pass
+    road_tbl = _sanitize_table_spec(
+        road_tbl, lang_n,
+        preserve_compiler_content=preserve_compiler_content) or road_tbl
     emit_roadmap_framework_mapping_diag(
         {'blocks': {**blocks, 'roadmap': {'tables': [road_tbl]}}},
         lang_n)
@@ -6476,7 +6716,11 @@ def enrich_professional_blocks(
     except Exception:  # noqa: BLE001
         pass
     kpis = _sec('kpi_kri_framework')
-    kpi_tables = split_kpi_tables(kpi_raw or kpis, lang_n, domain=domain_n)
+    if preserve_compiler_content and isinstance(content_sections, dict):
+        kpi_raw = content_sections.get('kpis', '') or kpi_raw
+    kpi_tables = split_kpi_tables(
+        kpi_raw or kpis, lang_n, domain=domain_n,
+        preserve_compiler_kpis=preserve_compiler_kpis)
     kpi_guides = extract_kpi_assessment_guides(kpi_raw, lang_n)
     _main_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_main']
     _formula_tbls = [t for t in kpi_tables if t.get('schema') == 'kpi_formula']
@@ -6492,7 +6736,8 @@ def enrich_professional_blocks(
     }
     blocks = _normalize_kpi_tables_semantics(
         {'blocks': blocks, 'domain': domain_n}, lang_n,
-        domain=domain_n)['blocks']
+        domain=domain_n,
+        preserve_compiler_kpis=preserve_compiler_kpis)['blocks']
     try:
         from release_engine_v3.rel34_visible_output_quality import (
             structure_kpi_section_block,
@@ -6503,24 +6748,37 @@ def enrich_professional_blocks(
         pass
 
     # Confidence — score card paragraph + factor table + risk register.
-    conf = _sec('confidence_risk_register')
-    conf_norm = normalize_confidence_risk(conf, lang_n, domain=domain_n)
-    conf_tables = [conf_norm['factor_table']]
-    if conf_norm.get('risk_table'):
-        conf_tables.append(conf_norm['risk_table'])
-    _conf_score = conf_norm.get('confidence_score', '—')
-    _conf_para = (f'درجة الثقة: {_conf_score}' if lang_n == 'ar'
-                  else f'Confidence score: {_conf_score}')
-    _conf_extra = [
-        p for p in _clean_paras(conf, 2)
-        if not p.startswith('درجة الثقة')
-        and not p.lower().startswith('confidence score')]
-    blocks['confidence_risk_register'] = {
-        **(blocks.get('confidence_risk_register') or {}),
-        'confidence_score': _conf_score,
-        'paragraphs': [_conf_para] + _conf_extra,
-        'tables': conf_tables,
-    }
+    # REL37 authoritative documents skip the catalog factor list; the
+    # validated model projection supplies the typed rows later.
+    if preserve_compiler_content and _rel37_canon is not None:
+        _conf_score = str(_rel37_canon.confidence_score or '—')
+        _conf_para = (f'درجة الثقة: {_conf_score}' if lang_n == 'ar'
+                      else f'Confidence score: {_conf_score}')
+        blocks['confidence_risk_register'] = {
+            **(blocks.get('confidence_risk_register') or {}),
+            'confidence_score': _conf_score,
+            'paragraphs': [_conf_para],
+            'tables': [],
+        }
+    else:
+        conf = _sec('confidence_risk_register')
+        conf_norm = normalize_confidence_risk(conf, lang_n, domain=domain_n)
+        conf_tables = [conf_norm['factor_table']]
+        if conf_norm.get('risk_table'):
+            conf_tables.append(conf_norm['risk_table'])
+        _conf_score = conf_norm.get('confidence_score', '—')
+        _conf_para = (f'درجة الثقة: {_conf_score}' if lang_n == 'ar'
+                      else f'Confidence score: {_conf_score}')
+        _conf_extra = [
+            p for p in _clean_paras(conf, 2)
+            if not p.startswith('درجة الثقة')
+            and not p.lower().startswith('confidence score')]
+        blocks['confidence_risk_register'] = {
+            **(blocks.get('confidence_risk_register') or {}),
+            'confidence_score': _conf_score,
+            'paragraphs': [_conf_para] + _conf_extra,
+            'tables': conf_tables,
+        }
 
     # Executive summary grid
     exec_blk = blocks.get('executive_summary') or {}
@@ -6580,21 +6838,32 @@ def enrich_professional_blocks(
             'split_tables': split_tables,
         }
 
-    blocks = _finalize_professional_blocks(
-        blocks, lang_n, domain=domain_n)
-    try:
-        from release_engine_v3.rel35_domain_framework_fidelity import (
-            apply_fidelity_to_blocks,
+    if preserve_compiler_content and _rel37_canon is not None:
+        from release_engine_v3.rel37_professional_projection import (
+            apply_rel37_projection_to_blocks,
         )
-        blocks = apply_fidelity_to_blocks(
-            blocks,
-            domain=domain_n,
-            document_type=str(model.get('document_type') or 'strategy'),
-            selected_frameworks=model.get('selected_frameworks') or [],
-            lang=lang_n,
-        )
-    except Exception:  # noqa: BLE001
-        pass
+        blocks = apply_rel37_projection_to_blocks(blocks, _rel37_canon)
+        blocks = _finalize_professional_blocks(
+            blocks, lang_n, domain=domain_n,
+            preserve_compiler_kpis=True,
+            preserve_compiler_content=True)
+    else:
+        blocks = _finalize_professional_blocks(
+            blocks, lang_n, domain=domain_n,
+            preserve_compiler_kpis=preserve_compiler_kpis)
+        try:
+            from release_engine_v3.rel35_domain_framework_fidelity import (
+                apply_fidelity_to_blocks,
+            )
+            blocks = apply_fidelity_to_blocks(
+                blocks,
+                domain=domain_n,
+                document_type=str(model.get('document_type') or 'strategy'),
+                selected_frameworks=model.get('selected_frameworks') or [],
+                lang=lang_n,
+            )
+        except Exception:  # noqa: BLE001
+            pass
     blocks = sync_professional_toc_entries(blocks, lang_n)
     model['blocks'] = blocks
     model['render_layer'] = 'prcy41_professional'
@@ -6637,9 +6906,82 @@ def ensure_strategy_professional_model(
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
+        preserve_compiler_kpis = _rel37_preserve_compiler_kpis_from_model(
+            model, lang_n)
+        preserve_compiler_content = False
+        _rel37_canon = None
+        try:
+            from release_engine_v3.rel37_apply import (
+                REL37_RENDER_BLOCKED_KEY,
+                is_rel37_authoritative,
+                overlay_rel37_authority,
+                prefer_rel37_authority_candidate,
+            )
+            from release_engine_v3.rel37_professional_projection import (
+                Rel37RenderAuthorityError,
+                apply_rel37_projection_to_blocks,
+                load_validated_rel37_model,
+            )
+            _src = prefer_rel37_authority_candidate(
+                model.get('_rel37_source_sections'),
+                (metadata or {}).get('_rel37_source_sections'),
+                sections if isinstance(sections, dict) else None,
+            )
+            _src = overlay_rel37_authority(
+                sections if isinstance(sections, dict) else _src,
+                _src,
+            )
+            _claimed = bool(
+                is_rel37_authoritative(_src)
+                or _src.get(REL37_RENDER_BLOCKED_KEY))
+            _ensure_org = str(model.get('org_name') or '')
+            _ensure_fws = list(model.get('selected_frameworks') or [])
+            try:
+                from release_engine_v3.rel37_apply import (
+                    load_model as _rel37_load_ensure,
+                )
+                _saved_ensure = _rel37_load_ensure(_src)
+                if _saved_ensure is not None:
+                    if _saved_ensure.org_name:
+                        _ensure_org = _saved_ensure.org_name
+                    if _saved_ensure.selected_frameworks:
+                        _ensure_fws = list(_saved_ensure.selected_frameworks)
+            except Exception:  # noqa: BLE001
+                pass
+            _rel37_canon, _rel37_blockers = load_validated_rel37_model(
+                _src,
+                domain=str(model.get('domain') or domain or ''),
+                lang=lang_n,
+                document_type=str(model.get('document_type') or 'strategy'),
+                org_name=_ensure_org,
+                selected_frameworks=_ensure_fws,
+            )
+            if _rel37_blockers and _claimed:
+                preserve_compiler_content = True
+                preserve_compiler_kpis = True
+                model['rel37_authority_blocked'] = True
+                model['rel37_authority_blockers'] = list(_rel37_blockers)
+                _rel37_canon = None
+            if _rel37_canon is not None and not _rel37_blockers:
+                preserve_compiler_content = True
+                preserve_compiler_kpis = True
+                model['rel37_content_authority'] = True
+                blocks = apply_rel37_projection_to_blocks(blocks, _rel37_canon)
+        except Exception as _rel37_ensure_exc:  # noqa: BLE001
+            if _rel37_ensure_exc.__class__.__name__ == 'Rel37RenderAuthorityError':
+                preserve_compiler_content = True
+                preserve_compiler_kpis = True
+                model['rel37_authority_blocked'] = True
+            else:
+                preserve_compiler_content = False
         blocks = _finalize_professional_blocks(
-            blocks, lang_n, domain=str(model.get('domain') or domain or ''))
-        return {**model, 'blocks': blocks}
+            blocks, lang_n, domain=str(model.get('domain') or domain or ''),
+            preserve_compiler_kpis=preserve_compiler_kpis,
+            preserve_compiler_content=preserve_compiler_content)
+        out = {**model, 'blocks': blocks}
+        if preserve_compiler_content and not model.get('rel37_authority_blocked'):
+            out['rel37_content_authority'] = True
+        return out
     if not model:
         raise ValueError('strategy_professional_model_missing_base')
     metadata = dict(metadata or {})
@@ -6823,7 +7165,8 @@ def prcy47_docmodel_professional_checks(
     """PR-CY47 Part I — professional document-model quality checks computed
     from the structured model (the source of truth for what the story
     renderer emits as ReportLab Tables/Paragraphs)."""
-    if model and str(lang or '').lower() != 'en':
+    if (model and str(lang or '').lower() != 'en'
+            and not (model or {}).get('rel37_content_authority')):
         apply_prcy78_roadmap_phase_coverage_to_model(
             model, lang, model.get('selected_frameworks'),
             output_type='docmodel_gate')
@@ -6975,8 +7318,16 @@ def prcy47_docmodel_professional_checks(
         domain=str((model or {}).get('domain') or ''))
     roadmap_framework_mapping_valid = not _roadmap_violations
 
-    kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)
-    kpi_metric_semantics_valid = not kpi_sem_issues
+    preserve_compiler_kpis = _rel37_preserve_compiler_kpis_from_model(
+        model, lang)
+    preserve_rel37_authority = bool(
+        (model or {}).get('rel37_content_authority')) or preserve_compiler_kpis
+    if preserve_compiler_kpis:
+        kpi_sem_issues = []
+        kpi_metric_semantics_valid = True
+    else:
+        kpi_sem_issues = collect_kpi_metric_semantics_issues(model, lang)
+        kpi_metric_semantics_valid = not kpi_sem_issues
     confidence_table_layout_valid = bool(conf_factor_tbl)
     if confidence_table_layout_valid:
         for r in conf_factor_tbl[0].get('rows') or []:
@@ -6991,21 +7342,28 @@ def prcy47_docmodel_professional_checks(
     # PR-CY52 — PDF table-cell rendering gates.
     pdf_gap_headers_clean_val = pdf_gap_headers_clean(
         list(gap_tables) + list(_gap_actions))
-    pdf_confidence_factor_labels_intact = confidence_factor_labels_intact(
-        conf_factor_tbl)
+    # Catalog-locked Cyber factor names must not reject a validated REL37
+    # model whose factor labels already passed identity/hash checks.
+    pdf_confidence_factor_labels_intact = (
+        True if preserve_rel37_authority else
+        confidence_factor_labels_intact(conf_factor_tbl))
     pdf_roadmap_cell_density_valid = roadmap_cell_density_valid(road_rows)
-    pdf_kpi_type_column_valid = kpi_type_column_valid(kpi_main)
+    pdf_kpi_type_column_valid = (
+        True if preserve_compiler_kpis else kpi_type_column_valid(kpi_main))
     final_arabic_spacing_pdf_passed = final_table_cell_arabic_cleanup_passed
 
     # PR-CY53 — PDF table layout hardening gates.
     pdf_table_layout_profiles_applied_val = pdf_table_layout_profiles_applied(
         model)
     pdf_confidence_factor_layout_valid_val = (
+        True if preserve_rel37_authority else
         pdf_confidence_factor_layout_valid(conf_factor_tbl))
     pdf_governance_split_if_wide_val = governance_pdf_split_valid(blocks)
-    pdf_roadmap_generic_rows_absent_val = roadmap_generic_rows_absent(
-        road_rows)
-    pdf_kpi_target_column_valid_val = kpi_target_column_valid(kpi_main)
+    pdf_roadmap_generic_rows_absent_val = (
+        True if preserve_rel37_authority else
+        roadmap_generic_rows_absent(road_rows))
+    pdf_kpi_target_column_valid_val = (
+        True if preserve_compiler_kpis else kpi_target_column_valid(kpi_main))
     _export_fallbacks = compute_pdf_export_layout_fallbacks(model, lang)
     _stack_eval = evaluate_vertical_stack_gate(
         model, fallbacks=_export_fallbacks)

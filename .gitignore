@@ -37,3 +37,11 @@ Thumbs.db
 # Upload directories (user content — not source)
 static/avatars/
 static/logos/
+
+# Downloaded render fonts (scripts/ensure_render_fonts.py)
+static/fonts/*.ttf
+static/fonts/*.otf
+!static/fonts/.gitkeep
+
+# Test-owned sanitized export diagnostics
+rel37_export_diagnostics/
