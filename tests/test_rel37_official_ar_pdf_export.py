@@ -59,6 +59,7 @@ from release_engine_v3.rel37_apply import (  # noqa: E402
 from release_engine_v3.rel37_compilers import compile_for_domain  # noqa: E402
 from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
     _content_words,
+    _identifier_owns_digit_chip,
     _identity_digit_remnants,
     _is_identity_digit_remnant,
     _mixed_script_runs,
@@ -173,6 +174,9 @@ _NUMERIC_MUT_88 = _NUMERIC_PARA.replace('10 سنوات', '10.88 سنوات')
 _EN_DASH = '\u2013'
 _NUMERIC_RANGE_33 = _NUMERIC_PARA.replace('10 سنوات', f'10{_EN_DASH}33 سنوات')
 _NUMERIC_RANGE_88 = _NUMERIC_PARA.replace('10 سنوات', f'10{_EN_DASH}88 سنوات')
+_NUMERIC_RANGE_1_10 = _NUMERIC_PARA.replace('10 سنوات', f'1{_EN_DASH}10 سنوات')
+_NUMERIC_RANGE_8_10 = _NUMERIC_PARA.replace('10 سنوات', f'8{_EN_DASH}10 سنوات')
+_NUMERIC_PARA_P8 = _NUMERIC_PARA.replace('P1', 'P8')
 
 
 def _true_framework_swap(para: str, left='NDMO', right='PDPL') -> str:
@@ -443,7 +447,7 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             for item in blockers
         ), blockers)
 
-    def test_helper_a_b_accept_c_through_g_refuse(self):
+    def test_helper_a_b_accept_c_through_h_refuse(self):
         wrap = _NUMERIC_PARA.replace('لمدة 10', 'لمدة\n10')
         self.assertEqual(self._helper(_NUMERIC_PARA, _NUMERIC_PARA, _NUMERIC_PARA), [])
         self.assertEqual(self._helper(_NUMERIC_PARA, wrap, _NUMERIC_PARA), [])
@@ -451,6 +455,16 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             _NUMERIC_PARA, _NUMERIC_MUT_33, _NUMERIC_PARA))
         self._content_blocker(self._helper(
             _NUMERIC_PARA, _NUMERIC_RANGE_33, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_RANGE_1_10, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_RANGE_1_10, _NUMERIC_RANGE_1_10))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, _NUMERIC_RANGE_8_10, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA_P8,
+            _NUMERIC_PARA_P8.replace('10 سنوات', f'1{_EN_DASH}10 سنوات'),
+            _NUMERIC_PARA_P8))
         self._content_blocker(self._helper(
             _NUMERIC_PARA, _NUMERIC_RANGE_33, _NUMERIC_RANGE_33))
         self._content_blocker(self._helper(
@@ -463,9 +477,17 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertNotIn('33', _content_words(_NUMERIC_MUT_33))
         self.assertEqual(_content_words(_NUMERIC_RANGE_33).count('10'), 1)
         self.assertEqual(_content_words(_NUMERIC_RANGE_33).count('33'), 1)
+        self.assertEqual(_content_words(_NUMERIC_RANGE_1_10).count('1'), 1)
+        self.assertEqual(_content_words(_NUMERIC_RANGE_1_10).count('10'), 1)
         self.assertIn('33', _identity_digit_remnants(_NUMERIC_PARA))
+        self.assertIn('1', _identity_digit_remnants(_NUMERIC_PARA))
         self.assertFalse(_is_identity_digit_remnant('10.33', _NUMERIC_PARA))
         self.assertTrue(_is_identity_digit_remnant('33', _NUMERIC_PARA))
+        self.assertTrue(_is_identity_digit_remnant('1', _NUMERIC_PARA))
+        self.assertTrue(_identifier_owns_digit_chip('P1', '1'))
+        self.assertTrue(_identifier_owns_digit_chip('REL33', '33'))
+        self.assertFalse(_identifier_owns_digit_chip('لمدة', '1'))
+        self.assertFalse(_identifier_owns_digit_chip('10', '33'))
 
     def test_actual_pdf_visible_10_versus_10_33(self):
         class _Model:
@@ -519,6 +541,18 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self._content_blocker(compare_environment_narrative_to_pdf(model, range_paint))
         range_both = _numeric_env_pdf(_NUMERIC_RANGE_33, _NUMERIC_RANGE_33)
         self._content_blocker(compare_environment_narrative_to_pdf(model, range_both))
+
+        lower_paint = _numeric_env_pdf(_NUMERIC_RANGE_1_10, _NUMERIC_PARA)
+        section, meta = pdf_environment_section_text(lower_paint)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertTrue(meta.get('associated'), meta)
+        self.assertTrue('1' in vis and '10' in vis, vis)
+        self.assertNotIn(_EN_DASH.join(('1', '10')), act)
+        self.assertIn('10', act)
+        self._content_blocker(compare_environment_narrative_to_pdf(model, lower_paint))
+        lower_both = _numeric_env_pdf(_NUMERIC_RANGE_1_10, _NUMERIC_RANGE_1_10)
+        self._content_blocker(compare_environment_narrative_to_pdf(model, lower_both))
         del section
 
     def test_real_thread_rejects_foreign_numeric_pdf(self):
@@ -573,20 +607,46 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertIn(_NUMERIC_PARA, model.environment_narrative)
         return model, label, fws
 
-    def _inject_export(self, saved, fws, raw):
-        from unittest.mock import patch
-        real_gate = app_mod._rel37_gate_saved_export_bytes
+    def _substitute_candidate(self, saved, fws, raw):
+        """Replace builder output before the real REL37 gate and response.
 
-        def injecting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
-                           route='pdf', lang='ar'):
+        The previous wrapper only swapped the gate argument. The original
+        renderer file was still written and downloaded. This substitute
+        is the candidate the gate sees and the candidate returned.
+        """
+        import hashlib
+        from io import BytesIO
+        from unittest.mock import patch
+
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+        seen = {'gate_input_sha': None, 'gate_blockers': None}
+
+        def substituting_gate(*, docx_bytes=None, pdf_bytes=None, sections=None,
+                              route='pdf', lang='ar'):
             if pdf_bytes and pdf_bytes.startswith(b'%PDF'):
                 pdf_bytes = raw
-            return real_gate(
+            seen['gate_input_sha'] = hashlib.sha256(pdf_bytes or b'').hexdigest()
+            allowed, blockers, detail = real_gate(
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
+            seen['gate_blockers'] = list(blockers)
+            return allowed, blockers, detail
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            return _export(saved, _official_body(saved, fws=fws), 'pdf')
+        def substituting_send_file(file_obj, **kwargs):
+            from flask import send_file as real_send_file
+            mime = str(kwargs.get('mimetype') or '')
+            if mime == 'application/pdf' or mime.endswith('pdf'):
+                return real_send_file(BytesIO(raw), **kwargs)
+            return real_send_file(file_obj, **kwargs)
+
+        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', substituting_gate):
+            with patch('flask.send_file', substituting_send_file):
+                result = _export(saved, _official_body(saved, fws=fws), 'pdf')
+        result['candidate_sha'] = hashlib.sha256(raw).hexdigest()
+        result['gate_input_sha'] = seen['gate_input_sha']
+        result['downloaded_sha'] = hashlib.sha256(result['bytes'] or b'').hexdigest()
+        result['gate_blockers'] = seen['gate_blockers']
+        return result
 
     def test_real_thread_same_source_numeric_mutations(self):
         from release_engine_v3.rel37_export_content_parity import (
@@ -606,21 +666,32 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
 
         env = model.environment_narrative
         same_layout = _numeric_env_pdf(env, env)
+        constructed = self._substitute_candidate(saved, fws, same_layout)
         self.assertEqual(
-            compare_environment_narrative_to_pdf(model, same_layout), [],
-            'constructed full-env PDF must match the saved source before mutation')
+            constructed['status'].get('status'), 'done', constructed['status'])
+        self.assertEqual(constructed['download_http'], 200)
+        self.assertTrue(constructed['bytes'].startswith(b'%PDF'))
+        self.assertEqual(constructed['candidate_sha'], constructed['gate_input_sha'])
+        self.assertEqual(constructed['candidate_sha'], constructed['downloaded_sha'])
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, constructed['bytes']), [])
+        self.assertEqual(model.model_hash, before)
+
         paint_decimal = _numeric_env_pdf(
             env.replace('لمدة 10 سنوات', 'لمدة 10.33 سنوات'), env)
-        paint_range = _numeric_env_pdf(
+        paint_upper = _numeric_env_pdf(
             env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'), env)
-        both_range = _numeric_env_pdf(
-            env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'),
-            env.replace('لمدة 10 سنوات', f'لمدة 10{_EN_DASH}33 سنوات'),
+        paint_lower = _numeric_env_pdf(
+            env.replace('لمدة 10 سنوات', f'لمدة 1{_EN_DASH}10 سنوات'), env)
+        both_lower = _numeric_env_pdf(
+            env.replace('لمدة 10 سنوات', f'لمدة 1{_EN_DASH}10 سنوات'),
+            env.replace('لمدة 10 سنوات', f'لمدة 1{_EN_DASH}10 سنوات'),
         )
         for name, raw in (
                 ('paint_10_33', paint_decimal),
-                ('paint_10_33_range', paint_range),
-                ('both_10_33_range', both_range),
+                ('paint_10_33_range', paint_upper),
+                ('paint_1_10_range', paint_lower),
+                ('both_1_10_range', both_lower),
         ):
             section, meta = pdf_environment_section_text(raw)
             self.assertTrue(meta.get('associated'), (name, meta))
@@ -629,8 +700,10 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             if name == 'paint_10_33':
                 self.assertIn('10.33', vis)
                 self.assertNotIn('10.33', act)
-            else:
+            elif name == 'paint_10_33_range':
                 self.assertTrue('33' in vis, (name, vis))
+            else:
+                self.assertTrue('1' in vis and '10' in vis, (name, vis))
             cmp_blockers = compare_environment_narrative_to_pdf(model, raw)
             self._content_blocker(cmp_blockers)
             numeric_idx = None
@@ -666,11 +739,23 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
                 )
                 for item in gated
             ), (name, numeric_idx, gated))
-            refused = self._inject_export(saved, fws, raw)
+            refused = self._substitute_candidate(saved, fws, raw)
             self.assertNotEqual(
                 refused['status'].get('status'), 'done', (name, refused['status']))
             self.assertNotEqual(refused['download_http'], 200, name)
             self.assertFalse(refused['bytes'].startswith(b'%PDF'), name)
+            self.assertEqual(refused['candidate_sha'], refused['gate_input_sha'], name)
+            self.assertNotEqual(refused['candidate_sha'], refused['downloaded_sha'], name)
+            route_blockers = refused.get('gate_blockers') or []
+            self.assertTrue(any(
+                item.endswith(f':{numeric_idx}')
+                and (
+                    'actual_visible_disagree' in item
+                    or 'narrative_missing' in item
+                    or 'narrative_incomplete' in item
+                )
+                for item in route_blockers
+            ), (name, numeric_idx, route_blockers, refused['status']))
         self.assertEqual(model.model_hash, before)
         del section
 
@@ -682,6 +767,25 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         leftover = para + ' 33 1 REL33 P1 Data Management Org'
         self.assertEqual(
             self._helper(para, leftover, para), [])
+        adjacent = para.replace('P1 Data', 'P1 1 Data')
+        self.assertEqual(self._helper(para, adjacent, para), [])
+
+        class _Model:
+            environment_narrative = para
+            lang = 'ar'
+            domain = 'data'
+            org_name = 'REL33 P1 Data Management Org'
+            model_hash = 'test-owned-leftover'
+            sector = 'Government'
+            selected_frameworks = ['NDMO', 'PDPL']
+
+        model = _Model()
+        leftover_pdf = _numeric_env_pdf(leftover, para)
+        section, meta = pdf_environment_section_text(leftover_pdf)
+        self.assertTrue(meta.get('associated'), meta)
+        self.assertTrue(leftover_pdf.startswith(b'%PDF'))
+        self.assertEqual(compare_environment_narrative_to_pdf(model, leftover_pdf), [])
+        del section
 
 
 if __name__ == '__main__':
