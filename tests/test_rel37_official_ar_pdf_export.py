@@ -275,7 +275,7 @@ def _official_body(saved, *, fws):
     }
 
 
-def _export(saved, body, fmt):
+def _export(saved, body, fmt, *, timeout=180):
     payload = dict(body)
     payload.setdefault('document_type', 'strategy')
     payload.setdefault('artifact_type', 'strategy')
@@ -290,7 +290,7 @@ def _export(saved, body, fmt):
     raw = b''
     download_http = 0
     if tid:
-        deadline = time.time() + 180
+        deadline = time.time() + timeout
         while time.time() < deadline:
             status = saved['client'].get(
                 f'/api/export-status/{tid}', headers=saved['headers']
@@ -623,7 +623,7 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertIn(_NUMERIC_PARA, model.environment_narrative)
         return model, label, fws
 
-    def _substitute_candidate(self, saved, fws, raw):
+    def _substitute_candidate(self, saved, fws, raw, *, timeout=180):
         """Replace builder output before the real REL37 gate and response.
 
         The previous wrapper only swapped the gate argument. The original
@@ -659,7 +659,9 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
 
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', substituting_gate):
             with patch.object(flask, 'send_file', substituting_send_file):
-                result = _export(saved, _official_body(saved, fws=fws), 'pdf')
+                result = _export(
+                    saved, _official_body(saved, fws=fws), 'pdf',
+                    timeout=timeout)
         result['candidate_sha'] = hashlib.sha256(raw).hexdigest()
         result['gate_input_sha'] = seen['gate_input_sha']
         result['downloaded_sha'] = hashlib.sha256(result['bytes'] or b'').hexdigest()
@@ -902,7 +904,10 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             or 'narrative_incomplete' in item
             for item in gated
         ), gated)
-        refused = self._substitute_candidate(saved, fws, route_wrong)
+        # Extra+full-env leftover walks can exceed the default 180s poll.
+        # That pending result is a wait timeout, not a downloadable bypass.
+        refused = self._substitute_candidate(
+            saved, fws, route_wrong, timeout=420)
         self.assertNotEqual(
             refused['status'].get('status'), 'done', refused['status'])
         self.assertNotEqual(refused['download_http'], 200)
