@@ -898,9 +898,9 @@ def _is_quantitative_number_word(word: str) -> bool:
 def _is_identity_digit_remnant(word: str, actual: str) -> bool:
     """Standalone leftover identifier digits, never a complete numeric value.
 
-    Text equality with digits inside REL33/P1 is not overlay provenance.
-    Callers must still refuse to skip a remnant that follows a consumed
-    quantitative number; that is a range or changed value.
+    Text equality with digits inside REL33/P1 is not overlay provenance
+    and is not permission to drop the chip. Callers must associate the
+    chip with its source identifier token in the same extracted run.
     """
     if _is_complete_numeric_value(word):
         return False
@@ -908,6 +908,21 @@ def _is_identity_digit_remnant(word: str, actual: str) -> bool:
     if not compact or not compact.isdigit():
         return False
     return compact in _identity_digit_remnants(actual)
+
+
+def _identifier_owns_digit_chip(token: str, chip: str) -> bool:
+    """True when chip digits are this identifier token's leftover draw.
+
+    ``P1`` owns ``1``. ``REL33`` owns ``33``. A preceding Arabic word
+    or another quantitative integer does not. This is run-adjacency to
+    the source identifier, not file font/draw/span proof.
+    """
+    if not token or not chip:
+        return False
+    if not _is_identity_latin_token(token):
+        return False
+    digits = ''.join(ch for ch in _bare_word(token) if ch.isdigit())
+    return bool(digits) and digits == _bare_word(chip)
 
 
 def _is_helvetica_overlay_word(word: str) -> bool:
@@ -946,8 +961,9 @@ def _compact_without_identity(text: str, actual: str = '') -> str:
             continue
         if bare in remnants:
             prev = kept[-1] if kept else ''
-            if prev and _is_quantitative_number_word(prev):
-                kept.append(bare)
+            if _identifier_owns_digit_chip(prev, bare):
+                continue
+            kept.append(bare)
             continue
         kept.append(bare)
     return ''.join(kept)
@@ -1151,8 +1167,12 @@ def _walk_complete_statement(
             i += 1
             continue
         if _is_identity_digit_remnant(word, ref):
+            prev_have = have[i - 1] if i else ''
             prev_consumed = consumed[-1] if consumed else ''
-            if not _is_quantitative_number_word(prev_consumed):
+            if (
+                    _identifier_owns_digit_chip(prev_have, word)
+                    or _identifier_owns_digit_chip(prev_consumed, word)
+            ):
                 extras.append(word)
                 i += 1
                 continue
