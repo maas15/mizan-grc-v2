@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
+from rel37_export_observation import observe_export_task  # noqa: E402
 
 _ENV_KEYS = (
     'ADMIN_PASSWORD', 'SECRET_KEY', 'DATABASE_PATH', 'DATABASE_URL',
@@ -257,7 +259,13 @@ def _official_body(saved, *, sector='Healthcare', org_name=None):
     }
 
 
-def _export(saved, body, fmt, *, immediate=True):
+# Real-worker official PDF builds were still pending at 45s and published
+# done afterward. The budget is set after the isolated timing record; it
+# is not a production timeout.
+REAL_WORKER_OBSERVATION_S = 45
+
+
+def _export(saved, body, fmt, *, immediate=True, timeout_s=None):
     payload = dict(body)
     payload.setdefault('document_type', 'strategy')
     payload.setdefault('artifact_type', 'strategy')
@@ -273,34 +281,86 @@ def _export(saved, body, fmt, *, immediate=True):
         )
     submit = resp.get_json(silent=True) or {}
     tid = submit.get('task_id')
-    status = {}
+    if timeout_s is None:
+        timeout_s = 2 if immediate else REAL_WORKER_OBSERVATION_S
+
+    def _get_status():
+        return saved['client'].get(
+            f'/api/export-status/{tid}', headers=saved['headers']
+        ).get_json(silent=True) or {}
+
+    observed = observe_export_task(
+        _get_status if tid else (lambda: {}),
+        task_id=tid,
+        deadline_s=timeout_s,
+        poll_interval_s=0.0 if immediate else 0.2,
+    )
+    status = observed['last_status']
     raw = b''
-    download_http = 0
-    if tid:
-        deadline = time.time() + (2 if immediate else 45)
-        while time.time() < deadline:
-            status = saved['client'].get(
-                f'/api/export-status/{tid}', headers=saved['headers']
-            ).get_json(silent=True) or {}
-            if status.get('status') in ('done', 'error'):
-                break
-            if not immediate:
-                time.sleep(0.2)
-            else:
-                break
-        if status.get('status') == 'done':
-            dl = saved['client'].get(
-                f'/api/export-download/{tid}', headers=saved['headers'])
-            download_http = dl.status_code
-            raw = dl.data or b''
+    download_requested = False
+    download_http = None
+    if observed['observed_terminal'] and status.get('status') == 'done':
+        download_requested = True
+        dl = saved['client'].get(
+            f'/api/export-download/{tid}', headers=saved['headers'])
+        download_http = dl.status_code
+        raw = dl.data or b''
     return {
         'submit_http': resp.status_code,
         'submit': submit,
         'status': status,
-        'download_http': download_http,
+        'download_http': download_http if download_requested else 0,
+        'download_requested': download_requested,
         'bytes': raw,
         'task_id': tid,
+        'observed_terminal': observed['observed_terminal'],
+        'poll_timed_out': observed['poll_timed_out'],
+        'elapsed_s': observed['elapsed_s'],
+        'deadline_s': observed['deadline_s'],
+        'last_status': status,
     }
+
+
+def _drain_worker(saved, task_id, *, bound_s=180):
+    """Wait out an already-recorded observation timeout.
+
+    This does not turn the timeout into a pass and does not download.
+    It keeps the next assertion from starting while this worker is alive.
+    """
+    if not task_id:
+        return {'task_id': None, 'observed_terminal': False, 'poll_timed_out': True}
+
+    def _get_status():
+        return saved['client'].get(
+            f'/api/export-status/{task_id}', headers=saved['headers']
+        ).get_json(silent=True) or {}
+
+    return observe_export_task(
+        _get_status, task_id=task_id, deadline_s=bound_s, poll_interval_s=0.2)
+
+
+def _require_terminal_download(testcase, result):
+    testcase.assertFalse(result.get('poll_timed_out'), result)
+    testcase.assertTrue(result.get('observed_terminal'), result)
+    testcase.assertEqual(result['status'].get('status'), 'done', result)
+    testcase.assertTrue(result.get('download_requested'), result)
+    testcase.assertEqual(result.get('download_http'), 200, result)
+
+
+def _require_terminal_refusal(testcase, result):
+    """Terminal error with no released file. Pending is not refusal."""
+    testcase.assertFalse(result.get('poll_timed_out'), result)
+    testcase.assertTrue(result.get('observed_terminal'), result)
+    testcase.assertEqual(result['status'].get('status'), 'error', result)
+    testcase.assertFalse(result.get('download_requested'), result)
+    testcase.assertFalse(result.get('bytes', b'').startswith(b'%PDF'))
+    testcase.assertFalse(result.get('bytes', b'').startswith(b'PK'))
+
+
+def _finish_refusal(testcase, saved, result):
+    if result.get('poll_timed_out'):
+        _drain_worker(saved, result.get('task_id'))
+    _require_terminal_refusal(testcase, result)
 
 
 class nullcontext:
@@ -768,9 +828,7 @@ class FinalRouteByteRefusalTests(unittest.TestCase):
 
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(saved, _official_body(saved), 'docx')
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'PK'))
+        _require_terminal_refusal(self, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
     def test_real_thread_worker_status_download_refuses_bad_bytes(self):
@@ -789,10 +847,7 @@ class FinalRouteByteRefusalTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'docx', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertIn(result['status'].get('status'), ('error', None, ''))
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'PK'))
+        _finish_refusal(self, saved, result)
 
     def test_owner_positive_and_csrf_cross_user(self):
         model = _load_json_model(LIVE_FIXTURE)
@@ -1100,9 +1155,7 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        _finish_refusal(self, saved, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
     def test_owner_positive_pdf_still_downloads(self):
@@ -1187,9 +1240,7 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        _finish_refusal(self, saved, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
     def test_real_thread_refuses_same_page_summary_only(self):
@@ -1213,9 +1264,7 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        _finish_refusal(self, saved, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
 
@@ -1428,7 +1477,9 @@ class CompleteRepresentationPdfTests(unittest.TestCase):
         saved = _persist(model, db_sector='Healthcare')
         good = _export(
             saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertEqual(good['download_http'], 200, good['status'])
+        if good.get('poll_timed_out'):
+            _drain_worker(saved, good.get('task_id'))
+        _require_terminal_download(self, good)
         self.assertTrue(good['bytes'].startswith(b'%PDF'))
         self.assertEqual(
             compare_environment_narrative_to_pdf(model, good['bytes']), [])
@@ -1447,9 +1498,7 @@ class CompleteRepresentationPdfTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        _finish_refusal(self, saved, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
         self.assertEqual(model.compute_model_hash(), LIVE_HASH)
 
@@ -1804,7 +1853,9 @@ class OrderedCompleteAndOverlayProvenanceTests(unittest.TestCase):
         self.assertEqual(model.model_hash, LIVE_HASH)
         saved = _persist(model, db_sector='Healthcare')
         good = _export(saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertEqual(good['download_http'], 200, good['status'])
+        if good.get('poll_timed_out'):
+            _drain_worker(saved, good.get('task_id'))
+        _require_terminal_download(self, good)
         self.assertTrue(good['bytes'].startswith(b'%PDF'))
         self.assertEqual(
             compare_environment_narrative_to_pdf(model, good['bytes']), [])
@@ -1821,9 +1872,7 @@ class OrderedCompleteAndOverlayProvenanceTests(unittest.TestCase):
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
             result = _export(
                 saved, _official_body(saved), 'pdf', immediate=False)
-        self.assertNotEqual(result['status'].get('status'), 'done', result['status'])
-        self.assertNotEqual(result['download_http'], 200)
-        self.assertFalse(result['bytes'].startswith(b'%PDF'))
+        _finish_refusal(self, saved, result)
         self.assertEqual(model.model_hash, LIVE_HASH)
         self.assertEqual(model.compute_model_hash(), LIVE_HASH)
 

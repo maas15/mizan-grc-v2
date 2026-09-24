@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import threading
 import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -50,6 +51,43 @@ _REL37_NARRATIVE_DOMAINS = frozenset({'data', 'ai', 'dt'})
 
 _AR_RE = re.compile(r'[\u0600-\u06FF]')
 _W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+
+_COMPARE_CACHE = threading.local()
+_COMPARE_CACHE_LIMIT = 100000
+
+
+def _compare_cache_push() -> None:
+    """Bound memoization to the current validation call.
+
+    The cache is cleared when the outermost call returns. It is not a
+    cross-user or cross-source store, and a miss recomputes.
+    """
+    depth = int(getattr(_COMPARE_CACHE, 'depth', 0) or 0)
+    if depth == 0:
+        _COMPARE_CACHE.box = {}
+    _COMPARE_CACHE.depth = depth + 1
+
+
+def _compare_cache_pop() -> None:
+    depth = int(getattr(_COMPARE_CACHE, 'depth', 0) or 0) - 1
+    if depth <= 0:
+        _COMPARE_CACHE.depth = 0
+        _COMPARE_CACHE.box = None
+    else:
+        _COMPARE_CACHE.depth = depth
+
+
+def _compare_cached(bucket: str, key, factory):
+    box = getattr(_COMPARE_CACHE, 'box', None)
+    if box is None:
+        return factory()
+    store = box.setdefault(bucket, {})
+    if key in store:
+        return store[key]
+    value = factory()
+    if len(store) < _COMPARE_CACHE_LIMIT:
+        store[key] = value
+    return value
 
 
 @dataclass
@@ -650,14 +688,17 @@ def _content_words(text: str) -> List[str]:
     ``10`` and ``33`` would let leftover identity digits authorize a
     changed quantitative value.
     """
-    cleaned = _protect_numeric_decimals(_layout_norm(text))
-    cleaned = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', ' ', cleaned)
-    words: List[str] = []
-    for word in cleaned.split():
-        word = _restore_numeric_decimals(word)
-        if re.sub(r'[\u060C\u061B\u061F\u0640]', '', word):
-            words.append(word)
-    return words
+    def _build() -> tuple:
+        cleaned = _protect_numeric_decimals(_layout_norm(text))
+        cleaned = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', ' ', cleaned)
+        words: List[str] = []
+        for word in cleaned.split():
+            word = _restore_numeric_decimals(word)
+            if re.sub(r'[\u060C\u061B\u061F\u0640]', '', word):
+                words.append(word)
+        return tuple(words)
+
+    return list(_compare_cached('words', text, _build))
 
 
 def _undo_extracted_arabic_visual(text: str) -> str:
@@ -858,10 +899,13 @@ def _compact_letters(text: str) -> str:
 
 def _bare_word(word: str) -> str:
     """Word identity without layout punctuation. Digits, decimals, and % stay."""
-    text = _protect_numeric_decimals(str(word or ''))
-    text = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', '', text)
-    text = _restore_numeric_decimals(text)
-    return re.sub(r'[\u060C\u061B\u061F\u0640]', '', text)
+    def _build() -> str:
+        text = _protect_numeric_decimals(str(word or ''))
+        text = re.sub(r'[^\w\u0600-\u06FF%\u241E]+', '', text)
+        text = _restore_numeric_decimals(text)
+        return re.sub(r'[\u060C\u061B\u061F\u0640]', '', text)
+
+    return _compare_cached('bare', word, _build)
 
 
 def _identity_digit_remnants(actual: str) -> set:
@@ -953,20 +997,23 @@ def _compact_without_identity(text: str, actual: str = '') -> str:
     keep only their leftover digits. Skipping those tokens is not
     permission to drop values or reorder the statement.
     """
-    remnants = _identity_digit_remnants(actual)
-    kept: List[str] = []
-    for word in _content_words(text):
-        bare = _bare_word(word)
-        if not bare or _is_helvetica_overlay_word(word):
-            continue
-        if bare in remnants:
-            prev = kept[-1] if kept else ''
-            if _identifier_owns_digit_chip(prev, bare):
+    def _build() -> str:
+        remnants = _identity_digit_remnants(actual)
+        kept: List[str] = []
+        for word in _content_words(text):
+            bare = _bare_word(word)
+            if not bare or _is_helvetica_overlay_word(word):
+                continue
+            if bare in remnants:
+                prev = kept[-1] if kept else ''
+                if _identifier_owns_digit_chip(prev, bare):
+                    continue
+                kept.append(bare)
                 continue
             kept.append(bare)
-            continue
-        kept.append(bare)
-    return ''.join(kept)
+        return ''.join(kept)
+
+    return _compare_cached('compact', (text, actual), _build)
 
 
 def _arabic_words(text: str | Sequence[str]) -> List[str]:
@@ -1070,7 +1117,7 @@ def _leftover_non_arabic_accounted(text: str, actual: str) -> bool:
     return True
 
 
-def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
+def _arabic_leftover_rotation_body(text: str, actual: str) -> bool:
     """True when a leftover run is the visual reverse of an ActualText prefix.
 
     Official mashed leftovers omit separately drawn Helvetica identity and
@@ -1114,7 +1161,13 @@ def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
     return _leftover_non_arabic_accounted(text, actual)
 
 
-def _is_visual_leftover_run(text: str, actual: str) -> bool:
+def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
+    return _compare_cached(
+        'rotation', (text, actual),
+        lambda: _arabic_leftover_rotation_body(text, actual))
+
+
+def _is_visual_leftover_run_body(text: str, actual: str) -> bool:
     """True when a run is a visual conversion of ActualText, not the logical run."""
     act = _layout_norm(actual)
     raw = _layout_norm(text)
@@ -1147,6 +1200,12 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
     if _arabic_leftover_rotation_of_actual(text, actual):
         return True
     return False
+
+
+def _is_visual_leftover_run(text: str, actual: str) -> bool:
+    return _compare_cached(
+        'leftover', (text, actual),
+        lambda: _is_visual_leftover_run_body(text, actual))
 
 
 def _advance_covered(idx: int, covered: Sequence[bool]) -> int:
@@ -2275,6 +2334,17 @@ def compare_environment_narrative_to_pdf(
         model: CanonicalDocument,
         raw: bytes,
 ) -> List[str]:
+    _compare_cache_push()
+    try:
+        return _compare_environment_narrative_to_pdf(model, raw)
+    finally:
+        _compare_cache_pop()
+
+
+def _compare_environment_narrative_to_pdf(
+        model: CanonicalDocument,
+        raw: bytes,
+) -> List[str]:
     narrative = str(model.environment_narrative or '').strip()
     if not narrative:
         return []
@@ -2415,6 +2485,22 @@ def _latin_relation(text: str) -> List[str]:
 
 
 def _paragraph_pdf_blockers(
+        idx: int,
+        para: str,
+        section: str,
+        *,
+        visible: str = '',
+        actual: str = '',
+) -> List[str]:
+    _compare_cache_push()
+    try:
+        return _paragraph_pdf_blockers_body(
+            idx, para, section, visible=visible, actual=actual)
+    finally:
+        _compare_cache_pop()
+
+
+def _paragraph_pdf_blockers_body(
         idx: int,
         para: str,
         section: str,
