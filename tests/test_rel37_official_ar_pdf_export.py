@@ -771,6 +771,21 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             self._helper(para, leftover, para), [])
         adjacent = para.replace('P1 Data', 'P1 1 Data')
         self.assertEqual(self._helper(para, adjacent, para), [])
+        ai_para = (
+            'تعمل REL33 P1 Artificial Intelligence Org في سياق تشغيلي '
+            'لقطاع حكومي، ضمن بيئة تتطلب امتثال إطار SDAIA للذكاء '
+            'الاصطناعي المسؤول، بما في ذلك سجل النماذج ومخاطر النموذج '
+            'والإشراف البشري وجاهزية البيانات قبل الإطلاق.')
+        mashed_prefix = (
+            'لمعت 33 1 ب ،لوؤسملا يعانطصالا ءاكذلل راطإ لاثتما بلطتت '
+            'ةئيب نمض ،يموكح عاطقل يليغشت قايس يف '
+        ) + ai_para
+        self.assertEqual(
+            self._helper(ai_para, mashed_prefix, ai_para), [])
+        unrelated_same_digit = para.replace(
+            'حوكمة بيانات', 'حوكمة 1 بيانات')
+        self._content_blocker(self._helper(
+            para, unrelated_same_digit, para))
 
         class _Model:
             environment_narrative = para

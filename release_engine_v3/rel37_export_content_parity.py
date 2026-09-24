@@ -1038,6 +1038,46 @@ def _is_reverse_fragment(word: str, known: Sequence[str] | set) -> bool:
     return False
 
 
+def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
+    """True when a leftover run is the visual reverse of an ActualText prefix.
+
+    Official mashed leftovers omit separately drawn Helvetica identity and
+    keep those tokens' leftover digits inside the reversed Arabic
+    presentation. After undo, the first ActualText Arabic word sits at
+    the end and the rest is the following ActualText Arabic prefix.
+    Leftover identity chips are Latin and are not part of this Arabic
+    rotation. One-letter reverse debris of a known word is not a new
+    statement.
+
+    This associates leftover chips with the leftover run they were
+    extracted from. It is not previous-word permission to drop a
+    quantitative integer, and it is not font/draw/span proof.
+    """
+    undone = _undo_extracted_arabic_visual(text)
+    known = _content_words(actual)
+    words: List[str] = []
+    for word in _arabic_words(undone):
+        bare = _bare_word(word)
+        if not bare:
+            continue
+        if len(bare) == 1 and any(
+                len(_bare_word(item)) >= 3
+                and _bare_word(item)[::-1].endswith(bare)
+                for item in known):
+            continue
+        if _is_short_reverse_debris(word, known):
+            continue
+        words.append(bare)
+    act_ar = [_bare_word(word) for word in _arabic_words(actual)]
+    if len(words) < 3 or not act_ar:
+        return False
+    if words[-1] == act_ar[0] and words[:-1] == act_ar[1:len(words)]:
+        return True
+    if words == act_ar[:len(words)] or words[::-1] == act_ar[:len(words)]:
+        return True
+    return False
+
+
 def _is_visual_leftover_run(text: str, actual: str) -> bool:
     """True when a run is a visual conversion of ActualText, not the logical run."""
     act = _layout_norm(actual)
@@ -1068,6 +1108,8 @@ def _is_visual_leftover_run(text: str, actual: str) -> bool:
             return True
         if _content_words(candidate) == _content_words(act):
             return True
+    if _arabic_leftover_rotation_of_actual(text, actual):
+        return True
     return False
 
 
@@ -1088,6 +1130,9 @@ def _walk_complete_statement(
     """Walk have consuming want in order. Return (complete, extras).
 
     A leftover visual run may omit separately drawn identity Latin.
+    Classify that leftover run before consuming a reverse chip of the
+    next expected word, so leftover identity digits stay with the
+    leftover presentation instead of being treated as a new value.
     A contiguous 3+ word ActualText span may appear out of wrap order.
     Single-word relocation is not a span and does not reorder the statement.
     """
@@ -1103,12 +1148,6 @@ def _walk_complete_statement(
         word = have[i]
         idx = _advance_covered(idx, covered)
         if idx < len(want_words) and _bare_word(word) == _bare_word(want_words[idx]):
-            consumed.append(want_words[idx])
-            covered[idx] = True
-            idx = _advance_covered(idx + 1, covered)
-            i += 1
-            continue
-        if idx < len(want_words) and _bare_word(word)[::-1] == _bare_word(want_words[idx]):
             consumed.append(want_words[idx])
             covered[idx] = True
             idx = _advance_covered(idx + 1, covered)
@@ -1146,6 +1185,12 @@ def _walk_complete_statement(
                 skipped = True
                 break
         if skipped:
+            continue
+        if idx < len(want_words) and _bare_word(word)[::-1] == _bare_word(want_words[idx]):
+            consumed.append(want_words[idx])
+            covered[idx] = True
+            idx = _advance_covered(idx + 1, covered)
+            i += 1
             continue
         if _bare_word(word) not in {_bare_word(item) for item in known} and (
                 _bare_word(word)[::-1] in {_bare_word(item) for item in known}):
