@@ -880,8 +880,9 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         before = owned.model_hash
         saved = _persist(owned, domain_label=label)
         env = owned.environment_narrative
-        route_match = _numeric_env_pdf(
-            _NUMERIC_PARA[::-1] + '\n' + env, env)
+        # The resolved same-route positive is the complete constructed
+        # candidate, not an extra-run-only environment PDF.
+        route_match = _numeric_env_pdf(env, env)
         constructed = self._substitute_candidate(saved, fws, route_match)
         self.assertEqual(
             constructed['status'].get('status'), 'done', constructed['status'])
