@@ -58,10 +58,13 @@ from release_engine_v3.rel37_apply import (  # noqa: E402
 )
 from release_engine_v3.rel37_compilers import compile_for_domain  # noqa: E402
 from release_engine_v3.rel37_export_content_parity import (  # noqa: E402
+    _arabic_leftover_rotation_of_actual,
     _content_words,
     _identifier_owns_digit_chip,
     _identity_digit_remnants,
     _is_identity_digit_remnant,
+    _is_visual_leftover_run,
+    _leftover_non_arabic_accounted,
     _mixed_script_runs,
     _paragraph_pdf_blockers,
     _undo_visual_rtl_line,
@@ -488,6 +491,19 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertTrue(_identifier_owns_digit_chip('REL33', '33'))
         self.assertFalse(_identifier_owns_digit_chip('لمدة', '1'))
         self.assertFalse(_identifier_owns_digit_chip('10', '33'))
+        matching_extra = _NUMERIC_PARA[::-1] + '\n' + _NUMERIC_PARA
+        self.assertEqual(
+            self._helper(_NUMERIC_PARA, matching_extra, _NUMERIC_PARA), [])
+        self.assertTrue(_is_visual_leftover_run(_NUMERIC_PARA[::-1], _NUMERIC_PARA))
+        wrong = _NUMERIC_PARA.replace('10 سنوات', '88 سنوات')
+        contradictory_extra = wrong[::-1] + '\n' + _NUMERIC_PARA
+        extra_run = wrong[::-1]
+        self.assertFalse(_leftover_non_arabic_accounted(extra_run, _NUMERIC_PARA))
+        self.assertFalse(_arabic_leftover_rotation_of_actual(
+            extra_run, _NUMERIC_PARA))
+        self.assertFalse(_is_visual_leftover_run(extra_run, _NUMERIC_PARA))
+        self._content_blocker(self._helper(
+            _NUMERIC_PARA, contradictory_extra, _NUMERIC_PARA))
 
     def test_actual_pdf_visible_10_versus_10_33(self):
         class _Model:
@@ -804,6 +820,99 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
         self.assertEqual(compare_environment_narrative_to_pdf(model, leftover_pdf), [])
         del section
 
+    def test_contradictory_extra_paint_is_not_leftover_rotation(self):
+        """Matching leftover extra stays valid; altered quantitative extra does not.
 
-if __name__ == '__main__':
-    unittest.main()
+        The same-route constructed-positive control is a separate resolved
+        test. This case keeps that boundary and only changes the extra run.
+        """
+        from release_engine_v3.rel37_export_content_parity import (
+            extract_pdf_pages,
+            gate_rel37_returned_bytes,
+        )
+
+        class _Model:
+            environment_narrative = _NUMERIC_PARA
+            lang = 'ar'
+            domain = 'data'
+            org_name = 'REL33 P1 Data Management Org'
+            model_hash = 'test-owned-extra-run'
+            sector = 'Government'
+            selected_frameworks = ['NDMO', 'PDPL']
+
+        model = _Model()
+        matching_vis = _NUMERIC_PARA[::-1] + '\n' + _NUMERIC_PARA
+        matching_pdf = _numeric_env_pdf(matching_vis, _NUMERIC_PARA)
+        section, meta = pdf_environment_section_text(matching_pdf)
+        self.assertTrue(meta.get('associated'), meta)
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(model, matching_pdf), [])
+
+        wrong = _NUMERIC_PARA.replace('10 سنوات', '88 سنوات')
+        extra_vis = wrong + '\n' + _NUMERIC_PARA
+        extra_pdf = _numeric_env_pdf(extra_vis, _NUMERIC_PARA)
+        section, meta = pdf_environment_section_text(extra_pdf)
+        vis = str(meta.get('environment_visible') or '')
+        act = str(meta.get('environment_actual') or '')
+        self.assertTrue(meta.get('associated'), meta)
+        self.assertIn('88', vis)
+        self.assertNotIn('88', act)
+        self.assertIn('10', act)
+        pages, page_meta = extract_pdf_pages(extra_pdf)
+        painted_88 = False
+        hidden_88 = False
+        for page in pages:
+            for event in page.get('events') or []:
+                text = str(event.get('text') or '')
+                if '88' not in text:
+                    continue
+                if event.get('kind') == 'visible' and not event.get('non_displayed'):
+                    painted_88 = True
+                if event.get('kind') == 'hidden_logical' or event.get('non_displayed'):
+                    hidden_88 = True
+        self.assertTrue(painted_88, (vis, page_meta, pages))
+        self.assertFalse(hidden_88)
+        blockers = compare_environment_narrative_to_pdf(model, extra_pdf)
+        self._content_blocker(blockers)
+        del section
+
+        owned, label, fws = self._owned_numeric_model()
+        before = owned.model_hash
+        saved = _persist(owned, domain_label=label)
+        env = owned.environment_narrative
+        route_match = _numeric_env_pdf(
+            _NUMERIC_PARA[::-1] + '\n' + env, env)
+        constructed = self._substitute_candidate(saved, fws, route_match)
+        self.assertEqual(
+            constructed['status'].get('status'), 'done', constructed['status'])
+        self.assertEqual(constructed['download_http'], 200)
+        self.assertEqual(constructed['candidate_sha'], constructed['gate_input_sha'])
+        self.assertEqual(constructed['candidate_sha'], constructed['downloaded_sha'])
+        self.assertEqual(
+            compare_environment_narrative_to_pdf(owned, constructed['bytes']), [])
+
+        route_wrong = _numeric_env_pdf(wrong + '\n' + env, env)
+        allowed, gated = gate_rel37_returned_bytes(
+            owned, pdf_bytes=route_wrong, route='pdf')
+        self.assertFalse(allowed, gated)
+        self.assertTrue(any(
+            'actual_visible_disagree' in item
+            or 'narrative_missing' in item
+            or 'narrative_incomplete' in item
+            for item in gated
+        ), gated)
+        refused = self._substitute_candidate(saved, fws, route_wrong)
+        self.assertNotEqual(
+            refused['status'].get('status'), 'done', refused['status'])
+        self.assertNotEqual(refused['download_http'], 200)
+        self.assertFalse(refused['bytes'].startswith(b'%PDF'))
+        self.assertEqual(refused['candidate_sha'], refused['gate_input_sha'])
+        self.assertNotEqual(refused['candidate_sha'], refused['downloaded_sha'])
+        self.assertTrue(any(
+            'actual_visible_disagree' in item
+            or 'narrative_missing' in item
+            or 'narrative_incomplete' in item
+            for item in (refused.get('gate_blockers') or [])
+        ), refused.get('gate_blockers'))
+        self.assertEqual(owned.model_hash, before)
+

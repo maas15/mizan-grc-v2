@@ -1038,6 +1038,38 @@ def _is_reverse_fragment(word: str, known: Sequence[str] | set) -> bool:
     return False
 
 
+def _leftover_non_arabic_accounted(text: str, actual: str) -> bool:
+    """True when leftover-run Latin/numeric chips are leftover identity.
+
+    Arabic-only rotation does not establish that excluded numeric or
+    Latin content is harmless. A leftover candidate must still account
+    for every material non-Arabic chip under the permitted layout
+    transform: an ActualText identity token, its character reverse, or
+    that token's leftover digit chip. A quantitative integer that is
+    not such a chip is contradictory extra paint. Identifier adjacency
+    and rotation are not font/draw/span proof.
+    """
+    known_ident = set()
+    for token in _content_words(actual):
+        if not _is_identity_latin_token(token):
+            continue
+        bare = _bare_word(token)
+        known_ident.add(bare)
+        known_ident.add(bare[::-1])
+    for word in _content_words(text):
+        if any('\u0600' <= ch <= '\u06FF' for ch in word):
+            continue
+        bare = _bare_word(word)
+        if not bare:
+            continue
+        if bare in known_ident:
+            continue
+        if _is_identity_digit_remnant(word, actual):
+            continue
+        return False
+    return True
+
+
 def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
     """True when a leftover run is the visual reverse of an ActualText prefix.
 
@@ -1050,8 +1082,9 @@ def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
     statement.
 
     This associates leftover chips with the leftover run they were
-    extracted from. It is not previous-word permission to drop a
-    quantitative integer, and it is not font/draw/span proof.
+    extracted from only when every material non-Arabic chip is leftover
+    identity of ActualText. It is not previous-word permission to drop
+    a quantitative integer, and it is not font/draw/span proof.
     """
     undone = _undo_extracted_arabic_visual(text)
     known = _content_words(actual)
@@ -1071,11 +1104,14 @@ def _arabic_leftover_rotation_of_actual(text: str, actual: str) -> bool:
     act_ar = [_bare_word(word) for word in _arabic_words(actual)]
     if len(words) < 3 or not act_ar:
         return False
-    if words[-1] == act_ar[0] and words[:-1] == act_ar[1:len(words)]:
-        return True
-    if words == act_ar[:len(words)] or words[::-1] == act_ar[:len(words)]:
-        return True
-    return False
+    arabic_match = (
+        (words[-1] == act_ar[0] and words[:-1] == act_ar[1:len(words)])
+        or words == act_ar[:len(words)]
+        or words[::-1] == act_ar[:len(words)]
+    )
+    if not arabic_match:
+        return False
+    return _leftover_non_arabic_accounted(text, actual)
 
 
 def _is_visual_leftover_run(text: str, actual: str) -> bool:
