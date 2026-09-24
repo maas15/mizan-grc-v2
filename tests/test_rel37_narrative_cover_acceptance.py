@@ -378,6 +378,19 @@ def _finish_refusal(testcase, saved, result):
     _require_terminal_refusal(testcase, result)
 
 
+def _refuse_while_gate_installed(
+        testcase, saved, body, fmt, injecting_gate, *, immediate=False):
+    """Export and finish refusal while the injecting gate is still installed.
+
+    Drain stays inside the patch so a late worker still reaches the
+    injected gate. The original observation timeout remains a failure.
+    """
+    with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
+        result = _export(saved, body, fmt, immediate=immediate)
+        _finish_refusal(testcase, saved, result)
+    return result
+
+
 class nullcontext:
     def __enter__(self):
         return None
@@ -859,10 +872,9 @@ class FinalRouteByteRefusalTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'docx', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'docx', injecting_gate,
+            immediate=False)
 
     def test_owner_positive_and_csrf_cross_user(self):
         model = _load_json_model(LIVE_FIXTURE)
@@ -1167,10 +1179,9 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'pdf', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'pdf', injecting_gate,
+            immediate=False)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
     def test_owner_positive_pdf_still_downloads(self):
@@ -1252,10 +1263,9 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'pdf', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'pdf', injecting_gate,
+            immediate=False)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
     def test_real_thread_refuses_same_page_summary_only(self):
@@ -1276,10 +1286,9 @@ class FindingLatinTokenPdfTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'pdf', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'pdf', injecting_gate,
+            immediate=False)
         self.assertEqual(model.model_hash, LIVE_HASH)
 
 
@@ -1509,10 +1518,9 @@ class CompleteRepresentationPdfTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'pdf', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'pdf', injecting_gate,
+            immediate=False)
         self.assertEqual(model.model_hash, LIVE_HASH)
         self.assertEqual(model.compute_model_hash(), LIVE_HASH)
 
@@ -1882,12 +1890,65 @@ class OrderedCompleteAndOverlayProvenanceTests(unittest.TestCase):
                 docx_bytes=docx_bytes, pdf_bytes=pdf_bytes,
                 sections=sections, route=route, lang=lang)
 
-        with patch.object(app_mod, '_rel37_gate_saved_export_bytes', injecting_gate):
-            result = _export(
-                saved, _official_body(saved), 'pdf', immediate=False)
-        _finish_refusal(self, saved, result)
+        _refuse_while_gate_installed(
+            self, saved, _official_body(saved), 'pdf', injecting_gate,
+            immediate=False)
         self.assertEqual(model.model_hash, LIVE_HASH)
         self.assertEqual(model.compute_model_hash(), LIVE_HASH)
+
+
+class GatePatchLifetimeTests(unittest.TestCase):
+    """Helper ordering only. This is not a public-route acceptance claim."""
+
+    def test_drain_runs_while_injecting_gate_is_installed(self):
+        import sys
+        mod = sys.modules[__name__]
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+        seen = {}
+
+        def injecting_gate(**kwargs):
+            return kwargs
+
+        def fake_export(saved, body, fmt, *, immediate=True, timeout_s=None):
+            seen['export_gate'] = app_mod._rel37_gate_saved_export_bytes
+            seen['immediate'] = immediate
+            return {
+                'poll_timed_out': True,
+                'observed_terminal': False,
+                'task_id': 'lifetime-task',
+                'status': {'status': 'pending'},
+                'last_status': {'status': 'pending'},
+                'download_requested': False,
+                'download_http': 0,
+                'bytes': b'',
+                'elapsed_s': 45,
+                'deadline_s': 45,
+            }
+
+        def fake_drain(saved, task_id, *, bound_s=180):
+            seen['drain_gate'] = app_mod._rel37_gate_saved_export_bytes
+            seen['bound_s'] = bound_s
+            seen['task_id'] = task_id
+            return {
+                'task_id': task_id,
+                'observed_terminal': False,
+                'poll_timed_out': False,
+                'last_status': {'status': 'pending'},
+            }
+
+        with patch.object(mod, '_export', fake_export), patch.object(
+                mod, '_drain_worker', fake_drain):
+            with self.assertRaises(AssertionError) as caught:
+                _refuse_while_gate_installed(
+                    self, {}, {}, 'pdf', injecting_gate, immediate=False)
+        self.assertIs(seen['export_gate'], injecting_gate)
+        self.assertIs(seen['drain_gate'], injecting_gate)
+        self.assertFalse(seen['immediate'])
+        self.assertEqual(seen['bound_s'], 180)
+        self.assertEqual(seen['task_id'], 'lifetime-task')
+        self.assertIn('poll_timed_out', str(caught.exception))
+        self.assertIn('pending', str(caught.exception))
+        self.assertIs(app_mod._rel37_gate_saved_export_bytes, real_gate)
 
 
 if __name__ == '__main__':

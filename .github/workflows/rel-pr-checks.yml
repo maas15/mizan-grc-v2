@@ -76,6 +76,7 @@ jobs:
             tests/test_rel37_export_content_parity.py \
             tests/test_rel37_saved_narrative_cover_authority.py \
             tests/test_rel37_narrative_cover_acceptance.py \
+            tests/test_rel37_export_poll_observation.py \
             tests/test_rel37_sync_pdf_ownership.py \
             tests/test_rel37_acceptance_evidence_isolation.py \
             tests/test_rel33_required_smoke_quality_contract.py \
