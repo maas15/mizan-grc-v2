@@ -632,15 +632,17 @@ class OfficialNumericOverlayAssociationTests(unittest.TestCase):
             seen['gate_blockers'] = list(blockers)
             return allowed, blockers, detail
 
+        import flask
+        real_send_file = flask.send_file
+
         def substituting_send_file(file_obj, **kwargs):
-            from flask import send_file as real_send_file
             mime = str(kwargs.get('mimetype') or '')
             if mime == 'application/pdf' or mime.endswith('pdf'):
                 return real_send_file(BytesIO(raw), **kwargs)
             return real_send_file(file_obj, **kwargs)
 
         with patch.object(app_mod, '_rel37_gate_saved_export_bytes', substituting_gate):
-            with patch('flask.send_file', substituting_send_file):
+            with patch.object(flask, 'send_file', substituting_send_file):
                 result = _export(saved, _official_body(saved, fws=fws), 'pdf')
         result['candidate_sha'] = hashlib.sha256(raw).hexdigest()
         result['gate_input_sha'] = seen['gate_input_sha']
