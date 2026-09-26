@@ -2528,11 +2528,20 @@ def _paragraph_pdf_blockers_body(
     vis_use = _stream_usable(vis_raw, para)
     act_use = _stream_usable(act_raw, para)
     vis_norm = _layout_norm(vis_raw)
-    para_has_ar = any('\u0600' <= ch <= '\u06FF' for ch in para)
+    arabic_letters = sum(1 for ch in para if '\u0600' <= ch <= '\u06FF')
+    latin_letters = sum(
+        1 for ch in para if ('A' <= ch <= 'Z') or ('a' <= ch <= 'z'))
     vis_has_ar = any('\u0600' <= ch <= '\u06FF' for ch in vis_norm)
-    # Painted English with the Arabic name missing is not repaired by
-    # ActualText. A logical span cannot stand in for glyphs that are absent.
-    if para_has_ar and vis_norm and not vis_has_ar and act_use:
+    # A mostly English paragraph whose visible paint lost its Arabic name
+    # is not repaired by ActualText. Arabic-majority paragraphs keep the
+    # existing visual-order reconciliation.
+    if (
+            arabic_letters
+            and latin_letters > arabic_letters
+            and vis_norm
+            and not vis_has_ar
+            and act_use
+    ):
         return [f'pdf_environment_narrative_missing:{idx}']
     vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
     act_cmp = _layout_norm(act_raw)

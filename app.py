@@ -52471,12 +52471,18 @@ def _rel2_backend_callables(*, pipeline_cache=None):
                         sess['user_id'] = uid
                         sess['username'] = 'rel2_export_validator'
                         sess['role'] = 'user'
+                    _lang_n = str(lang or '').strip().lower()
+                    # Arabic placeholders are for Arabic documents. An
+                    # English build must not invent حكومي/منظمة and then
+                    # paint them as real Arabic beside a Latin source.
+                    _org_fallback = 'منظمة' if _lang_n == 'ar' else ''
+                    _sector_fallback = 'حكومي' if _lang_n == 'ar' else ''
                     resp = client.post('/api/generate-pdf', json={
                         'content': content or '',
                         'filename': 'rel2_evidence',
                         'language': lang,
-                        'org_name': meta.get('org_name', 'منظمة'),
-                        'sector': meta.get('sector', 'حكومي'),
+                        'org_name': meta.get('org_name', _org_fallback),
+                        'sector': meta.get('sector', _sector_fallback),
                         'doc_type': _doc_type_label,
                         'domain': dcode,
                         'artifact_type': _dtype,
