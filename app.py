@@ -87772,9 +87772,14 @@ def api_generate_pdf():
                     # survive as ASCII leftovers (English cells previously
                     # skipped _pro_text and leaked family:gov / family:soc_siem).
                     logical = str(c)
-                    txt = _pro_text(logical, 'value')
+                    # Truncate the source text before font markup. Cutting
+                    # a <font> tag leaves the paragraph parser unclosed and
+                    # drops the rest of the professional body, including
+                    # the roadmap table.
+                    source = logical
                     if prof and not _keep_rel37:
-                        txt = _truncate_cell_for_profile(txt, prof)
+                        source = _truncate_cell_for_profile(logical, prof)
+                    txt = _pro_text(source, 'value')
                     if str(txt).isascii():
                         visual = Paragraph(str(txt), _ascii_val_sty)
                     else:
