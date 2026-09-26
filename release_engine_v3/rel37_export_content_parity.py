@@ -2527,6 +2527,13 @@ def _paragraph_pdf_blockers_body(
         return [f'pdf_environment_painted_unestablished:{idx}']
     vis_use = _stream_usable(vis_raw, para)
     act_use = _stream_usable(act_raw, para)
+    vis_norm = _layout_norm(vis_raw)
+    para_has_ar = any('\u0600' <= ch <= '\u06FF' for ch in para)
+    vis_has_ar = any('\u0600' <= ch <= '\u06FF' for ch in vis_norm)
+    # Painted English with the Arabic name missing is not repaired by
+    # ActualText. A logical span cannot stand in for glyphs that are absent.
+    if para_has_ar and vis_norm and not vis_has_ar and act_use:
+        return [f'pdf_environment_narrative_missing:{idx}']
     vis_cmp, how = _visible_reconciled_to_actual(vis_raw, act_raw)
     act_cmp = _layout_norm(act_raw)
     vis_complete = vis_use and _complete_paragraph_in_painted(
@@ -2703,6 +2710,9 @@ def rel37_returned_bytes_blockers(
         if require_narrative:
             blockers.extend(compare_environment_narrative_to_pdf(model, pdf_bytes))
         blockers.extend(compare_cover_sector_to_pdf(model, pdf_bytes))
+        if str(getattr(model, 'lang', '') or '') == 'en':
+            pdf_text, _pdf_meta = extract_pdf_text(pdf_bytes)
+            blockers.extend(language_blockers(model, pdf_text))
     return list(dict.fromkeys(blockers))
 
 

@@ -58902,6 +58902,142 @@ except Exception as _pfe:
     print(f'[FONT-REG] startup_preflight_failed: {_pfe}', flush=True)
 
 
+def _pdf_char_is_arabic(ch):
+    """Arabic script character. Latin letters and spaces are not Arabic."""
+    o = ord(ch)
+    return (
+        0x0600 <= o <= 0x06FF
+        or 0x0750 <= o <= 0x077F
+        or 0x08A0 <= o <= 0x08FF
+    )
+
+
+def _pdf_text_has_arabic(text):
+    return any(_pdf_char_is_arabic(ch) for ch in str(text or ''))
+
+
+def _iter_pdf_script_runs(text):
+    """Split text into Arabic and non-Arabic runs.
+
+    Spaces between Arabic words stay in the Arabic run. Spaces that
+    border Latin stay with the Latin run. The run list keeps source
+    order; it does not reverse an English sentence.
+    """
+    raw = str(text or '')
+    i = 0
+    n = len(raw)
+    while i < n:
+        if _pdf_char_is_arabic(raw[i]):
+            j = i + 1
+            while j < n:
+                if _pdf_char_is_arabic(raw[j]):
+                    j += 1
+                    continue
+                if raw[j].isspace():
+                    k = j
+                    while k < n and raw[k].isspace():
+                        k += 1
+                    if k < n and _pdf_char_is_arabic(raw[k]):
+                        j = k
+                        continue
+                break
+            yield 'ar', raw[i:j]
+            i = j
+            continue
+        j = i + 1
+        while j < n and not _pdf_char_is_arabic(raw[j]):
+            j += 1
+        yield 'lat', raw[i:j]
+        i = j
+
+
+def _shape_arabic_run(run):
+    """Shape one Arabic run. Does not reshape surrounding Latin."""
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    return get_display(arabic_reshaper.reshape(str(run or '')))
+
+
+def _english_pdf_mixed_script_markup(text, *, bold=False):
+    """Paragraph markup for an English sentence that contains Arabic.
+
+    Arabic runs are painted with the registered Arabic face and shaped
+    for that run only. Latin runs stay on Helvetica in source order.
+    The whole paragraph is not reversed.
+    """
+    raw = str(text or '')
+    if not _pdf_text_has_arabic(raw):
+        return raw
+    reg, reg_bold = _ensure_arabic_pdf_font(required=True)
+    arabic_font = reg_bold if bold else reg
+    latin_font = 'Helvetica-Bold' if bold else 'Helvetica'
+
+    def _esc(value):
+        return (str(value)
+                .replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;'))
+
+    parts = []
+    for kind, run in _iter_pdf_script_runs(raw):
+        if kind == 'ar':
+            shaped = _shape_arabic_run(run)
+            parts.append(
+                f'<font name="{arabic_font}">{_esc(shaped)}</font>')
+        else:
+            parts.append(
+                f'<font name="{latin_font}">{_esc(run)}</font>')
+    return ''.join(parts)
+
+
+def _english_mixed_script_width(text, size, *, bold=False):
+    """Advance width of an English string with shaped Arabic runs."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    raw = str(text or '')
+    latin_font = 'Helvetica-Bold' if bold else 'Helvetica'
+    if not _pdf_text_has_arabic(raw):
+        return stringWidth(raw, latin_font, size)
+    reg, reg_bold = _ensure_arabic_pdf_font(required=True)
+    arabic_font = reg_bold if bold else reg
+    total = 0.0
+    for kind, run in _iter_pdf_script_runs(raw):
+        if kind == 'ar':
+            drawn = _shape_arabic_run(run)
+            font = arabic_font
+        else:
+            drawn = run
+            font = latin_font
+        total += stringWidth(drawn, font, size)
+    return total
+
+
+def _draw_english_mixed_script(canvas, x, y, text, size, *, bold=False):
+    """Draw an English string left to right, with Arabic runs shaped.
+
+    Latin glyphs stay in source order. An Arabic organization name is
+    not a reason to reverse the rest of the line.
+    """
+    raw = str(text or '')
+    latin_font = 'Helvetica-Bold' if bold else 'Helvetica'
+    if not _pdf_text_has_arabic(raw):
+        canvas.setFont(latin_font, size)
+        canvas.drawString(x, y, raw)
+        return
+    reg, reg_bold = _ensure_arabic_pdf_font(required=True)
+    arabic_font = reg_bold if bold else reg
+    cursor = x
+    for kind, run in _iter_pdf_script_runs(raw):
+        if kind == 'ar':
+            drawn = _shape_arabic_run(run)
+            font = arabic_font
+        else:
+            drawn = run
+            font = latin_font
+        canvas.setFont(font, size)
+        canvas.drawString(cursor, y, drawn)
+        cursor += canvas.stringWidth(drawn, font, size)
+
+
 def _enforce_technical_strategy_completeness(sections, lang, domain, fw_short,
                                               sector='General',
                                               org_name='The Organization',
@@ -86615,6 +86751,9 @@ def api_generate_pdf():
                 except Exception:
                     pass
                 c.drawRightString(pw - 30, _mid_y + 26, _cover_org_draw)
+            elif _pdf_text_has_arabic(_cover_org_draw):
+                _draw_english_mixed_script(
+                    c, 30, _mid_y + 26, _cover_org_draw, 12, bold=False)
             else:
                 c.drawString(30, _mid_y + 26, _cover_org_draw)
 
@@ -86871,6 +87010,9 @@ def api_generate_pdf():
                 except Exception:
                     shaped = str(t)
                 return shaped
+            if _pdf_text_has_arabic(str(t)):
+                return _english_pdf_mixed_script_markup(
+                    str(t), bold=sty in ('title', 'label'))
             return str(t)
 
         def _pro_text_env(t):
@@ -86887,6 +87029,8 @@ def api_generate_pdf():
                 preserve_model_values=_rel37_keep)
             text = str(logical).replace('\u00a0', ' ')
             if not is_arabic:
+                if _pdf_text_has_arabic(text):
+                    return _english_pdf_mixed_script_markup(text, bold=False)
                 return text
             held = []
 
@@ -89885,7 +90029,14 @@ def api_generate_pdf():
             else:
                 canvas_obj.drawString(_lm, _bar_y + 9, _hdr_title)
                 canvas_obj.setFont(_hdr_regular, 7.5)
-                canvas_obj.drawRightString(_rm, _bar_y + 9, _hdr_org)
+                if _pdf_text_has_arabic(_org_footer):
+                    _org_w = _english_mixed_script_width(
+                        _org_footer[:50], 7.5, bold=False)
+                    _draw_english_mixed_script(
+                        canvas_obj, _rm - _org_w, _bar_y + 9,
+                        _org_footer[:50], 7.5, bold=False)
+                else:
+                    canvas_obj.drawRightString(_rm, _bar_y + 9, _hdr_org)
 
             # ── Footer: orange rule + classification / page / date ────────────
             _footer_rule_y = 22

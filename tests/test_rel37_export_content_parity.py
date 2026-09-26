@@ -847,5 +847,396 @@ class SixRouteMatrixTests(unittest.TestCase):
         out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+_LIVE_DATA_EN_AR_ORG_HASH = (
+    'ebb6b54215c0ce4f506295cfa55c3d14a801a99ca982e55e535942b34519b135'
+)
+
+
+def _export_real_thread(saved, fmt, *, gate_wrapper=None):
+    """Public async export on a real threading.Thread. No ImmediateThread."""
+    import time
+    captured = {}
+    real_gate = app_mod._rel37_gate_saved_export_bytes
+
+    def _recording_gate(**kwargs):
+        blob = kwargs.get('pdf_bytes') or kwargs.get('docx_bytes') or b''
+        if gate_wrapper is not None:
+            kwargs = gate_wrapper(dict(kwargs))
+            blob = kwargs.get('pdf_bytes') or kwargs.get('docx_bytes') or b''
+        if blob:
+            captured['sha256'] = hashlib.sha256(blob).hexdigest()
+            captured['nbytes'] = len(blob)
+        return real_gate(**kwargs)
+
+    body = {
+        'content': saved['content'],
+        'filename': f'rel37_ar_org_{fmt}',
+        'language': saved['lang'],
+        'domain': saved['domain'],
+        'doc_type': 'Strategy Document',
+        'document_type': 'strategy',
+        'artifact_type': 'strategy',
+        'generation_mode': 'drafting',
+        'strategy_id': saved['strategy_id'],
+        'artifact_id': saved['strategy_id'],
+        'selected_frameworks': list(saved['model'].selected_frameworks),
+        'frameworks': list(saved['model'].selected_frameworks),
+        'org_name': saved['model'].org_name,
+    }
+    app_mod._rel37_gate_saved_export_bytes = _recording_gate
+    try:
+        resp = saved['client'].post(
+            f'/api/generate-{fmt}-async', json=body, headers=saved['headers'])
+        submit = resp.get_json(silent=True) or {}
+        tid = submit.get('task_id')
+        status = {}
+        deadline = time.monotonic() + 90
+        while tid and time.monotonic() < deadline:
+            status = saved['client'].get(
+                f'/api/export-status/{tid}', headers=saved['headers']
+            ).get_json(silent=True) or {}
+            if status.get('status') in ('done', 'error', 'not_found'):
+                break
+            time.sleep(0.25)
+        raw = b''
+        download_http = 0
+        if tid and status.get('status') == 'done':
+            dl = saved['client'].get(
+                f'/api/export-download/{tid}', headers=saved['headers'])
+            download_http = dl.status_code
+            raw = dl.data or b''
+        elif tid:
+            dl = saved['client'].get(
+                f'/api/export-download/{tid}', headers=saved['headers'])
+            download_http = dl.status_code
+            raw = dl.data or b''
+    finally:
+        app_mod._rel37_gate_saved_export_bytes = real_gate
+    return {
+        'submit_http': resp.status_code,
+        'task_id': tid,
+        'status': status,
+        'download_http': download_http,
+        'bytes': raw if status.get('status') == 'done' else b'',
+        'download_body': raw,
+        'sha256': hashlib.sha256(raw).hexdigest() if raw and status.get('status') == 'done' else '',
+        'candidate_sha256': captured.get('sha256') or '',
+        'candidate_bytes': captured.get('nbytes') or 0,
+    }
+
+
+def _redact_body_arabic(pdf_bytes, *, replacement='', skip_pages=()):
+    """Remove body-band Arabic glyph runs from a builder PDF.
+
+    Header bands (y < 40) stay. ``skip_pages`` keeps the cover (page 0)
+    so a later refusal is not explained by deleting the cover name.
+    The redact box stops short of the next Latin line so NDMO/PDPL
+    are not clipped.
+    """
+    import pymupdf
+    doc = pymupdf.open(stream=pdf_bytes, filetype='pdf')
+    for index, page in enumerate(doc):
+        if index in skip_pages:
+            continue
+        rects = []
+        for block in page.get_text('rawdict').get('blocks') or []:
+            for line in block.get('lines') or []:
+                for span in line.get('spans') or []:
+                    if 'Noto' not in str(span.get('font') or '') and (
+                            'Arabic' not in str(span.get('font') or '')):
+                        continue
+                    chars = span.get('chars') or []
+                    if not chars:
+                        continue
+                    y0 = min(ch['bbox'][1] for ch in chars)
+                    if y0 < 40:
+                        continue
+                    rects.append(pymupdf.Rect(
+                        min(ch['bbox'][0] for ch in chars) - 0.4,
+                        y0,
+                        max(ch['bbox'][2] for ch in chars) + 0.4,
+                        y0 + 12,
+                    ))
+        for rect in rects:
+            page.add_redact_annot(rect, text=replacement or None, fill=(1, 1, 1))
+        if rects:
+            page.apply_redactions(images=0)
+            if replacement:
+                # apply_redactions text is not reliable for Arabic; stamp Latin.
+                if replacement.isascii():
+                    page.insert_text(
+                        (rects[0].x0, rects[0].y0 + 9),
+                        replacement, fontsize=9, fontname='helv',
+                    )
+    return doc.tobytes()
+
+
+class ArabicOrgEnglishPdfTests(unittest.TestCase):
+    """Saved English Data/AI/DT PDFs must paint an Arabic org name in place.
+
+    The compiled fixture is not the private live source. Its hash must not
+    be reported as the live model hash.
+    """
+
+    def _saved(self, domain, org, frameworks):
+        model, _sections = _compile(domain, 'en', org, frameworks)
+        self.assertEqual(model.org_name, org)
+        self.assertNotEqual(model.model_hash, _LIVE_DATA_EN_AR_ORG_HASH)
+        before = model.model_hash
+        saved = _persist_model(model, domain, 'en')
+        self.assertEqual(saved['model'].model_hash, before)
+        return saved, before
+
+    def _assert_painted_org(self, pdf_bytes, org, paragraph):
+        import pymupdf
+        from release_engine_v3.rel37_export_content_parity import (
+            _layout_norm,
+            pdf_environment_section_text,
+        )
+        _section, meta = pdf_environment_section_text(pdf_bytes)
+        visible = _layout_norm(meta.get('environment_visible') or '')
+        self.assertIn(_layout_norm(paragraph), visible)
+        self.assertIn(org, visible)
+        doc = pymupdf.open(stream=pdf_bytes, filetype='pdf')
+        found = False
+        for page in doc:
+            for block in page.get_text('rawdict').get('blocks') or []:
+                for line in block.get('lines') or []:
+                    spans = line.get('spans') or []
+                    for span in spans:
+                        chars = span.get('chars') or []
+                        if not chars or chars[0]['bbox'][1] < 40:
+                            continue
+                        text = ''.join(ch.get('c') or '' for ch in chars)
+                        if 'Noto' not in str(span.get('font') or ''):
+                            continue
+                        if not any(
+                                '\u0600' <= ch <= '\u06FF'
+                                or '\uFB50' <= ch <= '\uFEFF'
+                                for ch in text):
+                            continue
+                        xs = [
+                            ch['bbox'][0] for ch in chars
+                            if (ch.get('c') or '').strip()
+                        ]
+                        if len(xs) < 2:
+                            continue
+                        # Shaped Arabic is drawn right-to-left: the first
+                        # stored character sits to the right of the last.
+                        self.assertGreater(xs[0], xs[-1])
+                        found = True
+                        break
+                if found:
+                    break
+            if found:
+                break
+        self.assertTrue(found, 'Arabic org run was not painted with Noto')
+
+    def test_data_en_arabic_org_real_thread_pdf(self):
+        import pymupdf
+        from release_engine_v3.rel37_export_content_parity import (
+            _layout_norm,
+            environment_narrative_paragraphs,
+            gate_rel37_returned_bytes,
+            pdf_environment_section_text,
+        )
+        org = 'شركة مثال'
+        saved, before = self._saved(
+            'Data Management', org,
+            ['PDPL (Personal Data Protection Law)',
+             'NDMO Data Governance Framework'])
+        paragraph = environment_narrative_paragraphs(
+            saved['model'].environment_narrative)[0]
+        self.assertIn(org, paragraph)
+        self.assertIn('operates', paragraph)
+        markup = app_mod._english_pdf_mixed_script_markup(paragraph)
+        self.assertIn('operates', markup)
+        self.assertLess(markup.find('ArabicFont'), markup.find('operates'))
+        self.assertNotIn(paragraph[::-1], markup)
+        docx = _export_real_thread(saved, 'docx')
+        self.assertEqual(docx['status'].get('status'), 'done', docx['status'])
+        self.assertIn(org, inventory_docx_bytes(docx['bytes'])['text'])
+        pdf = _export_real_thread(saved, 'pdf')
+        self.assertEqual(pdf['submit_http'], 200, pdf['status'])
+        self.assertEqual(pdf['status'].get('status'), 'done', pdf['status'])
+        self.assertEqual(pdf['download_http'], 200)
+        self.assertTrue(pdf['bytes'].startswith(b'%PDF'))
+        self.assertEqual(pdf['candidate_sha256'], pdf['sha256'])
+        self.assertEqual(
+            hashlib.sha256(pdf['bytes']).hexdigest(), pdf['candidate_sha256'])
+        allowed, blockers = gate_rel37_returned_bytes(
+            saved['model'], pdf_bytes=pdf['bytes'], route='pdf')
+        self.assertTrue(allowed, blockers)
+        self._assert_painted_org(pdf['bytes'], org, paragraph)
+        self.assertEqual(saved['model'].compute_model_hash(), before)
+        self.assertEqual(
+            arabic_char_count(
+                extract_pdf_text(pdf['bytes'])[0], org_name=org), 0)
+
+        removed = _redact_body_arabic(pdf['bytes'], skip_pages=(0,))
+        ok, blockers = gate_rel37_returned_bytes(
+            saved['model'], pdf_bytes=removed, route='pdf')
+        self.assertFalse(ok)
+        self.assertTrue(any(
+            item.startswith('pdf_environment_narrative_missing:')
+            for item in blockers), blockers)
+        self.assertFalse(any(
+            'unassociated' in item or 'csrf' in item or 'unreliable' in item
+            for item in blockers), blockers)
+        cover_doc = pymupdf.open(stream=removed, filetype='pdf')
+        cover_text = ''.join(
+            ch.get('c') or ''
+            for block in cover_doc[0].get_text('rawdict').get('blocks') or []
+            for line in block.get('lines') or []
+            for span in line.get('spans') or []
+            for ch in (span.get('chars') or [])
+        )
+        self.assertTrue(any(
+            '\u0600' <= ch <= '\u06FF' or '\uFB50' <= ch <= '\uFEFF'
+            for ch in cover_text))
+        _section, removed_meta = pdf_environment_section_text(removed)
+        self.assertNotIn(
+            org, _layout_norm(removed_meta.get('environment_visible') or ''))
+
+        replaced = _redact_body_arabic(
+            pdf['bytes'], replacement='Other Org', skip_pages=(0,))
+        ok, blockers = gate_rel37_returned_bytes(
+            saved['model'], pdf_bytes=replaced, route='pdf')
+        self.assertFalse(ok)
+        self.assertTrue(any(
+            item.startswith('pdf_environment_narrative_missing:')
+            for item in blockers), blockers)
+
+        def _swap(kwargs):
+            kwargs['pdf_bytes'] = removed
+            return kwargs
+
+        refused = _export_real_thread(saved, 'pdf', gate_wrapper=_swap)
+        self.assertEqual(refused['status'].get('status'), 'error', refused['status'])
+        self.assertNotEqual(refused['status'].get('status'), 'done')
+        self.assertFalse((refused['download_body'] or b'').startswith(b'%PDF'))
+        self.assertIn(
+            'validation failed',
+            str(refused['status'].get('error') or ''))
+
+    def test_org_name_variation_and_sibling_domains(self):
+        from release_engine_v3.rel37_export_content_parity import (
+            environment_narrative_paragraphs,
+            gate_rel37_returned_bytes,
+        )
+        cases = (
+            ('Data Management', 'مؤسسة الاختبار',
+             ['PDPL (Personal Data Protection Law)',
+              'NDMO Data Governance Framework']),
+            ('Artificial Intelligence', 'شركة مثال',
+             ['SDAIA AI Ethics Principles']),
+            ('Digital Transformation', 'هيئة التجربة',
+             ['DGA Digital Government Policy']),
+        )
+        for domain, org, frameworks in cases:
+            saved, before = self._saved(domain, org, frameworks)
+            paragraph = environment_narrative_paragraphs(
+                saved['model'].environment_narrative)[0]
+            self.assertIn(org, paragraph)
+            pdf = _export_real_thread(saved, 'pdf')
+            self.assertEqual(
+                pdf['status'].get('status'), 'done', (domain, pdf['status']))
+            self.assertEqual(pdf['candidate_sha256'], pdf['sha256'])
+            allowed, blockers = gate_rel37_returned_bytes(
+                saved['model'], pdf_bytes=pdf['bytes'], route='pdf')
+            self.assertTrue(allowed, (domain, blockers))
+            self._assert_painted_org(pdf['bytes'], org, paragraph)
+            self.assertEqual(saved['model'].compute_model_hash(), before)
+            self.assertEqual(
+                arabic_char_count(
+                    extract_pdf_text(pdf['bytes'])[0], org_name=org), 0)
+
+    def test_actualtext_cannot_replace_missing_org_paint(self):
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.lib.pagesizes import A4
+        from release_engine_v3.rel37_export_content_parity import (
+            environment_narrative_paragraphs,
+            gate_rel37_returned_bytes,
+        )
+        from release_engine_v3.rel37_sector_context import (
+            cover_sector_from_hashed_narrative,
+        )
+        org = 'شركة مثال'
+        saved, _before = self._saved(
+            'Data Management', org,
+            ['PDPL (Personal Data Protection Law)',
+             'NDMO Data Governance Framework'])
+        model = saved['model']
+        paragraph = environment_narrative_paragraphs(
+            model.environment_narrative)[0]
+        visible = paragraph.replace(org, '').strip()
+        sector = cover_sector_from_hashed_narrative(
+            model.environment_narrative, 'en')
+        buf = io.BytesIO()
+        canv = Canvas(buf, pagesize=A4)
+        canv.setFont('Helvetica', 11)
+        canv.drawString(48, 800, 'Organization')
+        canv.drawString(48, 784, sector or 'Government')
+        canv.showPage()
+        canv.setFont('Helvetica', 12)
+        canv.drawString(48, 800, 'Environment and Drivers')
+        hx = 'FEFF' + paragraph.encode('utf-16-be').hex().upper()
+        canv._code.append(f'/Span <</ActualText <{hx}>>> BDC')
+        canv.setFont('Helvetica', 10)
+        canv.drawString(48, 760, visible[:180])
+        canv._code.append('EMC')
+        canv.save()
+        raw = buf.getvalue()
+        allowed, blockers = gate_rel37_returned_bytes(
+            model, pdf_bytes=raw, route='pdf')
+        self.assertFalse(allowed)
+        self.assertTrue(any(
+            item.startswith('pdf_environment_narrative_missing:')
+            for item in blockers), blockers)
+        self.assertFalse(any(
+            'unassociated' in item or item == 'pdf_extraction_unreliable'
+            for item in blockers), blockers)
+
+    def test_unrelated_arabic_outside_org_name_is_refused(self):
+        import pymupdf
+        from release_engine_v3.rel37_export_content_parity import (
+            environment_narrative_paragraphs,
+            gate_rel37_returned_bytes,
+        )
+        org = 'شركة مثال'
+        saved, _before = self._saved(
+            'Data Management', org,
+            ['PDPL (Personal Data Protection Law)',
+             'NDMO Data Governance Framework'])
+        pdf = _export_real_thread(saved, 'pdf')
+        self.assertEqual(pdf['status'].get('status'), 'done', pdf['status'])
+        paragraph = environment_narrative_paragraphs(
+            saved['model'].environment_narrative)[0]
+        font = '/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf'
+        if not Path(font).exists():
+            font = str(ROOT / 'static/fonts/NotoSansArabic-Regular.ttf')
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.lib.pagesizes import A4
+        pdfmetrics.registerFont(TTFont('NARExtra', font))
+        extra = io.BytesIO()
+        canv = Canvas(extra, pagesize=A4)
+        canv.setFont('NARExtra', 12)
+        canv.drawString(48, 400, app_mod._shape_arabic_run('ملاحظة خارج الاسم'))
+        canv.save()
+        host = pymupdf.open(stream=pdf['bytes'], filetype='pdf')
+        addon = pymupdf.open(stream=extra.getvalue(), filetype='pdf')
+        host.insert_pdf(addon)
+        mutated = host.tobytes()
+        allowed, blockers = gate_rel37_returned_bytes(
+            saved['model'], pdf_bytes=mutated, route='pdf')
+        self.assertFalse(allowed)
+        self.assertTrue(any(
+            item.startswith('en_unexpected_arabic_chars:')
+            for item in blockers), blockers)
+        self.assertIn(org, paragraph)
+
+
 if __name__ == '__main__':
     unittest.main()
