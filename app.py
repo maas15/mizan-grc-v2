@@ -21706,6 +21706,210 @@ def _sanitize_strategic_objectives_table_rows(target, lang, domain):
     return diag
 
 
+
+def _core_tech_action_cell_substantive(cell):
+    """True when a guide table cell contains a real action, not a blank step."""
+    import re as _re_ct
+    raw = _re_ct.sub(r'[\*`_]+', '', cell or '')
+    raw = raw.replace('—', '').replace('–', '').replace('-', '').strip()
+    return len(raw) >= 12
+
+
+def _core_tech_table_has_substantive_action(text):
+    """True when a markdown table has a data row with a non-empty action cell."""
+    for ln in (text or '').splitlines():
+        s = ln.strip()
+        if not (s.startswith('|') and s.endswith('|')) or '---' in s:
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        if len(cells) < 2:
+            continue
+        head = (cells[0] or '').lower()
+        if head in ('#', 'step', 'الخطوة', 'kpi', 'المؤشر', 'gap', 'الفجوة'):
+            continue
+        action = cells[1] if cells[0].replace('.', '').isdigit() else cells[1]
+        if _core_tech_action_cell_substantive(action):
+            return True
+    return False
+
+
+def _core_tech_named_rows(text, header_tokens):
+    """Return numbered row labels from the first matching markdown table."""
+    names = []
+    header_tokens = tuple(t.lower() for t in header_tokens)
+    in_table = False
+    for ln in (text or '').splitlines():
+        s = ln.strip()
+        if not s.startswith('|'):
+            if in_table:
+                break
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        blob = ' '.join(cells).lower()
+        if not in_table:
+            if any(tok in blob for tok in header_tokens) and '---' not in s:
+                in_table = True
+            continue
+        if '---' in s:
+            continue
+        if not cells or not cells[0].replace('.', '').isdigit():
+            continue
+        label = cells[1] if len(cells) > 1 else ''
+        if label and label not in ('—', '-', '–'):
+            names.append(label)
+    return names
+
+
+def _kpi_assessment_guides_substantive(kpis_text):
+    """KPI guides must name an actual KPI and contain an assessment action."""
+    import re as _re_kpi
+    text = kpis_text or ''
+    names = _core_tech_named_rows(
+        text.split('###')[0],
+        ('kpi', 'المؤشر', 'metric', 'وصف المؤشر'),
+    )
+    blocks = _re_kpi.split(
+        r'(?im)^####\s*(?:KPI\s*#?\d+\s*Assessment Guide|دليل\s+تقييم\s+المؤشر)',
+        text,
+    )
+    covered = False
+    if len(blocks) > 1:
+        for block in blocks[1:]:
+            if not _core_tech_table_has_substantive_action(block):
+                continue
+            title = block.splitlines()[0] if block.splitlines() else ''
+            if names and not any(name and name in (title + '\n' + block[:500]) for name in names):
+                continue
+            covered = True
+            break
+    if not covered:
+        m = _re_kpi.search(
+            r'(?im)^###\s*(?:KPI Assessment Guidelines|أدلة\s+تقييم\s+مؤشرات\s+الأداء)',
+            text,
+        )
+        if m:
+            tail = text[m.end():]
+            nxt = _re_kpi.search(r'(?m)^###\s+', tail)
+            section = tail[:nxt.start()] if nxt else tail
+            if _core_tech_table_has_substantive_action(section):
+                if not names or any(name and name in section for name in names):
+                    covered = True
+    return covered
+
+
+def _gap_summary_ids_and_names(text):
+    """Numbered ids and labels from the gap summary table only.
+
+    Step tables also use a leading number. They are not gap rows.
+    """
+    lines = (text or '').splitlines()
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not (s.startswith('|') and s.endswith('|')) or '---' in s:
+            continue
+        cells = [c.strip() for c in s.split('|')[1:-1]]
+        blob = ' '.join(cells).lower()
+        if 'gap' not in blob and 'الفجوة' not in blob:
+            continue
+        if i + 1 >= len(lines) or '---' not in lines[i + 1]:
+            continue
+        ids, names = [], []
+        j = i + 2
+        while j < len(lines) and lines[j].strip().startswith('|'):
+            row = [c.strip() for c in lines[j].strip().split('|')[1:-1]]
+            if row and row[0].replace('.', '').isdigit():
+                ids.append(row[0].replace('.', ''))
+                if len(row) > 1 and row[1] not in ('', '—', '-', '–'):
+                    names.append(row[1])
+            j += 1
+        return ids, names
+    return [], []
+
+
+def _guide_block_has_substance(block):
+    """A heading is not a guide. The body needs a real step or prose."""
+    if _core_tech_table_has_substantive_action(block):
+        return True
+    prose = []
+    for ln in (block or '').splitlines():
+        s = ln.strip().lstrip(':').strip()
+        if not s or s.startswith('#') or s.startswith('|') or set(s) <= set('-|: '):
+            continue
+        prose.append(s)
+    return sum(len(part) for part in prose) >= 80
+
+
+def _gap_implementation_guides_substantive(gaps_text):
+    """Gap guides must correspond to a gap row and contain a real step."""
+    import re as _re_gap
+    text = gaps_text or ''
+    gap_ids, gap_names = _gap_summary_ids_and_names(text)
+    headings = list(_re_gap.finditer(
+        r'(?im)^####\s*(?:Gap\s*#?(\d+)\s*Implementation Guide|دليل\s+تنفيذ\s+الفجوة\s*(?:رقم|#)?\s*(\d+))',
+        text,
+    ))
+    if headings:
+        for h in headings:
+            gid = (h.group(1) or h.group(2) or '').lstrip('0') or '0'
+            start = h.end()
+            nxt = _re_gap.search(r'(?m)^####\s+', text[start:])
+            block = text[start:start + nxt.start()] if nxt else text[start:]
+            if not _guide_block_has_substance(block):
+                continue
+            first = ''
+            for ln in block.splitlines():
+                s = ln.strip().lstrip(':').strip()
+                if s:
+                    first = s
+                    break
+            # A short trailing title is a named guide. Prose bodies are not.
+            explicit_name = first if first and len(first) <= 80 and '|' not in first else ''
+            if explicit_name and gap_names and not any(
+                    name and (name in explicit_name or explicit_name in name)
+                    for name in gap_names):
+                continue
+            known_ids = {(i or '').lstrip('0') or '0' for i in gap_ids}
+            if known_ids and gid not in known_ids and not (
+                    explicit_name and any(
+                        name and (name in explicit_name or explicit_name in name)
+                        for name in gap_names)):
+                continue
+            return True
+        return False
+    if _re_gap.search(r'Step-by-Step|ورشة العمل|Workstream\s+\d+', text, _re_gap.IGNORECASE):
+        return _core_tech_table_has_substantive_action(text) or len(
+            _re_gap.sub(r'(?m)^#+\s+.*$', '', text).strip()) >= 80
+    return False
+
+
+def _score_justification_substantive(conf_text):
+    """A justification label must be followed by a supporting paragraph."""
+    import re as _re_sj
+    m = _re_sj.search(
+        r'(?:Score\s+Justification|Confidence\s+Rationale|'
+        r'مبررات\s+التقييم|مبررات\s+درجة\s+الثقة|سبب\s+التقييم)',
+        conf_text or '',
+        _re_sj.IGNORECASE,
+    )
+    if not m:
+        return False
+    body = []
+    for ln in (conf_text or '')[m.end():].splitlines():
+        s = ln.strip().strip('*').strip(':').strip()
+        if not s:
+            if body:
+                break
+            continue
+        if s.startswith('#') or s.startswith('|'):
+            if body:
+                break
+            continue
+        body.append(s)
+        if sum(len(x) for x in body) >= 40:
+            return True
+    return sum(len(x) for x in body) >= 40
+
+
 def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
     """Validate that the assembled sections meet the expected quality bar for
     the requested document type (technical strategy vs board summary) and
@@ -21935,13 +22139,8 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
 
     if doc_subtype != 'board':
         # ── Technical Strategy quality requirements ───────────────────────
-        # 1. KPI Assessment Guides
-        if not _aq.search(
-            r'(?:KPI\s*#?\d+\s*Assessment Guide|دليل\s+تقييم\s+المؤشر\s+رقم|'
-            r'###\s*(?:KPI Assessment Guidelines|أدلة\s+تقييم\s+مؤشرات\s+الأداء)'
-            r'[^\n]*\n[^\n]*\|[^\n]*(?:طريقة\s+التقييم|Assessment\s+Method|المؤشر))',
-            kpis_text, _aq.IGNORECASE | _aq.MULTILINE | _aq.DOTALL
-        ):
+        # 1. KPI Assessment Guides — a heading alone is not a guide.
+        if not _kpi_assessment_guides_substantive(kpis_text):
             issues.append('kpi_assessment_guides_missing')
 
         # 2. Confidence Score (actual number, not placeholder)
@@ -21954,24 +22153,12 @@ def _audit_doc_quality(sections, doc_subtype, lang, generation_mode='drafting'):
         ):
             issues.append('confidence_score_missing')
 
-        # 3. Score Justification paragraph
-        # PR-CY65 — recognize Arabic/English justification label variants.
-        if not _aq.search(
-            r'(?:Score\s+Justification|Confidence\s+Rationale|'
-            r'مبررات\s+التقييم|مبررات\s+درجة\s+الثقة|سبب\s+التقييم)',
-            conf_text, _aq.IGNORECASE
-        ):
+        # 3. Score Justification must support the score, not only the label.
+        if not _score_justification_substantive(conf_text):
             issues.append('score_justification_missing')
 
-        # 4. Gap implementation / remediation guidance
-        if not _aq.search(
-            r'(?:Gap\s*#?\d+\s*Implementation Guide'
-            r'|Workstream\s+\d+'
-            r'|Step-by-Step'
-            r'|دليل.*?فجوة'
-            r'|ورشة العمل)',
-            gaps_text, _aq.IGNORECASE
-        ):
+        # 4. Gap guides must match a gap row and contain a non-empty step.
+        if not _gap_implementation_guides_substantive(gaps_text):
             issues.append('gap_guidance_missing')
 
         # 5. Pillar narrative paragraphs
@@ -46790,6 +46977,31 @@ def _prcy75_resync_content(sections, content):
         if sections.get(sk) and str(sections.get(sk)).strip())
 
 
+def _adopt_pipeline_issue_list(pipeline_result, previous):
+    """Keep the pipeline's refined issue list, including an explicit empty list.
+
+    ``list(result.get('quality_issues') or previous)`` treats ``[]`` as
+    absent and restores the pre-pipeline flags. The post-normalization
+    technical-strategy gate then refuses a same-attempt source whose
+    re-audit already cleared those flags.
+    """
+    if isinstance(pipeline_result, dict) and isinstance(
+            pipeline_result.get('quality_issues'), list):
+        return list(pipeline_result['quality_issues'])
+    return list(previous or [])
+
+
+def _legacy_postnorm_core_tech_blocks(remaining, domain_code, skip_legacy):
+    """True when the post-normalization core-tech gate must refuse save.
+
+    ``domain_code`` is the value bound before ``normalize_domain``. A
+    display name such as ``cyber security`` is not the ``cyber`` exemption.
+    An empty ``remaining`` set does not block, even when that display name
+    would otherwise fail the exemption.
+    """
+    return bool(remaining) and (domain_code or '') != 'cyber' and not skip_legacy
+
+
 def _prcy75_resolve_final_save_gate_issues(quality_issues, prcy66_diag=None):
     """PR-CY75/76 — drop stale generic SO violations when pipeline passed."""
     issues = list(quality_issues or [])
@@ -67804,9 +68016,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                 sections = _prcy66_pre.get('sections') or sections
                 if _prcy66_pre.get('content'):
                     content = _prcy66_pre.get('content')
-                _quality_issues_post = list(
-                    _prcy66_pre.get('quality_issues')
-                    or _quality_issues_post)
+                _quality_issues_post = _adopt_pipeline_issue_list(
+                    _prcy66_pre, _quality_issues_post)
                 _quality_issues_post = (
                     _prcy75_resolve_final_save_gate_issues(
                         _quality_issues_post,
@@ -77387,9 +77598,8 @@ The confidence score is based on a comprehensive assessment of the organization'
                             ))
                         sections = _prcy66_post.get('sections') or sections
                         content = _prcy66_post.get('content') or content
-                        _quality_issues_post = list(
-                            _prcy66_post.get('quality_issues')
-                            or _quality_issues_post)
+                        _quality_issues_post = _adopt_pipeline_issue_list(
+                            _prcy66_post, _quality_issues_post)
                         _p66_inv = _prcy66_post.get('diag') or {}
                         _quality_issues_post = (
                             _prcy75_resolve_final_save_gate_issues(
@@ -77554,9 +77764,9 @@ The confidence score is based on a comprehensive assessment of the organization'
                       f'gaps_len={len(sections.get("gaps","") or "")} '
                       f'vision_len={len(sections.get("vision","") or "")}',
                       flush=True)
-                if (_remaining_core_final
-                        and _cy28_dcode != 'cyber'
-                        and not _rel37_skip_legacy_save):
+                if _legacy_postnorm_core_tech_blocks(
+                        _remaining_core_final, _cy28_dcode,
+                        _rel37_skip_legacy_save):
                     _human_final = ', '.join(_core_tech_required_final[k] for k in sorted(_remaining_core_final))
                     print(f'[STRATEGY-GATE] save_decision=BLOCKED '
                           f'reason=core_tech_missing_post_normalization '
