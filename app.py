@@ -21715,22 +21715,107 @@ def _core_tech_action_cell_substantive(cell):
     return len(raw) >= 12
 
 
-def _core_tech_table_has_substantive_action(text):
-    """True when a markdown table has a data row with a non-empty action cell."""
-    for ln in (text or '').splitlines():
-        s = ln.strip()
-        if not (s.startswith('|') and s.endswith('|')) or '---' in s:
+def _iter_markdown_tables(text):
+    """Yield (header_cells, data_rows) for each markdown table."""
+    lines = (text or '').splitlines()
+    i = 0
+    while i < len(lines):
+        header = lines[i].strip()
+        if (header.startswith('|') and header.endswith('|')
+                and i + 1 < len(lines)
+                and '---' in lines[i + 1]
+                and lines[i + 1].strip().startswith('|')):
+            headers = [c.strip() for c in header.strip('|').split('|')]
+            rows = []
+            j = i + 2
+            while j < len(lines):
+                row = lines[j].strip()
+                if not (row.startswith('|') and row.endswith('|')):
+                    break
+                if '---' not in row:
+                    rows.append([c.strip() for c in row.strip('|').split('|')])
+                j += 1
+            yield headers, rows
+            i = j
             continue
-        cells = [c.strip() for c in s.split('|')[1:-1]]
-        if len(cells) < 2:
+        i += 1
+
+
+def _markdown_header_index(headers, tokens):
+    """Return the column whose header names a supported field."""
+    for idx, header in enumerate(headers or []):
+        label = (header or '').strip().lower()
+        if any(token in label for token in tokens):
+            return idx
+    return None
+
+
+def _table_column_substantive(text, header_tokens):
+    """True when a supported header's own column has a real action cell.
+
+    The KPI name, owner, and other metadata columns are not action cells.
+    """
+    for headers, rows in _iter_markdown_tables(text):
+        col = _markdown_header_index(headers, header_tokens)
+        if col is None:
             continue
-        head = (cells[0] or '').lower()
-        if head in ('#', 'step', 'الخطوة', 'kpi', 'المؤشر', 'gap', 'الفجوة'):
-            continue
-        action = cells[1] if cells[0].replace('.', '').isdigit() else cells[1]
-        if _core_tech_action_cell_substantive(action):
-            return True
+        for row in rows:
+            cell = row[col] if col < len(row) else ''
+            if _core_tech_action_cell_substantive(cell):
+                return True
     return False
+
+
+_ACTION_COLUMN_HEADERS = ('action', 'الإجراء', 'الاجراء')
+_METHOD_COLUMN_HEADERS = ('assessment method', 'طريقة التقييم')
+_KPI_LABEL_HEADERS = ('kpi', 'المؤشر', 'metric', 'وصف المؤشر')
+
+
+def _md_heading_level(line):
+    stripped = (line or '').lstrip()
+    if not stripped.startswith('#'):
+        return None
+    level = 0
+    while level < len(stripped) and stripped[level] == '#':
+        level += 1
+    if level < 1 or level > 6:
+        return None
+    if level < len(stripped) and stripped[level] not in (' ', '\t'):
+        return None
+    return level
+
+
+def _is_recognized_guide_heading(line):
+    import re as _re_gh
+    return _re_gh.match(
+        r'(?i)^#{1,4}\s*(?:'
+        r'Gap\s*#?\d+\s*Implementation Guide|'
+        r'دليل\s+(?:تنفيذ|معالجة)\s+الفجوة|'
+        r'KPI\s*#?\d+\s*Assessment Guide|'
+        r'دليل\s+تقييم\s+المؤشر|'
+        r'KPI Assessment Guidelines|'
+        r'أدلة\s+تقييم\s+مؤشرات\s+الأداء'
+        r')\b',
+        (line or '').strip(),
+    ) is not None
+
+
+def _bounded_guide_block(text, start, level):
+    """Return the guide body without a later section or guide."""
+    kept = []
+    for ln in (text or '')[start:].splitlines(keepends=True):
+        heading_level = _md_heading_level(ln)
+        if heading_level is not None and (
+                heading_level <= max(level, 2)
+                or _is_recognized_guide_heading(ln)):
+            break
+        kept.append(ln)
+    return ''.join(kept)
+
+
+def _core_tech_table_has_substantive_action(text):
+    """True when a Step/Action table has a real action cell."""
+    return _table_column_substantive(text, _ACTION_COLUMN_HEADERS)
 
 
 def _core_tech_named_rows(text, header_tokens):
@@ -21760,41 +21845,65 @@ def _core_tech_named_rows(text, header_tokens):
     return names
 
 
+def _aggregate_assessment_row_substantive(section, names):
+    """An aggregate guide counts only when its method cell is real.
+
+    The KPI label column is identity, not the assessment method.
+    """
+    for headers, rows in _iter_markdown_tables(section):
+        method_col = _markdown_header_index(headers, _METHOD_COLUMN_HEADERS)
+        if method_col is None:
+            continue
+        label_col = _markdown_header_index(headers, _KPI_LABEL_HEADERS)
+        for row in rows:
+            method = row[method_col] if method_col < len(row) else ''
+            if not _core_tech_action_cell_substantive(method):
+                continue
+            if names:
+                label = row[label_col] if (
+                    label_col is not None and label_col < len(row)) else ''
+                if not any(name and name in label for name in names):
+                    continue
+            return True
+    return False
+
+
 def _kpi_assessment_guides_substantive(kpis_text):
     """KPI guides must name an actual KPI and contain an assessment action."""
     import re as _re_kpi
     text = kpis_text or ''
-    names = _core_tech_named_rows(
-        text.split('###')[0],
-        ('kpi', 'المؤشر', 'metric', 'وصف المؤشر'),
+    individual_re = _re_kpi.compile(
+        r'(?im)^(?P<hashes>#{1,4})\s*(?:KPI\s*#?(?P<en>\d+)\s*Assessment Guide|'
+        r'دليل\s+تقييم\s+المؤشر\s*(?:رقم|#)?\s*(?P<ar>\d+))'
     )
-    blocks = _re_kpi.split(
-        r'(?im)^####\s*(?:KPI\s*#?\d+\s*Assessment Guide|دليل\s+تقييم\s+المؤشر)',
-        text,
+    aggregate_re = _re_kpi.compile(
+        r'(?im)^(?P<hashes>#{1,4})\s*(?:KPI Assessment Guidelines|'
+        r'أدلة\s+تقييم\s+مؤشرات\s+الأداء)'
     )
-    covered = False
-    if len(blocks) > 1:
-        for block in blocks[1:]:
-            if not _core_tech_table_has_substantive_action(block):
-                continue
-            title = block.splitlines()[0] if block.splitlines() else ''
-            if names and not any(name and name in (title + '\n' + block[:500]) for name in names):
-                continue
-            covered = True
-            break
-    if not covered:
-        m = _re_kpi.search(
-            r'(?im)^###\s*(?:KPI Assessment Guidelines|أدلة\s+تقييم\s+مؤشرات\s+الأداء)',
-            text,
-        )
-        if m:
-            tail = text[m.end():]
-            nxt = _re_kpi.search(r'(?m)^###\s+', tail)
-            section = tail[:nxt.start()] if nxt else tail
-            if _core_tech_table_has_substantive_action(section):
-                if not names or any(name and name in section for name in names):
-                    covered = True
-    return covered
+    cut = len(text)
+    for matcher in (individual_re, aggregate_re):
+        found = matcher.search(text)
+        if found:
+            cut = min(cut, found.start())
+    names = _core_tech_named_rows(text[:cut], _KPI_LABEL_HEADERS)
+    for heading in individual_re.finditer(text):
+        level = len(heading.group('hashes'))
+        block = _bounded_guide_block(text, heading.end(), level)
+        if not _core_tech_table_has_substantive_action(block):
+            continue
+        title = block.splitlines()[0] if block.splitlines() else ''
+        if names and not any(
+                name and name in (heading.group(0) + '\n' + title + '\n' + block[:500])
+                for name in names):
+            continue
+        return True
+    aggregate = aggregate_re.search(text)
+    if aggregate:
+        level = len(aggregate.group('hashes'))
+        section = _bounded_guide_block(text, aggregate.end(), level)
+        if _aggregate_assessment_row_substantive(section, names):
+            return True
+    return False
 
 
 def _gap_summary_ids_and_names(text):
@@ -21845,15 +21954,17 @@ def _gap_implementation_guides_substantive(gaps_text):
     text = gaps_text or ''
     gap_ids, gap_names = _gap_summary_ids_and_names(text)
     headings = list(_re_gap.finditer(
-        r'(?im)^####\s*(?:Gap\s*#?(\d+)\s*Implementation Guide|دليل\s+تنفيذ\s+الفجوة\s*(?:رقم|#)?\s*(\d+))',
+        r'(?im)^(?P<hashes>#{1,4})\s*(?:'
+        r'Gap\s*#?(?P<en>\d+)\s*Implementation Guide|'
+        r'دليل\s+تنفيذ\s+الفجوة\s*(?:رقم|#)?\s*(?P<ar>\d+)|'
+        r'دليل\s+معالجة\s+الفجوة\s*(?:رقم|#)?\s*(?P<ar2>\d+))',
         text,
     ))
     if headings:
         for h in headings:
-            gid = (h.group(1) or h.group(2) or '').lstrip('0') or '0'
-            start = h.end()
-            nxt = _re_gap.search(r'(?m)^####\s+', text[start:])
-            block = text[start:start + nxt.start()] if nxt else text[start:]
+            gid = (h.group('en') or h.group('ar') or h.group('ar2') or '').lstrip('0') or '0'
+            level = len(h.group('hashes'))
+            block = _bounded_guide_block(text, h.end(), level)
             if not _guide_block_has_substance(block):
                 continue
             first = ''

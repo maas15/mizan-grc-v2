@@ -346,6 +346,107 @@ class SubstanceRefusalTests(unittest.TestCase):
         self.assertIn('kpi_assessment_guides_missing', _core(_issues(sections)))
 
 
+_CASE_A_TABLE = (
+    '| Step | Action | Owner | Timeline | Output |\n'
+    '|---|---|---|---|---|\n'
+    '| 1 | Confirm the backup control gap against the restoration evidence | '
+    'CISO | Month 1 | Gap confirmation record |\n'
+    '| 2 | Implement the backup remediation and verify successful restoration | '
+    'Security Engineering | Months 2-4 | Implemented control |\n'
+)
+
+_CASE_B_METHOD = (
+    'Review restore evidence, calculate the success ratio, and compare it to the target'
+)
+
+
+def _case_a_gaps(hashes):
+    return (
+        '## 4. Gap Analysis\n\n'
+        '| # | Gap | Description | Priority | Status |\n'
+        '|---|---|---|---|---|\n'
+        '| 1 | Backup and Recovery Controls | Backups lack tested restoration | High | Open |\n\n'
+        f'{hashes} Gap #1 Implementation Guide: Backup and Recovery Controls\n\n'
+        + _CASE_A_TABLE
+    )
+
+
+def _case_b_kpis(method):
+    return (
+        '## 6. Key Performance Indicators\n\n'
+        '| # | KPI Description | Target Value | Calculation Formula | Justification | Timeframe |\n'
+        '|---|---|---|---|---|---|\n'
+        '| 1 | Backup Restore Success Rate | 95% | (Successful restores / Restore tests) x 100 | '
+        'Shows recovery readiness | 6 months |\n\n'
+        '### KPI Assessment Guidelines\n'
+        '| # | KPI | Assessment Method |\n'
+        '|---|---|---|\n'
+        f'| 1 | Backup Restore Success Rate | {method} |\n'
+    )
+
+
+class GuideSubstanceCompatibilityTests(unittest.TestCase):
+    """Heading depth and assessment-column regressions.
+
+    Helper results and ``_audit_doc_quality`` flags are separate. Neither
+    result is a save or download decision.
+    """
+
+    def test_heading_depth_keeps_the_same_gap_guide(self):
+        for hashes in ('####', '###'):
+            gaps = _case_a_gaps(hashes)
+            self.assertTrue(
+                appmod._gap_implementation_guides_substantive(gaps), hashes)
+            sections = _sections()
+            sections['gaps'] = gaps
+            self.assertNotIn(
+                'gap_guidance_missing', _issues(sections), hashes)
+
+        borrowed = (
+            '## 4. Gap Analysis\n\n'
+            '| # | Gap | Description | Priority | Status |\n'
+            '|---|---|---|---|---|\n'
+            '| 1 | Backup and Recovery Controls | Backups lack tested restoration | High | Open |\n\n'
+            '### Gap #1 Implementation Guide: Backup and Recovery Controls\n\n'
+            '## 5. Roadmap\n\n'
+            + _CASE_A_TABLE
+        )
+        self.assertFalse(appmod._gap_implementation_guides_substantive(borrowed))
+        sections = _sections()
+        sections['gaps'] = borrowed
+        self.assertIn('gap_guidance_missing', _issues(sections))
+
+    def test_assessment_method_is_not_the_kpi_label(self):
+        positive = _case_b_kpis(_CASE_B_METHOD)
+        self.assertTrue(appmod._kpi_assessment_guides_substantive(positive))
+        sections = _sections()
+        sections['kpis'] = positive
+        self.assertNotIn('kpi_assessment_guides_missing', _issues(sections))
+
+        mutated = _case_b_kpis(' ')
+        self.assertFalse(appmod._kpi_assessment_guides_substantive(mutated))
+        sections = _sections()
+        sections['kpis'] = mutated
+        self.assertIn('kpi_assessment_guides_missing', _issues(sections))
+
+    def test_arabic_level3_gap_guide_action_column(self):
+        gaps = (
+            '## 4. تحليل الفجوات\n\n'
+            '| # | الفجوة | الوصف | الأولوية | الحالة |\n'
+            '|---|---|---|---|---|\n'
+            '| 1 | ضوابط النسخ الاحتياطي | النسخ تفتقر إلى اختبار الاستعادة | عالية | مفتوحة |\n\n'
+            '### دليل تنفيذ الفجوة رقم 1: ضوابط النسخ الاحتياطي\n\n'
+            '| الخطوة | الإجراء | المسؤول | الجدول الزمني | الناتج |\n'
+            '|---|---|---|---|---|\n'
+            '| 1 | تأكيد فجوة النسخ الاحتياطي مقابل دليل الاستعادة | CISO | الشهر 1 | سجل تأكيد الفجوة |\n'
+            '| 2 | تنفيذ معالجة النسخ والتحقق من نجاح الاستعادة | هندسة الأمن | الأشهر 2-4 | ضابط مُنفذ |\n'
+        )
+        self.assertTrue(appmod._gap_implementation_guides_substantive(gaps))
+        sections = _sections()
+        sections['gaps'] = gaps
+        self.assertNotIn('gap_guidance_missing', _issues(sections))
+
+
 class PipelineAdoptionTests(unittest.TestCase):
     def test_real_pipeline_empty_list_is_what_the_gate_evaluates(self):
         calls = {'n': 0}
