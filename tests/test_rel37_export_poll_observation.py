@@ -74,6 +74,23 @@ class ExportObservationTests(unittest.TestCase):
         self.assertGreaterEqual(obs['elapsed_s'], 3)
         self.assertEqual(obs['task_id'], 'task-pending')
 
+    def test_not_found_is_lost_not_a_pending_timeout(self):
+        clock = _Clock()
+
+        def get_status():
+            return {'status': 'not_found'}
+
+        obs = observe_export_task(
+            get_status, task_id='task-lost', deadline_s=10,
+            monotonic=clock.monotonic, sleep=clock.sleep, poll_interval_s=1)
+        self.assertFalse(obs['observed_terminal'])
+        self.assertFalse(obs['poll_timed_out'])
+        self.assertTrue(obs['lost_not_found'])
+        self.assertEqual(obs['last_status'].get('status'), 'not_found')
+        self.assertFalse(obs['download_requested'])
+        self.assertLess(obs['elapsed_s'], 10)
+        self.assertEqual(obs['task_id'], 'task-lost')
+
     def test_controlled_terminal_does_not_stop_process(self):
         stop_if_worker_still_uncontrolled({
             'poll_timed_out': False,

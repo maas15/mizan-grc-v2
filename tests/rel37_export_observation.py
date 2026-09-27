@@ -21,20 +21,27 @@ def observe_export_task(
         sleep: Callable[[float], None] = time.sleep,
         poll_interval_s: float = 0.2,
 ) -> Dict[str, Any]:
-    """Poll until done/error or the monotonic deadline.
+    """Poll until done, error, not_found, or the monotonic deadline.
 
-    ``download_requested`` stays false. Callers issue GET only after a
-    terminal ``done``. ``download_http`` is not set here.
+    ``done`` and ``error`` are terminal. ``not_found`` is a lost task,
+    not a terminal export and not a pending timeout. ``download_requested``
+    stays false. Callers issue GET only after a terminal status they
+    choose to verify. ``download_http`` is not set here.
     """
     start = monotonic()
     deadline = start + float(deadline_s)
     last_status: Dict[str, Any] = {}
     observed_terminal = False
+    lost_not_found = False
     if task_id:
         while True:
             last_status = get_status() or {}
-            if last_status.get('status') in ('done', 'error'):
+            status_name = last_status.get('status')
+            if status_name in ('done', 'error'):
                 observed_terminal = True
+                break
+            if status_name == 'not_found':
+                lost_not_found = True
                 break
             if monotonic() >= deadline or poll_interval_s <= 0:
                 break
@@ -47,7 +54,10 @@ def observe_export_task(
         'task_id': task_id,
         'last_status': last_status,
         'observed_terminal': observed_terminal,
-        'poll_timed_out': bool(task_id) and not observed_terminal,
+        'lost_not_found': lost_not_found,
+        'poll_timed_out': (
+            bool(task_id) and not observed_terminal and not lost_not_found
+        ),
         'elapsed_s': elapsed,
         'deadline_s': float(deadline_s),
         'download_requested': False,

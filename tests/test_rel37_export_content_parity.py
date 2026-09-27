@@ -74,6 +74,14 @@ from release_engine_v3.rel37_professional_projection import (  # noqa: E402
 )
 from release_engine_v3.rel37_render import model_to_markdown, model_to_sections  # noqa: E402
 
+_TEST_DIR = Path(__file__).resolve().parent
+if str(_TEST_DIR) not in sys.path:
+    sys.path.insert(0, str(_TEST_DIR))
+from rel37_export_observation import (  # noqa: E402
+    observe_export_task,
+    stop_if_worker_still_uncontrolled,
+)
+
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'rel37' / 'data_en_saved_canonical_model.json'
 # Optional archival paths. Mandatory regressions must not read these.
 ORIGINAL_DOCX = ROOT / 'qa_outputs' / 'rel37_07_staging' / 'live' / 'data_en' / 'export.docx'
@@ -852,9 +860,44 @@ _LIVE_DATA_EN_AR_ORG_HASH = (
 )
 
 
+# This helper's observation budget. The drain bound is the established
+# 180s cleanup, not a longer watch and not a production timeout.
+_REAL_THREAD_OBSERVATION_S = 90
+_REAL_THREAD_DRAIN_S = 180
+
+
+def _drain_real_thread_worker(saved, task_id, *, bound_s=_REAL_THREAD_DRAIN_S):
+    """Second observation while the recording gate is still installed.
+
+    Does not download and does not replace the original observation.
+    """
+    if not task_id:
+        return {
+            'task_id': None,
+            'observed_terminal': False,
+            'poll_timed_out': True,
+            'lost_not_found': False,
+            'last_status': {},
+        }
+
+    def _get_status():
+        return saved['client'].get(
+            f'/api/export-status/{task_id}', headers=saved['headers']
+        ).get_json(silent=True) or {}
+
+    return observe_export_task(
+        _get_status, task_id=task_id, deadline_s=bound_s, poll_interval_s=0.2)
+
+
 def _export_real_thread(saved, fmt, *, gate_wrapper=None):
-    """Public async export on a real threading.Thread. No ImmediateThread."""
-    import time
+    """Public async export on a real threading.Thread. No ImmediateThread.
+
+    Observes with the shared monotonic helper for 90s. A pending result
+    at that deadline stays a failed observation even if a later drain
+    reaches done. The recording gate stays installed through that drain.
+    The original gate is restored only after the drain returns. A lost
+    task is not a download and is not a pending timeout.
+    """
     captured = {}
     real_gate = app_mod._rel37_gate_saved_export_bytes
 
@@ -884,44 +927,80 @@ def _export_real_thread(saved, fmt, *, gate_wrapper=None):
         'org_name': saved['model'].org_name,
     }
     app_mod._rel37_gate_saved_export_bytes = _recording_gate
+    resp = None
+    tid = None
+    observed = {
+        'task_id': None,
+        'last_status': {},
+        'observed_terminal': False,
+        'poll_timed_out': False,
+        'lost_not_found': False,
+        'elapsed_s': 0,
+        'deadline_s': _REAL_THREAD_OBSERVATION_S,
+        'download_requested': False,
+    }
+    download_requested = False
+    download_http = 0
+    raw = b''
     try:
         resp = saved['client'].post(
             f'/api/generate-{fmt}-async', json=body, headers=saved['headers'])
         submit = resp.get_json(silent=True) or {}
         tid = submit.get('task_id')
-        status = {}
-        deadline = time.monotonic() + 90
-        while tid and time.monotonic() < deadline:
-            status = saved['client'].get(
+
+        def _get_status():
+            return saved['client'].get(
                 f'/api/export-status/{tid}', headers=saved['headers']
             ).get_json(silent=True) or {}
-            if status.get('status') in ('done', 'error', 'not_found'):
-                break
-            time.sleep(0.25)
-        raw = b''
-        download_http = 0
-        if tid and status.get('status') == 'done':
+
+        observed = observe_export_task(
+            _get_status if tid else (lambda: {}),
+            task_id=tid,
+            deadline_s=_REAL_THREAD_OBSERVATION_S,
+            poll_interval_s=0.2,
+        )
+        if observed.get('poll_timed_out'):
+            drained = _drain_real_thread_worker(
+                saved, tid, bound_s=_REAL_THREAD_DRAIN_S)
+            stop_if_worker_still_uncontrolled(drained)
+        status = observed.get('last_status') or {}
+        # GET only from the original observation. Pending and not_found
+        # are not denials. Terminal error may confirm no file is released.
+        # A later drain completion does not authorize this GET.
+        if observed.get('observed_terminal') and status.get('status') == 'done':
+            download_requested = True
             dl = saved['client'].get(
                 f'/api/export-download/{tid}', headers=saved['headers'])
             download_http = dl.status_code
             raw = dl.data or b''
-        elif tid:
+        elif observed.get('observed_terminal') and status.get('status') == 'error':
+            download_requested = True
             dl = saved['client'].get(
                 f'/api/export-download/{tid}', headers=saved['headers'])
             download_http = dl.status_code
             raw = dl.data or b''
     finally:
         app_mod._rel37_gate_saved_export_bytes = real_gate
+    status = observed.get('last_status') or {}
+    done = bool(
+        observed.get('observed_terminal') and status.get('status') == 'done')
     return {
-        'submit_http': resp.status_code,
+        'submit_http': resp.status_code if resp is not None else 0,
         'task_id': tid,
         'status': status,
-        'download_http': download_http,
-        'bytes': raw if status.get('status') == 'done' else b'',
-        'download_body': raw,
-        'sha256': hashlib.sha256(raw).hexdigest() if raw and status.get('status') == 'done' else '',
+        'last_status': status,
+        'download_requested': download_requested,
+        'download_http': download_http if download_requested else 0,
+        'bytes': raw if done else b'',
+        'download_body': raw if download_requested else b'',
+        'sha256': hashlib.sha256(raw).hexdigest() if raw and done else '',
         'candidate_sha256': captured.get('sha256') or '',
         'candidate_bytes': captured.get('nbytes') or 0,
+        'observed_terminal': bool(observed.get('observed_terminal')),
+        'poll_timed_out': bool(observed.get('poll_timed_out')),
+        'lost_not_found': bool(observed.get('lost_not_found')),
+        'elapsed_s': observed.get('elapsed_s'),
+        'deadline_s': observed.get('deadline_s'),
     }
 
 
@@ -969,6 +1048,63 @@ def _redact_body_arabic(pdf_bytes, *, replacement='', skip_pages=()):
                         replacement, fontsize=9, fontname='helv',
                     )
     return doc.tobytes()
+
+
+def _environment_pdf_with_actualtext(model, paragraphs):
+    """Wrapped environment page plus logical ActualText for each paragraph.
+
+    Arabic runs use the English mixed-script painter. ActualText is a
+    separate non-displayed span so a later org-paint removal can leave
+    the logical paragraph in place. The cover value follows the hashed
+    narrative: an empty expected sector stays an em dash.
+    """
+    import pymupdf
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate
+    from release_engine_v3.rel37_sector_context import (
+        cover_sector_from_hashed_narrative,
+    )
+    sector = cover_sector_from_hashed_narrative(
+        model.environment_narrative, model.lang) or '\u2014'
+    styles = getSampleStyleSheet()
+    body = styles['Normal']
+    body.fontName = 'Helvetica'
+    body.fontSize = 10
+    body.leading = 14
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=48)
+    story = [
+        Paragraph('Sector', styles['Normal']),
+        Paragraph(sector, styles['Normal']),
+        PageBreak(),
+        Paragraph('Environment and Drivers', styles['Heading2']),
+    ]
+    for para in paragraphs:
+        if any('\u0600' <= ch <= '\u06FF' for ch in para):
+            markup = app_mod._english_pdf_mixed_script_markup(para)
+        else:
+            markup = (
+                para.replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+            )
+        story.append(Paragraph(markup, body))
+    doc.build(story)
+    pdf = pymupdf.open(stream=buf.getvalue(), filetype='pdf')
+    xref = pdf[1].get_contents()[0]
+    stream = pdf.xref_stream(xref)
+    extra = b''
+    for para in paragraphs:
+        hx = b'FEFF' + para.encode('utf-16-be').hex().upper().encode('ascii')
+        extra += (
+            b'\n/Span <</ActualText <' + hx + b'>>> BDC\n'
+            b'BT 3 Tr /F1 1 Tf 1 0 0 1 48 60 Tm ( ) Tj ET\nEMC\n'
+        )
+    pdf.update_stream(xref, stream + extra)
+    return pdf.tobytes()
 
 
 class ArabicOrgEnglishPdfTests(unittest.TestCase):
@@ -1152,50 +1288,117 @@ class ArabicOrgEnglishPdfTests(unittest.TestCase):
                     extract_pdf_text(pdf['bytes'])[0], org_name=org), 0)
 
     def test_actualtext_cannot_replace_missing_org_paint(self):
-        from reportlab.pdfgen.canvas import Canvas
-        from reportlab.lib.pagesizes import A4
+        """Standalone comparator. Not a route download.
+
+        The matching file paints the full wrapped paragraph, including
+        the Arabic name, with the same logical ActualText. Only the
+        painted organization run is then removed.
+        """
         from release_engine_v3.rel37_export_content_parity import (
+            _layout_norm,
             environment_narrative_paragraphs,
             gate_rel37_returned_bytes,
-        )
-        from release_engine_v3.rel37_sector_context import (
-            cover_sector_from_hashed_narrative,
+            pdf_environment_section_text,
         )
         org = 'شركة مثال'
-        saved, _before = self._saved(
+        saved, before = self._saved(
             'Data Management', org,
             ['PDPL (Personal Data Protection Law)',
              'NDMO Data Governance Framework'])
         model = saved['model']
-        paragraph = environment_narrative_paragraphs(
-            model.environment_narrative)[0]
-        visible = paragraph.replace(org, '').strip()
-        sector = cover_sector_from_hashed_narrative(
-            model.environment_narrative, 'en')
-        buf = io.BytesIO()
-        canv = Canvas(buf, pagesize=A4)
-        canv.setFont('Helvetica', 11)
-        canv.drawString(48, 800, 'Organization')
-        canv.drawString(48, 784, sector or 'Government')
-        canv.showPage()
-        canv.setFont('Helvetica', 12)
-        canv.drawString(48, 800, 'Environment and Drivers')
-        hx = 'FEFF' + paragraph.encode('utf-16-be').hex().upper()
-        canv._code.append(f'/Span <</ActualText <{hx}>>> BDC')
-        canv.setFont('Helvetica', 10)
-        canv.drawString(48, 760, visible[:180])
-        canv._code.append('EMC')
-        canv.save()
-        raw = buf.getvalue()
+        paragraphs = environment_narrative_paragraphs(
+            model.environment_narrative)
+        paragraph = paragraphs[0]
+        self.assertIn(org, paragraph)
+        matching = _environment_pdf_with_actualtext(model, paragraphs)
         allowed, blockers = gate_rel37_returned_bytes(
-            model, pdf_bytes=raw, route='pdf')
-        self.assertFalse(allowed)
-        self.assertTrue(any(
-            item.startswith('pdf_environment_narrative_missing:')
-            for item in blockers), blockers)
-        self.assertFalse(any(
-            'unassociated' in item or item == 'pdf_extraction_unreliable'
-            for item in blockers), blockers)
+            model, pdf_bytes=matching, route='pdf')
+        self.assertTrue(allowed, blockers)
+        _section, meta = pdf_environment_section_text(matching)
+        visible = _layout_norm(meta.get('environment_visible') or '')
+        actual = _layout_norm(meta.get('environment_actual') or '')
+        self.assertIn(_layout_norm(paragraph), visible)
+        self.assertIn(_layout_norm(paragraph), actual)
+        self.assertIn(org, visible)
+        self.assertIn(org, actual)
+        self.assertTrue(meta.get('environment_associated'))
+        self.assertEqual(model.compute_model_hash(), before)
+
+        removed = _redact_body_arabic(matching, skip_pages=(0,))
+        self.assertEqual(model.compute_model_hash(), before)
+        _section, removed_meta = pdf_environment_section_text(removed)
+        removed_visible = _layout_norm(
+            removed_meta.get('environment_visible') or '')
+        removed_actual = _layout_norm(
+            removed_meta.get('environment_actual') or '')
+        self.assertNotIn(org, removed_visible)
+        self.assertIn(_layout_norm(paragraph), removed_actual)
+        self.assertIn(org, removed_actual)
+        remainder = _layout_norm(paragraph.replace(org, ' '))
+        self.assertIn(remainder, removed_visible)
+        self.assertIn('rights.', removed_visible)
+        self.assertIn('NDMO', removed_visible)
+        self.assertIn('PDPL', removed_visible)
+        if len(paragraphs) > 1:
+            self.assertIn(_layout_norm(paragraphs[1]), removed_visible)
+        ok, blockers = gate_rel37_returned_bytes(
+            model, pdf_bytes=removed, route='pdf')
+        self.assertFalse(ok)
+        self.assertEqual(blockers, ['pdf_environment_narrative_missing:0'])
+
+    def test_route_refuses_actualtext_when_org_paint_is_removed(self):
+        """Route-level real worker. The matching export is the saved model.
+
+        The comparator file above is not claimed as a download. The
+        route refusal swaps that mutated file in at the gate.
+        """
+        from release_engine_v3.rel37_export_content_parity import (
+            environment_narrative_paragraphs,
+            gate_rel37_returned_bytes,
+        )
+        org = 'شركة مثال'
+        saved, before = self._saved(
+            'Data Management', org,
+            ['PDPL (Personal Data Protection Law)',
+             'NDMO Data Governance Framework'])
+        paragraphs = environment_narrative_paragraphs(
+            saved['model'].environment_narrative)
+        matching = _export_real_thread(saved, 'pdf')
+        self.assertFalse(matching.get('poll_timed_out'), matching)
+        self.assertTrue(matching.get('observed_terminal'), matching)
+        self.assertEqual(matching['status'].get('status'), 'done', matching)
+        self.assertTrue(matching.get('download_requested'))
+        self.assertEqual(matching['download_http'], 200)
+        self.assertTrue(matching['bytes'].startswith(b'%PDF'))
+        self.assertEqual(matching['candidate_sha256'], matching['sha256'])
+        self.assertEqual(
+            hashlib.sha256(matching['bytes']).hexdigest(),
+            matching['candidate_sha256'])
+        allowed, blockers = gate_rel37_returned_bytes(
+            saved['model'], pdf_bytes=matching['bytes'], route='pdf')
+        self.assertTrue(allowed, blockers)
+        self.assertEqual(saved['model'].compute_model_hash(), before)
+
+        removed = _redact_body_arabic(
+            _environment_pdf_with_actualtext(saved['model'], paragraphs),
+            skip_pages=(0,))
+
+        def _swap(kwargs):
+            kwargs['pdf_bytes'] = removed
+            return kwargs
+
+        refused = _export_real_thread(saved, 'pdf', gate_wrapper=_swap)
+        self.assertFalse(refused.get('poll_timed_out'), refused)
+        self.assertTrue(refused.get('observed_terminal'), refused)
+        self.assertEqual(refused['status'].get('status'), 'error', refused)
+        self.assertNotEqual(refused['status'].get('status'), 'done')
+        self.assertTrue(refused.get('download_requested'))
+        self.assertFalse((refused.get('download_body') or b'').startswith(b'%PDF'))
+        self.assertFalse((refused.get('bytes') or b'').startswith(b'%PDF'))
+        self.assertIn(
+            'validation failed',
+            str(refused['status'].get('error') or ''))
+        self.assertEqual(saved['model'].compute_model_hash(), before)
 
     def test_unrelated_arabic_outside_org_name_is_refused(self):
         import pymupdf
@@ -1236,6 +1439,156 @@ class ArabicOrgEnglishPdfTests(unittest.TestCase):
             item.startswith('en_unexpected_arabic_chars:')
             for item in blockers), blockers)
         self.assertIn(org, paragraph)
+
+
+class RealThreadObservationLifetimeTests(unittest.TestCase):
+    """Helper ordering only. Does not execute the process-exit branch."""
+
+    def _saved_stub(self, client):
+        class _Model:
+            selected_frameworks = ()
+            org_name = 'Org'
+
+        return {
+            'client': client,
+            'headers': {},
+            'content': 'body',
+            'lang': 'en',
+            'domain': 'Data Management',
+            'strategy_id': 1,
+            'model': _Model(),
+        }
+
+    def test_recording_gate_stays_installed_through_drain_and_restores(self):
+        import sys
+        mod = sys.modules[__name__]
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+        task_id = '11111111-2222-4333-8444-555555555555'
+        seen = {'gates': [], 'deadlines': [], 'task_ids': []}
+
+        class _Resp:
+            def __init__(self, payload):
+                self.status_code = 200
+                self.data = b''
+                self.payload = payload
+
+            def get_json(self, silent=True):
+                return self.payload
+
+        class _Client:
+            def __init__(self):
+                self.gets = []
+
+            def post(self, *_args, **_kwargs):
+                seen['gates'].append(app_mod._rel37_gate_saved_export_bytes)
+                return _Resp({'task_id': task_id})
+
+            def get(self, url, headers=None):
+                self.gets.append(url)
+                return _Resp({'status': 'pending'})
+
+        client = _Client()
+
+        def fake_observe(get_status, *, task_id, deadline_s, **_kwargs):
+            seen['gates'].append(app_mod._rel37_gate_saved_export_bytes)
+            seen['deadlines'].append(deadline_s)
+            seen['task_ids'].append(task_id)
+            if deadline_s == _REAL_THREAD_OBSERVATION_S:
+                return {
+                    'task_id': task_id,
+                    'last_status': {'status': 'pending'},
+                    'observed_terminal': False,
+                    'poll_timed_out': True,
+                    'lost_not_found': False,
+                    'elapsed_s': _REAL_THREAD_OBSERVATION_S,
+                    'deadline_s': deadline_s,
+                    'download_requested': False,
+                }
+            return {
+                'task_id': task_id,
+                'last_status': {'status': 'done'},
+                'observed_terminal': True,
+                'poll_timed_out': False,
+                'lost_not_found': False,
+                'elapsed_s': 1,
+                'deadline_s': deadline_s,
+                'download_requested': False,
+            }
+
+        with patch.object(mod, 'observe_export_task', fake_observe):
+            result = _export_real_thread(self._saved_stub(client), 'pdf')
+        recording_gates = [
+            gate for gate in seen['gates'] if gate is not real_gate]
+        self.assertGreaterEqual(len(recording_gates), 3)
+        self.assertTrue(all(gate is recording_gates[0] for gate in recording_gates))
+        self.assertEqual(
+            seen['deadlines'],
+            [_REAL_THREAD_OBSERVATION_S, _REAL_THREAD_DRAIN_S])
+        self.assertEqual(seen['task_ids'], [task_id, task_id])
+        self.assertEqual(result['task_id'], task_id)
+        self.assertTrue(result['poll_timed_out'])
+        self.assertFalse(result['observed_terminal'])
+        self.assertFalse(result['lost_not_found'])
+        self.assertEqual(result['status'].get('status'), 'pending')
+        self.assertEqual(result['last_status'].get('status'), 'pending')
+        self.assertFalse(result['download_requested'])
+        self.assertEqual(result['download_http'], 0)
+        self.assertEqual(result['bytes'], b'')
+        self.assertEqual(result['elapsed_s'], _REAL_THREAD_OBSERVATION_S)
+        self.assertEqual(result['deadline_s'], _REAL_THREAD_OBSERVATION_S)
+        self.assertEqual(client.gets, [])
+        self.assertIs(app_mod._rel37_gate_saved_export_bytes, real_gate)
+
+    def test_lost_task_does_not_drain_or_download(self):
+        import sys
+        mod = sys.modules[__name__]
+        real_gate = app_mod._rel37_gate_saved_export_bytes
+        task_id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        seen = {'deadlines': [], 'gates': []}
+
+        class _Resp:
+            def __init__(self, payload):
+                self.status_code = 200
+                self.data = b''
+                self.payload = payload
+
+            def get_json(self, silent=True):
+                return self.payload
+
+        class _Client:
+            def post(self, *_args, **_kwargs):
+                seen['gates'].append(app_mod._rel37_gate_saved_export_bytes)
+                return _Resp({'task_id': task_id})
+
+            def get(self, url, headers=None):
+                raise AssertionError('lost task must not GET ' + url)
+
+        def fake_observe(get_status, *, task_id, deadline_s, **_kwargs):
+            seen['deadlines'].append(deadline_s)
+            seen['gates'].append(app_mod._rel37_gate_saved_export_bytes)
+            return {
+                'task_id': task_id,
+                'last_status': {'status': 'not_found'},
+                'observed_terminal': False,
+                'poll_timed_out': False,
+                'lost_not_found': True,
+                'elapsed_s': 0.1,
+                'deadline_s': deadline_s,
+                'download_requested': False,
+            }
+
+        with patch.object(mod, 'observe_export_task', fake_observe):
+            result = _export_real_thread(self._saved_stub(_Client()), 'pdf')
+        self.assertEqual(seen['deadlines'], [_REAL_THREAD_OBSERVATION_S])
+        self.assertTrue(all(gate is not real_gate for gate in seen['gates']))
+        self.assertEqual(result['task_id'], task_id)
+        self.assertTrue(result['lost_not_found'])
+        self.assertFalse(result['poll_timed_out'])
+        self.assertFalse(result['observed_terminal'])
+        self.assertEqual(result['status'].get('status'), 'not_found')
+        self.assertFalse(result['download_requested'])
+        self.assertEqual(result['bytes'], b'')
+        self.assertIs(app_mod._rel37_gate_saved_export_bytes, real_gate)
 
 
 if __name__ == '__main__':
