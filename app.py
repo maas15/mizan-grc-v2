@@ -2220,6 +2220,19 @@ def init_db():
         cursor.execute('UPDATE users SET token_limit = 500000 WHERE token_limit = 50000 OR token_limit IS NULL')
     except:
         pass
+
+    # Per-user / per-document-type / per-domain allowance.
+    # Empty on purpose: a campaign grant is administrative data, not a seed.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_domain_doc_limits (
+            user_id INTEGER NOT NULL,
+            doc_type TEXT NOT NULL,
+            domain_code TEXT NOT NULL,
+            limit_value INTEGER NOT NULL,
+            PRIMARY KEY (user_id, doc_type, domain_code),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
     
     # ── NEW COLUMNS: Pillar 4 — Branded export logo ──
     try:
@@ -2528,22 +2541,54 @@ USAGE_LIMITS = {
     'risks': 10
 }
 
+class DocumentLimitError(Exception):
+    """Override data or the limit lookup is unusable. Callers must fail closed."""
+
+
+# SQLite INTEGER is a signed 64-bit value. Larger inputs are not stored.
+_DOCUMENT_LIMIT_MAX = 9223372036854775807
+
+
+def _usage_domain_names(domain):
+    """Return (english_display, arabic_display, canonical_code).
+
+    Recognized aliases, including Cyber Security and الأمن السيبراني,
+    share one display pair and one domain code. Unrecognized input is
+    counted as itself and cannot select an override. This uses the strict
+    map only — it does not prefix-match or default to cyber.
+    """
+    try:
+        code = normalize_domain_strict(domain)
+    except DomainResolutionError:
+        text = domain if isinstance(domain, str) else ''
+        return text, text, None
+    return _DOMAIN_DISPLAY_EN[code], _DOMAIN_DISPLAY_AR[code], code
+
+
 def get_user_usage_by_domain(user_id, domain):
     """Get current usage counts for a user in a specific domain.
-    Handles both English and Arabic domain names by querying both translations."""
+
+    English and Arabic display names for a canonical domain are one count.
+    Document types are an allowlist; the request never chooses the table.
+    """
     conn = get_db()
-    # Find the equivalent domain name in the other language
-    en_domains = TRANSLATIONS['en']['domains']
-    ar_domains = TRANSLATIONS['ar']['domains']
-    domain_pairs = dict(zip(en_domains, ar_domains))
-    domain_pairs.update(dict(zip(ar_domains, en_domains)))
-    alt_domain = domain_pairs.get(domain, domain)
+    en_name, ar_name, _code = _usage_domain_names(domain)
     usage = {
-        'strategies': conn.execute('SELECT COUNT(*) FROM strategies WHERE user_id = ? AND domain IN (?, ?)', (user_id, domain, alt_domain)).fetchone()[0],
-        'policies': conn.execute('SELECT COUNT(*) FROM policies WHERE user_id = ? AND domain IN (?, ?) AND COALESCE(is_procedure, 0) = 0', (user_id, domain, alt_domain)).fetchone()[0],
-        'procedures': conn.execute('SELECT COUNT(*) FROM policies WHERE user_id = ? AND domain IN (?, ?) AND is_procedure = 1', (user_id, domain, alt_domain)).fetchone()[0],
-        'audits': conn.execute('SELECT COUNT(*) FROM audits WHERE user_id = ? AND domain IN (?, ?)', (user_id, domain, alt_domain)).fetchone()[0],
-        'risks': conn.execute('SELECT COUNT(*) FROM risks WHERE user_id = ? AND domain IN (?, ?)', (user_id, domain, alt_domain)).fetchone()[0]
+        'strategies': conn.execute(
+            'SELECT COUNT(*) FROM strategies WHERE user_id = ? AND domain IN (?, ?)',
+            (user_id, en_name, ar_name)).fetchone()[0],
+        'policies': conn.execute(
+            'SELECT COUNT(*) FROM policies WHERE user_id = ? AND domain IN (?, ?) AND COALESCE(is_procedure, 0) = 0',
+            (user_id, en_name, ar_name)).fetchone()[0],
+        'procedures': conn.execute(
+            'SELECT COUNT(*) FROM policies WHERE user_id = ? AND domain IN (?, ?) AND is_procedure = 1',
+            (user_id, en_name, ar_name)).fetchone()[0],
+        'audits': conn.execute(
+            'SELECT COUNT(*) FROM audits WHERE user_id = ? AND domain IN (?, ?)',
+            (user_id, en_name, ar_name)).fetchone()[0],
+        'risks': conn.execute(
+            'SELECT COUNT(*) FROM risks WHERE user_id = ? AND domain IN (?, ?)',
+            (user_id, en_name, ar_name)).fetchone()[0],
     }
     return usage
 
@@ -2556,22 +2601,113 @@ def get_bilingual_domain(domain):
     pairs.update(dict(zip(ar_domains, en_domains)))
     return domain, pairs.get(domain, domain)
 
+
+def _stored_document_limit(value):
+    """Return a stored override, including 0. Reject malformed values."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DocumentLimitError('malformed document limit')
+    if value < 0 or value > _DOCUMENT_LIMIT_MAX:
+        raise DocumentLimitError('document limit out of range')
+    return value
+
+
+def effective_document_limit(user_id, doc_type, domain):
+    """Resolve the allowance for one user, document type, and domain.
+
+    An exact override wins, including an explicit 0. A missing row uses
+    USAGE_LIMITS. A lookup failure or a malformed stored value raises
+    DocumentLimitError so callers deny access instead of using the default.
+    """
+    if doc_type not in USAGE_LIMITS:
+        raise DocumentLimitError('unsupported document type')
+    _en, _ar, code = _usage_domain_names(domain)
+    if code is None:
+        return USAGE_LIMITS[doc_type], 'default'
+    try:
+        conn = get_db()
+        row = conn.execute(
+            'SELECT limit_value FROM user_domain_doc_limits '
+            'WHERE user_id = ? AND doc_type = ? AND domain_code = ?',
+            (user_id, doc_type, code)
+        ).fetchone()
+    except DocumentLimitError:
+        raise
+    except Exception as exc:
+        raise DocumentLimitError(
+            f'document limit lookup failed: {type(exc).__name__}') from exc
+    if row is None:
+        return USAGE_LIMITS[doc_type], 'default'
+    raw = row['limit_value'] if hasattr(row, 'keys') else row[0]
+    return _stored_document_limit(raw), 'override'
+
+
 def check_usage_limit(user_id, doc_type, domain):
-    """Check if user has reached usage limit for a document type in a domain."""
-    usage = get_user_usage_by_domain(user_id, domain)
-    current = usage.get(doc_type, 0)
-    limit = USAGE_LIMITS.get(doc_type, 1)
-    return current < limit, current, limit
+    """Check if user has reached usage limit for a document type in a domain.
+
+    Returns (allowed, used, limit). Unsupported types, malformed overrides,
+    and database failures deny generation. They do not fall back to unlimited.
+    """
+    try:
+        if doc_type not in USAGE_LIMITS:
+            print(f"[DOC-LIMIT] denied unsupported doc_type={doc_type!r}", flush=True)
+            return False, 0, 0
+        usage = get_user_usage_by_domain(user_id, domain)
+        current = int(usage.get(doc_type, 0) or 0)
+        limit, _source = effective_document_limit(user_id, doc_type, domain)
+        return current < limit, current, limit
+    except Exception as exc:
+        print(
+            f"[DOC-LIMIT] denied user={user_id} doc_type={doc_type!r} "
+            f"domain={domain!r}: {type(exc).__name__}: {exc}",
+            flush=True)
+        return False, 0, 0
+
 
 def get_remaining_usage(user_id, domain):
-    """Get remaining usage for all document types in a specific domain."""
-    usage = get_user_usage_by_domain(user_id, domain)
+    """Get remaining usage for all document types in a specific domain.
+
+    Remaining is never negative. A missing override is the global default.
+    A failed lookup is reported as unavailable with no remaining slots.
+    """
+    try:
+        usage = get_user_usage_by_domain(user_id, domain)
+        usage_failed = False
+    except Exception as exc:
+        print(f"[DOC-LIMIT] usage count failed domain={domain!r}: {type(exc).__name__}: {exc}",
+              flush=True)
+        usage = {}
+        usage_failed = True
     remaining = {}
-    for doc_type, limit in USAGE_LIMITS.items():
+    for doc_type in USAGE_LIMITS:
+        used = 0 if usage_failed else int(usage.get(doc_type, 0) or 0)
+        if usage_failed:
+            remaining[doc_type] = {
+                'used': 0,
+                'limit': 0,
+                'remaining': 0,
+                'limit_source': 'unavailable',
+            }
+            continue
+        try:
+            limit, source = effective_document_limit(user_id, doc_type, domain)
+        except Exception as exc:
+            print(
+                f"[DOC-LIMIT] remaining denied user={user_id} "
+                f"doc_type={doc_type!r} domain={domain!r}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True)
+            remaining[doc_type] = {
+                'used': used,
+                'limit': 0,
+                'remaining': 0,
+                'limit_source': 'unavailable',
+            }
+            continue
         remaining[doc_type] = {
-            'used': usage.get(doc_type, 0),
+            'used': used,
             'limit': limit,
-            'remaining': max(0, limit - usage.get(doc_type, 0))
+            'remaining': max(0, limit - used),
+            'limit_source': source,
         }
     return remaining
 
@@ -19573,7 +19709,7 @@ def api_generate_strategy_async():
         print(f"[DOMAIN] strategy generation rejected: {_de}", flush=True)
         return jsonify({'error': 'Missing or unsupported strategy domain. '
                                   'Please select a valid domain.'}), 400
-    user_id  = session.get('user_id', 1)
+    user_id = session['user_id']
     try:
         can_generate, used, limit = check_usage_limit(user_id, 'strategies', domain)
         if not can_generate:
@@ -19585,7 +19721,13 @@ def api_generate_strategy_async():
                 'limit': limit
             }), 429
     except Exception as _ul_err:
-        print(f"[STRATEGY] usage-limit check error (non-fatal): {_ul_err}", flush=True)
+        print(f"[DOC-LIMIT] denied user={user_id} doc_type='strategies' domain={domain!r}: {_ul_err}",
+              flush=True)
+        return jsonify({
+            'success': False,
+            'error': 'Document limit could not be verified. Generation was not started.',
+            'limit_check_failed': True,
+        }), 503
 
     task_id = str(uuid.uuid4())
     # PR-CY12 Part A — prevent duplicate concurrent strategy tasks for
@@ -78908,14 +79050,35 @@ The confidence score is based on a comprehensive assessment of the organization'
 def api_generate_bilingual():
     """Generate document in both English and Arabic."""
     try:
-        data = request.json
-        doc_type = data.get('type', 'strategy')  # strategy, policy, audit, risk
-        domain = data.get('domain', 'Cyber Security')
-        
-        # Check usage limits for both languages
-        table_map = {'strategy': 'strategies', 'policy': 'policies', 'audit': 'audits', 'risk': 'risks'}
-        table = table_map.get(doc_type, 'strategies')
-        
+        data = request.json if isinstance(request.json, dict) else {}
+        table_map = {
+            'strategy': 'strategies',
+            'policy': 'policies',
+            'audit': 'audits',
+            'risk': 'risks',
+        }
+        if 'type' in data:
+            doc_type = data.get('type')
+            if doc_type not in table_map:
+                return jsonify({
+                    'success': False,
+                    'error': 'Unsupported document type.',
+                }), 400
+        else:
+            doc_type = 'strategy'
+        table = table_map[doc_type]
+        if 'domain' in data:
+            try:
+                _bi_code = normalize_domain_strict(data.get('domain'))
+            except DomainResolutionError:
+                return jsonify({
+                    'success': False,
+                    'error': 'Missing or unsupported domain.',
+                }), 400
+            domain = _DOMAIN_DISPLAY_EN[_bi_code]
+        else:
+            domain = 'Cyber Security'
+
         can_generate, used, limit = check_usage_limit(session['user_id'], table, domain)
         if not can_generate:
             return jsonify({
@@ -92807,6 +92970,115 @@ def api_admin_user_quota(user_id):
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _parse_absolute_document_limit(data):
+    """Validate an absolute override. Reject values that are not a real integer."""
+    if not isinstance(data, dict) or 'limit_value' not in data:
+        return None, 'limit_value is required'
+    raw = data.get('limit_value')
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None, 'limit_value must be a nonnegative integer'
+    if raw < 0 or raw > _DOCUMENT_LIMIT_MAX:
+        return None, 'limit_value is outside the supported range'
+    doc_type = data.get('doc_type')
+    if not isinstance(doc_type, str) or doc_type not in USAGE_LIMITS:
+        return None, 'doc_type is not supported'
+    domain = data.get('domain')
+    try:
+        domain_code = normalize_domain_strict(domain)
+    except DomainResolutionError:
+        return None, 'domain is not supported'
+    if 'reason' in data and data.get('reason') is not None:
+        reason = data.get('reason')
+        if not isinstance(reason, str):
+            return None, 'reason must be a string'
+        reason = reason.strip()
+        if not reason or len(reason) > 200:
+            return None, 'reason must be 1 to 200 characters'
+    else:
+        reason = 'document_limit_override'
+    return {
+        'limit_value': raw,
+        'doc_type': doc_type,
+        'domain_code': domain_code,
+        'reason': reason,
+    }, None
+
+
+@app.route('/admin/api/users/<int:user_id>/document-limit', methods=['POST'])
+@login_required
+def api_admin_document_limit(user_id):
+    """Admin: set one absolute document allowance.
+
+    The value replaces any previous override for that user, document type,
+    and canonical domain. It does not add to the stored value and it does
+    not change usage counts or token quotas.
+    """
+    if session.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Admin only'}), 403
+    data = request.get_json(silent=True)
+    parsed, error = _parse_absolute_document_limit(data)
+    if error:
+        return jsonify({'success': False, 'error': error}), 400
+    conn = get_db()
+    try:
+        user = conn.execute(
+            'SELECT id, username FROM users WHERE id = ?',
+            (user_id,)
+        ).fetchone()
+        if not user:
+            return jsonify({'success': False, 'error': f'User ID {user_id} not found'}), 404
+        previous = conn.execute(
+            'SELECT limit_value FROM user_domain_doc_limits '
+            'WHERE user_id = ? AND doc_type = ? AND domain_code = ?',
+            (user_id, parsed['doc_type'], parsed['domain_code'])
+        ).fetchone()
+        previous_limit = None if previous is None else previous['limit_value']
+        conn.execute(
+            'INSERT INTO user_domain_doc_limits '
+            '(user_id, doc_type, domain_code, limit_value) VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(user_id, doc_type, domain_code) DO UPDATE SET '
+            'limit_value = excluded.limit_value',
+            (user_id, parsed['doc_type'], parsed['domain_code'], parsed['limit_value'])
+        )
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[DOC-LIMIT] upsert failed target={user_id}: {type(exc).__name__}",
+              flush=True)
+        return jsonify({
+            'success': False,
+            'error': 'Document limit was not changed.',
+        }), 500
+    log_action(session['user_id'], 'set_document_limit', {
+        'actor_user_id': session['user_id'],
+        'target_user_id': user_id,
+        'target_username': user['username'],
+        'doc_type': parsed['doc_type'],
+        'domain_code': parsed['domain_code'],
+        'old_limit': previous_limit,
+        'new_limit': parsed['limit_value'],
+        'reason': parsed['reason'],
+    })
+    _en = _DOMAIN_DISPLAY_EN[parsed['domain_code']]
+    _allowed, used, limit = check_usage_limit(user_id, parsed['doc_type'], _en)
+    _source_limit, source = effective_document_limit(
+        user_id, parsed['doc_type'], _en)
+    return jsonify({
+        'success': True,
+        'user_id': user_id,
+        'doc_type': parsed['doc_type'],
+        'domain_code': parsed['domain_code'],
+        'limit': _source_limit,
+        'used': used,
+        'remaining': max(0, _source_limit - used),
+        'limit_source': source,
+        'previous_limit': previous_limit,
+    })
 
 
 # ============================================================================

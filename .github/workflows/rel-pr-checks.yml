@@ -120,6 +120,7 @@ jobs:
             tests/test_rel37_narrative_cover_acceptance.py \
             tests/test_rel37_guide_completeness_persist.py \
             tests/test_rel37_sector_context_contract.py \
+            tests/test_rel37_user_domain_doc_limits.py \
             -q --tb=short
 
       - name: pytest REL37 sync PDF ownership
