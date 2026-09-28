@@ -2633,8 +2633,11 @@ def effective_document_limit(user_id, doc_type, domain):
     except DocumentLimitError:
         raise
     except Exception as exc:
-        raise DocumentLimitError(
-            f'document limit lookup failed: {type(exc).__name__}') from exc
+        print(
+            f"[DOC-LIMIT] lookup failed user={user_id} doc_type={doc_type!r} "
+            f"domain={domain!r}: {type(exc).__name__}",
+            flush=True)
+        raise DocumentLimitError('document limit could not be verified') from exc
     if row is None:
         return USAGE_LIMITS[doc_type], 'default'
     raw = row['limit_value'] if hasattr(row, 'keys') else row[0]
@@ -2644,23 +2647,43 @@ def effective_document_limit(user_id, doc_type, domain):
 def check_usage_limit(user_id, doc_type, domain):
     """Check if user has reached usage limit for a document type in a domain.
 
-    Returns (allowed, used, limit). Unsupported types, malformed overrides,
-    and database failures deny generation. They do not fall back to unlimited.
+    Returns (allowed, used, limit) for a verified allowance, including an
+    explicit zero. A malformed override or a failed count/lookup raises
+    DocumentLimitError instead of a fabricated exhausted tuple.
     """
+    if doc_type not in USAGE_LIMITS:
+        print(f"[DOC-LIMIT] denied unsupported doc_type={doc_type!r}", flush=True)
+        return False, 0, 0
     try:
-        if doc_type not in USAGE_LIMITS:
-            print(f"[DOC-LIMIT] denied unsupported doc_type={doc_type!r}", flush=True)
-            return False, 0, 0
         usage = get_user_usage_by_domain(user_id, domain)
         current = int(usage.get(doc_type, 0) or 0)
         limit, _source = effective_document_limit(user_id, doc_type, domain)
-        return current < limit, current, limit
+    except DocumentLimitError:
+        print(
+            f"[DOC-LIMIT] unavailable user={user_id} doc_type={doc_type!r} "
+            f"domain={domain!r}",
+            flush=True)
+        raise
     except Exception as exc:
         print(
-            f"[DOC-LIMIT] denied user={user_id} doc_type={doc_type!r} "
-            f"domain={domain!r}: {type(exc).__name__}: {exc}",
+            f"[DOC-LIMIT] unavailable user={user_id} doc_type={doc_type!r} "
+            f"domain={domain!r}: {type(exc).__name__}",
             flush=True)
-        return False, 0, 0
+        raise DocumentLimitError('document limit could not be verified') from exc
+    return current < limit, current, limit
+
+
+def document_limit_unavailable_response():
+    """Refuse admission when the quota store cannot be verified.
+
+    The body is fixed. It does not include driver errors, SQL, or a
+    fabricated used/limit pair.
+    """
+    return jsonify({
+        'success': False,
+        'error': 'Document limit could not be verified. Generation was not started.',
+        'limit_check_failed': True,
+    }), 503
 
 
 def get_remaining_usage(user_id, domain):
@@ -19720,14 +19743,14 @@ def api_generate_strategy_async():
                 'used': used,
                 'limit': limit
             }), 429
-    except Exception as _ul_err:
-        print(f"[DOC-LIMIT] denied user={user_id} doc_type='strategies' domain={domain!r}: {_ul_err}",
+    except DocumentLimitError:
+        print(f"[DOC-LIMIT] unavailable user={user_id} doc_type='strategies' domain={domain!r}",
               flush=True)
-        return jsonify({
-            'success': False,
-            'error': 'Document limit could not be verified. Generation was not started.',
-            'limit_check_failed': True,
-        }), 503
+        return document_limit_unavailable_response()
+    except Exception:
+        print(f"[DOC-LIMIT] unavailable user={user_id} doc_type='strategies' domain={domain!r}",
+              flush=True)
+        return document_limit_unavailable_response()
 
     task_id = str(uuid.uuid4())
     # PR-CY12 Part A — prevent duplicate concurrent strategy tasks for
@@ -63635,7 +63658,10 @@ def api_generate_strategy():
                 print(f"[ADVISORY] Could not load diagnostic session: {_de}", flush=True)
 
         # Check usage limit for this domain
-        can_generate, used, limit = check_usage_limit(session['user_id'], 'strategies', domain)
+        try:
+            can_generate, used, limit = check_usage_limit(session['user_id'], 'strategies', domain)
+        except DocumentLimitError:
+            return document_limit_unavailable_response()
         if not can_generate:
             return jsonify({
                 'success': False,
@@ -79079,7 +79105,10 @@ def api_generate_bilingual():
         else:
             domain = 'Cyber Security'
 
-        can_generate, used, limit = check_usage_limit(session['user_id'], table, domain)
+        try:
+            can_generate, used, limit = check_usage_limit(session['user_id'], table, domain)
+        except DocumentLimitError:
+            return document_limit_unavailable_response()
         if not can_generate:
             return jsonify({
                 'success': False,
@@ -79848,7 +79877,10 @@ def api_generate_policy():
         
         # Check usage limit for this domain (separate limits for policies vs procedures)
         doc_type_key = 'procedures' if is_procedure else 'policies'
-        can_generate, used, limit = check_usage_limit(session['user_id'], doc_type_key, domain)
+        try:
+            can_generate, used, limit = check_usage_limit(session['user_id'], doc_type_key, domain)
+        except DocumentLimitError:
+            return document_limit_unavailable_response()
         if not can_generate:
             doc_label = 'procedures' if is_procedure else 'policies'
             return jsonify({
@@ -80606,7 +80638,10 @@ def api_analyze_risk():
         domain = data.get('domain', 'Cyber Security')
         
         # Check usage limit for this domain
-        can_generate, used, limit = check_usage_limit(session['user_id'], 'risks', domain)
+        try:
+            can_generate, used, limit = check_usage_limit(session['user_id'], 'risks', domain)
+        except DocumentLimitError:
+            return document_limit_unavailable_response()
         if not can_generate:
             return jsonify({
                 'success': False,
@@ -81149,7 +81184,10 @@ def api_generate_audit():
         domain = request.form.get('domain', 'Cyber Security')
         
         # Check usage limit for this domain
-        can_generate, used, limit = check_usage_limit(session['user_id'], 'audits', domain)
+        try:
+            can_generate, used, limit = check_usage_limit(session['user_id'], 'audits', domain)
+        except DocumentLimitError:
+            return document_limit_unavailable_response()
         if not can_generate:
             return jsonify({
                 'success': False,
@@ -93065,9 +93103,22 @@ def api_admin_document_limit(user_id):
         'reason': parsed['reason'],
     })
     _en = _DOMAIN_DISPLAY_EN[parsed['domain_code']]
-    _allowed, used, limit = check_usage_limit(user_id, parsed['doc_type'], _en)
-    _source_limit, source = effective_document_limit(
-        user_id, parsed['doc_type'], _en)
+    try:
+        _allowed, used, limit = check_usage_limit(user_id, parsed['doc_type'], _en)
+        _source_limit, source = effective_document_limit(
+            user_id, parsed['doc_type'], _en)
+        remaining = max(0, _source_limit - used)
+    except DocumentLimitError:
+        return jsonify({
+            'success': True,
+            'user_id': user_id,
+            'doc_type': parsed['doc_type'],
+            'domain_code': parsed['domain_code'],
+            'limit': parsed['limit_value'],
+            'limit_source': 'unavailable',
+            'limit_check_failed': True,
+            'previous_limit': previous_limit,
+        })
     return jsonify({
         'success': True,
         'user_id': user_id,
@@ -93075,7 +93126,7 @@ def api_admin_document_limit(user_id):
         'domain_code': parsed['domain_code'],
         'limit': _source_limit,
         'used': used,
-        'remaining': max(0, _source_limit - used),
+        'remaining': remaining,
         'limit_source': source,
         'previous_limit': previous_limit,
     })
@@ -96670,7 +96721,10 @@ def api_generate_policy_async():
     is_procedure = data.get('is_procedure', False)
     doc_type_key = 'procedures' if is_procedure else 'policies'
 
-    can_gen, used, limit = check_usage_limit(session['user_id'], doc_type_key, domain)
+    try:
+        can_gen, used, limit = check_usage_limit(session['user_id'], doc_type_key, domain)
+    except DocumentLimitError:
+        return document_limit_unavailable_response()
     if not can_gen:
         label = 'procedures' if is_procedure else 'policies'
         return jsonify({
@@ -96925,7 +96979,10 @@ def api_generate_audit_async():
     audit_topic = request.form.get('audit_topic', '')
     policy_text = request.form.get('policy_content', '')
 
-    can_gen, used, limit = check_usage_limit(session['user_id'], 'audits', domain)
+    try:
+        can_gen, used, limit = check_usage_limit(session['user_id'], 'audits', domain)
+    except DocumentLimitError:
+        return document_limit_unavailable_response()
     if not can_gen:
         return jsonify({
             'success': False, 'limit_reached': True,
@@ -97467,7 +97524,10 @@ def api_generate_risk_async():
             'retry_after': _rl_retry,
         }), 429
 
-    can_gen, used, limit = check_usage_limit(session['user_id'], 'risks', domain)
+    try:
+        can_gen, used, limit = check_usage_limit(session['user_id'], 'risks', domain)
+    except DocumentLimitError:
+        return document_limit_unavailable_response()
     if not can_gen:
         return jsonify({
             'success': False, 'limit_reached': True,

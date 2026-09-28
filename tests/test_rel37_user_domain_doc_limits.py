@@ -319,15 +319,20 @@ class DocumentLimitTests(unittest.TestCase):
         self.assertEqual(over_remaining["strategies"]["remaining"], 0)
         self.assertGreaterEqual(over_remaining["strategies"]["remaining"], 0)
 
+    def _assert_limit_unavailable(self, user_id, domain="Cyber Security"):
+        with self.assertRaises(app_mod.DocumentLimitError):
+            self._check(user_id, "strategies", domain)
+        remaining = self._remaining(user_id, domain)["strategies"]
+        self.assertEqual(remaining["limit_source"], "unavailable")
+        self.assertNotIn(remaining["limit_source"], ("default", "override"))
+
     def test_malformed_override_and_lookup_failure_deny_access(self):
         uid = self._user("malformed")
         self._override_row(uid, "strategies", "cyber", -1)
-        allowed, used, limit = self._check(uid, "strategies", "Cyber Security")
-        self.assertEqual((allowed, used, limit), (False, 0, 0))
-        remaining = self._remaining(uid, "Cyber Security")
-        self.assertEqual(remaining["strategies"]["limit_source"], "unavailable")
-        self.assertEqual(remaining["strategies"]["remaining"], 0)
-        self.assertNotEqual(remaining["strategies"]["limit"], 10)
+        self._assert_limit_unavailable(uid)
+        remaining = self._remaining(uid, "Cyber Security")["strategies"]
+        self.assertEqual(remaining["remaining"], 0)
+        self.assertNotEqual(remaining["limit"], 10)
 
         conn = self._conn()
         conn.execute(
@@ -336,20 +341,13 @@ class DocumentLimitTests(unittest.TestCase):
         )
         conn.commit()
         conn.close()
-        self.assertEqual(self._check(uid, "strategies", "cyber")[0], False)
-        self.assertEqual(
-            self._remaining(uid, "cyber")["strategies"]["limit_source"], "unavailable")
+        self._assert_limit_unavailable(uid, "cyber")
 
         conn = self._conn()
         conn.execute("DROP TABLE user_domain_doc_limits")
         conn.commit()
         conn.close()
-        allowed, used, limit = self._check(uid, "strategies", "Cyber Security")
-        self.assertEqual((allowed, used, limit), (False, 0, 0))
-        self.assertEqual(
-            self._remaining(uid, "Cyber Security")["strategies"]["limit_source"],
-            "unavailable",
-        )
+        self._assert_limit_unavailable(uid)
 
     def test_migration_is_empty_and_repeatable(self):
         conn = self._conn()
@@ -735,6 +733,223 @@ class DocumentLimitTests(unittest.TestCase):
         conn.close()
         self.assertEqual(tuple(usage), (1250643, 1250643))
         self.assertEqual(docs, 0)
+
+
+    def _task_count(self):
+        conn = self._conn()
+        count = conn.execute("SELECT COUNT(*) FROM background_tasks").fetchone()[0]
+        conn.close()
+        return count
+
+    def _token_usage(self, user_id):
+        conn = self._conn()
+        usage = conn.execute(
+            "SELECT token_usage, token_limit FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        conn.close()
+        return tuple(usage)
+
+    def _fail_storage(self, needle):
+        real_get_db = app_mod.get_db
+
+        def wrapped():
+            conn = real_get_db()
+            if getattr(conn, "_doc_limit_wrapped", False):
+                return conn
+            real_execute = conn.execute
+
+            def execute(sql, params=()):
+                statement = sql if isinstance(sql, str) else ""
+                if needle in statement:
+                    raise sqlite3.OperationalError("injected storage failure")
+                return real_execute(sql, params)
+
+            conn.execute = execute
+            conn._doc_limit_wrapped = True
+            return conn
+
+        app_mod.get_db = wrapped
+        return real_get_db
+
+    def test_unavailable_lookup_is_distinct_from_exhaustion(self):
+        uid = self._user("classify", token_usage=11, token_limit=500000)
+        client = self._client(uid, "user")
+        calls = []
+        originals = {name: getattr(app_mod, name) for name in _PROVIDER_FUNCS}
+
+        def _fake(name):
+            def _inner(*_args, **_kwargs):
+                calls.append(name)
+                raise RuntimeError("provider_mock_blocked")
+            return _inner
+
+        captured = []
+        real_thread = threading.Thread
+
+        def _capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            captured.append(thread)
+            return thread
+
+        def _join():
+            for thread in captured:
+                thread.join(timeout=30)
+            self.assertFalse(any(thread.is_alive() for thread in captured))
+
+        def _strategy_rows():
+            conn = self._conn()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM strategies WHERE user_id = ?", (uid,)
+            ).fetchone()[0]
+            conn.close()
+            return count
+
+        def _post(path, payload):
+            before_tasks = self._task_count()
+            before_docs = _strategy_rows()
+            before_tokens = self._token_usage(uid)
+            response = client.post(path, json=payload, headers=self._headers(self.csrf))
+            _join()
+            return response, before_tasks, before_docs, before_tokens
+
+        def _assert_quota(response, used, limit):
+            self.assertEqual(response.status_code, 429, response.get_data(as_text=True)[:400])
+            body = response.get_json()
+            self.assertTrue(body.get("limit_reached"))
+            self.assertNotIn("limit_check_failed", body)
+            if "used" in body:
+                self.assertEqual(body["used"], used)
+                self.assertEqual(body["limit"], limit)
+            self.assertEqual(calls, [])
+            self.assertEqual(captured, [])
+
+        def _assert_unavailable_http(response, before_tasks, before_docs, before_tokens):
+            self.assertEqual(response.status_code, 503, response.get_data(as_text=True)[:500])
+            body = response.get_json()
+            self.assertTrue(body.get("limit_check_failed"))
+            self.assertFalse(body.get("limit_reached"))
+            self.assertNotIn("used", body)
+            self.assertNotIn("limit", body)
+            text = response.get_data(as_text=True).lower()
+            for secret in ("operationalerror", "sqlite", "no such table", "injected", "select "):
+                self.assertNotIn(secret, text)
+            self.assertEqual(calls, [])
+            self.assertEqual(captured, [])
+            self.assertEqual(self._task_count(), before_tasks)
+            self.assertEqual(_strategy_rows(), before_docs)
+            self.assertEqual(self._token_usage(uid), before_tokens)
+
+        for name in _PROVIDER_FUNCS:
+            setattr(app_mod, name, _fake(name))
+        threading.Thread = _capture
+        try:
+            admitted = _post("/api/generate-strategy-async", self._strategy_body())
+            self.assertEqual(admitted[0].status_code, 200, admitted[0].get_data(as_text=True)[:400])
+            self.assertEqual(len(captured), 1)
+            self.assertTrue(calls)
+            calls.clear()
+            captured.clear()
+            sync_ok = _post("/api/generate-strategy", self._strategy_body(domain="cybersecurity"))
+            self.assertNotEqual(sync_ok[0].status_code, 429, sync_ok[0].get_data(as_text=True)[:400])
+            self.assertNotIn("limit_check_failed", sync_ok[0].get_json() or {})
+            self.assertTrue(calls)
+            calls.clear()
+            captured.clear()
+            bilingual_ok = _post(
+                "/api/generate-bilingual",
+                {"type": "strategy", "domain": "الأمن السيبراني", "csrf_token": self.csrf},
+            )
+            self.assertNotEqual(
+                bilingual_ok[0].status_code, 429,
+                bilingual_ok[0].get_data(as_text=True)[:400])
+            self.assertNotIn("limit_check_failed", bilingual_ok[0].get_json() or {})
+            self.assertTrue(calls)
+            calls.clear()
+            captured.clear()
+
+            self._insert_docs("strategies", uid, 10, "Cyber Security")
+            for path, payload in (
+                ("/api/generate-strategy-async", self._strategy_body()),
+                ("/api/generate-strategy", self._strategy_body(domain="cyber_security")),
+                ("/api/generate-bilingual", {
+                    "type": "strategy", "domain": "Cyber Security", "csrf_token": self.csrf,
+                }),
+            ):
+                response, *_rest = _post(path, payload)
+                _assert_quota(response, 10, 10)
+
+            zero = self._user("zero-route", token_usage=11, token_limit=500000)
+            self._override_row(zero, "strategies", "cyber", 0)
+            zero_client = self._client(zero, "user")
+            zero_response = zero_client.post(
+                "/api/generate-strategy-async",
+                json=self._strategy_body(),
+                headers=self._headers(self.csrf),
+            )
+            self.assertEqual(zero_response.status_code, 429, zero_response.get_data(as_text=True)[:400])
+            zero_body = zero_response.get_json()
+            self.assertTrue(zero_body.get("limit_reached"))
+            self.assertEqual(zero_body.get("used"), 0)
+            self.assertEqual(zero_body.get("limit"), 0)
+            self.assertNotIn("limit_check_failed", zero_body)
+            self.assertEqual(
+                self._remaining(zero, "Cyber Security")["strategies"]["limit_source"],
+                "override",
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(captured, [])
+
+            self._override_row(uid, "strategies", "cyber", -1)
+            self._assert_limit_unavailable(uid)
+            for path, payload in (
+                ("/api/generate-strategy-async", self._strategy_body()),
+                ("/api/generate-strategy", self._strategy_body()),
+                ("/api/generate-bilingual", {
+                    "type": "strategy", "domain": "cybersecurity", "csrf_token": self.csrf,
+                }),
+            ):
+                response, before_tasks, before_docs, before_tokens = _post(path, payload)
+                _assert_unavailable_http(response, before_tasks, before_docs, before_tokens)
+
+            conn = self._conn()
+            conn.execute("DELETE FROM user_domain_doc_limits WHERE user_id = ?", (uid,))
+            conn.commit()
+            conn.close()
+            real_get_db = self._fail_storage("FROM user_domain_doc_limits")
+            try:
+                self._assert_limit_unavailable(uid)
+                for path, payload in (
+                    ("/api/generate-strategy-async", self._strategy_body(domain="الأمن السيبراني")),
+                    ("/api/generate-strategy", self._strategy_body()),
+                    ("/api/generate-bilingual", {
+                        "type": "policy", "domain": "Cyber Security", "csrf_token": self.csrf,
+                    }),
+                ):
+                    response, before_tasks, before_docs, before_tokens = _post(path, payload)
+                    _assert_unavailable_http(response, before_tasks, before_docs, before_tokens)
+            finally:
+                app_mod.get_db = real_get_db
+
+            real_get_db = self._fail_storage("FROM strategies")
+            try:
+                self._assert_limit_unavailable(uid)
+                for path, payload in (
+                    ("/api/generate-strategy-async", self._strategy_body()),
+                    ("/api/generate-strategy", self._strategy_body(domain="cyber")),
+                    ("/api/generate-bilingual", {
+                        "type": "strategy", "domain": "Cyber Security", "csrf_token": self.csrf,
+                    }),
+                ):
+                    response, before_tasks, before_docs, before_tokens = _post(path, payload)
+                    _assert_unavailable_http(response, before_tasks, before_docs, before_tokens)
+            finally:
+                app_mod.get_db = real_get_db
+        finally:
+            threading.Thread = real_thread
+            for name, func in originals.items():
+                setattr(app_mod, name, func)
+            for thread in captured:
+                thread.join(timeout=5)
 
 
 if __name__ == "__main__":
