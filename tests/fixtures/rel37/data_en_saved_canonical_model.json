@@ -1,0 +1,1846 @@
+{
+  "schema_version": "rel37.strategy.v1",
+  "coverage_registry_version": "rel37.coverage.v1",
+  "document_type": "strategy",
+  "domain": "data",
+  "lang": "en",
+  "selected_frameworks": [
+    "pdpl",
+    "ndmo"
+  ],
+  "org_name": "REL37.07 Data EN UI Org",
+  "task_id": "",
+  "vision": "REL37.07 Data EN UI Org adopts an enterprise data strategy that links NDMO governance and PDPL compliance to catalog, quality, and lifecycle control. The strategy makes data assets discoverable and accountable.",
+  "environment_narrative": "REL37.07 Data EN UI Org operates under national data-governance expectations from NDMO and personal-data duties from PDPL, with rising pressure on catalog coverage, quality, consent, and data-subject rights.\n\nOperating drivers include classification completeness, lifecycle control, documented sharing, and on-time incident notification inside the data scope.",
+  "strategic_objectives": [
+    {
+      "number": 1,
+      "objective": "Activate national NDMO data governance",
+      "target": "100% NDMO policy completeness",
+      "rationale": "National data-management compliance",
+      "timeframe": "12 months",
+      "family": "ndmo_compliance",
+      "framework": "NDMO"
+    },
+    {
+      "number": 2,
+      "objective": "Achieve PDPL personal-data compliance",
+      "target": "100% PDPL control coverage",
+      "rationale": "Statutory personal-data protection",
+      "timeframe": "12 months",
+      "family": "pdpl_compliance",
+      "framework": "PDPL"
+    },
+    {
+      "number": 3,
+      "objective": "Operate an enterprise data catalog",
+      "target": "95% catalog coverage",
+      "rationale": "Discoverable data assets",
+      "timeframe": "9 months",
+      "family": "data_catalog",
+      "framework": "data_catalog"
+    },
+    {
+      "number": 4,
+      "objective": "Control the data lifecycle",
+      "target": "100% retention-policy application",
+      "rationale": "Retention and disposal control",
+      "timeframe": "12 months",
+      "family": "data_lifecycle",
+      "framework": "data_lifecycle"
+    },
+    {
+      "number": 5,
+      "objective": "Establish privacy governance",
+      "target": "100% operating privacy committee",
+      "rationale": "Institutional privacy oversight",
+      "timeframe": "6 months",
+      "family": "privacy_governance",
+      "framework": "privacy_governance"
+    },
+    {
+      "number": 6,
+      "objective": "Classify personal data",
+      "target": "100% personal datasets classified",
+      "rationale": "Sensitivity-aligned protection",
+      "timeframe": "9 months",
+      "family": "personal_data_classification",
+      "framework": "personal_data_classification"
+    },
+    {
+      "number": 7,
+      "objective": "Manage processing consent",
+      "target": "100% required consents recorded",
+      "rationale": "Lawful processing basis",
+      "timeframe": "9 months",
+      "family": "consent_management",
+      "framework": "consent_management"
+    },
+    {
+      "number": 8,
+      "objective": "Enable data-subject rights",
+      "target": "100% requests closed on time",
+      "rationale": "Statutory rights response",
+      "timeframe": "6 months",
+      "family": "data_subject_rights",
+      "framework": "data_subject_rights"
+    },
+    {
+      "number": 9,
+      "objective": "Notify data incidents under PDPL",
+      "target": "100% eligible incidents notified on time",
+      "rationale": "Statutory notification duty",
+      "timeframe": "6 months",
+      "family": "breach_notification",
+      "framework": "breach_notification"
+    },
+    {
+      "number": 10,
+      "objective": "Raise operational data quality",
+      "target": "Quality score of at least 95%",
+      "rationale": "Reliable data-driven decisions",
+      "timeframe": "12 months",
+      "family": "data_quality",
+      "framework": "data_quality"
+    },
+    {
+      "number": 11,
+      "objective": "Govern metadata and stewardship",
+      "target": "100% assets have an owner",
+      "rationale": "Clear asset accountability",
+      "timeframe": "9 months",
+      "family": "metadata_stewardship",
+      "framework": "metadata_stewardship"
+    },
+    {
+      "number": 12,
+      "objective": "Control data sharing",
+      "target": "100% sharing agreements documented",
+      "rationale": "Controlled and safe sharing",
+      "timeframe": "9 months",
+      "family": "data_sharing",
+      "framework": "data_sharing"
+    },
+    {
+      "number": 13,
+      "objective": "Document critical data lineage",
+      "target": "100% lineage coverage",
+      "rationale": "Trace source to consumption",
+      "timeframe": "12 months",
+      "family": "data_lineage",
+      "framework": "data_lineage"
+    },
+    {
+      "number": 14,
+      "objective": "Operate master data management",
+      "target": "100% critical domains unified",
+      "rationale": "One master register",
+      "timeframe": "12 months",
+      "family": "master_data_management",
+      "framework": "master_data_management"
+    }
+  ],
+  "pillars": [
+    {
+      "number": 1,
+      "title": "Data governance and organization",
+      "description": "NDMO and PDPL policy, ownership, and control",
+      "family": "privacy_governance",
+      "owner": "CDO"
+    },
+    {
+      "number": 2,
+      "title": "Data quality and metadata",
+      "description": "Catalog operations and quality rules",
+      "family": "data_catalog",
+      "owner": "CDO"
+    },
+    {
+      "number": 3,
+      "title": "Privacy and personal-data protection",
+      "description": "PDPL compliance and personal-data protection",
+      "family": "PDPL",
+      "owner": "CDO"
+    },
+    {
+      "number": 4,
+      "title": "Value enablement and data sharing",
+      "description": "Sharing agreements and master data",
+      "family": "data_sharing",
+      "owner": "CDO"
+    }
+  ],
+  "pillar_initiatives": [
+    {
+      "pillar_number": 1,
+      "initiative": "Privacy governance initiative",
+      "description": "NDMO and PDPL policy, ownership, and control",
+      "output": "Privacy committee charter",
+      "owner": "DPO",
+      "pillar_family": "privacy_governance"
+    },
+    {
+      "pillar_number": 1,
+      "initiative": "NDMO governance program",
+      "description": "NDMO and PDPL policy, ownership, and control",
+      "output": "Approved NDMO policy",
+      "owner": "CDO",
+      "pillar_family": "privacy_governance"
+    },
+    {
+      "pillar_number": 1,
+      "initiative": "PDPL compliance program data program",
+      "description": "NDMO and PDPL policy, ownership, and control",
+      "output": "PDPL compliance file",
+      "owner": "DPO",
+      "pillar_family": "privacy_governance"
+    },
+    {
+      "pillar_number": 2,
+      "initiative": "Data catalog initiative",
+      "description": "Catalog operations and quality rules",
+      "output": "Operating catalog",
+      "owner": "Data Steward",
+      "pillar_family": "data_catalog"
+    },
+    {
+      "pillar_number": 2,
+      "initiative": "NDMO governance program",
+      "description": "Catalog operations and quality rules",
+      "output": "Approved NDMO policy",
+      "owner": "CDO",
+      "pillar_family": "data_catalog"
+    },
+    {
+      "pillar_number": 2,
+      "initiative": "PDPL compliance program data program",
+      "description": "Catalog operations and quality rules",
+      "output": "PDPL compliance file",
+      "owner": "DPO",
+      "pillar_family": "data_catalog"
+    },
+    {
+      "pillar_number": 3,
+      "initiative": "PDPL compliance program data program",
+      "description": "PDPL compliance and personal-data protection",
+      "output": "PDPL compliance file",
+      "owner": "DPO",
+      "pillar_family": "PDPL"
+    },
+    {
+      "pillar_number": 3,
+      "initiative": "NDMO governance program",
+      "description": "PDPL compliance and personal-data protection",
+      "output": "Approved NDMO policy",
+      "owner": "CDO",
+      "pillar_family": "PDPL"
+    },
+    {
+      "pillar_number": 3,
+      "initiative": "Data catalog initiative",
+      "description": "PDPL compliance and personal-data protection",
+      "output": "Operating catalog",
+      "owner": "Data Steward",
+      "pillar_family": "PDPL"
+    },
+    {
+      "pillar_number": 4,
+      "initiative": "Data-sharing initiative",
+      "description": "Sharing agreements and master data",
+      "output": "Approved sharing agreements",
+      "owner": "CDO",
+      "pillar_family": "data_sharing"
+    },
+    {
+      "pillar_number": 4,
+      "initiative": "NDMO governance program",
+      "description": "Sharing agreements and master data",
+      "output": "Approved NDMO policy",
+      "owner": "CDO",
+      "pillar_family": "data_sharing"
+    },
+    {
+      "pillar_number": 4,
+      "initiative": "PDPL compliance program data program",
+      "description": "Sharing agreements and master data",
+      "output": "PDPL compliance file",
+      "owner": "DPO",
+      "pillar_family": "data_sharing"
+    }
+  ],
+  "gaps": [
+    {
+      "number": 1,
+      "gap_label": "NDMO operating-policy gap",
+      "description": "No approved national data policy",
+      "priority": "High",
+      "status": "Open",
+      "family": "NDMO",
+      "framework": "NDMO"
+    },
+    {
+      "number": 2,
+      "gap_label": "PDPL control gap",
+      "description": "Incomplete PDPL controls",
+      "priority": "High",
+      "status": "Open",
+      "family": "PDPL",
+      "framework": "PDPL"
+    },
+    {
+      "number": 3,
+      "gap_label": "Data-catalog gap",
+      "description": "Undiscovered assets outside the catalog",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "data_catalog",
+      "framework": "data_catalog"
+    },
+    {
+      "number": 4,
+      "gap_label": "Data-lifecycle gap",
+      "description": "Uncontrolled retention",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "data_lifecycle",
+      "framework": "data_lifecycle"
+    },
+    {
+      "number": 5,
+      "gap_label": "Privacy-governance gap",
+      "description": "No privacy committee",
+      "priority": "High",
+      "status": "Open",
+      "family": "privacy_governance",
+      "framework": "privacy_governance"
+    },
+    {
+      "number": 6,
+      "gap_label": "Personal-data classification gap",
+      "description": "Unclassified datasets",
+      "priority": "High",
+      "status": "Open",
+      "family": "personal_data_classification",
+      "framework": "personal_data_classification"
+    },
+    {
+      "number": 7,
+      "gap_label": "Consent-management gap",
+      "description": "Unrecorded consents",
+      "priority": "High",
+      "status": "Open",
+      "family": "consent_management",
+      "framework": "consent_management"
+    },
+    {
+      "number": 8,
+      "gap_label": "Data-subject-rights gap",
+      "description": "Incomplete request path",
+      "priority": "High",
+      "status": "Open",
+      "family": "data_subject_rights",
+      "framework": "data_subject_rights"
+    },
+    {
+      "number": 9,
+      "gap_label": "Breach-notification gap",
+      "description": "Unexercised notification path",
+      "priority": "High",
+      "status": "Open",
+      "family": "breach_notification",
+      "framework": "breach_notification"
+    },
+    {
+      "number": 10,
+      "gap_label": "Data-quality gap",
+      "description": "Inactive quality rules",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "data_quality",
+      "framework": "data_quality"
+    },
+    {
+      "number": 11,
+      "gap_label": "Metadata-stewardship gap",
+      "description": "Ownerless assets",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "metadata_stewardship",
+      "framework": "metadata_stewardship"
+    },
+    {
+      "number": 12,
+      "gap_label": "Data-sharing gap",
+      "description": "Sharing without agreements",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "data_sharing",
+      "framework": "data_sharing"
+    },
+    {
+      "number": 13,
+      "gap_label": "Data-lineage gap",
+      "description": "Critical flows without lineage",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "data_lineage",
+      "framework": "data_lineage"
+    },
+    {
+      "number": 14,
+      "gap_label": "Master-data gap",
+      "description": "Critical domains without MDM",
+      "priority": "Medium",
+      "status": "Open",
+      "family": "master_data_management",
+      "framework": "master_data_management"
+    }
+  ],
+  "gap_guides": [
+    {
+      "number": 1,
+      "family": "NDMO",
+      "heading": "#### Gap #1 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the NDMO operating-policy gap scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for NDMO operating-policy gap",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for NDMO operating-policy gap",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "family": "PDPL",
+      "heading": "#### Gap #2 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the PDPL control gap scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for PDPL control gap",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for PDPL control gap",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "family": "data_catalog",
+      "heading": "#### Gap #3 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-catalog gap scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-catalog gap",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-catalog gap",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "family": "data_lifecycle",
+      "heading": "#### Gap #4 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-lifecycle gap scope and collect current evidence",
+          "owner": "Records Officer",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-lifecycle gap",
+          "owner": "Records Officer",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-lifecycle gap",
+          "owner": "Records Officer",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "family": "privacy_governance",
+      "heading": "#### Gap #5 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Privacy-governance gap scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Privacy-governance gap",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Privacy-governance gap",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "family": "personal_data_classification",
+      "heading": "#### Gap #6 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Personal-data classification gap scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Personal-data classification gap",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Personal-data classification gap",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "family": "consent_management",
+      "heading": "#### Gap #7 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Consent-management gap scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Consent-management gap",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Consent-management gap",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 8,
+      "family": "data_subject_rights",
+      "heading": "#### Gap #8 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-subject-rights gap scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-subject-rights gap",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-subject-rights gap",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 9,
+      "family": "breach_notification",
+      "heading": "#### Gap #9 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Breach-notification gap scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Breach-notification gap",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Breach-notification gap",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 10,
+      "family": "data_quality",
+      "heading": "#### Gap #10 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-quality gap scope and collect current evidence",
+          "owner": "Data Quality Lead",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-quality gap",
+          "owner": "Data Quality Lead",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-quality gap",
+          "owner": "Data Quality Lead",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 11,
+      "family": "metadata_stewardship",
+      "heading": "#### Gap #11 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Metadata-stewardship gap scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Metadata-stewardship gap",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Metadata-stewardship gap",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 12,
+      "family": "data_sharing",
+      "heading": "#### Gap #12 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-sharing gap scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-sharing gap",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-sharing gap",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 13,
+      "family": "data_lineage",
+      "heading": "#### Gap #13 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data-lineage gap scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data-lineage gap",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data-lineage gap",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 14,
+      "family": "master_data_management",
+      "heading": "#### Gap #14 Implementation Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Master-data gap scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Master-data gap",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Master-data gap",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    }
+  ],
+  "kpis": [
+    {
+      "number": 1,
+      "description": "Approved NDMO policy completeness",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "approved policies / required policies × 100",
+      "source": "Data policy register",
+      "frequency": "Quarterly",
+      "owner": "CDO",
+      "family": "NDMO",
+      "framework": "NDMO"
+    },
+    {
+      "number": 2,
+      "description": "PDPL control coverage",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "closed controls / required controls × 100",
+      "source": "PDPL compliance register",
+      "frequency": "Quarterly",
+      "owner": "DPO",
+      "family": "PDPL",
+      "framework": "PDPL"
+    },
+    {
+      "number": 3,
+      "description": "Data catalog coverage",
+      "type": "KPI",
+      "target": "95%",
+      "formula": "indexed assets / known assets × 100",
+      "source": "Catalog platform",
+      "frequency": "Monthly",
+      "owner": "Data Steward",
+      "family": "data_catalog",
+      "framework": "data_catalog"
+    },
+    {
+      "number": 4,
+      "description": "Retention-policy application",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "assets under policy / in-scope assets × 100",
+      "source": "Retention register",
+      "frequency": "Quarterly",
+      "owner": "Records Officer",
+      "family": "data_lifecycle",
+      "framework": "data_lifecycle"
+    },
+    {
+      "number": 5,
+      "description": "Privacy committee effectiveness",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "held meetings / planned meetings × 100",
+      "source": "Committee minutes",
+      "frequency": "Quarterly",
+      "owner": "DPO",
+      "family": "privacy_governance",
+      "framework": "privacy_governance"
+    },
+    {
+      "number": 6,
+      "description": "Personal-data classification completeness",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "classified sets / personal sets × 100",
+      "source": "Classification register",
+      "frequency": "Quarterly",
+      "owner": "Data Steward",
+      "family": "personal_data_classification",
+      "framework": "personal_data_classification"
+    },
+    {
+      "number": 7,
+      "description": "Consent-register completeness",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "recorded consents / required consents × 100",
+      "source": "Consent platform",
+      "frequency": "Monthly",
+      "owner": "DPO",
+      "family": "consent_management",
+      "framework": "consent_management"
+    },
+    {
+      "number": 8,
+      "description": "On-time data-subject request closure",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "on-time closures / total requests × 100",
+      "source": "Rights desk",
+      "frequency": "Monthly",
+      "owner": "DPO",
+      "family": "data_subject_rights",
+      "framework": "data_subject_rights"
+    },
+    {
+      "number": 9,
+      "description": "On-time eligible-incident notification",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "on-time notices / eligible incidents × 100",
+      "source": "Incident register",
+      "frequency": "Quarterly",
+      "owner": "DPO",
+      "family": "breach_notification",
+      "framework": "breach_notification"
+    },
+    {
+      "number": 10,
+      "description": "Data quality score",
+      "type": "KPI",
+      "target": "95%",
+      "formula": "clean records / tested records × 100",
+      "source": "Quality engine",
+      "frequency": "Monthly",
+      "owner": "Data Quality Lead",
+      "family": "data_quality",
+      "framework": "data_quality"
+    },
+    {
+      "number": 11,
+      "description": "Asset-owner assignment",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "owned assets / registered assets × 100",
+      "source": "Ownership register",
+      "frequency": "Quarterly",
+      "owner": "CDO",
+      "family": "metadata_stewardship",
+      "framework": "metadata_stewardship"
+    },
+    {
+      "number": 12,
+      "description": "Sharing-agreement documentation",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "documented agreements / active shares × 100",
+      "source": "Sharing register",
+      "frequency": "Quarterly",
+      "owner": "CDO",
+      "family": "data_sharing",
+      "framework": "data_sharing"
+    },
+    {
+      "number": 13,
+      "description": "Critical data-lineage coverage",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "documented flows / critical flows × 100",
+      "source": "Lineage register",
+      "frequency": "Quarterly",
+      "owner": "Data Steward",
+      "family": "data_lineage",
+      "framework": "data_lineage"
+    },
+    {
+      "number": 14,
+      "description": "Master-data record unification",
+      "type": "KPI",
+      "target": "100%",
+      "formula": "unified records / critical domains × 100",
+      "source": "MDM platform",
+      "frequency": "Quarterly",
+      "owner": "CDO",
+      "family": "master_data_management",
+      "framework": "master_data_management"
+    }
+  ],
+  "kpi_formula_source": [
+    {
+      "number": 1,
+      "kpi": "Approved NDMO policy completeness",
+      "formula": "approved policies / required policies × 100",
+      "data_source": "Data policy register",
+      "family": "NDMO"
+    },
+    {
+      "number": 2,
+      "kpi": "PDPL control coverage",
+      "formula": "closed controls / required controls × 100",
+      "data_source": "PDPL compliance register",
+      "family": "PDPL"
+    },
+    {
+      "number": 3,
+      "kpi": "Data catalog coverage",
+      "formula": "indexed assets / known assets × 100",
+      "data_source": "Catalog platform",
+      "family": "data_catalog"
+    },
+    {
+      "number": 4,
+      "kpi": "Retention-policy application",
+      "formula": "assets under policy / in-scope assets × 100",
+      "data_source": "Retention register",
+      "family": "data_lifecycle"
+    },
+    {
+      "number": 5,
+      "kpi": "Privacy committee effectiveness",
+      "formula": "held meetings / planned meetings × 100",
+      "data_source": "Committee minutes",
+      "family": "privacy_governance"
+    },
+    {
+      "number": 6,
+      "kpi": "Personal-data classification completeness",
+      "formula": "classified sets / personal sets × 100",
+      "data_source": "Classification register",
+      "family": "personal_data_classification"
+    },
+    {
+      "number": 7,
+      "kpi": "Consent-register completeness",
+      "formula": "recorded consents / required consents × 100",
+      "data_source": "Consent platform",
+      "family": "consent_management"
+    },
+    {
+      "number": 8,
+      "kpi": "On-time data-subject request closure",
+      "formula": "on-time closures / total requests × 100",
+      "data_source": "Rights desk",
+      "family": "data_subject_rights"
+    },
+    {
+      "number": 9,
+      "kpi": "On-time eligible-incident notification",
+      "formula": "on-time notices / eligible incidents × 100",
+      "data_source": "Incident register",
+      "family": "breach_notification"
+    },
+    {
+      "number": 10,
+      "kpi": "Data quality score",
+      "formula": "clean records / tested records × 100",
+      "data_source": "Quality engine",
+      "family": "data_quality"
+    },
+    {
+      "number": 11,
+      "kpi": "Asset-owner assignment",
+      "formula": "owned assets / registered assets × 100",
+      "data_source": "Ownership register",
+      "family": "metadata_stewardship"
+    },
+    {
+      "number": 12,
+      "kpi": "Sharing-agreement documentation",
+      "formula": "documented agreements / active shares × 100",
+      "data_source": "Sharing register",
+      "family": "data_sharing"
+    },
+    {
+      "number": 13,
+      "kpi": "Critical data-lineage coverage",
+      "formula": "documented flows / critical flows × 100",
+      "data_source": "Lineage register",
+      "family": "data_lineage"
+    },
+    {
+      "number": 14,
+      "kpi": "Master-data record unification",
+      "formula": "unified records / critical domains × 100",
+      "data_source": "MDM platform",
+      "family": "master_data_management"
+    }
+  ],
+  "kpi_guides": [
+    {
+      "number": 1,
+      "family": "NDMO",
+      "heading": "#### KPI #1 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Approved NDMO policy completeness scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Approved NDMO policy completeness",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Approved NDMO policy completeness",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "family": "PDPL",
+      "heading": "#### KPI #2 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the PDPL control coverage scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for PDPL control coverage",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for PDPL control coverage",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "family": "data_catalog",
+      "heading": "#### KPI #3 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data catalog coverage scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data catalog coverage",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data catalog coverage",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "family": "data_lifecycle",
+      "heading": "#### KPI #4 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Retention-policy application scope and collect current evidence",
+          "owner": "Records Officer",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Retention-policy application",
+          "owner": "Records Officer",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Retention-policy application",
+          "owner": "Records Officer",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "family": "privacy_governance",
+      "heading": "#### KPI #5 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Privacy committee effectiveness scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Privacy committee effectiveness",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Privacy committee effectiveness",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "family": "personal_data_classification",
+      "heading": "#### KPI #6 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Personal-data classification completeness scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Personal-data classification completeness",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Personal-data classification completeness",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "family": "consent_management",
+      "heading": "#### KPI #7 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Consent-register completeness scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Consent-register completeness",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Consent-register completeness",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 8,
+      "family": "data_subject_rights",
+      "heading": "#### KPI #8 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the On-time data-subject request closure scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for On-time data-subject request closure",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for On-time data-subject request closure",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 9,
+      "family": "breach_notification",
+      "heading": "#### KPI #9 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the On-time eligible-incident notification scope and collect current evidence",
+          "owner": "DPO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for On-time eligible-incident notification",
+          "owner": "DPO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for On-time eligible-incident notification",
+          "owner": "DPO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 10,
+      "family": "data_quality",
+      "heading": "#### KPI #10 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Data quality score scope and collect current evidence",
+          "owner": "Data Quality Lead",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Data quality score",
+          "owner": "Data Quality Lead",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Data quality score",
+          "owner": "Data Quality Lead",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 11,
+      "family": "metadata_stewardship",
+      "heading": "#### KPI #11 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Asset-owner assignment scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Asset-owner assignment",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Asset-owner assignment",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 12,
+      "family": "data_sharing",
+      "heading": "#### KPI #12 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Sharing-agreement documentation scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Sharing-agreement documentation",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Sharing-agreement documentation",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 13,
+      "family": "data_lineage",
+      "heading": "#### KPI #13 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Critical data-lineage coverage scope and collect current evidence",
+          "owner": "Data Steward",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Critical data-lineage coverage",
+          "owner": "Data Steward",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Critical data-lineage coverage",
+          "owner": "Data Steward",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    },
+    {
+      "number": 14,
+      "family": "master_data_management",
+      "heading": "#### KPI #14 Assessment Guide",
+      "steps": [
+        {
+          "step": 1,
+          "action": "Confirm the Master-data record unification scope and collect current evidence",
+          "owner": "CDO",
+          "timeline": "Week 1",
+          "output": "Approved scope register"
+        },
+        {
+          "step": 2,
+          "action": "Execute the approved treatment for Master-data record unification",
+          "owner": "CDO",
+          "timeline": "Weeks 2-4",
+          "output": "Executed procedure"
+        },
+        {
+          "step": 3,
+          "action": "Verify closure and update the register for Master-data record unification",
+          "owner": "CDO",
+          "timeline": "Week 5",
+          "output": "Closure report"
+        }
+      ]
+    }
+  ],
+  "roadmap": [
+    {
+      "phase": "Phase 1: Establish (1-6 months)",
+      "period": "1-6 months",
+      "initiative": "NDMO governance program",
+      "owner": "CDO",
+      "deliverable": "Approved NDMO policy",
+      "framework": "NDMO",
+      "family": "NDMO"
+    },
+    {
+      "phase": "Phase 1: Establish (1-6 months)",
+      "period": "1-6 months",
+      "initiative": "PDPL compliance program data program",
+      "owner": "DPO",
+      "deliverable": "PDPL compliance file",
+      "framework": "PDPL",
+      "family": "PDPL"
+    },
+    {
+      "phase": "Phase 2: Enable & Operate (7-18 months)",
+      "period": "7-18 months",
+      "initiative": "Data catalog initiative",
+      "owner": "Data Steward",
+      "deliverable": "Operating catalog",
+      "framework": "data_catalog",
+      "family": "data_catalog"
+    },
+    {
+      "phase": "Phase 2: Enable & Operate (7-18 months)",
+      "period": "7-18 months",
+      "initiative": "Data lifecycle initiative",
+      "owner": "Records Officer",
+      "deliverable": "Approved retention schedule",
+      "framework": "data_lifecycle",
+      "family": "data_lifecycle"
+    },
+    {
+      "phase": "Phase 1: Establish (1-6 months)",
+      "period": "1-6 months",
+      "initiative": "Privacy governance initiative",
+      "owner": "DPO",
+      "deliverable": "Privacy committee charter",
+      "framework": "privacy_governance",
+      "family": "privacy_governance"
+    },
+    {
+      "phase": "Phase 2: Enable & Operate (7-18 months)",
+      "period": "7-18 months",
+      "initiative": "Personal-data classification initiative",
+      "owner": "Data Steward",
+      "deliverable": "Approved classification register",
+      "framework": "personal_data_classification",
+      "family": "personal_data_classification"
+    },
+    {
+      "phase": "Phase 2: Enable & Operate (7-18 months)",
+      "period": "7-18 months",
+      "initiative": "Consent-management initiative data program",
+      "owner": "DPO",
+      "deliverable": "Operating consent platform",
+      "framework": "consent_management",
+      "family": "consent_management"
+    },
+    {
+      "phase": "Phase 1: Establish (1-6 months)",
+      "period": "1-6 months",
+      "initiative": "Data-subject-rights initiative",
+      "owner": "DPO",
+      "deliverable": "Operating rights procedure",
+      "framework": "data_subject_rights",
+      "family": "data_subject_rights"
+    },
+    {
+      "phase": "Phase 1: Establish (1-6 months)",
+      "period": "1-6 months",
+      "initiative": "Breach-notification initiative data program",
+      "owner": "DPO",
+      "deliverable": "Approved notification procedure",
+      "framework": "breach_notification",
+      "family": "breach_notification"
+    },
+    {
+      "phase": "Phase 3: Optimize & Sustain (19-24 months)",
+      "period": "19-24 months",
+      "initiative": "Data-quality initiative",
+      "owner": "Data Quality Lead",
+      "deliverable": "Operating quality dashboard",
+      "framework": "data_quality",
+      "family": "data_quality"
+    },
+    {
+      "phase": "Phase 2: Enable & Operate (7-18 months)",
+      "period": "7-18 months",
+      "initiative": "Metadata-stewardship initiative",
+      "owner": "CDO",
+      "deliverable": "Complete ownership register",
+      "framework": "metadata_stewardship",
+      "family": "metadata_stewardship"
+    },
+    {
+      "phase": "Phase 3: Optimize & Sustain (19-24 months)",
+      "period": "19-24 months",
+      "initiative": "Data-sharing initiative",
+      "owner": "CDO",
+      "deliverable": "Approved sharing agreements",
+      "framework": "data_sharing",
+      "family": "data_sharing"
+    },
+    {
+      "phase": "Phase 3: Optimize & Sustain (19-24 months)",
+      "period": "19-24 months",
+      "initiative": "Document end-to-end data lineage",
+      "owner": "Data Steward",
+      "deliverable": "Documented critical lineage",
+      "framework": "data_lineage",
+      "family": "data_lineage"
+    },
+    {
+      "phase": "Phase 3: Optimize & Sustain (19-24 months)",
+      "period": "19-24 months",
+      "initiative": "Establish master data management MDM",
+      "owner": "CDO",
+      "deliverable": "Approved critical MDM domains",
+      "framework": "master_data_management",
+      "family": "master_data_management"
+    }
+  ],
+  "confidence": [
+    {
+      "factor": "Approved-framework completeness",
+      "weight": "20%",
+      "score": "80",
+      "rationale": "Selected frameworks are complete for each coverage family"
+    },
+    {
+      "factor": "Operating readiness",
+      "weight": "16%",
+      "score": "76",
+      "rationale": "Each initiative has an owner and deliverable"
+    },
+    {
+      "factor": "Impact measurement",
+      "weight": "16%",
+      "score": "78",
+      "rationale": "Each KPI has a formula, source, and frequency"
+    },
+    {
+      "factor": "Risk management",
+      "weight": "16%",
+      "score": "74",
+      "rationale": "Each risk has a treatment plan and owner"
+    },
+    {
+      "factor": "Guide completeness",
+      "weight": "16%",
+      "score": "77",
+      "rationale": "One implementation guide per gap and one assessment guide per KPI"
+    },
+    {
+      "factor": "Traceability readiness",
+      "weight": "16%",
+      "score": "75",
+      "rationale": "Each initiative links a gap, KPI, and framework"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Late policy approval",
+      "impact": "Framework coverage stalls",
+      "mitigation": "Treatment plan: quarterly approval calendar",
+      "owner": "CDO"
+    },
+    {
+      "risk": "Incomplete registers",
+      "impact": "Decisions on partial data",
+      "mitigation": "Treatment plan: completeness gate before launch",
+      "owner": "CDO"
+    },
+    {
+      "risk": "Broken implementation guides",
+      "impact": "Gaps remain open",
+      "mitigation": "Treatment plan: one implementation guide per gap",
+      "owner": "CDO"
+    },
+    {
+      "risk": "Weak KPI measurement",
+      "impact": "No reliable follow-up",
+      "mitigation": "Treatment plan: formula and source for each KPI",
+      "owner": "CDO"
+    }
+  ],
+  "confidence_score": "78%",
+  "confidence_justification": "The confidence score is based on complete typed tables, one implementation guide per gap, and a calculation formula for each KPI.",
+  "governance": [
+    {
+      "role": "Strategy committee",
+      "responsibility": "Approve objectives and KPIs",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Governance office",
+      "responsibility": "Track framework coverage",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Initiative owners",
+      "responsibility": "Deliver roadmap initiatives",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Measurement office",
+      "responsibility": "Operate the KPI set",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Gap office",
+      "responsibility": "Close implementation guides",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Risk office",
+      "responsibility": "Track the treatment plan",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    },
+    {
+      "role": "Traceability office",
+      "responsibility": "Link initiative, gap, and KPI",
+      "cadence": "Quarterly",
+      "owner": "CDO"
+    }
+  ],
+  "traceability": [
+    {
+      "number": 1,
+      "initiative": "NDMO governance program",
+      "gap": "NDMO operating-policy gap",
+      "kpi": "Approved NDMO policy completeness",
+      "framework": "NDMO",
+      "family": "NDMO"
+    },
+    {
+      "number": 2,
+      "initiative": "PDPL compliance program",
+      "gap": "PDPL control gap",
+      "kpi": "PDPL control coverage",
+      "framework": "PDPL",
+      "family": "PDPL"
+    },
+    {
+      "number": 3,
+      "initiative": "Data catalog initiative",
+      "gap": "Data-catalog gap",
+      "kpi": "Data catalog coverage",
+      "framework": "data_catalog",
+      "family": "data_catalog"
+    },
+    {
+      "number": 4,
+      "initiative": "Data lifecycle initiative",
+      "gap": "Data-lifecycle gap",
+      "kpi": "Retention-policy application",
+      "framework": "data_lifecycle",
+      "family": "data_lifecycle"
+    },
+    {
+      "number": 5,
+      "initiative": "Privacy governance initiative",
+      "gap": "Privacy-governance gap",
+      "kpi": "Privacy committee effectiveness",
+      "framework": "privacy_governance",
+      "family": "privacy_governance"
+    },
+    {
+      "number": 6,
+      "initiative": "Personal-data classification initiative",
+      "gap": "Personal-data classification gap",
+      "kpi": "Personal-data classification completeness",
+      "framework": "personal_data_classification",
+      "family": "personal_data_classification"
+    },
+    {
+      "number": 7,
+      "initiative": "Consent-management initiative",
+      "gap": "Consent-management gap",
+      "kpi": "Consent-register completeness",
+      "framework": "consent_management",
+      "family": "consent_management"
+    },
+    {
+      "number": 8,
+      "initiative": "Data-subject-rights initiative",
+      "gap": "Data-subject-rights gap",
+      "kpi": "On-time data-subject request closure",
+      "framework": "data_subject_rights",
+      "family": "data_subject_rights"
+    },
+    {
+      "number": 9,
+      "initiative": "Breach-notification initiative",
+      "gap": "Breach-notification gap",
+      "kpi": "On-time eligible-incident notification",
+      "framework": "breach_notification",
+      "family": "breach_notification"
+    },
+    {
+      "number": 10,
+      "initiative": "Data-quality initiative",
+      "gap": "Data-quality gap",
+      "kpi": "Data quality score",
+      "framework": "data_quality",
+      "family": "data_quality"
+    },
+    {
+      "number": 11,
+      "initiative": "Metadata-stewardship initiative",
+      "gap": "Metadata-stewardship gap",
+      "kpi": "Asset-owner assignment",
+      "framework": "metadata_stewardship",
+      "family": "metadata_stewardship"
+    },
+    {
+      "number": 12,
+      "initiative": "Data-sharing initiative",
+      "gap": "Data-sharing gap",
+      "kpi": "Sharing-agreement documentation",
+      "framework": "data_sharing",
+      "family": "data_sharing"
+    },
+    {
+      "number": 13,
+      "initiative": "Document end-to-end data lineage",
+      "gap": "Data-lineage gap",
+      "kpi": "Critical data-lineage coverage",
+      "framework": "data_lineage",
+      "family": "data_lineage"
+    },
+    {
+      "number": 14,
+      "initiative": "Establish master data management MDM",
+      "gap": "Master-data gap",
+      "kpi": "Master-data record unification",
+      "framework": "master_data_management",
+      "family": "master_data_management"
+    }
+  ],
+  "required_families": [
+    "NDMO",
+    "PDPL",
+    "data_catalog",
+    "data_lifecycle",
+    "privacy_governance",
+    "personal_data_classification",
+    "consent_management",
+    "data_subject_rights",
+    "breach_notification",
+    "data_quality",
+    "metadata_stewardship",
+    "data_sharing",
+    "data_lineage",
+    "master_data_management"
+  ],
+  "satisfied_families": [
+    "NDMO",
+    "PDPL",
+    "data_catalog",
+    "data_lifecycle",
+    "privacy_governance",
+    "personal_data_classification",
+    "consent_management",
+    "data_subject_rights",
+    "breach_notification",
+    "data_quality",
+    "metadata_stewardship",
+    "data_sharing",
+    "data_lineage",
+    "master_data_management"
+  ],
+  "model_hash": "d73047a541e3a640d2ef0246b58ab50465e1a5464554633220cb9bf36f0bbdab",
+  "prose_hash": "517e83149cf66264e7f5a48d6240f18ce6383e47061a839c5bca8b5bf2c9d048",
+  "validation_passed": true,
+  "blockers": [],
+  "missing_families": []
+}

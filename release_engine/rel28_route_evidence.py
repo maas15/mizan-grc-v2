@@ -336,7 +336,13 @@ def apply_route_bound_verdict(
     # roadmap_visible_row_count). Scope to strategy-like document types
     # (strategy + gap_assessment) and skip for risk/risk_assessment. This
     # does NOT suppress the blocker globally — strategy exports still run it.
-    if _strategy_section_checks:
+    _rel37_auth = False
+    try:
+        from release_engine_v3.rel37_apply import is_rel37_authoritative
+        _rel37_auth = is_rel37_authoritative(canonical_sections)
+    except Exception:
+        _rel37_auth = False
+    if _strategy_section_checks and not _rel37_auth:
         for prefix, text, checked in (
                 ('docx', docx_text, docx_bytes_checked),
                 ('pdf', pdf_text, pdf_bytes_checked and not pdf_text_extraction_unreliable),

@@ -114,6 +114,43 @@ def export_pdf(
     render_exception: Optional[str] = None
     pdf_bytes = b''
     try:
+        try:
+            from release_engine_v3.rel37_apply import (
+                prefer_rel37_authority_candidate,
+            )
+            _split = backend.get('split_sections', lambda x: {})
+            try:
+                _split_secs = _split(content) or {}
+            except Exception:  # noqa: BLE001
+                _split_secs = {}
+            from release_engine_v3.rel37_apply import (
+                recall_rel37_export_snapshot,
+            )
+            _sid = (
+                getattr(render_tree, 'strategy_id', '')
+                or render_tree.artifact_id
+                or backend.get('strategy_id')
+            )
+            _pdf_sections = prefer_rel37_authority_candidate(
+                recall_rel37_export_snapshot(
+                    _sid,
+                    model_hash=render_tree.canonical_hash,
+                    artifact_type=(
+                        document_type
+                        or backend.get('document_type')
+                        or backend.get('artifact_type')
+                    ),
+                    owner=(
+                        backend.get('_rel32_export_user_id')
+                        or backend.get('user_id')
+                    ),
+                ),
+                backend.get('_rel37_source_sections'),
+                backend.get('_rel31_frozen_sections'),
+                _split_secs,
+            )
+        except Exception:  # noqa: BLE001
+            _pdf_sections = backend.get('split_sections', lambda x: {})(content)
         pdf_bytes = build_fn(
             content,
             **_filter_build_kwargs(build_fn, {
@@ -124,12 +161,22 @@ def export_pdf(
                 'domain': domain,
                 'selected_frameworks': selected_frameworks,
                 'cyber_sealed_artifact': cyber_sealed_artifact,
-                'sections': backend.get('split_sections', lambda x: {})(content),
+                'sections': _pdf_sections,
                 'metadata': {
                     'document_type': document_type,
+                    'artifact_type': document_type,
                     'org_name': org_name,
                     'sector': sector,
                     'selected_frameworks': selected_frameworks or [],
+                    'strategy_id': getattr(render_tree, 'strategy_id', '')
+                    or render_tree.artifact_id,
+                    'artifact_id': render_tree.artifact_id,
+                    'canonical_hash': render_tree.canonical_hash,
+                    'model_hash': render_tree.canonical_hash,
+                    'user_id': backend.get('_rel32_export_user_id')
+                    or backend.get('user_id'),
+                    '_rel32_export_user_id': backend.get(
+                        '_rel32_export_user_id') or backend.get('user_id'),
                 },
             }),
         )

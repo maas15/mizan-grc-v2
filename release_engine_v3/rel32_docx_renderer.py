@@ -45,9 +45,15 @@ def sections_from_frozen_artifact(
     """Build legacy section map for DOCX from frozen artifact only."""
     from release_engine_v3.section_models import section_to_markdown
 
+    legacy = dict(frozen.legacy_sections or {})
     sections = {
-        k: v for k, v in dict(frozen.legacy_sections or {}).items()
+        k: v for k, v in legacy.items()
         if isinstance(v, str) and not str(k).startswith('_')}
+    # REL37 authority keys are not visible markdown. Dropping them lets
+    # catalog compose replace saved relationships.
+    for key, value in legacy.items():
+        if str(key).startswith('_rel37_'):
+            sections[key] = value
     for canon_key, legacy_key in _CANON_TO_LEGACY:
         if str(sections.get(legacy_key) or '').strip():
             continue
@@ -98,6 +104,17 @@ def bind_rel32_docx_renderer_input(
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     """Force DOCX renderer content/sections from frozen artifact + RenderTree."""
     sections = sections_from_frozen_artifact(frozen, render_tree=render_tree)
+    try:
+        from release_engine_v3.rel37_apply import overlay_rel37_authority
+        authorized = (
+            backend.get('_rel37_source_sections')
+            or (artifact_dict or {}).get('_rel37_source_sections')
+            or (artifact_dict or {}).get('sections')
+            or {}
+        )
+        sections = overlay_rel37_authority(sections, authorized)
+    except Exception:  # noqa: BLE001
+        pass
     content = str(render_tree.markdown_view or '').strip()
     if not content:
         content = '\n\n'.join(
@@ -140,10 +157,13 @@ def bind_rel32_docx_renderer_input(
     backend['_rel32_docx_renderer_meta'] = meta
     backend['_rel32_docx_renderer_content'] = content
     backend['_rel32_docx_renderer_sections'] = sections
+    _rel37_keep = backend.get('_rel37_source_sections')
     backend['_rel31_frozen_sections'] = dict(sections)
     backend['_rel31_sections_bound'] = True
     backend['split_sections'] = (
         lambda _content, _secs=sections: dict(_secs))
+    if _rel37_keep:
+        backend['_rel37_source_sections'] = _rel37_keep
     return content, sections, meta
 
 

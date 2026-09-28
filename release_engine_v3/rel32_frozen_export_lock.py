@@ -247,6 +247,7 @@ def prepare_rel32_export_artifact_dict(
     )
 
     art = dict(artifact_dict or {})
+    original_sections = dict(art.get('sections') or {})
     domain = str(art.get('domain') or 'cyber')
     lang = str((art.get('contract_meta') or {}).get('lang') or 'ar')
     document_type = str(
@@ -258,6 +259,12 @@ def prepare_rel32_export_artifact_dict(
     # keyed by the same numeric id (risk_id colliding with strategy_id).
     if document_type in ('risk', 'risk_assessment'):
         return art
+    try:
+        from release_engine_v3.rel37_apply import rel37_sections_persist_blocked
+        if rel37_sections_persist_blocked(art.get('sections')):
+            return art
+    except Exception:  # noqa: BLE001
+        pass
     if not is_rel32_compiler_first(
             domain=domain, lang=lang, flags=flags,
             document_type=document_type):
@@ -288,7 +295,14 @@ def prepare_rel32_export_artifact_dict(
                 art['_rel32_frozen_loaded'] = False
                 continue
             if frozen.frozen and not frozen.blocking_errors:
-                art['sections'] = sections_from_frozen_artifact(frozen)
+                leftover = sections_from_frozen_artifact(frozen)
+                authorized = dict(art.get('sections') or {})
+                try:
+                    from release_engine_v3.rel37_apply import overlay_rel37_authority
+                    leftover = overlay_rel37_authority(leftover, authorized)
+                except Exception:  # noqa: BLE001
+                    leftover = leftover
+                art['sections'] = leftover
                 if frozen.final_markdown_view:
                     art['final_markdown'] = frozen.final_markdown_view
                 art['sealed'] = True
@@ -307,6 +321,12 @@ def prepare_rel32_export_artifact_dict(
                     'canonical_artifact')
                 break
     except KeyError:
+        pass
+    try:
+        from release_engine_v3.rel37_apply import overlay_rel37_authority
+        art['sections'] = overlay_rel37_authority(
+            art.get('sections'), original_sections)
+    except Exception:  # noqa: BLE001
         pass
     return art
 
@@ -504,8 +524,43 @@ def resolve_frozen_artifact_for_export(
     _frozen_tree = rel3_build_render_tree(frozen)
     _frozen_sections = sections_from_frozen_artifact(
         frozen, render_tree=_frozen_tree)
+    try:
+        from release_engine_v3.rel37_apply import (
+            overlay_rel37_authority,
+            rel37_sections_persist_blocked,
+        )
+        _authorized = dict(artifact_dict.get('sections') or {})
+        if rel37_sections_persist_blocked(_authorized):
+            _frozen_sections = overlay_rel37_authority(
+                _frozen_sections, _authorized)
+        else:
+            _frozen_sections = overlay_rel37_authority(
+                _frozen_sections, _authorized)
+    except Exception:  # noqa: BLE001
+        pass
     _bind_backend_sections(backend, {
         'sections': _frozen_sections,
+        '_rel37_source_sections': artifact_dict.get('_rel37_source_sections')
+        or artifact_dict.get('sections'),
+        'strategy_id': artifact_dict.get('strategy_id'),
+        'artifact_id': artifact_dict.get('artifact_id'),
+        'artifact_type': (
+            artifact_dict.get('artifact_type')
+            or artifact_dict.get('document_type')
+            or backend.get('document_type')
+        ),
+        'document_type': (
+            artifact_dict.get('document_type')
+            or backend.get('document_type')
+        ),
+        '_rel32_export_user_id': (
+            artifact_dict.get('_rel32_export_user_id')
+            or backend.get('_rel32_export_user_id')
+        ),
+        'user_id': (
+            artifact_dict.get('user_id')
+            or backend.get('_rel32_export_user_id')
+        ),
     })
     backend['_rel32_frozen_export_lock_active'] = True
     backend['_rel32_frozen_canonical_hash'] = frozen.canonical_hash or ''

@@ -216,6 +216,20 @@ def build_render_tree(artifact: FinalDocumentArtifact) -> RenderTree:
         if rendered.strip():
             md_parts.append(rendered)
     markdown_view = '\n\n'.join(md_parts)
+    # REL37-authoritative Data/AI/DT: the typed model is the source.
+    # Legacy kpi_kri section_to_markdown remixed EN KPI tables into an
+    # Arabic-header projection and dropped the main table from the
+    # professional renderer. Applied-flag alone is not enough.
+    try:
+        from release_engine_v3.rel37_apply import (
+            rel37_validated_export_markdown,
+        )
+        _rel37_md = rel37_validated_export_markdown(
+            getattr(artifact, 'legacy_sections', None) or {})
+        if _rel37_md.strip():
+            markdown_view = _rel37_md
+    except Exception:  # noqa: BLE001
+        pass
     # Prefer frozen canonical section markdown for preview/export parity.
     # Legacy sealed markdown may still contain pre-repair shallow pillars,
     # gap-table bleed, and Arabic residues that DOCX no longer has.

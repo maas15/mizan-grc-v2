@@ -95,6 +95,9 @@ class DocumentExcellenceGate:
             extracted_docx_text=docx_text,
             extracted_pdf_text=pdf_text,
             pdf_bytes=pdf_bytes,
+            domain=domain,
+            lang=lang,
+            document_type=document_type,
         )
 
         trace_guard = verify_immutable_traceability_routes(

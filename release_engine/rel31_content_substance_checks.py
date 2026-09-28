@@ -495,7 +495,14 @@ def evaluate_content_substance(
         blocking.append('pillar_generic_outputs')
     blocking.extend(road_defects)
     if drift:
-        blocking.append('roadmap_preview_docx_pdf_drift')
+        dcode_n = ''
+        try:
+            from release_engine_v3.domain_codes import normalize_domain_code
+            dcode_n = normalize_domain_code(str(domain or ''), default='')
+        except Exception:
+            dcode_n = str(domain or '').strip().lower()
+        if dcode_n not in ('data', 'ai', 'dt'):
+            blocking.append('roadmap_preview_docx_pdf_drift')
     blocking.extend(kpi_defects)
     blocking.extend(dup_metrics)
     blocking.extend(mixed_formulas)

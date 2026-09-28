@@ -92,6 +92,24 @@ def evaluate_rel33_completeness_gate(
     """Fail closed when required sections are missing after deterministic repair."""
     dtype = str(document_type or 'strategy').strip().lower()
     secs = dict(sections or {})
+    try:
+        from release_engine_v3.rel37_apply import rel37_completeness_override
+        _rel37_over = rel37_completeness_override(secs)
+    except Exception:
+        _rel37_over = None
+    if _rel37_over is not None:
+        ref_ok, ref_blockers = _evaluate_registry_evidence(
+            secs, domain=domain, document_type=dtype, lang=lang)
+        blockers = list(_rel37_over.get('blocking_errors') or [])
+        if not ref_ok:
+            blockers.extend(ref_blockers)
+        passed = bool(_rel37_over.get('passed')) and ref_ok
+        return {
+            'passed': passed,
+            'completeness_gate_passed': passed,
+            'blocking_errors': blockers,
+            'details': _rel37_over.get('details') or _rel37_over,
+        }
     if dtype == 'strategy':
         from release_engine_v3.rel32_complete_strategy_compiler import (
             evaluate_rel32_final_strategy_completeness,

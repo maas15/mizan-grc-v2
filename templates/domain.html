@@ -2567,13 +2567,21 @@ return t.trim()}
    The full-featured version there includes isHashHeader row injection, callout-label
    detection, PRE-PILLAR fixes, and all table repair logic. */
 
+function _exportTypedIdentity(){
+  var artType=window._currentArtifactType||'strategy';
+  var artId=window._currentArtifactId||null;
+  var ident={artifact_type:artType,artifact_id:artId,document_type:artType==='risk'?'risk':(artType==='gap_assessment'?'gap_assessment':'strategy')};
+  if(artType==='risk'){ident.risk_id=window._lastRiskId||artId}
+  else {ident.strategy_id=window._lastStrategyId||artId}
+  return ident;
+}
 function downloadFile(content,name,fmt){if(!content||!content.trim()){Toast.error(isRtl?'لا يوجد محتوى':'No content');return}content=content.replace(/^\s*#+\s*$/gm,'');if(fmt==='txt'){if(_advisoryMode!=='drafting'){Toast.error(isRtl?'تصدير TXT غير مسموح في وضع الاستشارة — استخدم Word أو PDF بعد المراجعة':'TXT export not allowed in advisory mode — use Word or PDF after Quality Review.');return;}var cleanContent=markdownToCleanText(_sanitizePreviewVisible(content));var blob=new Blob([cleanContent],{type:'text/plain; charset=utf-8'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name+'.txt';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(a.href);return}
 /* Show a subtle download-in-progress badge — NOT the AI overlay */
 var dlBadge=document.createElement('div');dlBadge.id='dl-badge';dlBadge.style.cssText='position:fixed;bottom:24px;'+(isRtl?'left':'right')+':24px;z-index:9998;background:var(--bg-card,#1e293b);border:1px solid var(--border-color,rgba(255,255,255,.12));border-radius:10px;padding:.7rem 1.2rem;display:flex;align-items:center;gap:.6rem;font-size:.85rem;color:var(--text-primary);box-shadow:0 4px 20px rgba(0,0,0,.35);animation:slideIn .3s ease';dlBadge.innerHTML='<i class="fas fa-circle-notch fa-spin" style="color:var(--primary)"></i>'+(isRtl?'جاري تحضير الملف...':'Preparing file…');document.body.appendChild(dlBadge);
 function removeBadge(){var b=document.getElementById('dl-badge');if(b)b.remove()}
 /* DOCX: use async endpoint to avoid Render's 30-second proxy timeout */
 if(fmt==='docx'){
-  fetch('/api/generate-docx-async',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:content,filename:name,language:lang,org_name:currentOrgName||'',sector:currentSector||'',doc_type:currentDocType||'Strategy Document',domain:currentDomain||'',selected_frameworks:(window._currentSelectedFrameworks||[]),artifact_id:window._currentArtifactId||null,strategy_id:window._lastStrategyId||window._currentArtifactId||null,artifact_type:window._currentArtifactType||'strategy',generation_mode:_advisoryMode||'drafting'})})
+  fetch('/api/generate-docx-async',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({content:content,filename:name,language:lang,org_name:currentOrgName||'',sector:currentSector||'',doc_type:currentDocType||'Strategy Document',domain:currentDomain||'',selected_frameworks:(window._currentSelectedFrameworks||[]),generation_mode:_advisoryMode||'drafting'},_exportTypedIdentity()))})
   .then(function(r){return r.json()})
   .then(function(d){
     if(d.error){removeBadge();Toast.error(isRtl?'التصدير محظور: '+d.error:'Export blocked: '+d.error);return}
@@ -2601,7 +2609,7 @@ if(fmt==='docx'){
 }
 /* PDF: also use async endpoint to avoid Render's 30-second proxy timeout */
 if(fmt==='pdf'){
-  fetch('/api/generate-pdf-async',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:content,filename:name,language:lang,org_name:currentOrgName||'',sector:currentSector||'',doc_type:currentDocType||'Strategy Document',domain:currentDomain||'',selected_frameworks:(window._currentSelectedFrameworks||[]),artifact_id:window._currentArtifactId||null,strategy_id:window._lastStrategyId||window._currentArtifactId||null,artifact_type:window._currentArtifactType||'strategy',generation_mode:_advisoryMode||'drafting'})})
+  fetch('/api/generate-pdf-async',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({content:content,filename:name,language:lang,org_name:currentOrgName||'',sector:currentSector||'',doc_type:currentDocType||'Strategy Document',domain:currentDomain||'',selected_frameworks:(window._currentSelectedFrameworks||[]),generation_mode:_advisoryMode||'drafting'},_exportTypedIdentity()))})
   .then(function(r){return r.json()})
   .then(function(d){
     if(d.error){removeBadge();Toast.error(isRtl?'التصدير محظور: '+d.error:'Export blocked: '+d.error);return}

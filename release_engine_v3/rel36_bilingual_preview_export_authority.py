@@ -171,7 +171,11 @@ def normalize_preview_sections(sections: Any) -> Dict[str, str]:
     return {
         str(k): _section_to_text(v)
         for k, v in sections.items()
-        if not str(k).startswith('_') or str(k) in ('_document_type',)
+        if (
+            not str(k).startswith('_')
+            or str(k) in ('_document_type',)
+            or str(k).startswith('_rel37')
+        )
     }
 
 
