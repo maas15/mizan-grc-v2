@@ -1,0 +1,52 @@
+{
+  "record_kind": "r13_h4_finding_disposition",
+  "review_reference": "A2-R13-MEMORY-H3-STATIC-REVIEW-2026-10-18-01",
+  "candidate": "MIZAN_A2_R13_MEMORY_REVIEW_H4",
+  "candidate_accepted": false,
+  "findings_closed": false,
+  "execution_performed": false,
+  "note": "corrected_pending_review means the authorized source change is written. It does not close R13-H2-F001 and it does not accept the candidate. Line numbers are this candidate's lines, read as text. No candidate function was called. Full closure of R13-H1-F002 remains ungranted.",
+  "findings": [
+    {
+      "id": "R13-H2-F001",
+      "h3_status": "partially_corrected_blocking_input_kind_residual",
+      "h4_disposition": "corrected_pending_review",
+      "closed": false,
+      "title": "input_kind set membership precedes exact-type validation and can abort evidence finalization",
+      "component": "controller.py",
+      "h3_anchors": [[593, 596], [729, 745], [753, 765], [913, 917], [1175, 1189], [1233, 1264]],
+      "h4_locations": [
+        {"path": "controller.py", "lines": [593, 596], "role": "the same five allowed strings"},
+        {"path": "controller.py", "lines": [742, 745], "role": "absent input_kind remains completed-field"},
+        {"path": "controller.py", "lines": [763, 765], "role": "exact str before membership; input-kind-binding"},
+        {"path": "controller.py", "lines": [914, 917], "role": "rejected completion is not stored and does not clear a start"},
+        {"path": "controller.py", "lines": [1009, 1009], "role": "sticky issue keeps protocol_complete false"},
+        {"path": "controller.py", "lines": [1175, 1175], "role": "decode after supervise returns"},
+        {"path": "controller.py", "lines": [1234, 1238], "role": "five evidence writes after a returned protocol"}
+      ],
+      "what_changed": [
+        "A present input_kind is tested with type is str before membership in the five-string set.",
+        "A list, dictionary, null, number, or Boolean takes input-kind-binding and is not coerced.",
+        "The rejected completion is not return credit. An earlier start remains. Later attributable events are still read.",
+        "The known rejection returns from the decoder, so the five evidence writes remain reachable. An operating-system write can still fail."
+      ],
+      "remaining_limitations": [
+        "The path readings in H4_CORRECTION_PATHS.md were not executed. No stream or receipt was produced.",
+        "An unforeseen exception inside decode_protocol still reaches the existing top-level handler and skips the five evidence writes.",
+        "R13-H2-F001 is not closed. R13-H1-F002 full closure is not granted."
+      ]
+    }
+  ],
+  "documentation_qualifications": [
+    {
+      "id": "R13-H3-N001",
+      "blocking": false,
+      "disposition": "wording_corrected_pending_review",
+      "closed": false,
+      "items": [
+        "EVIDENCE_CONTRACT.md now says started + not_run may still equal 288 when every start was captured and one completion is rejected. The short completed count and the sticky issue deny eligibility.",
+        "H4_CORRECTION_PATHS.md states that an absent argument_provenance or consumed_producer_ids key is completed-field at controller.py:742-745. Present invalid values may reach the field-specific checks. The historical H3 path file was not rewritten."
+      ]
+    }
+  ]
+}
