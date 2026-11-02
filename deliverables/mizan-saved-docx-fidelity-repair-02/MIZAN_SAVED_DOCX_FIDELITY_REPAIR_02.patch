@@ -1,0 +1,1932 @@
+--- a/app.py
++++ b/app.py
+@@ -14768,8 +14768,17 @@
+     try:
+         from professional_strategy_render import (
+             build_professional_strategy_document_model as _p41_build,
++            build_saved_source_strategy_model,
+             ensure_strategy_professional_model,
++            saved_docx_fidelity_rendering,
+         )
++        if saved_docx_fidelity_rendering():
++            return build_saved_source_strategy_model(
++                sections,
++                metadata=metadata,
++                lang=lang,
++                domain=domain,
++            )
+         model = _p41_build(
+             content,
+             metadata=metadata,
+@@ -14866,7 +14875,12 @@
+ def _prepare_final_render_text(text, lang='ar'):
+     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
+     try:
+-        from professional_strategy_render import prepare_final_render_text
++        from professional_strategy_render import (
++            prepare_final_render_text,
++            saved_docx_fidelity_rendering,
++        )
++        if saved_docx_fidelity_rendering():
++            return str(text or '').strip()
+         out = prepare_final_render_text(text or '', lang)
+     except Exception:  # noqa: BLE001
+         out = text or ''
+@@ -80560,6 +80574,39 @@
+     }
+ 
+ 
++def _saved_docx_fidelity_from_snapshot(snapshot):
++    """Server-side provenance for one accepted Arabic DT strategy snapshot.
++
++    The claim is not read from request JSON. Sections are copied; the
++    frozen snapshot is not mutated.
++    """
++    if (
++            snapshot is None
++            or snapshot.document_type != 'strategy'
++            or snapshot.domain_code != 'dt'
++            or snapshot.language_code != 'ar'):
++        return None, {}
++    from release_engine_v3.canonical_document import (
++        saved_docx_content_digest,
++        saved_docx_section_digest,
++    )
++    sections = {}
++    for key, value in snapshot.sections.items():
++        if isinstance(value, str):
++            sections[str(key)] = value
++    claim = {
++        'record_id': snapshot.record_id,
++        'owner_id': snapshot.owner_id,
++        'domain_code': snapshot.domain_code,
++        'language_code': snapshot.language_code,
++        'document_type': snapshot.document_type,
++        'route': 'docx',
++        'content_sha256': saved_docx_content_digest(snapshot.content),
++        'sections_sha256': saved_docx_section_digest(sections),
++    }
++    return claim, sections
++
++
+ def _docx_bind_arabic_dt(record_id, owner_id, folded, domain_raw):
+     from saved_arabic_dt_strategy_binding import (
+         bind_saved_arabic_dt_strategy,
+@@ -80624,6 +80671,7 @@
+             "response": _docx_refusal(
+                 422, "saved_scope_unresolved", detail="domain_code"),
+         }
++    _saved_claim, _saved_sections = _saved_docx_fidelity_from_snapshot(snapshot)
+     return {
+         "response": None,
+         "kind": "arabic_dt",
+@@ -80635,6 +80683,8 @@
+         "domain_display": domain_display,
+         "document_type": snapshot.document_type,
+         "generation_mode": snapshot.generation_mode,
++        "sections": _saved_sections,
++        "saved_docx_fidelity": _saved_claim,
+     }
+ 
+ 
+@@ -81100,8 +81150,13 @@
+                     pass
+                 if _saved_arabic_dt:
+                     _async_art['final_markdown'] = _content
+-                    _async_art['sections'] = (
+-                        _split_strategy_sections_by_h2(_content or '') or {})
++                    _async_saved_sections = dict(
++                        _docx_dispatch.get('sections') or {})
++                    _async_art['sections'] = _async_saved_sections
++                    _async_claim = _docx_dispatch.get('saved_docx_fidelity')
++                    if isinstance(_async_claim, dict):
++                        _async_art['_saved_docx_fidelity'] = dict(_async_claim)
++                    _async_art['_rel32_export_user_id'] = _export_owner_id
+                     _async_art['document_type'] = _doc_type
+                     _async_art['domain'] = _domain
+                     _async_cm_locked = _async_art.get('contract_meta')
+@@ -82597,8 +82652,37 @@
+     _docx_sections_rendered: list = []
+     _docx_raw_fallback = False
+ 
++    def _docx_render_source_flow(flow):
++        """Draw saved headings, prose and tables in source order.
++
++        Row width must already match the header. This path does not clip a
++        wider row or replace the header with a fixed schema.
++        """
++        for item in flow or []:
++            kind = item.get('kind')
++            if kind == 'heading':
++                level = int(item.get('level') or 2)
++                _docx_pro_heading(
++                    item.get('text') or '',
++                    level=1 if level <= 2 else 3)
++            elif kind == 'prose':
++                _docx_pro_paragraph(item.get('text') or '')
++            elif kind == 'table':
++                header = list(item.get('header') or [])
++                rows = [list(row) for row in (item.get('rows') or [])]
++                if not header or any(len(row) != len(header) for row in rows):
++                    raise ValueError(
++                        'saved_docx_fidelity_refused:malformed_table')
++                _docx_pro_grid_table(header, rows)
++            else:
++                raise ValueError(
++                    'saved_docx_fidelity_refused:unsupported_markdown')
++
+     def _docx_render_professional_block(kind, blk):
+         """Render one professional model block (PDF/DOCX parity)."""
++        if blk.get('source_flow'):
++            _docx_render_source_flow(blk.get('source_flow'))
++            return
+         if kind == 'doc_control':
+             if blk.get('title'):
+                 _docx_pro_heading(blk.get('title', ''))
+@@ -82671,6 +82755,15 @@
+         if kind == 'governance_ownership':
+             if blk.get('title'):
+                 _docx_pro_heading(blk.get('title', ''))
++            try:
++                from professional_strategy_render import (
++                    saved_docx_fidelity_rendering,
++                )
++                if saved_docx_fidelity_rendering():
++                    for _para in (blk.get('paragraphs') or []):
++                        _docx_pro_paragraph(_para)
++            except Exception:
++                pass
+             _gv_rows = blk.get('rows') or []
+             if _gv_rows:
+                 _gv_max_cols = max((len(r) for r in _gv_rows), default=3)
+@@ -82693,6 +82786,15 @@
+         if kind == 'traceability_matrix':
+             if blk.get('title'):
+                 _docx_pro_heading(blk.get('title', ''))
++            try:
++                from professional_strategy_render import (
++                    saved_docx_fidelity_rendering,
++                )
++                if saved_docx_fidelity_rendering():
++                    for _para in (blk.get('paragraphs') or []):
++                        _docx_pro_paragraph(_para)
++            except Exception:
++                pass
+             _split_tbls = blk.get('split_tables') or []
+             if _split_tbls:
+                 for _st in _split_tbls:
+@@ -82730,6 +82832,7 @@
+                 _docx_pro_heading(tbl['title'])
+             _docx_pro_grid_table(tbl.get('header'), tbl.get('rows'))
+ 
++    _saved_flow = False
+     if _docx_professional:
+         try:
+             from professional_strategy_render import (
+@@ -82741,8 +82844,23 @@
+                 count_model_arabic_spacing_issues,
+             )
+             _dblocks = _docx_doc_model.get('blocks') or {}
+-            for _kind in PROFESSIONAL_EXPORT_SECTION_ORDER:
++            try:
++                from professional_strategy_render import (
++                    saved_docx_fidelity_rendering,
++                )
++                _saved_flow = saved_docx_fidelity_rendering()
++            except Exception:
++                _saved_flow = False
++            if _saved_flow:
++                # Absent professional blocks are not rendered, so an empty
++                # scope block cannot invent a frameworks statement.
++                _render_order = list(_docx_doc_model.get('order') or [])
++            else:
++                _render_order = list(PROFESSIONAL_EXPORT_SECTION_ORDER)
++            for _kind in _render_order:
+                 _blk = _dblocks.get(_kind) or {}
++                if _saved_flow and not _blk.get('source_flow'):
++                    continue
+                 if _kind == 'current_state' and not (_blk.get('paragraphs') or []):
+                     continue
+                 try:
+@@ -82755,6 +82873,10 @@
+                         f'error={_sec_e!r}',
+                         flush=True,
+                     )
++                    if _saved_flow:
++                        # A saved section failure must not continue into an
++                        # apparently complete document.
++                        raise
+             _export_keys = get_professional_export_section_keys(_docx_doc_model)
+             _missing = [
+                 k for k in (
+@@ -82795,6 +82917,8 @@
+                 f'[DOCX-EXPORT-PARITY] professional_render_failed: {_dpro_e!r}',
+                 flush=True,
+             )
++            if _saved_flow:
++                raise
+             if (_docx_doc_model or {}).get(
+                     'render_layer') != 'prcy41_professional':
+                 _docx_professional = False
+@@ -83594,6 +83718,9 @@
+                         _resolved_docx_sid if _saved_arabic_dt else (
+                             _resolve_numeric_strategy_id(
+                                 _art_id, session.get('user_id', 0)) or '')),
++                    '_rel32_export_user_id': (
++                        _export_owner_id if _saved_arabic_dt else
++                        session.get('user_id', 0)),
+                     'document_type': (
+                         doc_type if _saved_arabic_dt else _art_type),
+                     'final_hash': _export_hash,
+@@ -83613,6 +83740,9 @@
+                 'domain': domain,
+                 'sealed': bool(_cyber_sealed_docx),
+                 'strategy_id': str(_art_id or data.get('artifact_id') or ''),
++                '_rel32_export_user_id': (
++                    _export_owner_id if _saved_arabic_dt else
++                    session.get('user_id', 0)),
+                 'final_hash': _export_hash,
+                 'contract_meta': {
+                     'lang': lang,
+@@ -83622,8 +83752,14 @@
+             }
+         if _saved_arabic_dt and isinstance(_rel3_art_base, dict):
+             _rel3_art_base['final_markdown'] = content
+-            _rel3_art_base['sections'] = (
+-                _split_strategy_sections_by_h2(content or '') or {})
++            _rel3_art_base['sections'] = dict(
++                _docx_dispatch.get('sections') or {})
++            _sync_claim = _docx_dispatch.get('saved_docx_fidelity')
++            if isinstance(_sync_claim, dict):
++                _rel3_art_base['_saved_docx_fidelity'] = dict(_sync_claim)
++            # The validated binder owner, not a client integer and not a
++            # backend-only value the artifact copy would drop.
++            _rel3_art_base['_rel32_export_user_id'] = _export_owner_id
+             _rel3_art_base['document_type'] = doc_type
+             _rel3_art_base['domain'] = domain
+             _locked_cm = _rel3_art_base.get('contract_meta')
+@@ -83650,6 +83786,7 @@
+                 artifact_dict=_rel3_art,
+                 domain=domain,
+                 lang=lang,
++                backend=_rel2_export_be,
+                 export_kwargs={
+                     'filename': filename,
+                     'lang': lang,
+--- a/release_engine_v3/canonical_document.py
++++ b/release_engine_v3/canonical_document.py
+@@ -3,6 +3,8 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import json
++import re
+ import uuid
+ from typing import Any, Dict, List, Optional, Tuple
+ 
+@@ -24,6 +26,314 @@
+ 
+ _ARTIFACT_REGISTRY: Dict[str, FinalDocumentArtifact] = {}
+ 
++SAVED_DOCX_FIDELITY_KEY = '_saved_docx_fidelity'
++SAVED_DOCX_REQUIRED_SECTIONS = (
++    'vision', 'pillars', 'environment', 'gaps', 'roadmap',
++    'kpis', 'confidence', 'governance', 'traceability',
++)
++
++
++def _saved_docx_positive_int(value: Any) -> Optional[int]:
++    if isinstance(value, bool):
++        return None
++    if type(value) is int and value > 0:
++        return value
++    if isinstance(value, str):
++        text = value.strip()
++        if text.isdigit():
++            parsed = int(text)
++            if parsed > 0:
++                return parsed
++    return None
++
++
++def saved_docx_section_strings(sections: Optional[Dict[str, Any]]) -> Dict[str, str]:
++    """String section bodies only. Underscore keys are not business content."""
++    out: Dict[str, str] = {}
++    for key, value in dict(sections or {}).items():
++        if str(key).startswith('_'):
++            continue
++        if isinstance(value, str):
++            out[str(key)] = value
++    return out
++
++
++def saved_docx_section_digest(sections: Optional[Dict[str, Any]]) -> str:
++    payload = saved_docx_section_strings(sections)
++    raw = json.dumps(
++        payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
++    ).encode('utf-8')
++    return hashlib.sha256(raw).hexdigest()
++
++
++def saved_docx_content_digest(content: Any) -> str:
++    return hashlib.sha256(str(content or '').encode('utf-8')).hexdigest()
++
++
++def _saved_norm_text(value: Any) -> str:
++    """Benign comparison whitespace. Brackets and punctuation stay."""
++    text = str(value or '').replace('\u00a0', ' ')
++    return re.sub(r'\s+', ' ', text).strip()
++
++
++def _saved_split_pipe_row(line: str) -> Optional[List[str]]:
++    """Split one bordered pipe row. A backslash-escaped pipe stays in the cell."""
++    raw = str(line or '').strip()
++    if len(raw) < 2 or not raw.startswith('|') or not raw.endswith('|'):
++        return None
++    body = raw[1:-1]
++    cells: List[str] = []
++    buf: List[str] = []
++    index = 0
++    while index < len(body):
++        char = body[index]
++        if char == '\\' and index + 1 < len(body) and body[index + 1] == '|':
++            buf.append('|')
++            index += 2
++            continue
++        if char == '|':
++            cells.append(''.join(buf).strip())
++            buf = []
++            index += 1
++            continue
++        buf.append(char)
++        index += 1
++    cells.append(''.join(buf).strip())
++    return cells
++
++
++def _saved_separator_row(cells: List[str]) -> bool:
++    return bool(cells) and all(
++        re.fullmatch(r':?-{3,}:?', cell or '') for cell in cells)
++
++
++def parse_saved_markdown_structure(
++        text: Any) -> Tuple[List[Dict[str, Any]], str]:
++    """Ordered headings, prose and tables. A non-empty error refuses export.
++
++    Supported Markdown is ATX headings, blank-line-separated prose, and pipe
++    tables with a leading and trailing pipe, one separator row, and data rows
++    of the header width. Escaped pipes and empty cells are kept. Any other
++    pipe line is unsupported and is not truncated into a shorter row.
++    """
++    blocks: List[Dict[str, Any]] = []
++    prose: List[str] = []
++
++    def flush() -> None:
++        chunk = '\n'.join(prose).strip()
++        prose.clear()
++        if chunk:
++            blocks.append({'kind': 'prose', 'text': chunk})
++
++    lines = str(text or '').splitlines()
++    index = 0
++    while index < len(lines):
++        stripped = lines[index].strip()
++        if not stripped:
++            flush()
++            index += 1
++            continue
++        heading = re.match(r'^(#{1,6})\s+(\S.*?)\s*$', stripped)
++        if heading:
++            flush()
++            blocks.append({
++                'kind': 'heading',
++                'level': len(heading.group(1)),
++                'text': heading.group(2).strip(),
++            })
++            index += 1
++            continue
++        if '|' in stripped and not (
++                stripped.startswith('|') and stripped.endswith('|')):
++            return blocks, 'saved_docx_fidelity_refused:unsupported_markdown'
++        if stripped.startswith('|') and stripped.endswith('|'):
++            flush()
++            raw_rows: List[List[str]] = []
++            while index < len(lines) and '|' in lines[index]:
++                if not lines[index].strip():
++                    break
++                cells = _saved_split_pipe_row(lines[index])
++                if cells is None:
++                    return blocks, 'saved_docx_fidelity_refused:unsupported_markdown'
++                raw_rows.append(cells)
++                index += 1
++            if len(raw_rows) < 2 or not _saved_separator_row(raw_rows[1]):
++                return blocks, 'saved_docx_fidelity_refused:malformed_table'
++            header = raw_rows[0]
++            data: List[List[str]] = []
++            for row in raw_rows[2:]:
++                if _saved_separator_row(row) or len(row) != len(header):
++                    return blocks, 'saved_docx_fidelity_refused:malformed_table'
++                data.append(row)
++            blocks.append({'kind': 'table', 'header': header, 'rows': data})
++            continue
++        prose.append(lines[index])
++        index += 1
++    flush()
++    return blocks, ''
++
++
++def saved_markdown_signature(blocks: List[Dict[str, Any]]) -> Tuple[Any, ...]:
++    """Order-sensitive structure after benign whitespace normalization."""
++    signature: List[Any] = []
++    for block in blocks:
++        kind = block.get('kind')
++        if kind == 'heading':
++            signature.append((
++                'heading', int(block.get('level') or 0),
++                _saved_norm_text(block.get('text'))))
++        elif kind == 'prose':
++            signature.append(('prose', _saved_norm_text(block.get('text'))))
++        elif kind == 'table':
++            header = tuple(
++                _saved_norm_text(cell) for cell in (block.get('header') or []))
++            rows = tuple(
++                tuple(_saved_norm_text(cell) for cell in row)
++                for row in (block.get('rows') or []))
++            signature.append(('table', header, rows))
++    return tuple(signature)
++
++
++def saved_body_sections_consistency(
++        content: Any, sections: Optional[Dict[str, Any]]) -> str:
++    """Refuse when the saved body and section map are not the same structure.
++
++    Digests are not this check. The nine section structures, in order, must
++    equal the body structure. A stale map, an extra business section, or a
++    malformed table is a concrete refusal.
++    """
++    strings = saved_docx_section_strings(sections)
++    unexpected = [
++        key for key in strings if key not in SAVED_DOCX_REQUIRED_SECTIONS]
++    if unexpected:
++        return 'saved_docx_fidelity_refused:unexpected_section:' + unexpected[0]
++    body_blocks, body_error = parse_saved_markdown_structure(content)
++    if body_error:
++        return body_error
++    combined: List[Dict[str, Any]] = []
++    for key in SAVED_DOCX_REQUIRED_SECTIONS:
++        part_blocks, part_error = parse_saved_markdown_structure(
++            strings.get(key) or '')
++        if part_error:
++            return part_error
++        if not part_blocks:
++            return f'saved_docx_fidelity_refused:section_missing:{key}'
++        combined.extend(part_blocks)
++    if saved_markdown_signature(body_blocks) != saved_markdown_signature(combined):
++        return 'saved_docx_fidelity_refused:body_sections_disagree'
++    return ''
++
++
++_SAVED_CANON_KEYS = {
++    'vision': 'vision_objectives',
++    'pillars': 'pillars',
++    'environment': 'environment',
++    'gaps': 'gap_analysis',
++    'roadmap': 'roadmap',
++    'kpis': 'kpi_kri',
++    'confidence': 'confidence_risk',
++    'governance': 'governance',
++    'traceability': 'traceability',
++}
++
++
++def saved_source_canonical_sections(
++        sections: Optional[Dict[str, Any]]) -> Dict[str, CanonicalSection]:
++    """Canonical slots whose narrative is the original section markdown.
++
++    table_rows stays empty and the key is not a catalog section key, so
++    section_to_markdown returns that narrative instead of inventing a header
++    or treating the source header as a data row. The title is empty so no
++    second heading is prefixed.
++    """
++    strings = saved_docx_section_strings(sections)
++    out: Dict[str, CanonicalSection] = {}
++    for legacy_key, canon_key in _SAVED_CANON_KEYS.items():
++        body = strings.get(legacy_key) or ''
++        if not body.strip():
++            continue
++        out[canon_key] = CanonicalSection(
++            key='saved_source',
++            title='',
++            narrative=body,
++            table_rows=(),
++        )
++    return out
++
++
++def saved_frozen_source_refusal(artifact: Optional[Dict[str, Any]], frozen: Any) -> str:
++    """Refuse a pre-existing frozen artifact that is not this saved source."""
++    fidelity = evaluate_saved_docx_fidelity(artifact)
++    if not fidelity:
++        return ''
++    if fidelity.startswith('saved_docx_fidelity_refused'):
++        return fidelity
++    frozen_sections = getattr(frozen, 'legacy_sections', None) or {}
++    frozen_markdown = getattr(frozen, 'final_markdown_view', '') or ''
++    section_error = saved_body_sections_consistency(
++        (artifact or {}).get('final_markdown'),
++        (artifact or {}).get('sections'))
++    if section_error:
++        return section_error
++    frozen_error = saved_body_sections_consistency(
++        frozen_markdown, frozen_sections)
++    if frozen_error:
++        return 'saved_docx_fidelity_refused:frozen_source_differs'
++    art_blocks, _art_err = parse_saved_markdown_structure(
++        (artifact or {}).get('final_markdown'))
++    frozen_blocks, _frozen_err = parse_saved_markdown_structure(frozen_markdown)
++    if saved_markdown_signature(art_blocks) != saved_markdown_signature(frozen_blocks):
++        return 'saved_docx_fidelity_refused:frozen_source_differs'
++    return ''
++
++
++def evaluate_saved_docx_fidelity(artifact: Optional[Dict[str, Any]]) -> str:
++    """Return '' , 'preserve', or a saved_docx_fidelity_refused code.
++
++    '' means this export is not the server-accepted saved DOCX path.
++    A claim is read only from the artifact field created after binder
++    acceptance. contract_meta and request JSON are not a claim.
++    """
++    if not isinstance(artifact, dict) or SAVED_DOCX_FIDELITY_KEY not in artifact:
++        return ''
++    claim = artifact.get(SAVED_DOCX_FIDELITY_KEY)
++    if not isinstance(claim, dict):
++        return 'saved_docx_fidelity_refused:malformed_context'
++    if claim.get('route') != 'docx':
++        return 'saved_docx_fidelity_refused:route'
++    if claim.get('domain_code') != 'dt':
++        return 'saved_docx_fidelity_refused:domain'
++    if claim.get('language_code') != 'ar':
++        return 'saved_docx_fidelity_refused:language'
++    if claim.get('document_type') != 'strategy':
++        return 'saved_docx_fidelity_refused:document_type'
++    record_id = _saved_docx_positive_int(claim.get('record_id'))
++    owner_id = _saved_docx_positive_int(claim.get('owner_id'))
++    artifact_record = _saved_docx_positive_int(
++        artifact.get('strategy_id') or artifact.get('artifact_id'))
++    artifact_owner = _saved_docx_positive_int(
++        artifact.get('_rel32_export_user_id'))
++    if (
++            record_id is None or owner_id is None
++            or artifact_record != record_id or artifact_owner != owner_id):
++        return 'saved_docx_fidelity_refused:identity'
++    sections = saved_docx_section_strings(artifact.get('sections'))
++    for key in SAVED_DOCX_REQUIRED_SECTIONS:
++        if not str(sections.get(key) or '').strip():
++            return f'saved_docx_fidelity_refused:section_missing:{key}'
++    content = artifact.get('final_markdown')
++    if not isinstance(content, str) or not content.strip():
++        return 'saved_docx_fidelity_refused:content_missing'
++    if saved_docx_content_digest(content) != str(claim.get('content_sha256') or ''):
++        return 'saved_docx_fidelity_refused:content_digest'
++    if saved_docx_section_digest(sections) != str(claim.get('sections_sha256') or ''):
++        return 'saved_docx_fidelity_refused:sections_digest'
++    consistency = saved_body_sections_consistency(
++        content, artifact.get('sections'))
++    if consistency:
++        return consistency
++    return 'preserve'
++
+ 
+ def _artifact_id_from(legacy: Dict[str, Any]) -> str:
+     aid = (
+@@ -131,6 +441,7 @@
+         document_type: str = 'strategy',
+         route: str = '',
+         phase: str = 'freeze',
++        preserve_saved: bool = False,
+ ) -> Tuple[Dict[str, CanonicalSection], Dict[str, str], List[str]]:
+     """Build canonical sections. REL3.3 document-type compiler authority:
+ 
+@@ -168,6 +479,11 @@
+             # and never invoke the strategy compiler. compile_canonical_strategy_document
+             # itself fails closed if it is ever reached with a risk document_type.
+             compiler_selected = 'risk_native'
++        elif preserve_saved:
++            # Saved DOCX fidelity: keep the accepted section text. The
++            # strategy compiler would replace objectives, initiatives, KPI
++            # rows and roadmap rows with registry content.
++            compiler_selected = 'saved_docx_fidelity'
+         else:
+             # Preserve existing strategy/gap behavior exactly: the compiler
+             # authority is decided as before (strategy-shaped) for non-risk.
+@@ -202,6 +518,15 @@
+         'synthetic_strategy_sections_created': synthetic_sections_created,
+         'blocking_errors': list(authority_blockers),
+     })
++    if preserve_saved:
++        # Do not parse through build_strategy_document. Its table parser
++        # keeps a source header as a data row, and the later markdown
++        # renderer then invents a replacement header.
++        return (
++            saved_source_canonical_sections(sections_src),
++            sections_src,
++            authority_blockers,
++        )
+     doc = build_strategy_document(sections_src)
+     sections = doc.as_dict()
+     raw_kpi = (
+@@ -312,13 +637,23 @@
+                 for k, v in legacy_sections.items())
+         except Exception:  # noqa: BLE001
+             pass
++    fidelity = evaluate_saved_docx_fidelity(legacy_artifact)
++    preserve_saved = fidelity == 'preserve'
++    fidelity_refused = fidelity.startswith('saved_docx_fidelity_refused')
++    # Refusal keeps the accepted text too. The compiler must not invent a
++    # replacement document for a claim that is about to be blocked.
++    keep_saved_source = preserve_saved or fidelity_refused
+     canon_map, legacy_sections, _authority_blockers = _legacy_to_canonical_sections(
+         legacy_sections, lang=lang, domain=domain, backend=backend,
+-        document_type=document_type, phase='build_final_document_artifact')
++        document_type=document_type, phase='build_final_document_artifact',
++        preserve_saved=keep_saved_source)
+     canon_hash = compute_canonical_hash(canon_map)
+-    legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
++    if not keep_saved_source:
++        legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
+     blockers = list(legacy_artifact.get('blocking_errors') or [])
+     blockers.extend(_authority_blockers)
++    if fidelity_refused:
++        blockers.append(fidelity)
+     if not str(domain or '').strip() and document_type == 'strategy':
+         blockers.append('rel33_export_domain_missing:canonical_artifact')
+     quality = validate_canonical_quality(
+--- a/release_engine_v3/exporters/docx_exporter.py
++++ b/release_engine_v3/exporters/docx_exporter.py
+@@ -70,8 +70,28 @@
+     content = render_tree.markdown_view or ''
+     sec_map: Dict[str, str] = {}
+     renderer_meta: Dict[str, Any] = {}
++    from release_engine_v3.canonical_document import (
++        evaluate_saved_docx_fidelity,
++        saved_docx_section_strings,
++    )
++    fidelity = evaluate_saved_docx_fidelity(artifact_dict)
++    saved_render = fidelity == 'preserve'
++
++    if fidelity.startswith('saved_docx_fidelity_refused'):
++        return ExportResult(
++            route_name='docx',
++            artifact_id=render_tree.artifact_id,
++            render_tree_hash=render_tree.render_tree_hash,
++            canonical_hash=render_tree.canonical_hash,
++            blocking_errors=[fidelity],
++        )
+ 
+-    if backend.get('_rel32_frozen_export_lock_active') and frozen_artifact is not None:
++    if saved_render:
++        # Writer body and section map are the same accepted snapshot.
++        # The render-tree markdown is a second compilation and is not used.
++        content = str((artifact_dict or {}).get('final_markdown') or '')
++        sec_map = saved_docx_section_strings((artifact_dict or {}).get('sections'))
++    elif backend.get('_rel32_frozen_export_lock_active') and frozen_artifact is not None:
+         from release_engine_v3.rel32_docx_renderer import (
+             bind_rel32_docx_renderer_input,
+             emit_rel32_docx_renderer_diag,
+@@ -155,21 +175,29 @@
+             or backend.get('_rel32_frozen_export_lock_active')
+             or backend.get('_rel31_frozen_sections'))
+         sections_loaded = bool(sec_map)
+-        with rel31_export_adapter_context():
+-            docx_bytes = build_fn(
+-                content,
+-                filename,
+-                lang,
+-                **_filter_build_kwargs(build_fn, {
+-                    'org_name': org_name,
+-                    'sector': sector,
+-                    'doc_type': doc_type,
+-                    'domain': domain,
+-                    'selected_frameworks': selected_frameworks,
+-                    'cyber_sealed_artifact': cyber_sealed_artifact,
+-                    'sections': sec_map,
+-                }),
+-            )
++        from professional_strategy_render import (
++            pop_saved_docx_fidelity_rendering,
++            push_saved_docx_fidelity_rendering,
++        )
++        fidelity_token = push_saved_docx_fidelity_rendering(saved_render)
++        try:
++            with rel31_export_adapter_context():
++                docx_bytes = build_fn(
++                    content,
++                    filename,
++                    lang,
++                    **_filter_build_kwargs(build_fn, {
++                        'org_name': org_name,
++                        'sector': sector,
++                        'doc_type': doc_type,
++                        'domain': domain,
++                        'selected_frameworks': selected_frameworks,
++                        'cyber_sealed_artifact': cyber_sealed_artifact,
++                        'sections': sec_map,
++                    }),
++                )
++        finally:
++            pop_saved_docx_fidelity_rendering(fidelity_token)
+         auth_diag = evaluate_rel33_docx_export_authority(
+             route='docx',
+             domain=domain,
+--- a/professional_strategy_render.py
++++ b/professional_strategy_render.py
+@@ -3,12 +3,29 @@
+ 
+ from __future__ import annotations
+ 
++import contextvars
+ import re
+ from copy import deepcopy
+ from typing import Any, Dict, List, Optional, Tuple
+ 
+ from release_engine.risk_treatment_model import specific_risk_treatment_for_blob
+ 
++_SAVED_DOCX_SOURCE_FIDELITY = contextvars.ContextVar(
++    'mizan_saved_docx_source_fidelity', default=False)
++
++
++def saved_docx_fidelity_rendering() -> bool:
++    """True only while a validated saved-DOCX export is inside the writer."""
++    return bool(_SAVED_DOCX_SOURCE_FIDELITY.get())
++
++
++def push_saved_docx_fidelity_rendering(active: bool):
++    return _SAVED_DOCX_SOURCE_FIDELITY.set(bool(active))
++
++
++def pop_saved_docx_fidelity_rendering(token) -> None:
++    _SAVED_DOCX_SOURCE_FIDELITY.reset(token)
++
+ # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
+ # Longest patterns first — shorter keys must not run before longer ones.
+ PRCY41_AR_CONCAT_FIXES: Tuple[Tuple[str, str], ...] = (
+@@ -563,6 +580,10 @@
+     """
+     if text is None:
+         return ''
++    if saved_docx_fidelity_rendering():
++        # Keep brackets, formulas, identifiers and the saved confidence
++        # statement. Layout whitespace at the edges is the only change.
++        return str(text).strip()
+     out = prepare_section_text(str(text), lang)
+     out = prcy47_fix_ar_fragments(out)
+     out = _repair_gap_header_fragments(out)
+@@ -2963,6 +2984,8 @@
+         blocks: Dict[str, Any], lang: str = 'ar',
+         domain: str = '') -> Dict[str, Any]:
+     """PR-CY48 — last pass over all blocks before PDF/DOCX render."""
++    if saved_docx_fidelity_rendering():
++        return blocks
+     out = deepcopy(blocks)
+     for kind, blk in out.items():
+         if not isinstance(blk, dict):
+@@ -6634,6 +6657,8 @@
+         section_splitter=None,
+ ) -> Dict[str, Any]:
+     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
++    if saved_docx_fidelity_rendering() and model:
++        return model
+     if model and model.get('render_layer') == 'prcy41_professional':
+         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
+         blocks = deepcopy(model.get('blocks') or {})
+@@ -6653,6 +6678,63 @@
+         model, content_sections, metadata, lang_n)
+ 
+ 
++_SAVED_SECTION_BLOCK = {
++    'vision': 'vision_objectives',
++    'pillars': 'strategic_pillars',
++    'environment': 'environment_context',
++    'gaps': 'gap_analysis',
++    'roadmap': 'roadmap',
++    'kpis': 'kpi_kri_framework',
++    'confidence': 'confidence_risk_register',
++    'governance': 'governance_ownership',
++    'traceability': 'traceability_matrix',
++}
++
++
++def build_saved_source_strategy_model(
++        sections: Optional[Dict[str, str]],
++        *,
++        metadata: Optional[Dict[str, Any]] = None,
++        lang: str = 'ar',
++        domain: Optional[str] = None,
++) -> Dict[str, Any]:
++    """Ordered saved headings, prose and tables. No invented framework line.
++
++    A malformed or unsupported section raises ValueError with the refusal
++    code. This does not call the registry compiler, schema rebind, roadmap
++    compaction, catalog substitution, or the confidence percentage scan.
++    Client framework selections are not copied onto the model.
++    """
++    from release_engine_v3.canonical_document import (
++        parse_saved_markdown_structure,
++    )
++    blocks: Dict[str, Any] = {}
++    order: List[str] = []
++    source = sections if isinstance(sections, dict) else {}
++    for key, kind in _SAVED_SECTION_BLOCK.items():
++        body = source.get(key) or ''
++        if not isinstance(body, str) or not body.strip():
++            continue
++        flow, error = parse_saved_markdown_structure(body)
++        if error:
++            raise ValueError(error)
++        if not flow:
++            raise ValueError(
++                'saved_docx_fidelity_refused:section_missing:' + key)
++        blocks[kind] = {'source_flow': flow}
++        order.append(kind)
++    return {
++        'render_layer': 'prcy41_professional',
++        'saved_docx_source': True,
++        'domain': domain or (metadata or {}).get('domain') or '',
++        'lang': lang,
++        'order': order,
++        'professional_section_order': order,
++        'blocks': blocks,
++        'selected_frameworks': [],
++    }
++
++
+ def build_professional_strategy_document_model(
+         content: str,
+         metadata: Optional[Dict[str, Any]] = None,
+--- a/release_engine_v3/rel31_authority.py
++++ b/release_engine_v3/rel31_authority.py
+@@ -15,6 +15,7 @@
+ )
+ from release_engine_v3.canonical_document import (
+     build_final_document_artifact,
++    evaluate_saved_docx_fidelity,
+     freeze_artifact,
+     store_artifact,
+ )
+@@ -954,6 +955,41 @@
+     repairs: List[str] = []
+     art = dict(legacy_artifact)
+     sections = dict(art.get('sections') or {})
++    fidelity = evaluate_saved_docx_fidelity(art)
++    if fidelity == 'preserve' or str(fidelity).startswith(
++            'saved_docx_fidelity_refused'):
++        # Exclude pre-freeze replacement before any English-cyber or
++        # compiler rewrite can change the accepted snapshot.
++        import copy
++        if fidelity == 'preserve':
++            observed = copy.deepcopy(sections)
++            for _name, _fn in (
++                    ('objectives', validate_rel3_objectives),
++                    ('roadmap', validate_rel3_roadmap_output_quality),
++            ):
++                try:
++                    _result = _fn(observed, backend=backend)
++                except Exception:  # noqa: BLE001
++                    art.setdefault('blocking_errors', []).append(
++                        'saved_docx_fidelity_refused:validator_exception:'
++                        + _name)
++                    continue
++                _blocker = ''
++                if isinstance(_result, dict):
++                    _blocker = str(_result.get('blocker') or '')
++                    if not _blocker and _result.get('valid') is False:
++                        _blocker = (
++                            'rel3_generation_contract_failed:' + _name)
++                if _blocker:
++                    art.setdefault('blocking_errors', []).append(_blocker)
++            # The copy may have been rewritten. The saved sections stay.
++            repairs.append('saved_docx_fidelity:validator_decisions_retained')
++            repairs.append(
++                'saved_docx_fidelity:validator_replacements_discarded')
++        else:
++            art.setdefault('blocking_errors', []).append(fidelity)
++        art['sections'] = sections
++        return art, repairs
+     lang = str(
+         backend.get('lang')
+         or (art.get('contract_meta') or {}).get('lang')
+@@ -1535,6 +1571,36 @@
+                     ), ev
+ 
+     if frozen_pre is not None:
++        from release_engine_v3.canonical_document import (
++            saved_frozen_source_refusal,
++        )
++        _frozen_refusal = saved_frozen_source_refusal(art, frozen_pre)
++        if _frozen_refusal:
++            ev = EvidenceResult(
++                route_name=route_n,
++                artifact_id=str(art.get('artifact_id') or ''),
++                strategy_id=str(art.get('strategy_id') or ''),
++                canonical_hash='',
++                render_tree_hash='',
++                returned_bytes_sha256='',
++                evidence_bytes_sha256='',
++                returned_equals_evidence_bytes=False,
++                exact_bytes_checked=False,
++                preview_text_checked=False,
++                docx_bytes_checked=False,
++                pdf_bytes_checked=False,
++                evidence_passed=False,
++                export_return_allowed=False,
++                blocking_errors=[_frozen_refusal],
++            )
++            ev.emit_diag()
++            return ExportResult(
++                route_name=route_n,
++                artifact_id=str(art.get('artifact_id') or ''),
++                render_tree_hash='',
++                canonical_hash='',
++                blocking_errors=[_frozen_refusal],
++            ), ev
+         frozen = frozen_pre
+         backend['_rel32_export_artifact_dict'] = art
+         try:
+@@ -1606,6 +1672,7 @@
+                 canonical_hash='',
+                 blocking_errors=bind_blockers,
+             ), ev
++        backend['_rel32_export_artifact_dict'] = art
+         with rel31_export_adapter_context():
+             frozen = rel3_freeze_artifact(art)
+             try:
+@@ -1657,11 +1724,15 @@
+             frozen.render_tree_hash = _tree.render_tree_hash
+             register_rel32_frozen_export_lock(
+                 frozen, render_tree_hash=_tree.render_tree_hash)
++            _saved_source_selected = (
++                evaluate_saved_docx_fidelity(art) == 'preserve')
+             lock_meta = {
+                 'frozen_artifact_loaded_for_docx': False,
+                 'frozen_artifact_loaded_for_pdf': False,
+-                'docx_rebuilt_from_markdown': route_n == 'docx',
++                'docx_rebuilt_from_markdown': (
++                    route_n == 'docx' and not _saved_source_selected),
+                 'pdf_rebuilt_from_markdown': route_n == 'pdf',
++                'saved_docx_source_selected': _saved_source_selected,
+                 'blocking_errors': [],
+             }
+             export, evidence = rel3_export_with_evidence(
+@@ -1719,14 +1790,25 @@
+         mutation_after_contract_detected=mutation,
+         route_name=route_n,
+     )
++    _saved_source_selected = evaluate_saved_docx_fidelity(art) == 'preserve'
++    if isinstance(lock_meta, dict):
++        lock_meta['saved_docx_source_selected'] = _saved_source_selected
++        if _saved_source_selected and route_n == 'docx':
++            # Writer and frozen narrative are the saved sections. Do not
++            # keep the historical rebuilt-markdown label for this path.
++            lock_meta['docx_rebuilt_from_markdown'] = False
+     emit_rel3_source_authority_check(
+         route_name=route_n,
+         artifact_id=str(art.get('artifact_id') or frozen.artifact_id or ''),
+         strategy_id=str(art.get('strategy_id') or frozen.strategy_id or ''),
+-        source_used='rel3_render_tree',
++        source_used=(
++            'saved_docx_snapshot' if lock_meta.get(
++                'saved_docx_source_selected') else 'rel3_render_tree'),
+         sealed_artifact_used=True,
+         render_tree_hash=tree,
+         canonical_hash=canon,
++        saved_docx_source_selected=bool(
++            lock_meta.get('saved_docx_source_selected')),
+         strategies_content_direct_used=False,
+         legacy_helper_used_inside_rel3_adapter=True,
+         legacy_helper_authoritative=False,
+@@ -1783,6 +1865,7 @@
+         strategies_content_direct_used: bool = False,
+         cyber_final_export_contract_used: bool = False,
+         professional_raw_markdown_used: bool = False,
++        saved_docx_source_selected: bool = False,
+         legacy_helper_used_inside_rel3_adapter: bool = False,
+         legacy_helper_authoritative: bool = False,
+         rel3_authoritative: bool = True,
+@@ -1813,6 +1896,7 @@
+         'strategies_content_direct_used': strategies_content_direct_used,
+         'cyber_final_export_contract_used': cyber_final_export_contract_used,
+         'professional_raw_markdown_used': professional_raw_markdown_used,
++        'saved_docx_source_selected': bool(saved_docx_source_selected),
+         'legacy_helper_used_inside_rel3_adapter': bool(
+             legacy_helper_used_inside_rel3_adapter),
+         'legacy_helper_authoritative': bool(legacy_helper_authoritative),
+--- a/tests/test_docx_real_render_r02.py
++++ b/tests/test_docx_real_render_r02.py
+@@ -89,6 +89,11 @@
+     return _write_bytes(path, data)
+ 
+ 
++def _write_exact(path, text):
++    """Argument-byte capture. No added final LF."""
++    return _write_bytes(path, str(text or "").encode("utf-8"))
++
++
+ def _norm(value):
+     text = str(value or "").replace("\u00a0", " ")
+     return re.sub(r"\s+", " ", text).strip()
+@@ -132,11 +137,12 @@
+                 args[3] if len(args) > 3 else kwargs.get("generation_mode")
+             ),
+             "user_id": args[4] if len(args) > 4 else kwargs.get("user_id"),
+-            "content_sha256": _sha(str(content or "").encode("utf-8")),
+             "content_is_fixture": content == observations["fixture_text"],
+             "client_conflict_in_content": CLIENT_CONFLICT in str(content or ""),
+         }
+-        _write_text(run / "gate_input_content.txt", str(content or ""))
++        saved = _write_exact(run / "gate_input_content.txt", str(content or ""))
++        record["content_sha256"] = saved["sha256"]
++        record["content_capture_exact_bytes"] = True
+         try:
+             result = originals["gate"](*args, **kwargs)
+         except Exception as exc:
+@@ -160,8 +166,14 @@
+             "artifact_id": str(art.get("artifact_id") or ""),
+             "contract_meta": meta,
+             "section_keys": sorted(sections),
+-            "final_markdown_sha256": _sha(
+-                str(art.get("final_markdown") or "").encode("utf-8")
++            "export_user_id": art.get("_rel32_export_user_id"),
++            "fidelity_owner_id": (
++                (art.get("_saved_docx_fidelity") or {}).get("owner_id")
++                if isinstance(art.get("_saved_docx_fidelity"), dict) else None
++            ),
++            "fidelity_record_id": (
++                (art.get("_saved_docx_fidelity") or {}).get("record_id")
++                if isinstance(art.get("_saved_docx_fidelity"), dict) else None
+             ),
+             "final_markdown_is_fixture": (
+                 art.get("final_markdown") == observations["fixture_text"]
+@@ -172,10 +184,12 @@
+                 if key != "backend"
+             },
+         }
+-        _write_text(
++        saved_markdown = _write_exact(
+             run / "route_input_final_markdown.md",
+             str(art.get("final_markdown") or ""),
+         )
++        record["final_markdown_sha256"] = saved_markdown["sha256"]
++        record["final_markdown_capture_exact_bytes"] = True
+         _write_text(
+             run / "route_input_sections.json",
+             json.dumps(sections, ensure_ascii=False, indent=2),
+@@ -232,12 +246,14 @@
+             "traceability_present": bool(
+                 str(section_copy.get("traceability") or "").strip()
+             ),
+-            "content_sha256": _sha(str(content or "").encode("utf-8")),
+             "content_is_fixture": content == observations["fixture_text"],
+             "client_conflict_in_content": CLIENT_CONFLICT in str(content or ""),
+         }
+         suffix = "" if call_no == 1 else f"_{call_no}"
+-        _write_text(run / f"writer_input{suffix}_content.md", str(content or ""))
++        saved_content = _write_exact(
++            run / f"writer_input{suffix}_content.md", str(content or ""))
++        record["content_sha256"] = saved_content["sha256"]
++        record["content_capture_exact_bytes"] = True
+         _write_text(
+             run / f"writer_input{suffix}_sections.json",
+             json.dumps(section_copy, ensure_ascii=False, indent=2),
+@@ -287,6 +303,12 @@
+     conn = sqlite3.connect(os.environ["DATABASE_PATH"])
+     conn.execute("PRAGMA foreign_keys = ON")
+     conn.execute(
++        "DELETE FROM traceability_records WHERE user_id = ? AND artifact_id = ?",
++        (gate_row["user_id"], gate_row["artifact_id"]),
++    )
++    conn.execute("DELETE FROM strategies WHERE id = ?", (strategy["id"],))
++    conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
++    conn.execute(
+         "INSERT INTO users "
+         "(id, username, email, password_hash, role, is_active) "
+         "VALUES (?, ?, ?, ?, ?, ?)",
+@@ -339,38 +361,102 @@
+     return True, "valid_docx_package"
+ 
+ 
++_BODY_HEADINGS = (
++    ("الرؤية والأهداف الاستراتيجية", "vision"),
++    ("الركائز الاستراتيجية", "pillars"),
++    ("البيئة التنظيمية والتهديدات", "environment"),
++    ("تحليل الفجوات", "gaps"),
++    ("خارطة الطريق التنفيذية", "roadmap"),
++    ("مؤشرات الأداء الرئيسية", "kpis"),
++    ("تقييم الثقة والمخاطر", "confidence"),
++    ("نموذج الحوكمة والمسؤوليات", "governance"),
++    ("مصفوفة تتبع الأطر المرجعية", "traceability"),
++)
++
++
++def _heading_key(text):
++    sample = _norm(text)
++    for title, key in _BODY_HEADINGS:
++        if sample == _norm(title):
++            return key
++    return ""
++
++
++def _is_saved_body_heading(paragraph):
++    """Bold 14pt full-title paragraph emitted by the saved heading renderer.
++
++    A contents entry, a cover tagline, or a body sentence that merely
++    mentions a section is not a heading. Word Heading styles are not required.
++    """
++    if not _heading_key(paragraph.text):
++        return False
++    runs = [run for run in paragraph.runs if str(run.text or "").strip()]
++    if not runs or any(not run.bold for run in runs):
++        return False
++    sizes = [
++        run.font.size.pt for run in runs
++        if run.font.size is not None]
++    return bool(sizes) and max(sizes) >= 14
++
++
+ def _extract(data):
+     document = Document(BytesIO(data))
+     xml = document.element.xml
++    para_by_el = {paragraph._p: paragraph for paragraph in document.paragraphs}
++    table_by_el = {table._tbl: table for table in document.tables}
+     paragraphs = []
+-    for index, paragraph in enumerate(document.paragraphs):
+-        paragraphs.append({
+-            "index": index,
+-            "text": paragraph.text,
+-            "style": paragraph.style.name if paragraph.style is not None else "",
+-        })
+     tables = []
+-    for table_index, table in enumerate(document.tables):
+-        rows = []
+-        for row_index, row in enumerate(table.rows):
+-            cells = []
+-            for col_index, cell in enumerate(row.cells):
+-                tc_xml = cell._tc.xml
+-                cells.append({
+-                    "row": row_index,
+-                    "column": col_index,
+-                    "text": cell.text,
+-                    "paragraphs": [p.text for p in cell.paragraphs],
+-                    "grid_span": "w:gridSpan" in tc_xml,
+-                    "v_merge": "w:vMerge" in tc_xml,
+-                })
+-            rows.append(cells)
+-        tables.append({"index": table_index, "rows": rows})
++    stream = []
++    section = "cover"
++    body_started = False
++    for child in document.element.body.iterchildren():
++        if child in para_by_el:
++            paragraph = para_by_el[child]
++            mapped = ""
++            if _is_saved_body_heading(paragraph):
++                mapped = _heading_key(paragraph.text)
++                section = mapped
++                body_started = True
++            item = {
++                "index": len(paragraphs),
++                "text": paragraph.text,
++                "style": paragraph.style.name if paragraph.style is not None else "",
++                "section": section,
++                "role": "body" if body_started else "cover",
++                "body_heading": bool(mapped),
++            }
++            paragraphs.append(item)
++            stream.append({"kind": "paragraph", **item})
++        elif child in table_by_el:
++            table = table_by_el[child]
++            rows = []
++            for row_index, row in enumerate(table.rows):
++                cells = []
++                for col_index, cell in enumerate(row.cells):
++                    tc_xml = cell._tc.xml
++                    cells.append({
++                        "row": row_index,
++                        "column": col_index,
++                        "text": cell.text,
++                        "paragraphs": [p.text for p in cell.paragraphs],
++                        "grid_span": "w:gridSpan" in tc_xml,
++                        "v_merge": "w:vMerge" in tc_xml,
++                    })
++                rows.append(cells)
++            item = {
++                "index": len(tables),
++                "rows": rows,
++                "section": section if body_started else "cover",
++                "role": "body" if body_started else "cover_metadata",
++            }
++            tables.append(item)
++            stream.append({"kind": "table", "index": item["index"], "section": section})
+     return {
+         "paragraph_count": len(paragraphs),
+         "table_count": len(tables),
+         "paragraphs": paragraphs,
+         "tables": tables,
++        "stream": stream,
+         "rtl_flag_count": xml.count("w:rtl"),
+         "bidi_flag_count": xml.count("w:bidi"),
+         "rtl_flags_are_not_visual_acceptance": True,
+@@ -399,19 +485,40 @@
+     return lines
+ 
+ 
++def _row_identity(section_name, row):
++    cells = tuple(_norm(cell) for cell in row)
++    if section_name == "traceability":
++        return cells
++    return cells[:1]
++
++
++def _without_brackets(text):
++    return _norm(text).replace("[", "").replace("]", "")
++
++
+ def _compare(expected, extraction, provenance):
+     differences = []
+     paragraphs = extraction["paragraphs"]
+-    paragraph_norms = [_norm(item["text"]) for item in paragraphs]
+-    visible_parts = list(paragraph_norms)
++    section_paragraphs = {}
++    for item in paragraphs:
++        section_paragraphs.setdefault(item.get("section") or "cover", []).append(item)
+     matrices = []
+     for table in extraction["tables"]:
+         matrix = _table_matrix(table)
+-        matrices.append(matrix)
+-        for row in matrix:
++        matrices.append({
++            "section": table.get("section") or "cover",
++            "role": table.get("role") or "",
++            "matrix": matrix,
++            "index": table["index"],
++        })
++
++    visible_parts = []
++    for item in paragraphs:
++        visible_parts.append(_norm(item["text"]))
++    for entry in matrices:
++        for row in entry["matrix"]:
+             visible_parts.extend(_norm(cell) for cell in row)
+     visible = "\n".join(part for part in visible_parts if part)
+-
+     if CLIENT_CONFLICT in visible or _norm(CLIENT_CONFLICT) in _norm(visible):
+         differences.append({
+             "kind": "client_conflict_sentence",
+@@ -427,84 +534,155 @@
+     for section_name, tables in (expected.get("tables") or {}).items():
+         for source_index, source in enumerate(tables):
+             header = [_norm(cell) for cell in source["header"]]
+-            found = None
+-            for doc_index, matrix in enumerate(matrices):
+-                if not matrix:
++            found_tables = []
++            elsewhere = []
++            for entry in matrices:
++                matrix = entry["matrix"]
++                if not matrix or [_norm(cell) for cell in matrix[0]] != header:
+                     continue
+-                if [_norm(cell) for cell in matrix[0]] == header:
+-                    found = doc_index
+-                    break
++                if entry["section"] == section_name and entry["index"] not in matched_tables:
++                    found_tables.append(entry)
++                else:
++                    elsewhere.append({
++                        "document_table": entry["index"],
++                        "section": entry["section"],
++                    })
+             label = f"{section_name}[{source_index}]"
++            found = found_tables[0] if found_tables else None
+             if found is None:
+                 differences.append({
+                     "kind": "source_table_absent",
+                     "table": label,
++                    "section": section_name,
+                     "header": source["header"],
++                    "same_header_in_other_sections": elsewhere,
+                     "provenance": provenance,
+                 })
+                 continue
+-            matched_tables.add(found)
+-            matrix = matrices[found]
+-            seen = {}
+-            for row_index, source_row in enumerate(source["rows"], start=1):
+-                ident = _norm(source_row[0]) if source_row else ""
+-                matches = [
+-                    index for index, row in enumerate(matrix[1:], start=1)
+-                    if row and _norm(row[0]) == ident
+-                ]
+-                if len(matches) > 1:
++            if len(found_tables) > 1:
++                differences.append({
++                    "kind": "duplicate_source_table",
++                    "table": label,
++                    "section": section_name,
++                    "document_tables": [entry["index"] for entry in found_tables],
++                    "provenance": provenance,
++                })
++            for entry in found_tables:
++                matched_tables.add(entry["index"])
++            actual_rows = []
++            for entry in found_tables:
++                actual_rows.extend(entry["matrix"][1:])
++            expected_counts = {}
++            for source_row in source["rows"]:
++                ident = _row_identity(section_name, source_row)
++                expected_counts[ident] = expected_counts.get(ident, 0) + 1
++            actual_counts = {}
++            actual_by_ident = {}
++            for offset, row in enumerate(actual_rows, start=1):
++                ident = _row_identity(section_name, row)
++                actual_counts[ident] = actual_counts.get(ident, 0) + 1
++                actual_by_ident.setdefault(ident, []).append((offset, row))
++            for ident, expected_count in expected_counts.items():
++                actual_count = actual_counts.get(ident, 0)
++                if actual_count > expected_count:
+                     differences.append({
+                         "kind": "duplicate_row_in_table",
+                         "table": label,
+-                        "document_table": found,
+-                        "identifier": source_row[0],
+-                        "rows": matches,
++                        "section": section_name,
++                        "document_table": found["index"],
++                        "identity": list(ident),
++                        "expected_count": expected_count,
++                        "actual_count": actual_count,
+                         "provenance": provenance,
+                     })
+-                if not matches:
++                if actual_count < expected_count:
+                     differences.append({
+                         "kind": "source_row_absent",
+                         "table": label,
+-                        "document_table": found,
+-                        "identifier": source_row[0] if source_row else "",
++                        "section": section_name,
++                        "document_table": found["index"],
++                        "identity": list(ident),
++                        "expected_count": expected_count,
++                        "actual_count": actual_count,
+                         "provenance": provenance,
+                     })
++                if actual_count <= 0:
+                     continue
+-                actual = matrix[matches[0]]
++                actual = actual_by_ident[ident][0][1]
++                source_row = next(
++                    row for row in source["rows"]
++                    if _row_identity(section_name, row) == ident)
+                 for col, expected_cell in enumerate(source_row):
+                     header_name = (
+                         source["header"][col]
+-                        if col < len(source["header"]) else f"column_{col}"
+-                    )
++                        if col < len(source["header"]) else f"column_{col}")
+                     actual_cell = actual[col] if col < len(actual) else ""
+                     if _norm(actual_cell) != _norm(expected_cell):
+                         differences.append({
+                             "kind": "cell_differs",
+                             "table": label,
+-                            "document_table": found,
+-                            "document_row": matches[0],
++                            "section": section_name,
++                            "document_table": found["index"],
+                             "column": col,
+                             "header": header_name,
+-                            "identifier": source_row[0],
++                            "identity": list(ident),
+                             "expected": expected_cell,
+                             "actual": actual_cell,
+                             "provenance": provenance,
+                         })
+-                seen[ident] = matches[0]
+-    extra_tables = []
+-    for index, matrix in enumerate(matrices):
+-        if index in matched_tables or not matrix:
++            for ident, actual_count in actual_counts.items():
++                if ident not in expected_counts and any(ident):
++                    differences.append({
++                        "kind": "unexpected_extra_row",
++                        "table": label,
++                        "section": section_name,
++                        "document_table": found["index"],
++                        "identity": list(ident),
++                        "actual_count": actual_count,
++                        "provenance": provenance,
++                    })
++    additional_tables = []
++    for entry in matrices:
++        if entry["index"] in matched_tables or not entry["matrix"]:
+             continue
+-        extra_tables.append({
+-            "document_table": index,
+-            "header": matrix[0],
+-            "data_rows": len(matrix) - 1,
++        record = {
++            "document_table": entry["index"],
++            "section": entry["section"],
++            "role": entry.get("role"),
++            "header": entry["matrix"][0],
++            "data_rows": len(entry["matrix"]) - 1,
++        }
++        if entry.get("role") == "cover_metadata" or entry.get("section") == "cover":
++            record["classification"] = "cover_or_contents_presentation"
++            additional_tables.append(record)
++            continue
++        differences.append({
++            "kind": "alternative_business_table",
++            "provenance": provenance,
++            **record,
+         })
+ 
+     for name, section in (expected.get("saved_sections") or {}).items():
++        section_items = section_paragraphs.get(name) or []
++        section_norms = [_norm(item["text"]) for item in section_items]
++        for table in extraction["tables"]:
++            if table.get("section") != name:
++                continue
++            for row in table["rows"]:
++                section_norms.extend(_norm(cell["text"]) for cell in row)
+         for line in _body_lines(section.get("text")):
+             wanted = _norm(line)
+-            if any(wanted and wanted in item for item in paragraph_norms):
++            if any(wanted and wanted in item for item in section_norms):
++                continue
++            loosened = _without_brackets(line)
++            loosened_items = [_without_brackets(item) for item in section_norms]
++            if loosened and any(loosened in item for item in loosened_items):
++                differences.append({
++                    "kind": "reference_punctuation_loss",
++                    "section": name,
++                    "expected": line,
++                    "provenance": provenance,
++                })
+                 continue
+             differences.append({
+                 "kind": "paragraph_absent",
+@@ -512,22 +690,80 @@
+                 "expected": line,
+                 "provenance": provenance,
+             })
++        source_norm = _norm(section.get("text"))
++        for item in section_items:
++            if item.get("body_heading") or not _norm(item["text"]):
++                continue
++            if _norm(item["text"]) not in source_norm:
++                differences.append({
++                    "kind": "unexplained_business_prose",
++                    "section": name,
++                    "paragraph": item["index"],
++                    "actual": item["text"],
++                    "provenance": provenance,
++                })
+ 
+-    negative_hits = []
++    confidence_items = section_paragraphs.get("confidence") or []
++    confidence_text = "\n".join(_norm(item["text"]) for item in confidence_items)
++    for table in extraction["tables"]:
++        if table.get("section") != "confidence":
++            continue
++        for row in table["rows"]:
++            confidence_text += "\n" + "\n".join(_norm(cell["text"]) for cell in row)
++    if "70 من 100" not in confidence_text:
++        differences.append({
++            "kind": "confidence_statement_absent",
++            "section": "confidence",
++            "expected": "70 من 100",
++            "provenance": provenance,
++        })
++    operational_targets = []
+     for item in paragraphs:
+-        text = item["text"]
++        if "99.5%" in item["text"]:
++            operational_targets.append({
++                "section": item.get("section"),
++                "paragraph": item["index"],
++                "text": item["text"],
++            })
++
++    negative_hits = []
++    cover_hits = []
++
++    def _consider_type_token(text, location):
+         for token in ("Risk Analysis", "تحليل المخاطر"):
+-            if token in text:
+-                negative_hits.append({
+-                    "paragraph": item["index"],
+-                    "token": token,
+-                    "text": text,
++            if token not in str(text or ""):
++                continue
++            hit = {"token": token, "text": text, **location}
++            negative_hits.append(hit)
++            if location.get("role") in ("cover", "cover_metadata"):
++                cover_hits.append(hit)
++
++    for item in paragraphs:
++        _consider_type_token(item["text"], {
++            "role": "cover" if item.get("role") == "cover" else "body",
++            "paragraph": item["index"],
++            "section": item.get("section"),
++        })
++    for table in extraction["tables"]:
++        if table.get("role") != "cover_metadata":
++            continue
++        for row in table["rows"]:
++            for cell in row:
++                _consider_type_token(cell["text"], {
++                    "role": "cover_metadata",
++                    "document_table": table["index"],
++                    "row": cell["row"],
++                    "column": cell["column"],
++                    "section": "cover",
+                 })
+     return {
+         "provenance": provenance,
+         "differences": differences,
+-        "additional_tables": extra_tables,
++        "additional_tables": additional_tables,
++        "additional_tables_are_not_defects": False,
+         "document_type_negative_occurrences": negative_hits,
++        "cover_document_type_hits": cover_hits,
++        "operational_percentage_occurrences": operational_targets,
+         "paragraph_count": extraction["paragraph_count"],
+         "table_count": extraction["table_count"],
+     }
+@@ -550,15 +786,26 @@
+     for item in comparison["document_type_negative_occurrences"]:
+         lines.append(
+             "document_type_string "
++            f"paragraph={item['paragraph']} section={item.get('section')} "
++            f"token={item['token']} text={item['text']}"
++        )
++    for item in comparison.get("cover_document_type_hits") or []:
++        lines.append(
++            "cover_document_type "
+             f"paragraph={item['paragraph']} token={item['token']} "
+             f"text={item['text']}"
+         )
++    for item in comparison.get("operational_percentage_occurrences") or []:
++        lines.append(
++            "operational_percentage "
++            f"section={item['section']} paragraph={item['paragraph']}"
++        )
+     for item in comparison["differences"]:
+         kind = item["kind"]
+         if kind == "cell_differs":
+             lines.append(
+                 "cell "
+-                f"{item['table']} row={item['identifier']} "
++                f"{item['table']} row={item['identity']} "
+                 f"column={item['column']} header={item['header']}"
+             )
+             lines.append(f"expected={item['expected']}")
+@@ -569,6 +816,105 @@
+     return "\n".join(lines)
+ 
+ 
++def _edge(value):
++    """Allowed handoff whitespace is an edge strip only."""
++    return str(value or "").strip()
++
++
++def _join_recorded_worker(lifecycle):
++    """Join the export worker at most once, on the original deadline.
++
++    A thread that is already finished is still joined once so the record
++    does not treat "not alive" as proof that join() ran. No new deadline
++    is created when a worker exists.
++    """
++    if lifecycle.get("join_invoked"):
++        return lifecycle.get("thread")
++    if lifecycle.get("thread") is None:
++        lifecycle["thread"] = _export_thread()
++    thread = lifecycle.get("thread")
++    if thread is None:
++        return None
++    deadline = lifecycle.get("deadline")
++    remaining = 0.0 if deadline is None else max(0.0, deadline - time.monotonic())
++    thread.join(remaining)
++    lifecycle["join_invoked"] = True
++    return thread
++
++
++def _restore_after_worker(lifecycle, originals, observations):
++    """Recover and join before any observer restoration."""
++    thread = _join_recorded_worker(lifecycle)
++    alive = bool(thread is not None and thread.is_alive())
++    observations["thread_alive_at_cleanup"] = alive
++    observations["join_invoked"] = bool(lifecycle.get("join_invoked"))
++    if alive:
++        observations["observers_left_installed"] = True
++        return False
++    if not lifecycle.get("restored"):
++        lifecycle["restored"] = _restore(originals, thread)
++    return bool(lifecycle.get("restored"))
++
++
++def _thread_observation(lifecycle, started):
++    thread = lifecycle.get("thread")
++    join_invoked = bool(lifecycle.get("join_invoked"))
++    alive = bool(thread is not None and thread.is_alive())
++    return {
++        "created": len(RecordingThread.created),
++        "recorded": thread is not None,
++        "join_invoked": join_invoked,
++        "joined": bool(join_invoked and thread is not None and not alive),
++        "alive": alive,
++        "deadline_seconds": DEADLINE_SECONDS,
++        "elapsed_seconds": time.monotonic() - started,
++    }
++
++
++def _append_source_handoff_problems(observations, expected, run):
++    """Fail route and writer mismatches. Flags alone do not reach the assert."""
++    fixture = observations["fixture_text"]
++    expected_sections = expected.get("saved_sections") or {}
++    route_path = run / "route_input_final_markdown.md"
++    if route_path.is_file():
++        route_text = route_path.read_bytes().decode("utf-8")
++        if _edge(route_text) != _edge(fixture):
++            observations["saved_body_changed_before_route"] = True
++            observations["problems"].append("route_markdown_edge_mismatch")
++    route_sections_path = run / "route_input_sections.json"
++    if route_sections_path.is_file():
++        route_sections = json.loads(route_sections_path.read_text("utf-8"))
++        for key, section in expected_sections.items():
++            actual = route_sections.get(key)
++            if not isinstance(actual, str) or _edge(actual) != _edge(section.get("text")):
++                observations["problems"].append("route_section_map_mismatch:" + key)
++    for index, call in enumerate(observations.get("writer_calls") or []):
++        suffix = "" if call.get("call") == 1 else f"_{call.get('call')}"
++        if call.get("lang") != "ar" or call.get("doc_type") != "strategy":
++            observations["problems"].append(
++                "writer_type_mismatch:" + json.dumps(
++                    {"lang": call.get("lang"), "doc_type": call.get("doc_type")},
++                    ensure_ascii=False,
++                )
++            )
++        content_path = run / f"writer_input{suffix}_content.md"
++        if content_path.is_file() and _edge(
++                content_path.read_bytes().decode("utf-8")) != _edge(fixture):
++            observations["saved_body_changed_before_writer"] = True
++            observations["problems"].append("writer_content_edge_mismatch")
++        sections_path = run / f"writer_input{suffix}_sections.json"
++        if sections_path.is_file():
++            writer_sections = json.loads(sections_path.read_text("utf-8"))
++            for key, section in expected_sections.items():
++                actual = writer_sections.get(key)
++                if not isinstance(actual, str) or _edge(actual) != _edge(
++                        section.get("text")):
++                    observations["problems"].append(
++                        "writer_section_map_mismatch:" + key)
++        elif index == 0:
++            observations["problems"].append("writer_section_map_absent")
++
++
+ def _inspect(run, data, provenance, expected):
+     valid, reason = _valid_package(data)
+     record = {"provenance": provenance, "valid": valid, "reason": reason}
+@@ -585,16 +931,11 @@
+     )
+     comparison = _compare(expected, extraction, provenance)
+     _write_text(run / f"comparison_{provenance}.txt", _report(comparison))
+-    record["comparison"] = {
+-        "difference_count": len(comparison["differences"]),
+-        "first_difference": (
+-            comparison["differences"][0] if comparison["differences"] else None
+-        ),
+-        "additional_tables": comparison["additional_tables"],
+-        "document_type_negative_occurrences": (
+-            comparison["document_type_negative_occurrences"]
+-        ),
+-    }
++    record["comparison"] = comparison
++    record["comparison"]["difference_count"] = len(comparison["differences"])
++    record["comparison"]["first_difference"] = (
++        comparison["differences"][0] if comparison["differences"] else None
++    )
+     record["rtl_flag_count"] = extraction["rtl_flag_count"]
+     record["bidi_flag_count"] = extraction["bidi_flag_count"]
+     return record
+@@ -621,14 +962,19 @@
+     app_module.init_db()
+     _insert(expected, fixture_text)
+     originals = _install(observations, run)
+-    thread = None
+-    restored = False
++    lifecycle = {
++        "deadline": None,
++        "thread": None,
++        "join_invoked": False,
++        "restored": False,
++    }
+     try:
+         client = app_module.app.test_client()
+         with client.session_transaction() as sess:
+             sess["user_id"] = 7
+             sess["csrf_token"] = CSRF
+         started = time.monotonic()
++        lifecycle["deadline"] = started + DEADLINE_SECONDS
+         posted = client.post(
+             "/api/generate-docx-async",
+             json=PAYLOAD,
+@@ -645,11 +991,10 @@
+             json.dumps(observations["post"], ensure_ascii=False, indent=2),
+         )
+         task_id = (post_body or {}).get("task_id") if posted.status_code == 200 else None
+-        deadline = time.monotonic() + DEADLINE_SECONDS
+         statuses = []
+         terminal = None
+         if task_id:
+-            while time.monotonic() < deadline:
++            while time.monotonic() < lifecycle["deadline"]:
+                 response = client.get(f"/api/export-status/{task_id}")
+                 body = response.get_json(silent=True)
+                 item = {
+@@ -665,18 +1010,10 @@
+                     terminal = item
+                     break
+                 time.sleep(0.25)
+-            thread = _export_thread()
+-            remaining = deadline - time.monotonic()
+-            if thread is not None:
+-                thread.join(max(0.0, remaining))
++        lifecycle["thread"] = _export_thread()
++        _join_recorded_worker(lifecycle)
+         observations["statuses"] = statuses
+-        observations["thread"] = {
+-            "created": len(RecordingThread.created),
+-            "joined": bool(thread is not None and not thread.is_alive()),
+-            "alive": bool(thread is not None and thread.is_alive()),
+-            "deadline_seconds": DEADLINE_SECONDS,
+-            "elapsed_seconds": time.monotonic() - started,
+-        }
++        observations["thread"] = _thread_observation(lifecycle, started)
+         _write_text(
+             run / "status_observations.json",
+             json.dumps(statuses, ensure_ascii=False, indent=2),
+@@ -690,7 +1027,6 @@
+             observations["owner_download"] = owner
+         else:
+             observations["owner_download"] = None
+-        restored = _restore(originals, thread)
+ 
+         route = observations.get("route") or {}
+         gate = observations.get("gate") or {}
+@@ -735,8 +1071,10 @@
+             observations["problems"].append("route_input_is_not_saved_arabic_dt_strategy")
+         if observations["thread"]["alive"]:
+             observations["problems"].append("worker_still_alive")
+-        elif task_id and not observations["thread"]["joined"]:
++        elif task_id and not observations["thread"]["recorded"]:
+             observations["problems"].append("worker_absent")
++        elif task_id and not observations["thread"]["join_invoked"]:
++            observations["problems"].append("worker_not_joined")
+         if terminal is None or (terminal.get("body") or {}).get("status") != "done":
+             error = (terminal or {}).get("body")
+             observations["problems"].append(
+@@ -758,10 +1096,8 @@
+                 )
+             negatives = (
+                 inspected.get("comparison") or {}
+-            ).get("document_type_negative_occurrences") or []
+-            title_hit = [
+-                item for item in negatives if item["paragraph"] == 0
+-            ]
++            ).get("cover_document_type_hits") or []
++            title_hit = list(negatives)
+             if title_hit:
+                 observations["problems"].append(
+                     "cover_uses_risk_document_title:"
+@@ -789,17 +1125,116 @@
+             "content_is_fixture"
+         ):
+             observations["saved_body_changed_before_writer"] = True
++        _append_source_handoff_problems(observations, expected, run)
+         observations["first_problem"] = (
+             observations["problems"][0] if observations["problems"] else None
+         )
+         _persist(run, observations)
+         assert not observations["problems"], observations["first_problem"]
+     finally:
+-        if not restored:
+-            _restore(originals, thread)
+-        observations["thread_alive_at_cleanup"] = bool(
+-            thread is not None and thread.is_alive()
++        _restore_after_worker(lifecycle, originals, observations)
++        _persist(run, observations)
++
++
++def test_saved_arabic_dt_consulting_sync_docx_owner_handoff():
++    """Prospective synchronous owner handoff. Not a content-success test.
++
++    A roadmap or objectives quality refusal is recorded and does not by
++    itself fail this handoff. Returned bytes are still compared.
++    """
++    assert os.environ.get("DATABASE_PATH") == DATABASE
++    run = _run_dir() / "sync-owner-handoff"
++    run.mkdir(parents=True, exist_ok=True)
++    fixture_bytes = FIXTURE_PATH.read_bytes()
++    expected_bytes = EXPECTED_PATH.read_bytes()
++    fixture_text = fixture_bytes.decode("utf-8")
++    expected = json.loads(expected_bytes.decode("utf-8"))
++    observations = {
++        "fixture_text": fixture_text,
++        "fixture_sha256": _sha(fixture_bytes),
++        "expected_sha256": _sha(expected_bytes),
++        "writer_calls": [],
++        "gate": None,
++        "route": None,
++        "problems": [],
++    }
++    app_module.init_db()
++    _insert(expected, fixture_text)
++    originals = _install(observations, run)
++    lifecycle = {
++        "deadline": None,
++        "thread": None,
++        "join_invoked": False,
++        "restored": False,
++    }
++    try:
++        client = app_module.app.test_client()
++        with client.session_transaction() as sess:
++            sess["user_id"] = 7
++            sess["csrf_token"] = CSRF
++        started = time.monotonic()
++        lifecycle["deadline"] = started + DEADLINE_SECONDS
++        posted = client.post(
++            "/api/generate-docx",
++            json=PAYLOAD,
++            headers={"X-CSRFToken": CSRF},
++        )
++        post_body = posted.get_json(silent=True)
++        observations["post"] = {
++            "status_code": posted.status_code,
++            "body": post_body,
++            "content_type": posted.content_type,
++            "bytes": len(posted.data or b""),
++            "elapsed_seconds": time.monotonic() - started,
++        }
++        route = observations.get("route") or {}
++        blockers = list(route.get("blocking_errors") or [])
++        blockers.extend(route.get("export_blocking_errors") or [])
++        observations["recorded_blockers"] = blockers
++        if not route:
++            observations["problems"].append("missing_route_record")
++        else:
++            if int(route.get("export_user_id") or 0) != 7:
++                observations["problems"].append("sync_export_user_mismatch")
++            if int(route.get("fidelity_owner_id") or 0) != 7:
++                observations["problems"].append("sync_fidelity_owner_mismatch")
++            if int(route.get("fidelity_record_id") or 0) != 701:
++                observations["problems"].append("sync_fidelity_record_mismatch")
++        if any(
++                "saved_docx_fidelity_refused:identity" in str(item)
++                for item in blockers):
++            observations["problems"].append("sync_identity_refusal")
++        _append_source_handoff_problems(observations, expected, run)
++        returned = posted.data or b""
++        if returned.startswith(b"PK"):
++            inspected = _inspect(run, returned, "sync_response", expected)
++            observations["sync_inspection"] = inspected
++            if not inspected["valid"]:
++                observations["problems"].append(
++                    "sync_package_invalid:" + inspected["reason"])
++            elif inspected["comparison"]["difference_count"]:
++                observations["problems"].append(
++                    "content_difference:" + json.dumps(
++                        inspected["comparison"]["first_difference"],
++                        ensure_ascii=False,
++                    )
++                )
++            if (inspected.get("comparison") or {}).get("cover_document_type_hits"):
++                observations["problems"].append("cover_uses_risk_document_title")
++        lifecycle["thread"] = _export_thread()
++        _join_recorded_worker(lifecycle)
++        observations["thread"] = _thread_observation(lifecycle, started)
++        if observations["thread"]["alive"]:
++            observations["problems"].append("worker_still_alive")
++        observations["first_problem"] = (
++            observations["problems"][0] if observations["problems"] else None
+         )
++        observations["quality_blockers_recorded"] = blockers
++        observations["content_success_claimed"] = False
++        _persist(run, observations)
++        assert not observations["problems"], observations["first_problem"]
++    finally:
++        _restore_after_worker(lifecycle, originals, observations)
+         _persist(run, observations)
+ 
+ 
