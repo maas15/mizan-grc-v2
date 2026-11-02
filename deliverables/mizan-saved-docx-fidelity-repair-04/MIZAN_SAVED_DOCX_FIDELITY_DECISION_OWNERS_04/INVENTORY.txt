@@ -1,0 +1,46 @@
+MIZAN / REL36.24
+SAVED DOCX FIDELITY — DECISION-OWNER READ-ONLY BUNDLE 04
+Prepared: 2 November 2026, 14:18 Asia/Riyadh
+Review answered: MIZAN-SAVED-DOCX-FIDELITY-REPAIR-03-SOURCE-AND-CONTRACT-REVIEW-20261102-01
+
+These are unchanged source copies. They were read as text. They were not
+imported, executed, or edited. They are not an expanded production surface.
+Repair 04 does not modify any file in this bundle.
+
+Each copy has 0 CR and a final LF. The SHA-256 is of the copied bytes, which
+match the workspace file of the same repository-relative path.
+
+Required by review section 5.3
+Path | bytes | LF | SHA-256
+release_engine/arabic_language_gate.py | 17699 | 458 | 78d817480ffae5234718dfaa692361481867cea328c1dfd4d6d7082e1b8e973b
+release_engine/rel31_acceptance_checks.py | 39657 | 1021 | 1dcf575443b57600947309f2b485dbe8e7a6f3ea65a34cb5e7fa3f07255baca5
+release_engine/rel31_content_substance_checks.py | 25971 | 647 | 8f56d01848305359fd247ec9f07bc4f5e11cf651c9e60e40e52be368d2e3c1d4
+release_engine_v3/rel36_5_actual_server_export_evidence_hook.py | 10032 | 260 | 12e47409f843a82974b63e665847f949c31cd68e14792f2c43302bcb525e48d3
+release_engine_v3/rel36_11_en_cyber_export_stability.py | 22632 | 598 | aad021d5bb3ca2d6c89350cce1d8e1550e72f5a30919cea92a999707efe6eda9
+
+Added because their own decisions are required to state the retained contract
+Path | bytes | LF | SHA-256 | why this copy is included
+release_engine_v3/validators.py | 5463 | 141 | c41937852ebb8ff1d8de77025a5ab4ce9767d773288d708df14ba3d13b16cc32 | Delegation to the evidence consumer is this file at 100-116. The canonical roadmap comparison at 63-67 still calls check_roadmap_coverage without a domain argument and still compares visible_row_count with 10.
+release_engine/rel28_route_evidence.py | 20541 | 526 | f3df8ac0062a549a17da7a24bc2345d9165cdd18358c20c223b997ba4ff8226d | check_roadmap_visible_drift at 189-212 and the DOCX/PDF loop at 339-360 keep another visible-count threshold of 10 and an internal-versus-visible drift rule. A count contract that omitted this site would leave a contradictory downstream rule unexplained.
+
+Read in place and not copied
+The shared coverage function is release_engine/rel27_export_checks.py
+check_roadmap_coverage at 489-573. The saved helper already calls it with an
+explicit domain. Copying that generation module would duplicate a checker this
+proposal does not change.
+DT family names are release_engine_v3/rel33_domain_substance.py
+DT_TRACE_REGISTRY at 204-283 and DT_ROADMAP_FAMILIES at 1226.
+The four DT pillar headings are the 'dt' catalog at 883-934.
+The eight DT objective catalog entries are
+release_engine_v3/rel32_registries.py DT_STRATEGIC_OBJECTIVE_REGISTRY at 205-253.
+Compiler-first scope is release_engine_v3/rel33_authority.py
+is_rel33_compiler_first at 55-65, which requires document_type strategy,
+flags rel3 and rel31, an authoritative domain, and a language prefix ar.
+The returned-byte entry is release_engine_v3/evidence/evidence_validator.py
+validate_returned_export_bytes. It extracts channel text and then calls
+validate_export_text. No rel31_export_adapter_context re-entry is present in
+that function.
+The prior evidence-consumer delivery remains the closed copy of
+release_engine/export_evidence_validator.py, 59433 bytes, 1450 LF, 0 CR,
+final LF, SHA-256 e5c795590d184b894f3399f360709dc3a01817484d55ffd841dc221339b0f673.
+It is not repeated in this bundle.

@@ -1,0 +1,313 @@
+MIZAN / REL36.24
+SAVED DOCX FIDELITY REPAIR 04 — ISOLATED SOURCE PROPOSAL
+Review answered: MIZAN-SAVED-DOCX-FIDELITY-REPAIR-03-SOURCE-AND-CONTRACT-REVIEW-20261102-01
+Prepared: 2 November 2026, 14:18 Asia/Riyadh
+Authority:
+MIZAN-SAVED-ARABIC-DT-DOCX-FIDELITY-REPAIR-AUTHORING-REQUEST-20261102-01
+MIZAN-SAVED-ARABIC-DT-DOCX-FIDELITY-REPAIR-AUTHORING-AUTHORIZATION-20261102-01
+
+patch_status=blocked
+positive_render_readiness=false
+quality_contract_change_selected=false
+repair_01_overwritten=false
+repair_02_overwritten=false
+repair_03_overwritten=false
+repair_03_applied=false
+baseline_application_executed=false
+tests_executed=false
+project_import_executed=false
+validators_executed=false
+numerical_probe_executed=false
+new_export_created=false
+commit_push_deploy_authorized=false
+runtime_fidelity_pass_claimed=false
+visual_acceptance=false
+full_export_accepted=false
+production_accepted=false
+full_heading_outline_preservation=not_established_documented_limitation
+
+This file is a source proposal. A static check is not a rendering result.
+Repair 01, Repair 02, Repair 03, their notes, and quality-contract proposal
+01 remain unapplied review records. This patch is a full replacement against
+the same accepted baseline. It is not a delta on an applied Repair 03 tree.
+
+The one production correction in this replacement is the saved reused-frozen
+branch in release_engine_v3/rel31_authority.py. The other five proposed files
+are byte-identical to the Repair 03 reconstruction. The patch still contains
+their already-reviewed baseline diffs.
+
+1. Identities
+
+Baseline (left side of every hunk). 0 CR. Final LF present.
+Path | bytes | LF | SHA-256
+app.py | 5171612 | 96166 | b346fe55e6a185d1e813636bda9473a38ce17960d71fbabd6c04135a4702e72d
+release_engine_v3/canonical_document.py | 20914 | 497 | 233c85c7cd2750999b483595678f2f2c9a5f590ac2dde51c35a7cd629132788d
+release_engine_v3/exporters/docx_exporter.py | 9653 | 232 | 5e5c512a9a3f2c8446c534a174918668a84585bf111caf8c56cc006cd1ab4098
+professional_strategy_render.py | 340104 | 7931 | 626fdfe4899b7e8bc0427071003b0445a3a93bf9ccce79a4760e4d1a0b165784
+release_engine_v3/rel31_authority.py | 114778 | 2740 | 623273cfe8a0af828f77645ad423587ae8eb7b083f08c31bdccd7ea79d369438
+tests/test_docx_real_render_r02.py | 31533 | 812 | b7ffc1d03ef48bc8a9fc4f9fbbc67bf685acc84a9c53c122d44865a03803878a
+
+Proposed isolated files (right side). 0 CR. Final LF present.
+Path | bytes | LF | hunks | SHA-256
+app.py | 5179537 | 96350 | 23 | fb66cf9dd902402f93a83294149e1d547897885de5599272d050dec979768bfd
+release_engine_v3/canonical_document.py | 38798 | 944 | 7 | f8d466c81dd8ed2affdd99715dd2fba119eaddf2038b15a227c45ee9f4027422
+release_engine_v3/exporters/docx_exporter.py | 10930 | 260 | 2 | 7884de3a6efb34d4c5a2fdad96fe1c446d8bddf058a29311bd86a02093eff8eb
+professional_strategy_render.py | 342947 | 8013 | 5 | 0418cff95d836b0a01249db1b9788cefa832c09da4d42649c10be1a87ee6adca
+release_engine_v3/rel31_authority.py | 122273 | 2907 | 9 | b573ecec5a191baacbfa0140756c6424712ebe3b46863c3f38050cc4251f449e
+tests/test_docx_real_render_r02.py | 52906 | 1313 | 22 | d8923ff838f8a526a11b810d0c79e72e3b9df8ac35eb415a3ec46902c0bd1a16
+
+Repair 03 rel31_authority.py was 120643 bytes, 2872 LF,
+SHA-256 86b1cfbb7d85d6421a6445983b170fbf97aee2722f337d8618145228bb2b4956.
+That identity remains the Repair 03 review record. Repair 04 replaces it
+only inside this new full-baseline patch.
+
+Patch
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_04.patch
+97507 bytes; 2341 LF; 0 CR; final LF present.
+SHA-256 902c80a8504834af0cad721638159b67e7c4e9a2f9fc85e76cf5a316d6299e7a
+68 hunks. Labels a/ and b/. Six paths, in this order:
+app.py
+release_engine_v3/canonical_document.py
+release_engine_v3/exporters/docx_exporter.py
+professional_strategy_render.py
+release_engine_v3/rel31_authority.py
+tests/test_docx_real_render_r02.py
+
+The quality-contract text is
+MIZAN_SAVED_DOCX_FIDELITY_QUALITY_CONTRACT_PROPOSAL_02.txt.
+No rule in that text is selected or implemented.
+The read-only decision bundle is
+MIZAN_SAVED_DOCX_FIDELITY_DECISION_OWNERS_04/ with INVENTORY.txt.
+
+2. Changed symbol in Repair 04
+
+release_engine_v3/rel31_authority.py
+rel3_export_authoritative, reused-frozen branch.
+
+After saved_frozen_source_refusal returns an empty string, and before
+frozen is taken from frozen_pre, the preserve claim calls the existing
+validate_saved_snapshot_original on art sections and the same backend.
+A non-empty result builds EvidenceResult and ExportResult from those
+blockers and returns before rel36_4 and before rel3_export_with_evidence.
+The helper is not given a copy that has passed through roadmap repair.
+The frozen object is not rewritten by this return.
+An empty stored blocking_errors list is not read as a current pass.
+
+Anchor: proposed rel31_authority.py 1652-1686.
+The following assignment is proposed rel31_authority.py 1687.
+The reused export call is proposed rel31_authority.py 1705-1711.
+
+No other symbol was edited for this correction. The five files that match
+Repair 03 keep the mechanisms already reviewed there.
+
+3. Fresh and reuse quality decision points
+
+Domain, language, document type, and flags are written on the backend
+before either branch. Proposed rel31_authority.py 1394-1410 resolves
+domain from the artifact, language from the artifact or export kwargs,
+and flags from the caller. Proposed rel31_authority.py 1511-1528 copies
+domain, language, and document type onto the backend. The wrapper at
+app.py 52221-52229 passes flags from the version flags rel3 and rel31.
+
+Fresh preserve path. repair_canonical_before_freeze at 1013-1040 calls
+validate_saved_snapshot_original at 1028-1031, appends the blockers, and
+returns the original section strings. The fresh export branch calls that
+function at 1713. For a route other than preview, frozen.blocking_errors
+return at 1777-1804 before the writer. Preview keeps the pre-existing
+exception on that fresh stop.
+
+Reused preserve path. Equivalence is saved_frozen_source_refusal at
+1621-1651. The current objective and roadmap decision is the new call at
+1652-1686. It uses the same helper, the same original strings, and the
+same backend. Refusal returns before writer invocation.
+
+validate_saved_snapshot_original remains at 948-1010. It reads the
+original strings, uses the compiler-first eight digit-led objective rule,
+and calls check_roadmap_coverage with the explicit normalized domain.
+It does not remove duplicates or replace weak cells.
+
+4. Dispositions retained from the Repair 03 source review
+
+F001 owner handoff remains. The synchronous post-prepare block restores
+the trusted owner at app.py 83810. The wrapper copies it at 52217-52219.
+The synchronous authoritative call at 83832-83847 omits the backend
+argument. The wrapper at 52215 selects _rel31_backend_callables when no
+backend is supplied.
+
+DOCX-FIDELITY-R2-F001 remains closed at source-review level. The REL31
+builder is app.py 52120-52139. The Repair 03 notes anchor 52109-52128
+was stale. This notes file uses 52120-52139. That is a location
+correction. The asynchronous DOCX call at 81179-81194 passes its own
+backend object into the same wrapper; the authoritative function then
+resolves domain and language from the artifact before the quality
+decision.
+
+F002 supported-grammar body and section comparison remains in
+canonical_document.py. Separator-width validation remains at 163-173.
+The comparison is the declared grammar. It is a structural comparison
+under that grammar.
+
+F003 preloaded canonical comparison remains. Render order is
+canonical_document.py 269-281. Context is 288-314. The canonical
+signature is 317-345. Refusal is 359-399, including
+saved_docx_fidelity_refused:frozen_canonical_differs. The authority
+refusal at 1625-1651 still precedes the new quality call and precedes
+export.
+
+F004 reported table and saved-construction mechanisms remain. Header-only
+drawing stays at app.py 82641-82667 with allow_header_only at 82717-82724.
+Saved drawing failures stay at 82527-82536 and the catches at 82566-82568,
+82585-82587, and 82687-82689. The model wrapper rethrows at 14811-14813.
+The DOCX caller maps a non-ValueError at 82513-82518. The exporter returns
+blockers without DOCX bytes at docx_exporter.py 221-245.
+
+Heading text and order remain supported. Levels 1 and 2 share one visual
+weight, and levels 3 through 6 share another. That limitation is written
+at app.py 82703-82705. Full heading-depth and Word outline preservation
+is not established. The fixture heading level in the historical file is
+H2. This proposal does not redesign headings, cover, or fonts.
+
+F005 remains. The absent scope and framework block does not acquire an
+unsourced default sentence. Source order and source_flow filtering remain
+at professional_strategy_render.py 6694-6735 and app.py 82902-82911.
+
+F006 remains. The test _location_text at 809-818 uses the paragraph or
+the document-table, row, and column fields of the actual hit. Both report
+loops at 835-847 use it. _inspect at 990-1003 attaches the comparison
+before formatting.
+
+F007 remains. The allowed writer-domain set at test 57-61 is dt,
+Digital Transformation, and التحول الرقمي. The check at 950-957
+edge-strips the recorded writer value. Both cases call the handoff checks
+at 1191 and 1272.
+
+F008 remains. The guard at test 116-134 is the first statement in each
+case at 1007 and 1209. The finally paths at 1197-1200 and 1301-1304
+remember unresolved lifecycle state. The guard does not join again or
+turn a blocked case into a pass.
+
+F009 fresh original-content verdict remains the preserve branch at
+rel31_authority.py 1028-1039. F009 reused-frozen original-content check
+is the new block at 1652-1686. The quality contract remains unselected.
+Proposal 02 states a complete recommended contract and does not implement
+it.
+
+F010 provenance remains. saved_docx_snapshot is the prospective source
+label on the preserve path. source_authority_valid is not forced true.
+No separate worker-temp-file capture is claimed. docx_rebuilt_from_markdown
+stays false when the saved source is selected, at the fresh lock metadata
+1815-1818.
+
+5. Source walkthroughs
+
+These are control-flow readings of the proposed source. No export, worker,
+validator, or fixture run was performed. The fourth walkthrough is not a
+test result and does not change the historical fixture.
+
+5.1 Fresh saved snapshot refused by the current objective or roadmap rule
+
+The artifact has no frozen_pre. rel3_export_authoritative takes the else
+branch at 1712 and calls repair_canonical_before_freeze. The preserve
+claim reaches validate_saved_snapshot_original. Compiler-first true and
+fewer than eight vision lines matching ^\|\s*\d+\s*\| appends
+rel3_generation_contract_failed:objectives. A coverage defect appends
+rel3_generation_contract_failed:roadmap_weak_output and one
+saved_docx_original_roadmap_defect entry per defect. The function returns
+the same section strings. rel3_freeze_artifact carries the blockers. For
+DOCX, the stop at 1777-1804 returns ExportResult and EvidenceResult with
+those blockers and does not call rel3_export_with_evidence.
+
+5.2 Matching reused frozen snapshot refused by those same rules
+
+frozen_pre is present. saved_frozen_source_refusal returns an empty
+string, so context, legacy signature, and canonical signature matched.
+evaluate_saved_docx_fidelity returns preserve. The new block calls
+validate_saved_snapshot_original on the selected original section strings
+and the established backend. The same objective or roadmap blockers are
+returned at 1661-1686. rel3_export_with_evidence is not called. The
+frozen object is not assigned and is not rewritten by this return.
+Empty retained blockers on the frozen candidate are not consulted.
+This refusal is the current original-content decision. It is distinct
+from saved_docx_fidelity_refused:frozen_canonical_differs.
+
+5.3 Reused object whose canonical rendering differs
+
+saved_frozen_source_refusal compares the canonical section_to_markdown
+signature with the snapshot signature. A difference returns
+saved_docx_fidelity_refused:frozen_canonical_differs at canonical_document.py
+397-398. The authority return at 1625-1651 happens before the quality
+block. validate_saved_snapshot_original is not called. Export is not
+called.
+
+5.4 Matching reused source that satisfies the current rules
+
+This reading states the path taken when the helper returns an empty list.
+It does not assert that the historical fixture does so, and it does not
+assert that a file would pass later evidence.
+
+Conditions read from the helper: normalized domain is present;
+is_rel32_compiler_first is true for that domain, language, flags, and
+document type; the vision string has at least eight digit-led rows; and
+check_roadmap_coverage for that domain returns no defects and a
+visible_row_count of at least 10. The new block then falls through.
+frozen is set from frozen_pre at 1687. The pre-existing rel36_4 call at
+1690-1702 still runs. Its repair guard returns the same section strings
+when language is not English or domain is not cyber, and that function
+still assigns those strings and a joined markdown view onto the frozen
+object. The quality helper itself does not replace the selected strings.
+Control then enters rel31_export_adapter_context and
+rel3_export_with_evidence at 1705-1711. Later returned-byte evidence
+remains in force. Reaching that call is not a content pass and is not a
+file success.
+
+5.5 Non-target export
+
+evaluate_saved_docx_fidelity returns an empty string when the artifact
+has no server-accepted saved DOCX claim. saved_frozen_source_refusal
+returns immediately. The new preserve condition is false, so the quality
+helper is not called on that reused object. A fresh non-target artifact
+still uses the ordinary repair_canonical_before_freeze path, which
+returns before the preserve branch when fidelity is empty. The
+synchronous DOCX call still omits the backend argument, and the wrapper
+still selects the ordinary REL31 backend when none is supplied.
+
+6. Harness semantics and provenance
+
+The asynchronous case remains a positive-content case. While the current
+objective or roadmap rule refuses, that case fails on content. The
+synchronous case remains an owner-handoff case. It may record a quality
+refusal without recording a file success. Neither case was run.
+
+Diagnostic provenance stays as reviewed. A lock diagnostic is not evidence
+policy. The historical real DOCX attempt remains one test, one failure,
+zero errors, zero skipped, zero passed, captured test status 1. This
+delivery did not repeat it.
+
+7. Author checks performed
+
+Performed on the isolated trees only:
+source and text inspection of the six baseline files and six proposed files;
+byte length, LF count, CR count, final-LF, and SHA-256 of those files and
+of the patch;
+syntax-only ast.parse of the six proposed files, with no project import
+and no bytecode write;
+diff -u with labels a/ and b/;
+patch --dry-run -p1 --forward --batch against an isolated copy of the six
+baseline files, exit 0;
+remeasurement of the six workspace files after that dry-run, still equal
+to the baseline identities above;
+text reads of the decision owners listed in the bundle inventory.
+
+Not performed: project import, parser or validator execution, pytest,
+collection, a numerical probe, an export, a commit, a push, a pull
+request, activation, or deployment.
+
+8. Limits that remain
+
+positive_render_readiness stays false while the current eight digit-led
+objective rule and the roadmap coverage rule remain, and while no
+executed repaired DOCX exists. Cover title and status, pagination, full
+outline preservation, general visual acceptance, full-export acceptance,
+and production acceptance are not granted. publishable does not establish
+final approval. Proposal 02 is review text. Writing a rule there does not
+make the rule effective.

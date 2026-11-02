@@ -1,0 +1,490 @@
+MIZAN / REL36.24
+SAVED ARABIC DT DOCX — QUALITY CONTRACT PROPOSAL 02
+Prepared: 2 November 2026, 14:18 Asia/Riyadh
+Review answered: MIZAN-SAVED-DOCX-FIDELITY-REPAIR-03-SOURCE-AND-CONTRACT-REVIEW-20261102-01
+Status: textual proposal only. No contract is selected. No rule below is
+effective because it is written here.
+quality_contract_change_selected=false
+proposal_02_implemented=false
+validators_py_edited=false
+export_evidence_validator_edited=false
+rel28_route_evidence_edited=false
+fixture_modified=false
+additional_production_file_edited=false
+
+Repair 04 applies the existing original-content helper on the saved reused
+frozen branch. That is a source correction under the current rules. This
+document recommends those current rules as a fully specified contract for
+later owner review. It does not lower a minimum to the fixture, and it does
+not leave a minimum blank for a later reader to invent.
+
+1. Recommended contract
+
+Recommended contract R, unselected: keep every existing numeric, family,
+catalog, identifier, duplicate, weak-output, and weak-owner rule named
+below, and apply that same decision to the original saved section strings
+on a fresh freeze and on a matching reused frozen artifact, from both
+DOCX handlers, through validate_saved_snapshot_original.
+
+A fixture-sized alternative is declined in section 8. It is not offered as
+an incomplete option. No product requirement read for this proposal
+justifies replacing the current thresholds with two roadmap rows or four
+OBJ-DT objective rows.
+
+Established product facts used below are distinguished from the retained
+decision rule:
+The DT objective catalog DT_STRATEGIC_OBJECTIVE_REGISTRY has eight keys:
+digital_strategy, service_digitization, platform_modernization,
+cloud_adoption, api_integration, customer_experience, agile_delivery,
+digital_governance. That catalog is a generation registry. The saved
+pre-writer counter does not look up these keys.
+The DT roadmap family tuple DT_ROADMAP_FAMILIES is the ten keys of
+DT_TRACE_REGISTRY: digital_strategy_alignment, enterprise_architecture,
+service_design, digital_channels, integration_apis, cloud_adoption,
+user_experience, automation, change_management, digital_workforce.
+The DT pillar catalog headings are الاستراتيجية والحوكمة الرقمية,
+الخدمات والقنوات الرقمية, المنصات والتكامل والسحابة, and
+القدرات وإدارة التغيير.
+
+2. Rule R1 — objective identifier form and count
+
+Existing rule. When is_rel32_compiler_first is true,
+validate_saved_snapshot_original counts vision lines matching the
+multiline expression ^\|\s*\d+\s*\|. A count below 8 appends
+rel3_generation_contract_failed:objectives. Compiler-first is true when
+document_type is strategy, flags contain rel3 and rel31, the normalized
+domain is an authoritative domain, and the language prefix is ar.
+Arabic DT strategy with those flags is in that set. When compiler-first
+is false, the helper appends
+saved_docx_fidelity_refused:objective_rule_unverified and does not apply
+a second objective grammar. A missing domain returns
+rel33_export_domain_missing:roadmap_quality before the objective count.
+An exception in the compiler-first lookup appends
+saved_docx_fidelity_refused:validator_exception:objectives.
+
+Proposed rule. Retain that form, that count of 8, and those failure codes.
+An accepted objective row, for this decision, is a vision line whose first
+cell is one or more digits. OBJ-DT-01 is not an accepted form under this
+counter. Each matching line increments the count, including a repeated
+digit-led line. The helper has no separate duplicate-objective defect, no
+malformed-token defect beyond failure to match the expression, no
+registry-membership test, and no dangling-reference test. Those absences
+are retained. Adding them would be a new policy, and no saved-fidelity
+requirement read here defines them.
+
+Scope. Original vision string on the saved preserve path, fresh and reused,
+both handlers, for the route that entered rel3_export_authoritative.
+Failure codes. The codes in the existing-rule paragraph.
+Call sites. validate_saved_snapshot_original at proposed
+rel31_authority.py 986-992. Fresh caller 1028-1031. Reused caller
+1657-1660. Compiler-first predicate: rel32_compiler.py is_rel32_compiler_first
+166-179, delegating to rel33_authority.py is_rel33_compiler_first 55-65.
+The wrapper supplies flags at app.py 52226-52229.
+
+3. Rule R2 — roadmap row minimum
+
+Existing rule. check_roadmap_coverage sets
+visible_row_count = max(unique parsed rows, number of required families
+present). It appends roadmap_row_count:{visible_count} when that value is
+below 10. The saved helper, if the visible count is below 10 and no
+defect already starts with roadmap_row_count, also appends
+roadmap_row_count_low. Any defect list is returned as
+rel3_generation_contract_failed:roadmap_weak_output plus
+saved_docx_original_roadmap_defect:{defect} for each defect.
+There is no second numeric minimum that counts only physical table rows
+apart from this visible_row_count rule.
+
+Proposed rule. Retain visible_row_count of at least 10 as the only numeric
+roadmap minimum on the pre-writer saved decision. Retain the formula
+max(unique parsed rows, families present). Do not add a separate actual-row
+minimum, and do not replace 10 with another number. An intentional absence
+of a second actual-row minimum is this rule: completeness for the count is
+the visible_row_count formula already computed by check_roadmap_coverage,
+together with the family, duplicate, weak-output, and weak-owner defects
+in R3, R4, and R5.
+
+Scope. The joined original section strings on the saved preserve path,
+fresh and reused. The domain argument is the normalized backend domain.
+Failure codes. rel3_generation_contract_failed:roadmap_weak_output and
+saved_docx_original_roadmap_defect:roadmap_row_count:{n} or
+saved_docx_original_roadmap_defect:roadmap_row_count_low.
+A validator exception appends
+saved_docx_fidelity_refused:validator_exception:roadmap and returns before
+the defect list.
+Call sites. Helper 993-1010. Coverage function
+rel27_export_checks.py check_roadmap_coverage 548-553.
+
+4. Rule R3 — unique identifiers and duplicates
+
+Existing rule. The coverage checker dedupes by the full row blob. A
+repeated blob appends roadmap_duplicate_rows and is not counted again as
+a unique row. There is no separate minimum number of distinct identifier
+tokens such as RM-DT-nn.
+
+Proposed rule. Retain the row-blob identity and the duplicate defect.
+The explicit completeness criterion that replaces a separate unique-id
+minimum is: one unique row is one distinct row blob; a repeated blob is
+roadmap_duplicate_rows; the numeric gate remains R2. No minimum count of
+distinct RM-DT identifiers is added.
+
+Scope. Same joined original text and same domain as R2.
+Failure code. saved_docx_original_roadmap_defect:roadmap_duplicate_rows,
+under the collapsed rel3_generation_contract_failed:roadmap_weak_output.
+Call site. rel27_export_checks.py 501-507 and 554-555, surfaced by the
+helper at 1006-1009.
+
+5. Rule R4 — required DT family set
+
+Existing rule. For domain dt, resolve_roadmap_families returns the ten
+DT_ROADMAP_FAMILIES names listed in section 1. A family absent after row
+detection and token detection appends missing_family:{family}. Family
+presence can raise visible_row_count. It does not erase a missing_family
+defect, a duplicate, a weak output, or a weak owner.
+
+Proposed rule. Retain that exact set of ten names as a requirement
+separate from the row count. All ten are required for a coverage result
+with no missing_family defect. Catalog tokens may mark a family present.
+They do not replace the ten-name set and they do not lower R2.
+
+Scope. Saved preserve path, explicit domain dt. Another domain keeps its
+own family tuple. This proposal does not change other domains.
+Failure code. saved_docx_original_roadmap_defect:missing_family:{family}.
+Call sites. rel32_registries.py resolve_roadmap_families 491-498.
+rel33_domain_substance.py DT_ROADMAP_FAMILIES 1226.
+check_roadmap_coverage 537 and 556-557.
+
+6. Rule R5 — weak output and weak owner
+
+Existing rule. A unique row whose output contains
+مخرج تشغيلي معتمد ومقاس or مخرج تشغيلي appends roadmap_weak_output.
+An owner in FORBIDDEN_OWNERS, or an owner shorter than 3 characters,
+appends roadmap_weak_owner. FORBIDDEN_OWNERS includes Threat Intelligence,
+Data Protection, المسؤول, مسؤول, Owner, owner, Team, team, and the empty
+string. The saved helper does not replace these cells before the decision.
+
+Proposed rule. Retain both defects and retain the decision on the original
+cell text.
+Scope. Same original rows as R2.
+Failure codes. saved_docx_original_roadmap_defect:roadmap_weak_output and
+saved_docx_original_roadmap_defect:roadmap_weak_owner.
+Call sites. rel27_export_checks.py 538-561. Helper 993-1010, which does
+not call the weak-output repair or the row-dedupe repair.
+
+7. Rule R6 — pillar names
+
+Existing rule. check_pillars_after_strategic_heading returns no defect
+when neither الركائز الاستراتيجية nor الركائز is present. When either
+heading marker is present, every domain catalog heading must appear.
+For an explicit dt domain those headings are the four names in section 1.
+A saved pillar title that is not one of those headings does not satisfy
+the missing entry. The pre-writer helper does not call this function.
+
+Proposed rule. Retain the downstream catalog requirement. Saved pillar
+names do not substitute for the four catalog headings when a heading
+marker is present. This proposal does not add a new pre-writer pillar
+gate. Adding one would be a new production check, and the current
+objective and roadmap rules already have an established pre-writer owner.
+Failure code, when the downstream check fails:
+missing_pillars_after_heading, later wrapped by the evidence route as
+rel2_actual_export_evidence_failed:{channel}:missing_pillars_after_heading
+and, on the DOCX and PDF strategy loops, also
+rel2_section_parity_failed:pillars:actual_text_missing.
+Call sites. rel28_route_evidence.py 151-175 and 299-329.
+required_pillar_name_variants in rel27_export_checks.py 33-58.
+The 'dt' catalog in rel33_domain_substance.py 883-934.
+run_rel31_acceptance_checks also calls the same pillar check at
+rel31_acceptance_checks.py 781-784 for a strategy document.
+
+8. Rule R7 — where domain, type, and language come from
+
+Existing rule. rel3_export_authoritative resolves domain from the artifact
+top level, then contract_meta, and refuses a blank domain with
+rel33_export_domain_missing:{route}. Language comes from contract_meta,
+then artifact lang or language, then export kwargs, otherwise ar.
+Document type comes from contract_meta or the artifact, otherwise strategy.
+Flags come from the wrapper's version flags rel3 and rel31. Those values
+are copied onto the backend before the fresh branch and before the reused
+branch. The helper normalizes the backend domain again and reads backend
+lang, flags, and document_type.
+
+Proposed rule. Use that same resolved backend for the fresh call and the
+reused call. Both DOCX handlers reach it through
+_rel31_authoritative_export_route. The synchronous call at app.py
+83832-83847 omits backend, so the wrapper builds the REL31 backend and
+copies the trusted owner. The asynchronous call at 81179-81194 passes its
+backend; the authoritative function still resolves domain and language
+from the artifact before the quality decision. The new reused invocation
+is gated by evaluate_saved_docx_fidelity == preserve, so a non-target
+export does not enter it. Because the branch is the shared authoritative
+function, a preserve-claim route that reaches a matching frozen artifact,
+including a later PDF call on that same claim, receives the same helper.
+That is the existing function boundary. It is not a new PDF policy.
+Failure codes. The R1 and R2 codes. A blank domain at the authoritative
+entry is rel33_export_domain_missing:{route} before either branch.
+Call sites. rel31_authority.py 1394-1413 and 1511-1528; fresh 1713;
+reused 1652-1686; wrapper 52215-52229; sync 83832-83847; async 81179.
+
+9. Rule R8 — what text may change before evidence
+
+Existing rule, retained.
+The pre-writer decision reads the original section strings joined by a
+blank line. It does not normalize business text, does not repair Arabic
+glue, and does not replace the snapshot. On refusal, those strings are
+what the blockers describe, and the fresh preserve branch assigns those
+same strings back.
+The earlier equivalence check compares the canonical section_to_markdown
+rendering with the snapshot signature under the saved-markdown grammar.
+That comparison is the F003 source check. It is not the objective or
+roadmap decision.
+After a quality pass, the writer may draw the preserved source flow.
+Returned-byte evidence then extracts visible text from the file bytes.
+Extraction can break lines and tables. The extracted string, the
+post-extraction hook string, the channel-local string, and the source
+markdown remain different objects.
+Equal returned-byte hashes show that the bytes given to the client match
+the bytes given to evidence. They do not show that every later textual
+decision used unmodified source markdown.
+Business-text repair before this pre-writer decision stays excluded.
+The repair helpers that delete duplicate roadmap rows or replace weak
+output cells stay unwired on this path.
+
+10. Downstream counters, with their callers
+
+These sites stay as they are. Recommended contract R does not edit them.
+Their threshold, where they have a numeric minimum, stays 10. Their
+counters are not the same counter.
+
+a. export_evidence_validator.py _count_roadmap_rows_visible at 271-291
+counts bordered rows inside a خارطة الطريق or Implementation Roadmap
+region whose first cell is all digits or contains المرحلة. A header cell
+المرحلة, Phase, #, or رقم is skipped.
+_roadmap_defects_in at 294-321 can return before its own count defect
+when that visible count is at least 10, or when a supplied internal count
+is at least 10. Its count defect is appended only by
+if count and count < 10. A zero visible count adds no count defect in
+this helper. Other gates still apply to that blob. This helper is not a
+statement that zero rows pass the saved pre-writer rule. The pre-writer
+rule is R2, and a zero visible_row_count from check_roadmap_coverage is
+below 10.
+
+b. validate_actual_export_evidence computes internal_roadmap_row_count at
+613-620 as the length of _parse_roadmap_rows on the canonical roadmap
+section. _parse_roadmap_rows keeps a bordered row of at least four cells
+whose first cell is not المرحلة, Phase, or #. A first cell RM-DT-01 is
+kept by that parser and is not a digit-led visible row.
+The preview channel receives that internal count at 643-653.
+The DOCX channel at 654-663 and the PDF channel at 664-671 do not pass
+internal_roadmap_row_count into _channel_defects. The supplied-internal
+shortcut is therefore active only for a channel that receives the
+argument. It is not an active DOCX-channel shortcut merely because the
+count was computed earlier.
+Inside _channel_defects, an internal count of at least 10 drops defects
+whose text starts with roadmap_row_count at 417-420, for the channel that
+was given the argument. The further reduction at 427-432, which keeps
+only roadmap_bad_initiative defects, is conditioned on route == preview
+and the same internal threshold.
+The peer-count map records a canonical count at 636-637 only when the
+internal count is at least 10. That map is an input to substance checks.
+It is not itself the DOCX shortcut.
+
+c. The same internal count is passed to apply_route_bound_verdict at
+717-742 for the validation as a whole. rel28_route_evidence.py 339-360
+calls check_roadmap_visible_drift for checked DOCX text and for checked
+PDF text on a strategy-like document. The drift function at 189-212 calls
+check_roadmap_coverage and uses that function's visible_row_count, which
+can include family presence. It appends roadmap_row_count:{visible} when
+visible is non-zero and below 10. When an internal count is supplied and
+visible is non-zero, a difference of at least 3, or an internal count of
+at least 10 with visible below 10, appends
+rel2_export_model_drift:roadmap_visible_row_count.
+A zero visible count adds neither of those two drift-function defects.
+The coverage function used underneath can still carry its own defects in
+other callers. This rel28 site remains relevant if catalog pillar names
+are retained. Any later change to a count function has to include this
+site in the same decision. This proposal does not change it.
+
+d. release_engine_v3/validators.py validate_canonical_quality calls
+check_roadmap_coverage(blob) at line 63 with no domain argument, so the
+coverage default domain cyber remains on that canonical function. Lines
+64-67 still compare visible_row_count with 10 and append
+rel3_export_model_drift:roadmap_visible_row_count:{count}.
+Passing dt at line 63 would select the DT family tuple and would leave
+the comparison with 10 in place.
+The delegation from canonical export-text validation to the evidence
+consumer is validators.py validate_export_text at 100-116. It is not
+export_evidence_validator.py 100-116.
+
+The saved helper and the fresh and reused callers already pass an explicit
+domain into check_roadmap_coverage. Contract R keeps that explicit domain
+and keeps the shared coverage function's existing policy. It does not
+retarget the canonical function in validators.py.
+
+11. Evidence applicability for this saved Arabic DT DOCX contract
+
+The evidence consumer assigns REL36.5 results, and then REL36.11 results,
+onto the preview, DOCX, and PDF strings at export_evidence_validator.py
+523-611 before the channel defect functions. A call is not the same as a
+rewrite.
+
+REL36.5. rel36_5_should_apply returns false unless the normalized domain
+is cyber, the document type is strategy, strategy_document, or empty, the
+framework signal passes, and an English evidence signal passes. The
+English signal is language en, or the English headers Initiative and
+Expected Deliverable, or KPI Description, or a blob that contains both
+the Arabic pillar headers and those English headers. Domain dt fails the
+domain comparison. apply_rel36_5_to_evidence_blob leaves the input string
+in place when that guard is false and returns it. The hook stays callable.
+This proposal does not disable it.
+
+REL36.11. rel36_11_should_apply delegates to rel36_5_should_apply. The
+English Cyber text and PDF rewrite block is inside that guard. For domain
+dt the function returns the DOCX and PDF strings it received. It also
+builds an auth diagnostic. The evidence caller replaces the channel
+strings with the returned strings and stores the diagnostic. The
+diagnostic's HTTP status is not a second export gate in that caller.
+Missing authenticated-user arguments inside the evidence call make the
+diagnostic's own auth result unauthenticated. That diagnostic is not an
+Arabic DT content rewrite and is not used here as a saved-DOCX denial.
+The hook stays callable. This proposal does not disable it.
+
+REL36.4, which runs before export on the reuse branch after the quality
+decision, uses the same English-and-cyber guard. When language is not en
+or domain is not cyber, the repair returns the same section strings. The
+frozen assignment of those strings and of a joined markdown view is
+pre-existing. It is outside the quality helper.
+
+Arabic canonical repair. _channel_defects at 354-360 calls
+repair_rel3_arabic_canonical_text only when rel31_in_export_adapter is
+true. evaluate_content_substance at rel31_content_substance_checks.py
+449-454 does the same. The context manager at proposed rel31_authority.py
+1302-1307 sets the flag true and clears it on exit, with no nesting
+count. The DOCX exporter enters an inner context at docx_exporter.py
+184-198 and that inner exit clears the flag before the exporter returns.
+The orchestrator calls the exporter at orchestrator.py 222 and calls
+returned-byte evidence at 245. validate_returned_export_bytes does not
+enter rel31_export_adapter_context. On this authoritative DOCX path, the
+flag is clear when those two repair calls are evaluated, so the repair
+function is not entered there. This is a reading of the wrappers. It is
+not an observed Arabic rewrite, and it is not a request to change the
+context manager. A different caller that invokes evidence while the flag
+is still set would still run the repair.
+
+Acceptance and substance still run for a strategy channel after extraction.
+run_rel31_acceptance_checks at export_evidence_validator.py 382-384 runs
+for document type strategy. With an explicit domain dt it still runs the
+pillar checks, placeholder-pillar check, Arabic residue check, generic
+KPI formula, and empty risk-treatment check. The cyber-only additions,
+DLP and third-party KPI checks and the DCC traceability check, are added
+when the domain is blank or cyber. Explicit dt omits those additions.
+run_rel31_content_substance_checks at 391-397 runs for a strategy
+document. Its roadmap substance calls check_roadmap_coverage with the
+passed domain and still treats a count below 10 as a defect, including a
+flat initiative count below 10. check_traceability_bad_mappings returns
+an empty list when the domain is present and is not cyber. Pillar depth,
+pillar owner, Arabic residue, duplicate metrics, and mixed formulas still
+return their own defects. Those returned items enter the forbidden and
+blocking aggregation at 463-473.
+Later, for every strategy document, validate_returned_export_bytes can
+append traceability-immutability blockers and KPI-main schema blockers.
+Those checks were read in place. They are retained. They are not copied
+into the bundle because this contract does not change them and does not
+claim a positive evidence result that would depend on a particular
+outcome from them.
+A statement that all remaining evidence is unchanged is not a
+demonstrated positive path. A pre-writer pass only reaches those checks.
+Each applicable check above can still refuse the returned bytes.
+
+12. Text objects that stay identifiable
+
+Original saved section strings: input to validate_saved_snapshot_original
+and to the fresh preserve return.
+Snapshot structure: input to saved_frozen_source_refusal, including
+section_to_markdown of the canonical sections.
+Writer source flow: the preserved saved drawing path after a quality pass.
+Extracted channel text: extract_docx_visible_text or the PDF and preview
+extractors inside validate_returned_export_bytes.
+Post-extraction hook text: the string returned by REL36.5 and then
+REL36.11. For this Arabic DT contract those guards leave the extracted
+string in place.
+Channel-local text: the blob inside _channel_defects after the
+adapter-gated Arabic repair, which section 11 places outside this
+authoritative returned-byte path.
+Source markdown and returned bytes remain separately hashed. File-hash
+equality is the returned-equals-evidence check. It is not a proof that
+every downstream decision used unmodified source text.
+
+13. Fixture outcome under the specified rules
+
+The unchanged fixture and EXPECTED stay unchanged. This section uses the
+previously recorded fixture text: four vision rows whose first cells are
+OBJ-DT-01, OBJ-DT-02, OBJ-DT-03, and OBJ-DT-04, and two roadmap data rows
+RM-DT-01 and RM-DT-02. No new validator, parser, or numeric probe was run.
+
+Under recommended contract R, on a fresh preserve freeze and on a matching
+reused frozen artifact, the objective rule sees zero digit-led vision
+rows. The helper appends rel3_generation_contract_failed:objectives when
+compiler-first is true. When compiler-first is false it appends
+saved_docx_fidelity_refused:objective_rule_unverified. Either code refuses
+before the writer: fresh DOCX and PDF at the frozen.blocking_errors stop,
+and matching reuse at the new return before rel3_export_with_evidence.
+The roadmap rule remains applicable to the original strings. This proposal
+does not publish a new coverage defect list for the fixture. Refusal is
+already established by the objective rule. A roadmap pass is not claimed.
+
+The fixture heading text contains الركائز الاستراتيجية. If a file were
+ever produced, the downstream pillar rule would require the four DT
+catalog headings. Contract R does not require the fixture to pass, and
+Repair 04 does not generate rows, rename OBJ-DT identifiers, or inject
+catalog sentences to make it pass.
+
+The declined fixture-sized alternative is stated completely so it is not
+an unspecified option: minimum actual roadmap rows 2, minimum unique
+identifiers 2, required family set whatever tokens happen to occur,
+accepted objective form OBJ-DT- followed by digits, objective count 4,
+pillar catalog optional. That alternative is not recommended. No source
+requirement read for this proposal treats two saved rows or four OBJ-DT
+rows as completeness. It is not selected, and it is not implemented.
+
+14. Prospective cases under contract R
+
+These are consequences of the rules above. They are not executed scenarios.
+
+A fresh or matching reused saved Arabic DT strategy whose vision has eight
+or more digit-led rows, whose compiler-first predicate is true, and whose
+original text yields visible_row_count of at least 10, all ten DT
+families, no duplicate row blob, and no weak output or weak owner, passes
+this pre-writer gate and reaches the existing exporter and evidence path.
+Later acceptance, substance, pillar, drift, traceability-immutability, and
+KPI schema checks still apply. Reaching export is not a file success.
+A saved text with eight digit-led objective rows and a roadmap
+visible_row_count below 10 is refused by R2 before the writer.
+A saved text whose objectives are only OBJ-DT identifiers is refused by
+R1 even if the roadmap coverage result is empty.
+A reused object whose canonical signature differs is refused as
+saved_docx_fidelity_refused:frozen_canonical_differs before R1 and R2.
+A non-target export does not enter the preserve quality call.
+
+15. Named production change that this proposal does not make
+
+Contract R needs no production edit beyond the Repair 04 reuse call,
+which is already inside the six-file surface and uses the current helper.
+If a later owner wants the canonical quality function to use the same
+explicit domain as the saved helper, the smallest change is one argument
+at release_engine_v3/validators.py line 63:
+check_roadmap_coverage(blob, domain=domain).
+The comparison with 10 at lines 64-67 would remain. That edit is not
+authorized, not required for the saved DOCX gate, and not made.
+No change to export_evidence_validator.py, rel28_route_evidence.py,
+rel27_export_checks.py, or the five evidence decision owners is proposed
+as an effective edit.
+
+16. Selection status
+
+quality_contract_change_selected=false
+Recommended contract R is ready for review as a retain-and-specify
+decision. Writing it here does not put it into force beyond the current
+source behavior. Repair 04's reused-branch call implements the current
+helper, which is the behavior R describes for that branch. It does not
+implement a lowered contract, a new pillar gate, or a validators.py edit.
+The next owner decision on whether to adopt R, or to authorize an
+executed scenario, remains deferred.
