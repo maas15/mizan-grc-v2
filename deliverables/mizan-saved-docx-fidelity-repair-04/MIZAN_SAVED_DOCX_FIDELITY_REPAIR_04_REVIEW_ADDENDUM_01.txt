@@ -1,0 +1,203 @@
+MIZAN / REL36.24
+SAVED DOCX FIDELITY REPAIR 04 — REVIEW ADDENDUM 01
+Review answered: MIZAN-SAVED-DOCX-FIDELITY-REPAIR-04-SOURCE-AND-CONTRACT-REVIEW-20261102-01
+Prepared: 2 November 2026, 18:07 Asia/Riyadh
+
+This addendum records the limited textual clarifications from that review.
+It does not replace, rewrite, or rehash the three received originals. It
+does not select Contract R, implement a rule, or change source bytes.
+No Repair 05 is included.
+
+quality_contract_change_selected=false
+positive_render_readiness=false
+repair_04_source_bytes_changed_by_this_addendum=false
+repair_05_requested=false
+baseline_application_executed=false
+tests_executed=false
+project_import_executed=false
+validators_executed=false
+new_export_created=false
+commit_push_pr_executed=false
+
+1. Originals named by the received identities
+
+These three files stay exactly as delivered and reviewed. Each has 0 CR
+and a final LF.
+
+File | Bytes | LF | SHA-256
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_04.patch | 97507 | 2341 | 902c80a8504834af0cad721638159b67e7c4e9a2f9fc85e76cf5a316d6299e7a
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_AUTHORING_NOTES_04.txt | 15782 | 313 | cb13a0386d5233f32224fd877bbd89c1a1ef1018ff0f0011de879e111a4d0cf0
+MIZAN_SAVED_DOCX_FIDELITY_QUALITY_CONTRACT_PROPOSAL_02.txt | 27362 | 490 | 22134df33bb4674edd26e16127ddb27d36455ac39b85450d40ef7f249af68f75
+
+Repair 04 remains the accepted source-review patch within the reviewed
+scope. F009 stays closed at source-review level on both the fresh preserve
+path and the matching reused-frozen path. This addendum does not reopen it.
+
+2. Notes 04, section 5.5 — fresh non-target control flow
+
+Original sentence in notes section 5.5:
+
+"A fresh non-target artifact still uses the ordinary
+repair_canonical_before_freeze path, which returns before the preserve
+branch when fidelity is empty."
+
+Corrected reading:
+
+"A fresh non-target artifact still uses repair_canonical_before_freeze.
+When fidelity is empty, it skips the saved-preserve/refusal branch and
+continues the existing ordinary repair logic."
+
+Source basis: proposed rel31_authority.py 1023-1041. The source already
+follows that reading. The notes file itself is unchanged.
+
+Disposition: walkthrough wording corrected here. No source change.
+
+3. Proposal 02 introduction — section cross-reference
+
+Original sentence:
+
+"A fixture-sized alternative is declined in section 8."
+
+Corrected cross-reference:
+
+"A fixture-sized alternative is declined in section 13."
+
+Section 8 of the proposal is the metadata and text-provenance rule. The
+declined fixture-sized alternative is stated in section 13. Its declined
+status is unchanged. Contract R remains unselected.
+
+Disposition: cross-reference corrected here. The proposal file is unchanged.
+
+4. Proposal 02, R1 and R3 — existing predicate and duplicate key
+
+R1. Read "flags contain rel3 and rel31" as:
+
+"the rel3 and rel31 flags are both truthy."
+
+Source basis: rel33_authority.py 40-65, reached through
+rel32_compiler.py is_rel32_compiler_first at 166-179. A key that is
+present and false does not satisfy flags.get('rel3') and
+flags.get('rel31'). This clarification adds no objective form, duplicate
+rule, or count.
+
+R3. The existing duplicate key is:
+
+"the lowercased, edge-stripped join of the parsed row values produced by
+the existing parser; it is not byte identity of the original Markdown row."
+
+Source basis: roadmap_model.py _row_blob at 151-152, and
+rel27_export_checks.py _dedupe_row_key at 485-486. No new identifier
+minimum and no new normalization policy is added.
+
+Disposition: wording aligned with the existing functions. No threshold
+and no source change.
+
+5. Proposal 02, R6 — catalog matching
+
+The retained pillar rule uses required_pillar_name_variants and
+_pillar_variant_present. It does not require byte-identical title strings.
+Existing direct substring, normalized Arabic, reversed-glyph,
+space-collapsed, and mixed-script Arabic-span matching remain in force.
+When the selected post-heading slice is insufficient, the existing
+whole-blob fallback remains in force. A different saved pillar name that
+matches none of those accepted variants does not replace a required
+catalog entry. No literal-only matcher or new pre-writer pillar gate is
+proposed. The existing failure codes are unchanged.
+
+Source basis: rel27_export_checks.py 33-58; rel28_route_evidence.py
+128-185, including the missing_pillars_after_heading return at 173-174
+and the route wrappers at 299-329; rel33_pdf_evidence_norm.py 31-71.
+The proposal's failure codes stay as written.
+
+Disposition: matching semantics recorded here. No production matcher
+change and no new pre-writer pillar gate.
+
+6. Proposal 02, R7 and section 13 — producer scope
+
+The reviewed producer scope is the two saved Arabic DT DOCX handlers.
+This proposal selects no PDF producer, PDF claim handoff, or PDF
+acceptance scenario. The current shared function would also apply its
+preserve condition if a different caller supplied the same validated
+DOCX claim. That is a conditional source-boundary observation, not
+evidence that such a PDF producer is wired or a PDF scenario was run.
+Any statement about the fresh non-preview refusal describes that same
+shared boundary and does not extend this authorization.
+
+This qualification applies to proposal section 7, including the sentence
+about a later PDF call on the same claim, and to section 13's statement
+that fresh DOCX and PDF stop at frozen.blocking_errors. No new
+current-route guard and no PDF source edit is requested.
+
+Disposition: scope wording qualified here. No PDF work is authorized.
+
+7. Evidence status
+
+Author source readings stay distinct from an independent review of the
+decision-owner originals.
+
+The five owners named for QCP1-F003, together with the two additional
+copies and the original inventory, are packaged from the existing
+reported bytes. Their identities are listed in section 8. Packaging
+read-back confirms those member bytes. That read-back is delivery
+fidelity for this package. It is the arrival of the originals for
+independent review. QCP1-F003 stays open until that independent reading
+of the five owners is complete.
+
+REL36.4's implementation is not a member of this bundle. The separate
+guard statement about that implementation remains an author reading.
+The review already places the call after the new refusal. A call site
+does not establish that implementation's guard.
+
+Disposition: originals supplied for the open applicability review.
+Applicability is not closed by this addendum. F009 stays closed.
+
+8. Decision-owner package
+
+Folder name: MIZAN_SAVED_DOCX_FIDELITY_DECISION_OWNERS_04
+The inventory file was not regenerated. Each member below is the existing
+copy. All eight files have 0 CR and a final LF.
+
+Path | Bytes | SHA-256
+INVENTORY.txt | 3404 | 62c268507c95e772cd0ad1bee4733b2be0f5fcaab9529c29098649c100cad8f9
+release_engine/arabic_language_gate.py | 17699 | 78d817480ffae5234718dfaa692361481867cea328c1dfd4d6d7082e1b8e973b
+release_engine/rel31_acceptance_checks.py | 39657 | 1dcf575443b57600947309f2b485dbe8e7a6f3ea65a34cb5e7fa3f07255baca5
+release_engine/rel31_content_substance_checks.py | 25971 | 8f56d01848305359fd247ec9f07bc4f5e11cf651c9e60e40e52be368d2e3c1d4
+release_engine_v3/rel36_5_actual_server_export_evidence_hook.py | 10032 | 12e47409f843a82974b63e665847f949c31cd68e14792f2c43302bcb525e48d3
+release_engine_v3/rel36_11_en_cyber_export_stability.py | 22632 | aad021d5bb3ca2d6c89350cce1d8e1550e72f5a30919cea92a999707efe6eda9
+release_engine_v3/validators.py | 5463 | c41937852ebb8ff1d8de77025a5ab4ce9767d773288d708df14ba3d13b16cc32
+release_engine/rel28_route_evidence.py | 20541 | f3df8ac0062a549a17da7a24bc2345d9165cdd18358c20c223b997ba4ff8226d
+
+Archive:
+MIZAN_SAVED_DOCX_FIDELITY_DECISION_OWNERS_04.zip
+38944 bytes. SHA-256 e28e38743a2de4fc68c0137c17d07e89cf0a853c265746c540652e2c5b1f41f2.
+Eight members. Each member name is the folder name above plus the relative
+path in this table. The eight extracted member byte strings were read back
+and match this table, including 0 CR and a final LF. The inventory inside
+the archive is the original inventory file.
+
+9. Limits carried forward
+
+The unchanged fixture's objective rows remain OBJ-DT-01 through OBJ-DT-04.
+Under the retained digit-led rule they do not satisfy the count of 8.
+That is a source deduction from the fixture text and the predicate, not
+a new validator run. No roadmap pass and no new fixture defect list is
+asserted.
+
+The historical real-render attempt remains one test, one failure, zero
+errors, zero skipped, zero passed, captured test status 1. It stays
+consumed. This delivery created no repaired DOCX.
+
+Cover title and status, pagination, full heading outline, general visual
+acceptance, full-export acceptance, and production acceptance remain
+unestablished. Full heading-outline preservation remains the documented
+limitation that levels 1-2 share one visual weight and levels 3-6 share
+another.
+
+positive_render_readiness=false
+quality_contract_change_selected=false
+historical_real_render_tests=1
+historical_real_render_failures=1
+historical_real_render_errors=0
+historical_real_render_skipped=0
+historical_real_render_passed=0
+historical_real_render_captured_status=1
