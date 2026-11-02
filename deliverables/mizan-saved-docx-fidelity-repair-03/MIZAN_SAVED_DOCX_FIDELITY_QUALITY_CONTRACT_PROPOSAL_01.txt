@@ -1,0 +1,204 @@
+MIZAN / REL36.24
+SAVED ARABIC DT DOCX — QUALITY CONTRACT PROPOSAL 01
+Prepared: 2 November 2026, 13:45 Asia/Riyadh
+Status: textual proposal only. No contract is selected.
+quality_contract_change_selected=false
+validators_py_edited=false
+export_evidence_validator_edited=false
+
+This document does not authorize an edit outside the six-file Repair 03
+surface. It does not choose a minimum in order to make the current fixture
+pass. The fixture and EXPECTED bytes stay unchanged.
+
+1. Evidence-consumer copy
+
+release_engine/export_evidence_validator.py
+59433 bytes; 1450 LF; 0 CR; final LF present.
+SHA-256 e5c795590d184b894f3399f360709dc3a01817484d55ffd841dc221339b0f673
+Delivery path:
+MIZAN_SAVED_DOCX_FIDELITY_READONLY_EXPORT_EVIDENCE_VALIDATOR_01/release_engine/export_evidence_validator.py
+The copy matches the workspace file byte for byte. It was read as text and
+was not imported or executed. No further dependency was required to name
+the decisions below. rel36.5 and rel36.11 are called from this file; their
+implementations were not copied because the call sites already show that
+extracted text can be rewritten before the defect functions run.
+
+2. Scope this proposal is about
+
+Server-accepted saved Arabic DT strategy DOCX, both the synchronous and
+asynchronous handlers, including a fresh freeze and a reused frozen
+artifact. Other domains, other document types, and PDF keep their current
+behavior. A saved row is not treated as complete merely because it was
+stored.
+
+3. Facts that must stay separate
+
+For the unchanged fixture, source inspection shows:
+
+Actual roadmap data rows: two, identified RM-DT-01 and RM-DT-02.
+Unique roadmap identifiers: those two strings. No duplicate is visible in
+the fixture text.
+Digit-led objective rows: zero. The four objective identifiers are
+OBJ-DT-01 through OBJ-DT-04.
+Digit-led roadmap rows: zero under the predicate ^\|\s*\d+\s*\|.
+
+Family coverage is a third fact. check_roadmap_coverage counts
+visible_row_count as the maximum of unique parsed rows and required
+families marked present (rel27_export_checks.py 548-550). That number is
+not the number of source rows. Repair 02's literal token scan, which did
+not call the matcher, reported three of the ten DT families and a derived
+count of three, versus a cyber-default derived count of two. This proposal
+does not replace that scan with a new executed result.
+
+The ten DT family keys, from DT_TRACE_REGISTRY in
+release_engine_v3/rel33_domain_substance.py, are:
+digital_strategy_alignment, enterprise_architecture, service_design,
+digital_channels, integration_apis, cloud_adoption, user_experience,
+automation, change_management, digital_workforce.
+
+The four DT catalog pillar headings in DOMAIN_PILLAR_CATALOGS['dt'] are:
+الاستراتيجية والحوكمة الرقمية, الخدمات والقنوات الرقمية,
+المنصات والتكامل والسحابة, القدرات وإدارة التغيير.
+check_pillars_after_strategic_heading requires those names when a
+strategic-pillar heading is present (rel28_route_evidence.py 151-175).
+The fixture heading contains الركائز الاستراتيجية. Whether the loose
+Arabic fallback would mark the catalog names present was not executed.
+
+4. Decisions that remain in force
+
+No option below is selected. Under every option that is not selected, the
+current refusal stays.
+
+4.1 Objectives, rel31_authority.py 658-670.
+When is_rel32_compiler_first is true, validate_rel3_objectives counts
+rows matching ^\|\s*\d+\s*\| and requires at least eight. The blocker is
+rel3_generation_contract_failed:objectives. Repair 03's
+validate_saved_snapshot_original applies that same predicate to the
+original vision string. It does not accept OBJ-DT identifiers. Supporting
+that identifier form would be a contract change, and it would still need
+a separate decision about whether the minimum count is four or eight.
+
+4.2 Roadmap, original text.
+check_roadmap_coverage (rel27_export_checks.py 489-574) records, as
+separate defects, visible count below ten, duplicate rows, missing
+families, weak outputs, and weak owners. Repair 03 calls it on the
+original joined section text with the explicit domain. It does not call
+_repair_rel3_weak_roadmap_outputs or _rel31_dedupe_roadmap_rows first.
+The collapsed blocker remains
+rel3_generation_contract_failed:roadmap_weak_output, with
+saved_docx_original_roadmap_defect entries for the individual defects.
+"Accept the real roadmap-row count" is not a completeness rule. A future
+rule has to state the minimum actual row count, the minimum unique
+identifier count, and the required family set as three separate
+requirements, with a reason that is not "the fixture has this many."
+
+4.3 Canonical validator domain.
+validators.py 63 calls check_roadmap_coverage(blob) with no domain. The
+helper defaults to cyber. The same function receives the real domain and
+uses it for the pillar check at lines 58-59. Repair 03 does not edit
+validators.py. A saved DT contract that passed an explicit dt coverage
+check could still be refused by this cyber-default call. The smallest
+later edit, not authorized now, is to pass the same domain argument at
+that one call. That edit alone does not make the fixture pass: the count
+minimum and the other defects remain.
+
+validators.py 69-70 copies only risk, traceability, and Arabic-residue
+channel defects into canonical blockers. It does not copy every roadmap
+defect from check_roadmap_coverage. The row-count blocker it adds is only
+rel3_export_model_drift:roadmap_visible_row_count:<n> when the visible
+count is below ten. Duplicate, family, weak-output, and weak-owner
+defects from that result are not all re-emitted there. The rel31 original
+check is what retains them on the saved export path.
+
+4.4 Returned-byte evidence.
+validate_export_text delegates to validate_actual_export_evidence
+(export_evidence_validator.py 100-116 and 503-742).
+Before the defect functions, lines 523-611 may replace preview, DOCX, and
+PDF text through the rel36.5 hook and the rel36.11 English-cyber hook.
+A saved-content contract has to say whether those rewrites are allowed to
+change the text that is judged. This proposal does not allow a rewrite to
+stand in for the saved snapshot.
+_roadmap_defects_in (294-321) returns without a count defect when the
+visible evidence count is at least ten, or when the internal parsed row
+count passed in is at least ten. The visible counter (271-291) counts a
+roadmap row only when the first cell is all digits or contains المرحلة.
+RM-DT-01 does not match that counter. The internal count comes from
+_parse_roadmap_rows (roadmap_model.py 130-148), which keeps a bordered
+row of at least four cells whose first cell is not المرحلة, Phase, or #.
+Those are different counts. An internal count of two does not take the
+early return. The function was not executed.
+The same evidence function also carries KPI, traceability, Arabic-residue,
+forbidden-pattern, and section-drift checks. Changing the roadmap minimum
+does not retire them.
+
+4.5 Pillars and KPI.
+required_pillar_name_variants returns the DT catalog when the domain
+normalizes to dt, and the cyber list when the domain is blank or cyber
+(rel27_export_checks.py 33-58). A saved contract has to say whether the
+accepted saved pillar names are sufficient or whether the four catalog
+headings remain mandatory. This proposal does not replace saved pillar
+text with catalog text.
+check_kpi_canonical still runs from validators.py and from the channel
+checks. The fixture KPI rows are not digit-led. Repair 02 noted that the
+visible defect list does not by itself force exported_kpi_table_count:0.
+That function was not executed for this proposal, so no KPI pass is claimed.
+
+5. Options, none selected
+
+Option A — keep the current refusal.
+Saved Arabic DT DOCX continues to require eight digit-led objective rows
+and the existing roadmap coverage result on the original text, including
+visible count of at least ten, no duplicate rows, the required families,
+and no weak outputs or owners. The canonical cyber-default call and the
+returned-byte checks stay as they are. The unchanged fixture is refused
+before the writer. This is the behavior Repair 03 implements. It is the
+behavior in force until a later review selects something else.
+
+Option B — a distinct saved-content contract, not drafted as numbers.
+If a later review wants saved exports to keep their real rows, it has to
+specify, before any edit:
+the minimum actual roadmap row count, the minimum unique identifier
+count, and the required DT family set, each with a completeness reason;
+the accepted objective identifier forms, including whether OBJ-DT-01 is
+accepted, and the minimum count of those rows;
+how a duplicate identifier, a missing identifier, and a reference to a
+missing objective or roadmap row are refused;
+that every count and coverage call receives domain dt, including
+validators.py 63;
+whether catalog pillar names are required in addition to the saved names;
+that ownership, caller and alias checks, namespace refusals, body/section
+consistency, frozen canonical equivalence, original-content validation,
+and returned-byte evidence remain in force;
+that rel36.5 and rel36.11 do not rewrite the saved snapshot before that
+judgment, or that any allowed rewrite is listed;
+the exact call sites to change. The smallest surface named by this reading
+is validators.py validate_canonical_quality, the digit-led branch in
+rel31_authority.py, the count and family minima in
+check_roadmap_coverage, the evidence counter and early return in
+export_evidence_validator.py, and the pillar catalog requirement in
+rel28_route_evidence.py if catalog names are not required for saved text.
+Naming that surface is not permission to edit it.
+
+Under Option B as written here, the unchanged fixture has no selected
+minimum, so it is still refused. A positive-file test is not renamed as
+a fidelity pass.
+
+6. Prospective cases, not runs
+
+Current contract, unchanged fixture: fresh and reused saved DOCX both
+refuse before a positive file. The async content test fails on the
+quality blockers. The sync test may record those blockers while checking
+the owner handoff. Returned bytes, if a future bug produced them, are
+still compared.
+
+A later selected contract needs its own refusal cases: a duplicate
+roadmap row, a weak output cell, a missing required family if families
+remain required, an objective identifier that is not in the accepted
+form, a stale section map, and a frozen canonical rendering that differs
+from the snapshot. Those cases are descriptions. They were not added to
+the fixture and were not executed.
+
+7. What Repair 03 already did inside the six files
+
+It validates the original snapshot instead of a repaired copy, and it
+keeps the current refusal. It does not implement Option B.
