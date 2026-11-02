@@ -1,0 +1,535 @@
+MIZAN / REL36.24
+SAVED DOCX FIDELITY REPAIR 02 — ISOLATED SOURCE PROPOSAL
+Review answered: MIZAN-SAVED-DOCX-FIDELITY-REPAIR-01-SOURCE-REVIEW-20261102-01
+Prepared: 2 November 2026, Asia/Riyadh
+Authority:
+MIZAN-SAVED-ARABIC-DT-DOCX-FIDELITY-REPAIR-AUTHORING-REQUEST-20261102-01
+MIZAN-SAVED-ARABIC-DT-DOCX-FIDELITY-REPAIR-AUTHORING-AUTHORIZATION-20261102-01
+
+patch_status=blocked
+positive_render_readiness=false
+repair_01_overwritten=false
+repair_01_applied=false
+baseline_application_executed=false
+tests_executed=false
+project_import_executed=false
+new_export_created=false
+commit_push_deploy_authorized=false
+runtime_fidelity_pass_claimed=false
+visual_acceptance=false
+full_export_accepted=false
+production_accepted=false
+
+This file is a source proposal. A static check is not a rendering result.
+Repair 01 remains the unapplied review record. This patch is a full
+replacement against the same accepted baseline, not an incremental diff
+on Repair 01.
+
+1. Identities
+
+Baseline HEAD: fb6173642f37fc02210da360770ad3614162e362
+The six baseline files were not modified. After the dry-run their
+SHA-256 values still match the accepted authoring baseline.
+
+Baseline (left side of every hunk) | bytes | LF | CR | final LF | SHA-256
+app.py | 5171612 | 96166 | 0 | yes | b346fe55e6a185d1e813636bda9473a38ce17960d71fbabd6c04135a4702e72d
+release_engine_v3/rel31_authority.py | 114778 | 2740 | 0 | yes | 623273cfe8a0af828f77645ad423587ae8eb7b083f08c31bdccd7ea79d369438
+release_engine_v3/canonical_document.py | 20914 | 497 | 0 | yes | 233c85c7cd2750999b483595678f2f2c9a5f590ac2dde51c35a7cd629132788d
+release_engine_v3/exporters/docx_exporter.py | 9653 | 232 | 0 | yes | 5e5c512a9a3f2c8446c534a174918668a84585bf111caf8c56cc006cd1ab4098
+professional_strategy_render.py | 340104 | 7931 | 0 | yes | 626fdfe4899b7e8bc0427071003b0445a3a93bf9ccce79a4760e4d1a0b165784
+tests/test_docx_real_render_r02.py | 31533 | 812 | 0 | yes | b7ffc1d03ef48bc8a9fc4f9fbbc67bf685acc84a9c53c122d44865a03803878a
+
+Proposed isolated files (right side). 0 CR. Final LF present.
+Path | bytes | LF | SHA-256
+app.py | 5177437 | 96303 | 65827ba2184a0083b4fa854238c0f8d1a475ad907052e35e207802cc5580da63
+release_engine_v3/canonical_document.py | 34210 | 832 | e6c8b9dab91ae756d96c108531bb71bc7701d71c5a54ece9fc057c5fd667b490
+release_engine_v3/exporters/docx_exporter.py | 10930 | 260 | 7884de3a6efb34d4c5a2fdad96fe1c446d8bddf058a29311bd86a02093eff8eb
+professional_strategy_render.py | 342947 | 8013 | 0418cff95d836b0a01249db1b9788cefa832c09da4d42649c10be1a87ee6adca
+release_engine_v3/rel31_authority.py | 118821 | 2824 | 994832c4c0d0c69c0ada8a0b029651106b7f5c8a4a3039452588ad21071711e6
+tests/test_docx_real_render_r02.py | 50648 | 1247 | 41f030b2e8835ca17e1e1da54fb78fe54dbb389336d91a3c787117dc6de868ae
+
+Patch
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_02.patch
+81928 bytes; 1932 LF; 0 CR; final LF present.
+SHA-256 bfa77d694ed1c57f0cfcf021b37c8ad65777a35b2e245a3d5198ad2f7013b8a3
+58 hunks. Repository-relative labels. Six paths, in this order:
+app.py
+release_engine_v3/canonical_document.py
+release_engine_v3/exporters/docx_exporter.py
+professional_strategy_render.py
+release_engine_v3/rel31_authority.py
+tests/test_docx_real_render_r02.py
+
+Repair 01 originals were remeasured and still match the review:
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_01.patch
+47290 bytes; SHA-256 eee64fd726274961383eee82b81513ddcb35a24d5dbd064668da6fcd0fca10d7
+MIZAN_SAVED_DOCX_FIDELITY_REPAIR_AUTHORING_NOTES_01.txt
+29262 bytes; SHA-256 91c679120354b2ec5b35b387c9cc9091d3f685e4adce9a7910bce8e9ae020dbd
+
+Read-only archive
+MIZAN_SAVED_DOCX_FIDELITY_READONLY_SOURCE_INPUTS_02.zip
+335218 bytes; stored members; SHA-256
+5f9c23ba84d77c7794d1191d375eb4e8af6f36eb3730308ee771f4a13ff93e66
+Inventory member SOURCE_INPUT_INVENTORY.txt is inside the archive.
+The schema consumer matches the reported identity:
+39842 bytes; SHA-256
+b961359fea7d69f77c94ac9e16f855314c62ffa38bb703162226df9225ae6349
+No difference. This is a current-source check, not a reconstruction of
+the historical thirty-path trace.
+
+Unchanged and not in the patch: binder, templates/domain.html, PDF path,
+tests/test_docx_integration_r02.py, fixture, EXPECTED JSON, compiler
+implementation, Amiri font, historical evidence, validators.py.
+
+2. Changed symbols
+
+app.py
+_saved_docx_fidelity_from_snapshot
+synchronous artifact literal, fallback, post-prepare owner assignment
+synchronous _rel31_authoritative_export_route backend handoff
+asynchronous post-prepare _rel32_export_user_id assignment
+_docx_render_source_flow
+_docx_render_professional_block source_flow return
+saved-flow render order and refusal re-raise
+
+release_engine_v3/canonical_document.py
+parse_saved_markdown_structure
+saved_markdown_signature
+saved_body_sections_consistency
+saved_source_canonical_sections
+saved_frozen_source_refusal
+evaluate_saved_docx_fidelity
+_legacy_to_canonical_sections preserve return
+
+release_engine_v3/exporters/docx_exporter.py
+export_docx saved_render branch and context-variable scope
+This file's proposed identity matches the Repair 01 reconstruction.
+The replacement patch still carries it against the baseline.
+
+professional_strategy_render.py
+saved_docx_fidelity_rendering, push and pop
+prepare_final_render_text saved branch
+_finalize_professional_blocks saved branch
+ensure_strategy_professional_model saved branch
+build_saved_source_strategy_model
+The Repair 01 heading-discarding splitter is not part of this proposal.
+
+release_engine_v3/rel31_authority.py
+repair_canonical_before_freeze preserve branch
+frozen-source refusal return
+lock metadata and emit_rel3_source_authority_check source label
+
+tests/test_docx_real_render_r02.py
+_is_saved_body_heading
+_compare, _report, _inspect
+_join_recorded_worker, _restore_after_worker
+_append_source_handoff_problems
+test_saved_arabic_dt_consulting_real_docx
+test_saved_arabic_dt_consulting_sync_docx_owner_handoff
+
+3. Dispositions
+
+DOCX-FIDELITY-R1-F001 — corrected in the authorized surface.
+The synchronous artifact literal (app.py 83714-83716), its fallback
+(83736-83738), and the post-prepare block (83746-83762) carry
+_export_owner_id from the binder dispatch. The authoritative call at
+83777-83789 passes backend=_rel2_export_be. The async handler reattaches
+the same owner after prepare at 81159. evaluate_saved_docx_fidelity
+(canonical_document.py 310-319) still requires that owner to equal the
+claim owner. The owner is not read from client metadata. A matching
+integer alone is not acceptance: the claim is built only in
+_saved_docx_fidelity_from_snapshot (app.py 80577-80607) after binder
+acceptance. The prospective synchronous case is
+test_saved_arabic_dt_consulting_sync_docx_owner_handoff
+(test file 1139-1238). It was not executed.
+
+DOCX-FIDELITY-R1-F002 — corrected as a structural rule, not another hash.
+saved_body_sections_consistency (canonical_document.py 197-224) parses
+the body and the nine section strings, refuses an unexpected business
+key, a missing section, unsupported markdown, or a malformed table, and
+refuses saved_docx_fidelity_refused:body_sections_disagree when the
+ordered signatures differ. evaluate_saved_docx_fidelity calls it after
+the digest checks (331-334). The writer model is still built from the
+section map; the body must already be the same structure or the claim
+is a refusal before export. The preparation files were compared as text:
+the fixture (4250 characters) equals the nine saved_sections texts joined
+by one newline. That text identity is not a parser execution and is not
+binder proof.
+
+DOCX-FIDELITY-R1-F003 — corrected inside the six files for this saved path.
+A. Fresh construction. On preserve, _legacy_to_canonical_sections returns
+at canonical_document.py 521-529 before build_strategy_document,
+enrich_kpi_section, and enrich_traceability_section.
+saved_source_canonical_sections (240-261) stores each original section
+string as CanonicalSection narrative, with key saved_source, empty title,
+and empty table_rows. Unchanged section_to_markdown keeps headings when
+the key is not in its drop list and emits a table only when table_rows
+is non-empty. The narrative is therefore the source section. Dict keys
+remain vision_objectives through traceability so the render tree still
+finds them. legacy_sections stay the original strings, which is what
+DOCX evidence parity reads. compute_canonical_hash hashes those
+narratives under the dict keys.
+B. Existing frozen. saved_frozen_source_refusal (264-287) returns the
+claim refusal, or saved_docx_fidelity_refused:frozen_source_differs when
+the frozen legacy sections or final markdown are not the same block
+signature. rel31_authority.py 1573-1602 returns that blocker and does
+not export. A matching frozen object may proceed. The writer still draws
+the artifact snapshot (docx_exporter.py 89-93). Bytes are not given
+another representation's success flag. source_used is saved_docx_snapshot
+when the preserve claim is selected (rel31_authority.py 1793-1811).
+docx_rebuilt_from_markdown is false on that path (1732-1733 and 1796-1799).
+source_authority_valid stays false because its formula still requires
+source_used rel3_render_tree (1874-1884). That flag is a diagnostic,
+not an export blocker, and it is not forced true.
+If a later review requires the canonical object to store a header apart
+from the narrative, the smallest extra change is section_models.py
+section_to_markdown and the render-tree node that consumes it. Those
+files are outside this authorization and were not edited. The six-file
+proposal does not need that change to keep the original markdown as the
+narrative, the legacy map, and the writer input.
+
+DOCX-FIDELITY-R1-F004 — corrected on the app/renderer surface.
+parse_saved_markdown_structure (canonical_document.py 110-173) keeps
+ATX headings, blank-separated prose, and bordered pipe tables in order.
+Escaped pipes stay inside the cell. Empty cells stay. A pipe line without
+both borders, a table without one separator, or a row whose width differs
+from the header returns unsupported_markdown or malformed_table.
+build_saved_source_strategy_model (professional_strategy_render.py
+6694-6734) puts that flow on each present section and raises the refusal
+code. _docx_render_source_flow (app.py 82655-82679) draws heading, prose,
+and table in that order and raises on a width mismatch before the grid
+clip. A level above 2 is drawn at heading level 3 (11pt). The saved
+section loop re-raises (82876 and 82920) so a failed section is not
+swallowed into a completed document. The exporter turns that ValueError
+into an ExportResult without bytes (docx_exporter.py 221-245).
+
+DOCX-FIDELITY-R1-F005 — corrected.
+The saved model order contains only sections that have source_flow
+(professional_strategy_render.py 6711-6734). selected_frameworks is [].
+The saved render loop (app.py 82854-82862) skips a block without
+source_flow, so the absent scope_frameworks block does not reach the
+sentence at 82724-82727. Client framework selections are not copied onto
+the saved model. The comparator records unexplained_business_prose
+(test file 687-698) when a non-heading body paragraph is not contained
+in that section's source text.
+
+DOCX-FIDELITY-R1-F006 — corrected in the harness schema.
+cell_differs records identity (test file 615-626). _report reads
+item['identity'] (805-807). _inspect stores the full comparison, then
+adds difference_count and first_difference (934-937). The async assertion
+reads cover_document_type_hits from that stored comparison (1094-1106),
+not from a reduced copy. A report line is not the failing condition.
+
+DOCX-FIDELITY-R1-F007 — corrected in the harness source.
+A body heading is the entire normalized text of one of the nine fixture
+titles, with every non-empty run bold and maximum size at least 14pt
+(385-393). Section starts as cover. Cover and contents lines that are
+not that heading stay cover. Tables before the first such heading have
+role cover_metadata. Type tokens in those cells are cover hits (741-752).
+A body mention of Risk Analysis or تحليل المخاطر is recorded and does
+not fail. All same-header tables in the section contribute rows.
+More than one is duplicate_source_table (556-563). A different header in
+a body section is alternative_business_table (653-657). Cover tables are
+presentation records, and additional_tables_are_not_defects is false.
+Traceability identity is the full cell tuple (482-486).
+_append_source_handoff_problems (874-916) appends route and writer
+edge-strip mismatches, and a writer lang/doc_type other than ar/strategy,
+into problems. The async assertion checks problems (1133). Edge strip is
+str.strip only.
+
+DOCX-FIDELITY-R1-F008 — corrected.
+_join_recorded_worker (824-842) recovers _export_thread when needed,
+calls join once, and sets join_invoked only on that call. A finished
+thread is still joined once; not-alive alone does not set the flag.
+The remaining wait uses the deadline assigned before POST. If a worker
+exists and that deadline was never set, remaining is 0. No second full
+window is created. _restore_after_worker (845-857) joins before
+_restore. Observers stay installed while the thread is alive. The async
+finally (1134-1136) and the sync finally (1236-1238) are that one
+restore path. The earlier in-try restore is gone.
+
+DOCX-FIDELITY-R1-F009 — not closed. The patch is blocked for a positive
+rendering run. See section 6. Validator decisions are now retained.
+validators.py was not edited. No rows were added. The fixture and
+EXPECTED JSON were not changed.
+
+DOCX-FIDELITY-R1-F010 — this file.
+Repair 01's F001-F004 names were authoring-request groups. They do not
+close DOCX-REAL-R1-F001 through F006. Section 8 is that map. The test
+records the owner download and the diagnostic writer bytes. It does not
+record a separate worker temporary file. No external collector is
+attributed to this test. Prospective diagnostics use
+source_used=saved_docx_snapshot and saved_docx_source_selected. The old
+lock label docx_rebuilt_from_markdown is set false for this path.
+source_authority_valid is not manufactured.
+
+4. End-to-end source account
+
+Both handlers call _docx_saved_reference_dispatch. For document_type
+strategy, domain dt, and language ar, the binder-accepted snapshot
+supplies content, nine sections, record, and owner. The claim is built
+field by field from that snapshot. Client content, client doc_type risk,
+and client selected_frameworks do not become the claim.
+
+Body/map consistency runs inside evaluate_saved_docx_fidelity after the
+two digests. A stale map returns body_sections_disagree. An unexpected
+business key, a bad table, or a missing section returns its own code.
+
+The artifact dictionary on both handlers receives the snapshot sections,
+final markdown, the claim, and _rel32_export_user_id from the binder
+owner. prepare_rel32_export_artifact_dict copies the artifact. It does
+not invent an owner. The post-prepare block sets the owner again so a
+copy cannot drop it. The synchronous route receives that backend. The
+asynchronous route already passes its backend.
+
+Canonical construction, when the decision is preserve or a fidelity
+refusal, skips both compiler passes and the Arabic scrub, and stores the
+original section strings as narratives. validate_canonical_quality still
+runs. Its blockers are kept. repair_canonical_before_freeze, on preserve,
+calls validate_rel3_objectives and validate_rel3_roadmap_output_quality
+on a deep copy, appends a non-empty blocker, and discards the copy.
+An exception becomes saved_docx_fidelity_refused:validator_exception.
+A fidelity refusal is itself a blocker. rel3_export_authoritative returns
+before the writer when frozen.blocking_errors is non-empty.
+
+Fresh frozen source: the frozen artifact is built from that canonical
+object. legacy_sections, canonical narratives, and the writer snapshot
+are the same section strings. Render-tree nodes render those narratives.
+The writer context variable is set only around build_fn and reset in
+finally. export_docx, on preserve, passes the snapshot body and section
+map, not render-tree markdown.
+
+Existing frozen source: a pre-existing frozen artifact whose sections or
+markdown are not block-equivalent is refused as frozen_source_differs
+and is not exported. A matching frozen artifact may be exported. The
+writer still uses the request snapshot. Evidence continues to use the
+selected artifact's legacy sections. No evidence check is disabled.
+
+Returned bytes, when the gate allows them, are hashed on the ExportResult.
+The async test still fails unless export_return_allowed is true, the
+writer ran, the task is done, and the comparison problems are empty.
+That positive test is not expected to pass while section 6 remains.
+The sync test checks the owner handoff and does not treat a quality
+blocker as content success.
+
+5. Source walkthroughs
+
+These are readings of the proposed source. None was executed.
+
+Changed long cell. A KPI or roadmap row whose first cell still matches,
+but whose later cell differs after whitespace normalization, becomes
+cell_differs with key identity (test 615-626). _report prints
+item['identity'] (805). _inspect keeps the whole comparison (934).
+difference_count is non-zero, so the async assertion appends
+content_difference and fails (1090-1096). The report is not required
+for that failure.
+
+Wrong cover type. A paragraph whose role is cover, or a cell in a
+cover_metadata table, containing Risk Analysis or تحليل المخاطر is
+appended to cover_document_type_hits (726-752). Those hits are on the
+comparison stored by _inspect. The assertion at 1099-1106 reads that
+field and appends cover_uses_risk_document_title. A body-section mention
+is recorded in document_type_negative_occurrences and is not a cover hit.
+
+Two distinct DGA relations. Traceability identity is the full normalized
+tuple (482-486). The fixture rows differ in initiative and indicator, so
+each expected count is one. Neither duplicate_row_in_table nor
+source_row_absent is produced for those two rows.
+
+Duplicate relation across tables. Two body tables with the traceability
+header produce duplicate_source_table (556-563). Their data rows are
+concatenated before the count. A second copy of the same full tuple
+makes actual_count greater than expected_count and adds
+duplicate_row_in_table (581-591). Both records are in differences, so
+difference_count fails the assertion.
+
+Stale section map. Body A and sections B have different block signatures.
+saved_body_sections_consistency returns body_sections_disagree (222-223).
+evaluate returns that code (331-334). The refusal is a blocker. The
+writer model is not a successful export of B.
+
+Differing frozen source. saved_frozen_source_refusal returns
+frozen_source_differs (278-286). rel31_authority.py 1577-1602 returns
+ExportResult with that single blocker and does not call the exporter.
+
+Multiple and subordinate source blocks. parse_saved_markdown_structure
+emits heading, prose, and table blocks in source order, including a
+heading after a table. The model stores that list. The renderer draws
+it in order. A heading of level greater than 2 is drawn at 11pt, so
+_is_saved_body_heading does not treat it as a new section. All tables
+in the flow are drawn. The fixed governance header is not used because
+source_flow returns first (app.py 82683-82684).
+
+Worker recorded before a failing POST response. The deadline is set
+immediately before POST. If POST returns no task id, the try block does
+not restore observers. finally calls _restore_after_worker, which calls
+_export_thread and join once on the original deadline, then restores
+only if the thread is not alive. join_invoked is true only when join
+was called.
+
+6. Quality-contract conflict
+
+The unchanged fixture has two roadmap data rows and four objective rows
+whose first cells are OBJ-DT-01 through OBJ-DT-04. No objective row
+matches ^\|\s*\d+\s*\|.
+
+Source trace, not an executed refusal:
+
+Input counted. _parse_roadmap_rows keeps bordered pipe rows of at least
+four cells, skips a separator and a header whose first cell is المرحلة,
+Phase, or #. The roadmap section yields RM-DT-01 and RM-DT-02.
+visible_count is the maximum of that unique-row count and the number of
+required families marked present.
+
+Condition, dt-domain call. validate_rel3_roadmap_output_quality passes
+domain dt. resolve_roadmap_families('dt') is the ten DT_TRACE_REGISTRY
+keys. A literal substring scan of the fixture, without calling the
+validator, marks three of those ten families
+(digital_strategy_alignment, digital_channels, integration_apis).
+visible_count on that scan is max(2, 3) = 3, which is below 10.
+check_roadmap_coverage then appends roadmap_row_count and the missing
+families. The preserve branch appends
+rel3_generation_contract_failed:roadmap_weak_output when valid is false
+(rel31_authority.py 964-984). The mutated section copy is discarded.
+
+Condition, canonical default. validate_canonical_quality calls
+check_roadmap_coverage(blob) with the default domain cyber
+(validators.py 63-67). Cyber required families are the twelve
+ROADMAP_FAMILIES. The same literal scan marks one of them
+(governance_ciso, from the substring حوكمة). visible_count is max(2, 1)
+= 2. The blocker is rel3_export_model_drift:roadmap_visible_row_count:2.
+That function still runs on the preserve path (canonical_document.py
+659-666). Its blockers are kept.
+
+detect_families_normalized was not called. Its alias table adds tokens
+only for data_classification and awareness_training. It can mark a
+family present. It cannot add a roadmap row. The seven absent DT phrases
+are not substrings of the fixture. This note does not claim the loose
+matcher was run.
+
+Objectives. With the route's default flags rel3 and rel31, domain dt,
+language ar, and document_type strategy, is_rel33_compiler_first is true.
+validate_rel3_objectives then counts digit-led vision rows (rel31
+658-670). The count is 0, so valid is false and the blocker is
+rel3_generation_contract_failed:objectives. The preserve branch appends
+it and does not keep the returned sections.
+
+Propagation. Both blockers are on the artifact before freeze.
+rel3_export_authoritative returns before the writer when
+frozen.blocking_errors is non-empty (1694-1720). Bytes are not built
+after that return. The decisions are not discarded and exceptions are
+not swallowed.
+
+Pillars. The fixture heading contains الركائز الاستراتيجية, and the four
+DT catalog headings are not substrings of the fixture. The exact branch
+of check_pillars_after_strategic_heading therefore misses them. Its loose
+Arabic fallback was not executed, so this note does not claim that
+blocker as an observed result. It is an additional source-visible
+condition inside the same unedited validator.
+
+KPI. The fixture KPI header sets the main-table counter, and the data
+rows are not digit-led. The visible defect list does not, by itself,
+force exported_kpi_table_count:0. That function was not executed.
+
+Required decision, still missing. A faithful two-row, four-objective
+export and a positive-file acceptance cannot both be promised while
+validators.py requires ten visible roadmap rows and rel31 requires eight
+digit-led objective rows. This patch keeps both refusals. It does not
+add rows, change the fixture, relax the validator, or redefine the
+refusal as a content pass.
+
+Smallest later scope, text only, not authorized now:
+change the out-of-scope quality contract so a saved Arabic DT strategy
+is accepted with its real roadmap-row count and identifier-led objective
+rows, or keep the refusal and do not request a positive file.
+validators.py and the objective-count branch in rel31 remain the
+contract surface. Changing validators.py is outside this authorization.
+The rel31 objective branch was not weakened.
+
+The async content test remains a positive test. While this gate refuses,
+that test fails. That failure would be the quality contract, not a
+content pass. The sync test may pass the owner handoff while recording
+those blockers, and it must still fail on an identity refusal or on
+content differences if bytes are returned. Neither test was run.
+
+positive_render_readiness=false
+
+7. What this proposal does and does not establish
+
+Supported as source mechanisms: claim origin, both-handler owner and
+section handoff, body/section signature refusal, narrative canonical
+form, frozen-difference refusal, ordered source rendering, no invented
+framework sentence, harness schema, heading role, multiplicity, cover
+metadata type hits, writer edge-strip failures, and one worker join
+before restoration.
+
+Not executed: the sync handoff case, the async content case, the
+validator functions, detect_families_normalized, and any DOCX write.
+
+Read-only limits: the five requested files plus the five named imports
+listed in the archive. section_models.py and render_tree.py were read
+from the existing workspace and were not edited. No project module was
+imported.
+
+Still open, and outside this patch: cover title and status fields,
+pagination, visual acceptance, and the statement publishable. No repaired
+file has been rendered or viewed. The machine type strategy stays
+distinct from any Arabic display title. The contents page remains a
+presentation block; the harness classifies its entries by role.
+
+8. Relation to DOCX-REAL-R1
+
+The evidence review file remains
+MIZAN_REAL_DOCX_RENDERING_EVIDENCE_REVIEW_20261102.txt
+26954 bytes; SHA-256
+8c1c9e9a404be32ef250cd1f004901480d69018c0f37b2e51a1b5666cfe042c7.
+The consumed render remains one test, one failure, zero errors, zero
+skipped, zero passed, status 1.
+
+DOCX-REAL-R1-F001 saved business content replaced before the writer.
+Open. The compiler skip, nine-section handoff, body/section rule, and
+frozen-source refusal are prospective mechanisms. No repaired file exists.
+
+DOCX-REAL-R1-F002 confidence 70/100 became 5%.
+Open. The saved text path avoids the percentage scan, and the comparator
+keeps 70 من 100 distinct from 99.5%. That is not evidence from a repaired
+export.
+
+DOCX-REAL-R1-F003 writer-stage incoherence, brackets, and column meanings.
+Open. The adapter, edge strip, narrative canonical form, and source-flow
+parser address the mechanism. They are not a viewed document.
+
+DOCX-REAL-R1-F004 acceptance harness defects.
+Open. The schema, role, multiplicity, and lifecycle corrections are in
+the test source. The test was not run.
+
+DOCX-REAL-R1-F005 cover, title, status, and visual presentation.
+Open. No new title or status field and no cover redesign.
+
+DOCX-REAL-R1-F006 lock diagnostic versus evidence policy.
+Open as a rendering conclusion. No new bypass is claimed. The prospective
+source label is saved_docx_snapshot, and source_authority_valid is not
+forced true.
+
+The earlier 26-pass and the controlled 27-pass acceptances stay at their
+original scope. Neither is a fidelity pass for a repaired DOCX. This
+review creates no replacement for the missing historical per-path trace.
+
+9. Static checks performed
+
+Source text inspection of the six isolated files and of the read-only
+dependency files named in the archive.
+Byte identity of the schema consumer against the reported hash.
+Text comparison of the fixture with the nine saved section strings joined
+by one newline.
+Literal substring scan of DT and cyber roadmap family tokens against the
+fixture. The validator functions were not called.
+ast.parse of the six isolated files with bytecode writing disabled.
+No project import. No py_compile. No pytest. No collection.
+patch --dry-run -p1 --forward --batch from /workspace.
+Exit status 0. The dry-run wrote nothing. Baseline hashes were remeasured
+and still match section 1. git status remains the pre-existing entries:
+modified app.py, modified templates/domain.html, and the untracked binder,
+Amiri font, integration test, and real-render test.
+
+A successful dry-run is not application and not a render.
