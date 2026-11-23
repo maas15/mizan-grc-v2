@@ -1,0 +1,163 @@
+name: Mizan reviewed commit 491550839de2
+
+on:
+  push:
+    branches: [ci/mizan-r18-491550839de2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mizan-reviewed-491550839de2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reviewed-commit:
+    name: REL32 exact reviewed commit gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ADMIN_PASSWORD: test-admin-password
+      SECRET_KEY: test-secret-key
+      DATABASE_URL: sqlite:////tmp/mizan_rel_pr_checks.db
+      OPENAI_API_KEY: ''
+      REL2_SKIP_EXPORT_EVIDENCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 491550839de26080f6b46e376458b2384bf31c2f
+          persist-credentials: false
+
+      - name: Verify source and workflow carrier identity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          expected = {
+              "head": "491550839de26080f6b46e376458b2384bf31c2f",
+              "tree": "fcd08e9c5bd26a2687c887830636b75d40450b3c",
+              "index_entries": 532,
+              "index_stage_z_sha256": "30652c401a4876823427aef5cfddbc683c750ecd675efbf61d734287b9fefc0f",
+          }
+          workflow_path = ".github/workflows/mizan-reviewed-491550839de2.yml"
+          evidence = Path(os.environ["RUNNER_TEMP"]) / "mizan-reviewed-491550839de2"
+          evidence.mkdir(parents=True, exist_ok=True)
+          receipt = {
+              "expected_source": expected,
+              "event": os.environ.get("GITHUB_EVENT_NAME"),
+              "event_ref": os.environ.get("GITHUB_REF"),
+              "carrier_sha": os.environ.get("GITHUB_SHA"),
+              "workflow_sha": os.environ.get("GITHUB_WORKFLOW_SHA"),
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "identity_passed": False,
+          }
+
+          def git(*args):
+              return subprocess.check_output(["git", *args])
+
+          try:
+              index = git("ls-files", "--stage", "-z")
+              (evidence / "index.stage-z").write_bytes(index)
+              actual = {
+                  "head": git("rev-parse", "HEAD").decode().strip(),
+                  "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+                  "index_entries": len([entry for entry in index.split(b"\0") if entry]),
+                  "index_stage_z_sha256": hashlib.sha256(index).hexdigest(),
+              }
+              receipt["actual_source"] = actual
+              receipt["initial_status"] = git("status", "--porcelain=v1", "--untracked-files=all").decode()
+              subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], check=True)
+              if actual != expected or receipt["initial_status"]:
+                  raise ValueError("Test checkout differs from the reviewed source")
+              if receipt["event"] != "push" or receipt["event_ref"] != "refs/heads/ci/mizan-r18-491550839de2":
+                  raise ValueError("Unexpected workflow trigger")
+              carrier = receipt["carrier_sha"]
+              if not carrier or len(carrier) != 40 or any(c not in "0123456789abcdef" for c in carrier):
+                  raise ValueError("Invalid carrier SHA")
+              if receipt["workflow_sha"] != carrier:
+                  raise ValueError("Workflow definition SHA differs from the push carrier")
+              # The public origin's push commit is fetched only for ancestry/diff proof.
+              git("fetch", "--no-tags", "--depth=2", "origin", carrier)
+              parents = [line.split()[1].decode() for line in git("cat-file", "-p", carrier).split(b"\n\n", 1)[0].splitlines() if line.startswith(b"parent ")]
+              changes = git("diff-tree", "--no-commit-id", "--name-status", "-r", "-z", expected["head"], carrier).split(b"\0")
+              changes = [part.decode() for part in changes if part]
+              receipt["carrier_parents"] = parents
+              receipt["carrier_changes"] = changes
+              if parents != [expected["head"]] or changes != ["A", workflow_path]:
+                  raise ValueError("Carrier must add only this workflow directly above the reviewed commit")
+              receipt["identity_passed"] = True
+          except Exception as exc:
+              receipt["error"] = str(exc)
+              raise
+          finally:
+              text = json.dumps(receipt, ensure_ascii=False, indent=2)
+              (evidence / "identity.json").write_text(text + "\n", encoding="utf-8")
+              print(text, flush=True)
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: py_compile core modules
+        run: |
+          python -m py_compile app.py professional_strategy_render.py
+
+      - name: pytest REL32 gate suite
+        run: |
+          python -m pytest \
+            tests/test_rel32_frozen_artifact_export_lock.py \
+            tests/test_rel32_complete_strategy_compiler.py \
+            tests/test_rel32_kpi_assessment_guides_repair.py \
+            tests/test_rel32_table_schema_binding.py \
+            tests/test_rel32_preview_table_dom_binding.py \
+            tests/test_enterprise_document_factory_foundation.py \
+            tests/test_rel33_all_domain_document_quality_matrix.py \
+            -q
+
+      - name: rel32 cyber AR export smoke
+        run: python scripts/rel32_cyber_ar_export_smoke.py
+
+      - name: smoke all domains preview docx pdf
+        run: python scripts/smoke_all_domains_preview_docx_pdf.py
+
+      - name: smoke document type matrix
+        run: python scripts/smoke_document_type_matrix.py
+
+      - name: Mizan targeted integration regressions
+        run: python scripts/run_mizan_contract_checks.py regressions
+
+      - name: Mizan eight fixture-backed Contract R cases
+        run: python scripts/run_mizan_contract_checks.py contract
+
+      - name: Retain reviewed-commit identity and available test evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mizan-reviewed-491550839de2-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/mizan-reviewed-491550839de2/identity.json
+            ${{ runner.temp }}/mizan-reviewed-491550839de2/index.stage-z
+            ${{ runner.temp }}/mizan-contract-*/**/junit.xml
+            ${{ runner.temp }}/mizan-contract-*/**/observations.json
+            ${{ runner.temp }}/mizan-contract-*/**/extraction_*.json
+            ${{ runner.temp }}/mizan-contract-*/**/comparison_*.txt
+            ${{ runner.temp }}/mizan-contract-*/**/delivered_*.docx
+            ${{ runner.temp }}/mizan-contract-*/**/diagnostic_writer_*.docx
+            !${{ runner.temp }}/mizan-contract-*/**/tmp/**
