@@ -291,7 +291,7 @@ def _saved_frozen_context_refusal(
 
     The frozen contract has no owner field. This check does not invent one.
     """
-    claim = artifact.get(SAVED_DOCX_FIDELITY_KEY) or {}
+    claim = artifact.get(SAVED_DOCX_FIDELITY_KEY) or artifact.get('_saved_pdf_fidelity') or {}
     from release_engine_v3.domain_codes import normalize_domain_code
     domain_code = normalize_domain_code(
         str(getattr(frozen, 'domain', '') or ''), default='')
@@ -362,7 +362,7 @@ def saved_frozen_source_refusal(artifact: Optional[Dict[str, Any]], frozen: Any)
     Legacy strings and the canonical rendering are both required. A legacy
     match with a different canonical table is frozen_canonical_differs.
     """
-    fidelity = evaluate_saved_docx_fidelity(artifact)
+    fidelity = evaluate_saved_source_fidelity(artifact)
     if not fidelity:
         return ''
     if fidelity.startswith('saved_docx_fidelity_refused'):
@@ -406,12 +406,22 @@ def evaluate_saved_docx_fidelity(artifact: Optional[Dict[str, Any]]) -> str:
     A claim is read only from the artifact field created after binder
     acceptance. contract_meta and request JSON are not a claim.
     """
-    if not isinstance(artifact, dict) or SAVED_DOCX_FIDELITY_KEY not in artifact:
+    return _saved_snapshot_decision(artifact, SAVED_DOCX_FIDELITY_KEY, 'docx')
+
+
+def evaluate_saved_source_fidelity(artifact):
+    if isinstance(artifact, dict) and '_saved_pdf_fidelity' in artifact:
+        return _saved_snapshot_decision(artifact, '_saved_pdf_fidelity', 'pdf')
+    return evaluate_saved_docx_fidelity(artifact)
+
+
+def _saved_snapshot_decision(artifact, claim_key, route):
+    if not isinstance(artifact, dict) or claim_key not in artifact:
         return ''
-    claim = artifact.get(SAVED_DOCX_FIDELITY_KEY)
+    claim = artifact.get(claim_key)
     if not isinstance(claim, dict):
         return 'saved_docx_fidelity_refused:malformed_context'
-    if claim.get('route') != 'docx':
+    if claim.get('route') != route:
         return 'saved_docx_fidelity_refused:route'
     if claim.get('domain_code') != 'dt':
         return 'saved_docx_fidelity_refused:domain'
@@ -554,6 +564,7 @@ def _legacy_to_canonical_sections(
         route: str = '',
         phase: str = 'freeze',
         preserve_saved: bool = False,
+        saved_route: str = 'docx',
 ) -> Tuple[Dict[str, CanonicalSection], Dict[str, str], List[str]]:
     """Build canonical sections. REL3.3 document-type compiler authority:
 
@@ -595,7 +606,7 @@ def _legacy_to_canonical_sections(
             # Saved DOCX fidelity: keep the accepted section text. The
             # strategy compiler would replace objectives, initiatives, KPI
             # rows and roadmap rows with registry content.
-            compiler_selected = 'saved_docx_fidelity'
+            compiler_selected = f'saved_{saved_route}_fidelity'
         else:
             # Preserve existing strategy/gap behavior exactly: the compiler
             # authority is decided as before (strategy-shaped) for non-risk.
@@ -749,7 +760,7 @@ def build_final_document_artifact(
                 for k, v in legacy_sections.items())
         except Exception:  # noqa: BLE001
             pass
-    fidelity = evaluate_saved_docx_fidelity(legacy_artifact)
+    fidelity = evaluate_saved_source_fidelity(legacy_artifact)
     preserve_saved = fidelity == 'preserve'
     fidelity_refused = fidelity.startswith('saved_docx_fidelity_refused')
     # Refusal keeps the accepted text too. The compiler must not invent a
@@ -758,7 +769,8 @@ def build_final_document_artifact(
     canon_map, legacy_sections, _authority_blockers = _legacy_to_canonical_sections(
         legacy_sections, lang=lang, domain=domain, backend=backend,
         document_type=document_type, phase='build_final_document_artifact',
-        preserve_saved=keep_saved_source)
+        preserve_saved=keep_saved_source,
+        saved_route='pdf' if '_saved_pdf_fidelity' in legacy_artifact else 'docx')
     canon_hash = compute_canonical_hash(canon_map)
     if not keep_saved_source:
         legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)

@@ -15,7 +15,7 @@ from release_engine.rel27_export_checks import (
 )
 from release_engine_v3.canonical_document import (
     build_final_document_artifact,
-    evaluate_saved_docx_fidelity,
+    evaluate_saved_source_fidelity,
     freeze_artifact,
     store_artifact,
 )
@@ -166,9 +166,13 @@ def emit_rel3_route_artifact_equivalence(
         'preview_render_tree_hash': _h(preview, 'render_tree_hash'),
         'docx_render_tree_hash': _h(docx, 'render_tree_hash'),
         'pdf_render_tree_hash': _h(pdf, 'render_tree_hash'),
-        'all_route_hashes_equal': all_canon_equal and all_tree_equal,
+        'observed_routes': sorted(routes),
+        'comparison_scope': 'current_process',
+        'docx_pdf_compared': bool(docx.get('canonical_hash') and pdf.get('canonical_hash')),
+        'all_route_hashes_equal': all_canon_equal and all_tree_equal if len(present_canon) > 1 else None,
         'route_artifact_equivalence_passed': (
-            all_canon_equal and all_tree_equal and not blockers),
+            len(present_canon) > 1 and len(present_tree) > 1
+            and all_canon_equal and all_tree_equal and not blockers),
         'blocking_errors': list(dict.fromkeys(blockers)),
     }
     try:
@@ -1020,7 +1024,7 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
-    fidelity = evaluate_saved_docx_fidelity(art)
+    fidelity = evaluate_saved_source_fidelity(art)
     if fidelity == 'preserve' or str(fidelity).startswith(
             'saved_docx_fidelity_refused'):
         # Exclude pre-freeze replacement before any English-cyber or
@@ -1649,7 +1653,7 @@ def rel3_export_authoritative(
                 canonical_hash='',
                 blocking_errors=[_frozen_refusal],
             ), ev
-        if evaluate_saved_docx_fidelity(art) == 'preserve':
+        if evaluate_saved_source_fidelity(art) == 'preserve':
             # Equivalence is not the current objective/roadmap decision.
             # Judge the original saved strings. Do not rewrite them or the
             # frozen object, and do not treat an empty stored blocker list
@@ -1687,7 +1691,7 @@ def rel3_export_authoritative(
         frozen = frozen_pre
         backend['_rel32_export_artifact_dict'] = art
         # A validated saved DOCX already has its authoritative markdown and sections.
-        if evaluate_saved_docx_fidelity(art) != 'preserve':
+        if evaluate_saved_source_fidelity(art) != 'preserve':
             try:
                 from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
                     apply_rel36_4_to_frozen,
@@ -1761,7 +1765,7 @@ def rel3_export_authoritative(
         with rel31_export_adapter_context():
             frozen = rel3_freeze_artifact(art)
             # A validated saved DOCX already has its authoritative markdown and sections.
-            if evaluate_saved_docx_fidelity(art) != 'preserve':
+            if evaluate_saved_source_fidelity(art) != 'preserve':
                 try:
                     from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
                         apply_rel36_4_to_frozen,
@@ -1812,14 +1816,14 @@ def rel3_export_authoritative(
             register_rel32_frozen_export_lock(
                 frozen, render_tree_hash=_tree.render_tree_hash)
             _saved_source_selected = (
-                evaluate_saved_docx_fidelity(art) == 'preserve')
+                evaluate_saved_source_fidelity(art) == 'preserve')
             lock_meta = {
                 'frozen_artifact_loaded_for_docx': False,
                 'frozen_artifact_loaded_for_pdf': False,
                 'docx_rebuilt_from_markdown': (
                     route_n == 'docx' and not _saved_source_selected),
-                'pdf_rebuilt_from_markdown': route_n == 'pdf',
-                'saved_docx_source_selected': _saved_source_selected,
+                'pdf_rebuilt_from_markdown': route_n == 'pdf' and not _saved_source_selected,
+                'saved_docx_source_selected': _saved_source_selected and route_n == 'docx',
                 'blocking_errors': [],
             }
             export, evidence = rel3_export_with_evidence(
@@ -1877,9 +1881,10 @@ def rel3_export_authoritative(
         mutation_after_contract_detected=mutation,
         route_name=route_n,
     )
-    _saved_source_selected = evaluate_saved_docx_fidelity(art) == 'preserve'
+    _saved_source_selected = evaluate_saved_source_fidelity(art) == 'preserve'
     if isinstance(lock_meta, dict):
-        lock_meta['saved_docx_source_selected'] = _saved_source_selected
+        lock_meta['saved_docx_source_selected'] = _saved_source_selected and route_n == 'docx'
+        lock_meta['saved_pdf_source_selected'] = _saved_source_selected and route_n == 'pdf'
         if _saved_source_selected and route_n == 'docx':
             # Writer and frozen narrative are the saved sections. Do not
             # keep the historical rebuilt-markdown label for this path.
@@ -1889,11 +1894,13 @@ def rel3_export_authoritative(
         artifact_id=str(art.get('artifact_id') or frozen.artifact_id or ''),
         strategy_id=str(art.get('strategy_id') or frozen.strategy_id or ''),
         source_used=(
+            'saved_pdf_snapshot' if lock_meta.get('saved_pdf_source_selected') else
             'saved_docx_snapshot' if lock_meta.get(
                 'saved_docx_source_selected') else 'rel3_render_tree'),
         sealed_artifact_used=True,
         render_tree_hash=tree,
         canonical_hash=canon,
+        saved_pdf_source_selected=bool(lock_meta.get('saved_pdf_source_selected')),
         saved_docx_source_selected=bool(
             lock_meta.get('saved_docx_source_selected')),
         strategies_content_direct_used=False,
@@ -1953,6 +1960,7 @@ def emit_rel3_source_authority_check(
         cyber_final_export_contract_used: bool = False,
         professional_raw_markdown_used: bool = False,
         saved_docx_source_selected: bool = False,
+        saved_pdf_source_selected: bool = False,
         legacy_helper_used_inside_rel3_adapter: bool = False,
         legacy_helper_authoritative: bool = False,
         rel3_authoritative: bool = True,
@@ -1960,7 +1968,8 @@ def emit_rel3_source_authority_check(
 ) -> Dict[str, Any]:
     valid = (
         rel3_authoritative
-        and source_used == 'rel3_render_tree'
+        and (source_used == 'rel3_render_tree' or (
+            route_name == 'pdf' and source_used == 'saved_pdf_snapshot' and saved_pdf_source_selected))
         and sealed_artifact_used
         and not raw_markdown_used
         and not client_content_used
@@ -1984,6 +1993,7 @@ def emit_rel3_source_authority_check(
         'cyber_final_export_contract_used': cyber_final_export_contract_used,
         'professional_raw_markdown_used': professional_raw_markdown_used,
         'saved_docx_source_selected': bool(saved_docx_source_selected),
+        'saved_pdf_source_selected': bool(saved_pdf_source_selected),
         'legacy_helper_used_inside_rel3_adapter': bool(
             legacy_helper_used_inside_rel3_adapter),
         'legacy_helper_authoritative': bool(legacy_helper_authoritative),

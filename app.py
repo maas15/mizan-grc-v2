@@ -51898,7 +51898,10 @@ def _rel2_backend_callables(*, pipeline_cache=None):
 
     def _rel2_build_pdf_bytes(
             content, lang, *, sections=None, metadata=None,
-            selected_frameworks=None, domain='cyber'):
+            selected_frameworks=None, domain='cyber', saved_cover=None):
+        if saved_cover is not None:
+            from release_engine_v3.exporters.saved_strategy_pdf import render_saved_pdf
+            return render_saved_pdf(content, saved_cover, _ensure_arabic_pdf_font(required=True)[0])
         try:
             uid = _rel2_ensure_export_user()
             meta = dict(metadata) if isinstance(metadata, dict) else {}
@@ -58241,6 +58244,9 @@ def _ensure_arabic_pdf_font(required=False):
     except Exception:
         pass
 
+    configured = _os_fr.environ.get('MIZAN_ARABIC_PDF_FONT')
+    if configured:
+        font_paths.insert(0, configured)
     for font_path in font_paths:
         if not _os_fr.path.exists(font_path):
             continue
@@ -80053,6 +80059,14 @@ def api_generate_pdf_async():
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
 
+    saved = _saved_pdf_request(data)
+    if saved and saved.get('response') is not None:
+        return saved['response']
+    if saved:
+        data = dict(data, content=saved['content'], language='ar', domain=saved['domain_display'],
+                    strategy_id=saved['record_id'], artifact_id=saved['record_id'],
+                    artifact_type='strategy', document_type='strategy', doc_type='strategy',
+                    generation_mode=saved['generation_mode'])
     content  = data.get('content', '').strip()
     filename = data.get('filename', 'document')
     lang     = data.get('language', 'en')
@@ -80102,7 +80116,7 @@ def api_generate_pdf_async():
     # that the preview has already fixed. See _canonical_content_from_db
     # for the resolution order (sections_json → content → client fallback).
     try:
-        _db_canonical = _canonical_content_from_db(
+        _db_canonical = saved['content'] if saved else _canonical_content_from_db(
             _art_type_a, _art_id_a, session.get('user_id', 0),
             request_frameworks=(
                 data.get('selected_frameworks') or data.get('frameworks')),
@@ -80168,9 +80182,9 @@ def api_generate_pdf_async():
             }), 422
 
     # REL3.3 — load complete saved artifact by strategy_id (not client fragment).
-    _rel33_skip_frag_pa = False
+    _rel33_skip_frag_pa = bool(saved)
     _rel33_export_prep_pa: dict = {}
-    if _art_type_a == 'strategy':
+    if _art_type_a == 'strategy' and not saved:
         try:
             _rel33_uid_pa = session.get('user_id', 0)
             _rel33_sid_pa = _resolve_numeric_strategy_id(
@@ -80338,6 +80352,8 @@ def api_generate_pdf_async():
                 # Manually patch session for auth
                 from flask import session as _sess
                 _sess['user_id'] = _export_uid_pdf
+                if saved:
+                    request.environ['mizan.saved_pdf_revision'] = saved['saved_docx_fidelity']
                 resp = api_generate_pdf()
 
             # api_generate_pdf() may return a tuple (Response, status_code) on error,
@@ -80811,6 +80827,66 @@ def _docx_bind_arabic_dt(record_id, owner_id, folded, domain_raw):
     if saved_cover is not None:
         dispatch["saved_cover"] = saved_cover
     return dispatch
+
+
+def _saved_pdf_request(data):
+    # Resolve the namespace and owner before consulting request content or internal flags.
+    # Opaque legacy IDs belong to the existing per-domain resolution paths.
+    ids = [_docx_parse_supplied_id(data.get(key), required=False)
+           for key in ('strategy_id', 'artifact_id')]
+    records = [record for state, record in ids if state == 'ok']
+    if not records:
+        return None
+    folded = _rel33_normalize_export_artifact_type(data)
+    if not data.get('strategy_id') and folded not in _DOCX_STRATEGY_FOLDS:
+        return None
+    from contextlib import closing
+    with closing(get_db_direct()) as conn:
+        scopes = conn.execute('SELECT domain, language FROM strategies WHERE id IN (?, ?)',
+                              (records[0], records[-1])).fetchall()
+    if not any(_docx_binder_domain_is_dt(row['domain']) and
+               str(row['language']).strip().lower() in _DOCX_ARABIC_LABELS for row in scopes):
+        return None
+    bound = _docx_saved_reference_dispatch(data)
+    if bound.get('response') is not None:
+        return bound
+    if bound.get('kind') != 'arabic_dt':
+        return None
+    return bound
+
+
+def _saved_strategy_pdf_response(bound, filename):
+    from flask import send_file
+    from io import BytesIO
+    claim = dict(bound['saved_docx_fidelity'], route='pdf')
+    if not bound.get('saved_cover'):
+        return jsonify(error='Saved PDF cover metadata unavailable'), 422
+    cover = dict(bound['saved_cover'])
+    domain = bound['domain_display']
+    try:
+        _enforce_export_domain_isolation_from_text(
+            bound['content'], domain=domain, language='ar', frameworks=[],
+            artifact_type='strategy', artifact_id=bound['record_id'], document_type='strategy')
+    except DomainContaminationError:
+        return jsonify(error='Saved strategy contains cross-domain content',
+                       reason='domain_contamination'), 422
+    artifact = {
+        'artifact_type': 'strategy', 'document_type': 'strategy', 'domain': domain,
+        'strategy_id': str(bound['record_id']), 'artifact_id': str(bound['record_id']),
+        '_rel32_export_user_id': bound['owner_id'], '_saved_pdf_fidelity': claim,
+        'final_markdown': bound['content'], 'sections': dict(bound['sections']),
+        'contract_meta': {'lang': 'ar', 'domain': domain, 'document_type': 'strategy'},
+    }
+    result = _rel31_authoritative_export_route(
+        'pdf', artifact_dict=artifact, domain=domain, lang='ar',
+        export_kwargs={'lang': 'ar', 'domain': domain, 'doc_type': 'strategy',
+                       'org_name': cover['org_name'], 'sector': cover['sector'], 'saved_cover': cover})
+    if result is None or not result[1].export_return_allowed:
+        blockers = list(result[1].blocking_errors) if result else ['saved_pdf_authority_unavailable']
+        return jsonify(error='Saved PDF refused', reason='rel3_export_evidence_failed',
+                       blocking_errors=blockers), 422
+    return send_file(BytesIO(result[0].bytes_data), mimetype='application/pdf',
+                     as_attachment=True, download_name=f'{filename}.pdf')
 
 
 def _export_task_owned(entry):
@@ -85643,6 +85719,17 @@ def api_generate_pdf():
             data = request.json or {}
         except Exception:
             data = {}
+    saved = _saved_pdf_request(data)
+    if saved and saved.get('response') is not None:
+        return saved['response']
+    if saved:
+        data = dict(data, content=saved['content'], language='ar', domain=saved['domain_display'],
+                    strategy_id=saved['record_id'], artifact_id=saved['record_id'],
+                    artifact_type='strategy', document_type='strategy', doc_type='strategy',
+                    generation_mode=saved['generation_mode'])
+    queued = request.environ.get('mizan.saved_pdf_revision')
+    if queued and (not saved or queued != saved['saved_docx_fidelity']):
+        return jsonify(error='Saved source changed after queueing'), 422
     content = data.get('content', '')
     filename = data.get('filename', 'document')
     lang = data.get('language', 'en')
@@ -85683,6 +85770,9 @@ def api_generate_pdf():
     except Exception as _gep:
         print(f'[PDF-GATE] Exception — denying: {_gep}', flush=True)
         return jsonify({'error': f'PDF export gate error — denied for safety: {_gep}'}), 403
+
+    if saved:
+        return _saved_strategy_pdf_response(saved, filename)
 
     # ── Preview/export parity: prefer DB-canonical content ──────────────────
     # Sync PDF endpoint is used by async internally; we ALSO apply canonical
