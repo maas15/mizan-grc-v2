@@ -1,0 +1,264 @@
+name: Mizan native two-worker Gunicorn verification
+
+on:
+  push:
+    branches: [ci/mizan-gunicorn-3b713191631c-20261123]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mizan-native-gunicorn-3b713191631c
+  cancel-in-progress: false
+
+jobs:
+  native-gunicorn:
+    name: Real DOCX and PDF across two Gunicorn workers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check out the isolated control commit
+        uses: actions/checkout@v4
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check out the immutable application source
+        uses: actions/checkout@v4
+        with:
+          path: source
+          ref: 3b713191631cb67580424bdf2d9461827f05ec02
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify source and control identities and stage the external driver
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          pinned = "3b713191631cb67580424bdf2d9461827f05ec02"
+          expected_tree = "c9a55999fae334af6ebe953b30b63b5741d87768"
+          expected_index = "578c0c4abf867ac2110b18951c72883e65c4afd9ddaf56405ae3d7e6d611e581"
+          branch = "ci/mizan-gunicorn-3b713191631c-20261123"
+          workflow = ".github/workflows/mizan-native-gunicorn-20261123.yml"
+          prefix = "ci/mizan_native_gunicorn_20261123/"
+          helpers = {
+              "run_native_gunicorn.py": "534f3f1960af607eaf4cf559c98c675aecff320a1d2c9e0eb200b0836296b7c9",
+              "gunicorn_observer_config.py": "aca03932be5e3e1e244cbc556562760c6cb4bbfd1ab7b8c63358b5d251615671",
+              "seed_native_fixture.py": "9b33accc16d5033df51a09b2093ead4479f0a63797a7fbb24f70a32823599449",
+          }
+          source = Path(os.environ["GITHUB_WORKSPACE"]) / "source"
+          control = Path(os.environ["GITHUB_WORKSPACE"]) / "control"
+          evidence = Path(os.environ["RUNNER_TEMP"]) / "mizan-native-control"
+          evidence.mkdir(exist_ok=False)
+          driver = evidence / "driver"
+          driver.mkdir()
+          receipt = {
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "event": os.environ.get("GITHUB_EVENT_NAME"),
+              "event_ref": os.environ.get("GITHUB_REF"),
+              "event_sha": os.environ.get("GITHUB_SHA"),
+              "workflow_sha": os.environ.get("GITHUB_WORKFLOW_SHA"),
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "prior_pr": 141,
+              "prior_pr_run_id": 45190096682,
+              "prior_tested_pr_merge": "5bbfd75043f8759478f59702cc179a5f093af7e7",
+              "identity_passed": False,
+          }
+
+          def git(root, *args):
+              return subprocess.check_output(["git", "-C", str(root), *args], timeout=30)
+
+          def commit_info(root, ref, stem):
+              raw = git(root, "cat-file", "commit", ref)
+              (evidence / (stem + ".commit")).write_bytes(raw)
+              calculated = hashlib.sha1(b"commit " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+              headers = raw.split(b"\n\n", 1)[0].splitlines()
+              return {
+                  "sha": git(root, "rev-parse", ref).decode().strip(),
+                  "calculated_commit_sha": calculated,
+                  "tree": [r[5:].decode() for r in headers if r.startswith(b"tree ")][0],
+                  "parents": [r[7:].decode() for r in headers if r.startswith(b"parent ")],
+              }
+
+          try:
+              if receipt["repository"] != "maas15/mizan-grc-v2":
+                  raise ValueError("Wrong repository")
+              if receipt["event"] != "push" or receipt["event_ref"] != "refs/heads/" + branch:
+                  raise ValueError("Wrong event or control branch")
+              if receipt["run_attempt"] != "1":
+                  raise ValueError("Only the first recorded attempt is authorized by this one-shot workflow")
+              carrier = receipt["event_sha"] or ""
+              if not re.fullmatch(r"[0-9a-f]{40}", carrier):
+                  raise ValueError("Invalid control commit identity")
+              if receipt["workflow_sha"] != carrier:
+                  raise ValueError("Workflow and event are from different commits")
+              expected_workflow_ref = receipt["repository"] + "/" + workflow + "@refs/heads/" + branch
+              if receipt["workflow_ref"] != expected_workflow_ref:
+                  raise ValueError("Unexpected workflow ref")
+              source_info = commit_info(source, "HEAD", "source")
+              control_info = commit_info(control, "HEAD", "control")
+              receipt["source"] = source_info
+              receipt["control"] = control_info
+              if source_info["sha"] != pinned or source_info["calculated_commit_sha"] != pinned:
+                  raise ValueError("Source HEAD is not the pinned PR head")
+              if source_info["tree"] != expected_tree:
+                  raise ValueError("Source tree differs from the tested PR merge tree")
+              if control_info["sha"] != carrier or control_info["calculated_commit_sha"] != carrier:
+                  raise ValueError("Control checkout differs from the actual workflow/event SHA")
+              if control_info["parents"] != [pinned]:
+                  raise ValueError("Control commit must have the pinned PR head as its sole parent")
+              source_status = git(source, "status", "--porcelain=v1", "--untracked-files=all")
+              control_status = git(control, "status", "--porcelain=v1", "--untracked-files=all")
+              source_others = git(source, "ls-files", "--others", "-z")
+              if source_status or control_status or source_others:
+                  raise ValueError("Checkout has pre-existing changes or untracked source files")
+              if (source / ".secret_key").exists():
+                  raise ValueError("A source-adjacent secret key must not exist")
+              index = git(source, "ls-files", "--stage", "-z")
+              (evidence / "source.index.stage-z").write_bytes(index)
+              entries = [r for r in index.split(b"\0") if r]
+              index_hash = hashlib.sha256(index).hexdigest()
+              receipt["source"].update(index_entries=len(entries), index_sha256=index_hash)
+              if len(entries) != 532 or index_hash != expected_index:
+                  raise ValueError("The 532-entry source index does not match the accepted PR tree")
+              git(source, "diff", "--exit-code", "HEAD", "--")
+              change_raw = git(control, "diff-tree", "--no-commit-id", "--name-status", "-r", "-z", pinned, carrier)
+              parts = [p for p in change_raw.split(b"\0") if p]
+              if len(parts) % 2:
+                  raise ValueError("Unexpected control diff encoding")
+              changes = [(parts[i].decode(), parts[i + 1].decode()) for i in range(0, len(parts), 2)]
+              allowed = {workflow, *(prefix + name for name in helpers)}
+              if len(changes) != len(allowed) or {p for _, p in changes} != allowed or any(s != "A" for s, _ in changes):
+                  raise ValueError("Control commit must add exactly the workflow and three approved helpers")
+              receipt["control_changes"] = [{"status": s, "path": p} for s, p in changes]
+              receipt["helper_files"] = {}
+              for name, expected_hash in helpers.items():
+                  repo_path = prefix + name
+                  mode_and_blob = git(control, "ls-tree", carrier, "--", repo_path).split(b"\t", 1)[0].decode().split()
+                  if mode_and_blob[0] != "100644" or mode_and_blob[1] != "blob":
+                      raise ValueError("Unexpected helper mode/type: " + name)
+                  raw = git(control, "show", carrier + ":" + repo_path)
+                  actual_hash = hashlib.sha256(raw).hexdigest()
+                  if actual_hash != expected_hash:
+                      raise ValueError("Helper bytes differ from the prepared kit: " + name)
+                  (driver / name).write_bytes(raw)
+                  receipt["helper_files"][name] = {"bytes": len(raw), "sha256": actual_hash, "git_blob": mode_and_blob[2]}
+              workflow_raw = git(control, "show", carrier + ":" + workflow)
+              (evidence / "executed-workflow.yml").write_bytes(workflow_raw)
+              receipt["workflow_sha256"] = hashlib.sha256(workflow_raw).hexdigest()
+              receipt["identity_passed"] = True
+          except Exception as exc:
+              receipt["error"] = type(exc).__name__ + ": " + str(exc)
+              raise
+          finally:
+              text = json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+              (evidence / "identity.json").write_text(text, encoding="utf-8")
+              print(text, flush=True)
+          PY
+
+      - name: Set up the source-pinned CPython version
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: source/.python-version
+          cache: pip
+          cache-dependency-path: source/requirements.txt
+
+      - name: Install the unchanged production dependencies
+        timeout-minutes: 7
+        run: |
+          python -B -m pip install -r requirements.txt > "$RUNNER_TEMP/mizan-native-control/dependencies.stdout.txt" 2> "$RUNNER_TEMP/mizan-native-control/dependencies.stderr.txt"
+          python -B -m pip freeze > "$RUNNER_TEMP/mizan-native-control/pip-freeze.txt"
+          python -B -VV > "$RUNNER_TEMP/mizan-native-control/python-version.txt"
+          cat /etc/os-release > "$RUNNER_TEMP/mizan-native-control/os-release.txt"
+
+      - name: Run the unchanged production font-build step once
+        timeout-minutes: 3
+        run: |
+          python -B scripts/ensure_render_fonts.py > "$RUNNER_TEMP/mizan-native-control/font-build.stdout.txt" 2> "$RUNNER_TEMP/mizan-native-control/font-build.stderr.txt"
+
+      - name: Run the supervised native two-worker probe once
+        timeout-minutes: 17
+        run: |
+          python -B "$RUNNER_TEMP/mizan-native-control/driver/run_native_gunicorn.py" \
+            --source "$GITHUB_WORKSPACE/source" \
+            --run-root "$RUNNER_TEMP/mizan-native-runtime" \
+            > "$RUNNER_TEMP/mizan-native-control/runner.stdout.txt" \
+            2> "$RUNNER_TEMP/mizan-native-control/runner.stderr.txt"
+
+      - name: Record the final source and font identity
+        if: ${{ always() }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          source = Path(os.environ["GITHUB_WORKSPACE"]) / "source"
+          evidence = Path(os.environ["RUNNER_TEMP"]) / "mizan-native-control"
+          evidence.mkdir(exist_ok=True)
+          receipt = {"post_source_passed": False}
+          def git(*args):
+              return subprocess.check_output(["git", "-C", str(source), *args], timeout=30)
+          try:
+              index = git("ls-files", "--stage", "-z")
+              (evidence / "source-after.index.stage-z").write_bytes(index)
+              index_hash = hashlib.sha256(index).hexdigest()
+              head = git("rev-parse", "HEAD").decode().strip()
+              others = [p.decode() for p in git("ls-files", "--others", "-z").split(b"\0") if p]
+              font_path = source / "static/fonts/Amiri-Regular.ttf"
+              font = None
+              if font_path.is_file():
+                  raw = font_path.read_bytes()
+                  font = {"path": "static/fonts/Amiri-Regular.ttf", "bytes": len(raw),
+                          "sha256": hashlib.sha256(raw).hexdigest(),
+                          "git_blob": hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()}
+              receipt.update(head=head, index_sha256=index_hash, untracked_including_ignored=others,
+                             font=font, source_adjacent_secret_key_exists=(source / ".secret_key").exists())
+              git("diff", "--exit-code", "HEAD", "--")
+              if head != "3b713191631cb67580424bdf2d9461827f05ec02":
+                  raise ValueError("Source HEAD changed")
+              if index_hash != "578c0c4abf867ac2110b18951c72883e65c4afd9ddaf56405ae3d7e6d611e581":
+                  raise ValueError("Source index changed")
+              if set(others) - {"static/fonts/Amiri-Regular.ttf"}:
+                  raise ValueError("Unexpected generated files in source checkout")
+              if receipt["source_adjacent_secret_key_exists"]:
+                  raise ValueError("Source-adjacent secret key was created")
+              receipt["post_source_passed"] = True
+          except Exception as exc:
+              receipt["error"] = type(exc).__name__ + ": " + str(exc)
+              raise
+          finally:
+              text = json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+              (evidence / "source-after.json").write_text(text, encoding="utf-8")
+              print(text, flush=True)
+          PY
+
+      - name: Retain public identity, runtime evidence, and actual delivered documents
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mizan-native-gunicorn-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/mizan-native-control/
+            ${{ runner.temp }}/mizan-native-runtime/evidence/
