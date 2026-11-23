@@ -13,7 +13,7 @@ concurrency:
 jobs:
   rel-pr-checks:
     name: REL32 PR gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       ADMIN_PASSWORD: test-admin-password
@@ -23,6 +23,83 @@ jobs:
       REL2_SKIP_EXPORT_EVIDENCE: '1'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Record and verify CI checkout identity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          evidence = Path(os.environ["RUNNER_TEMP"]) / "mizan-pr-checks"
+          evidence.mkdir(parents=True, exist_ok=True)
+          receipt = {
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "event": os.environ.get("GITHUB_EVENT_NAME"),
+              "event_ref": os.environ.get("GITHUB_REF"),
+              "event_sha": os.environ.get("GITHUB_SHA"),
+              "workflow_sha": os.environ.get("GITHUB_WORKFLOW_SHA"),
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "identity_passed": False,
+          }
+
+          def git(*args):
+              return subprocess.check_output(["git", *args])
+
+          try:
+              index = git("ls-files", "--stage", "-z")
+              (evidence / "rawindex.stage-z").write_bytes(index)
+              headers = git("cat-file", "-p", "HEAD").split(b"\n\n", 1)[0]
+              status = git("status", "--porcelain=v1", "--untracked-files=all").decode()
+              receipt["actual_checkout"] = {
+                  "head": git("rev-parse", "HEAD").decode().strip(),
+                  "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+                  "parents": [
+                      line.split()[1].decode()
+                      for line in headers.splitlines()
+                      if line.startswith(b"parent ")
+                  ],
+                  "initial_status": status,
+                  "clean": not status,
+                  "index_entries": len([entry for entry in index.split(b"\0") if entry]),
+                  "index_stage_z_sha256": hashlib.sha256(index).hexdigest(),
+              }
+              payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+              pr = payload.get("pull_request")
+              receipt["pull_request"] = None
+              if isinstance(pr, dict):
+                  receipt["pull_request"] = {
+                      "number": pr.get("number", payload.get("number")),
+                      "head": {
+                          "sha": (pr.get("head") or {}).get("sha"),
+                          "ref": (pr.get("head") or {}).get("ref"),
+                          "repository": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
+                      },
+                      "base": {
+                          "sha": (pr.get("base") or {}).get("sha"),
+                          "ref": (pr.get("base") or {}).get("ref"),
+                          "repository": ((pr.get("base") or {}).get("repo") or {}).get("full_name"),
+                      },
+                  }
+              subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], check=True)
+              if receipt["actual_checkout"]["head"] != receipt["event_sha"]:
+                  raise ValueError("Checked-out HEAD differs from the event SHA")
+              if status:
+                  raise ValueError("Initial checkout is not clean")
+              receipt["identity_passed"] = True
+          except Exception as exc:
+              receipt["error"] = str(exc)
+              raise
+          finally:
+              text = json.dumps(receipt, ensure_ascii=False, indent=2)
+              (evidence / "checkout-identity.json").write_text(text + "\n", encoding="utf-8")
+              print(text, flush=True)
+          PY
 
       - uses: actions/setup-python@v5
         with:
@@ -50,7 +127,8 @@ jobs:
             tests/test_rel32_preview_table_dom_binding.py \
             tests/test_enterprise_document_factory_foundation.py \
             tests/test_rel33_all_domain_document_quality_matrix.py \
-            -q
+            -q -ra \
+            --junitxml="$RUNNER_TEMP/mizan-pr-checks/rel32-junit.xml"
 
       - name: rel32 cyber AR export smoke
         run: python scripts/rel32_cyber_ar_export_smoke.py
@@ -66,3 +144,23 @@ jobs:
 
       - name: Mizan eight fixture-backed Contract R cases
         run: python scripts/run_mizan_contract_checks.py contract
+
+      - name: Retain PR checkout identity and available CI evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mizan-pr-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/mizan-pr-checks/checkout-identity.json
+            ${{ runner.temp }}/mizan-pr-checks/rawindex.stage-z
+            ${{ runner.temp }}/mizan-pr-checks/rel32-junit.xml
+            ${{ runner.temp }}/mizan-contract-*/**/junit.xml
+            ${{ runner.temp }}/mizan-contract-*/**/observations.json
+            ${{ runner.temp }}/mizan-contract-*/**/extraction_*.json
+            ${{ runner.temp }}/mizan-contract-*/**/comparison_*.txt
+            ${{ runner.temp }}/mizan-contract-*/**/delivered_*.docx
+            ${{ runner.temp }}/mizan-contract-*/**/diagnostic_writer_*.docx
+            ${{ github.workspace }}/qa_outputs/smoke_all_domains_preview_docx_pdf.json
+            ${{ github.workspace }}/qa_outputs/smoke_document_type_matrix.json
+            !${{ runner.temp }}/mizan-contract-*/**/tmp/**
