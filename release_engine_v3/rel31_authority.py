@@ -15,6 +15,7 @@ from release_engine.rel27_export_checks import (
 )
 from release_engine_v3.canonical_document import (
     build_final_document_artifact,
+    evaluate_saved_docx_fidelity,
     freeze_artifact,
     store_artifact,
 )
@@ -944,6 +945,71 @@ def _rel31_trim_so_table_rows(vision: str, remove_count: int = 1) -> str:
     return '\n'.join(out)
 
 
+def validate_saved_snapshot_original(
+        sections: Dict[str, str],
+        *,
+        backend: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Quality decisions for the exact saved strings.
+
+    Repair helpers are not called. A duplicate row or a weak output cell is
+    judged on the original text, not on a copy that has already removed or
+    replaced it. The returned blockers do not rewrite ``sections``.
+    """
+    blockers: List[str] = []
+    backend = dict(backend or {})
+    source = sections or {}
+    vision = source.get('vision', '') or ''
+    if not isinstance(vision, str):
+        vision = str(vision)
+    from release_engine_v3.domain_codes import normalize_domain_code
+    domain = normalize_domain_code(
+        str(backend.get('domain') or ''), default='')
+    lang = backend.get('lang', 'ar')
+    flags = backend.get('flags') or {}
+    document_type = str(backend.get('document_type') or 'strategy')
+    if not domain:
+        blockers.append('rel33_export_domain_missing:roadmap_quality')
+        return blockers
+    compiler_first: Optional[bool] = None
+    try:
+        from release_engine_v3.rel32_compiler import is_rel32_compiler_first
+        compiler_first = bool(is_rel32_compiler_first(
+            domain=domain,
+            lang=lang,
+            flags=flags,
+            document_type=document_type,
+        ))
+    except Exception:  # noqa: BLE001
+        blockers.append(
+            'saved_docx_fidelity_refused:validator_exception:objectives')
+    if compiler_first is True:
+        rows = len(re.findall(r'^\|\s*\d+\s*\|', vision, re.M))
+        if rows < 8:
+            blockers.append('rel3_generation_contract_failed:objectives')
+    elif compiler_first is False:
+        blockers.append(
+            'saved_docx_fidelity_refused:objective_rule_unverified')
+    try:
+        blob = '\n\n'.join(
+            value for value in source.values() if isinstance(value, str))
+        road = check_roadmap_coverage(blob, domain=domain)
+    except Exception:  # noqa: BLE001
+        blockers.append(
+            'saved_docx_fidelity_refused:validator_exception:roadmap')
+        return blockers
+    defects = [str(item) for item in (road.get('defects') or []) if item]
+    if int(road.get('visible_row_count') or 0) < 10 and not any(
+            item.startswith('roadmap_row_count') for item in defects):
+        defects.append('roadmap_row_count_low')
+    if defects:
+        blockers.append(
+            'rel3_generation_contract_failed:roadmap_weak_output')
+        for defect in defects:
+            blockers.append('saved_docx_original_roadmap_defect:' + defect)
+    return blockers
+
+
 def repair_canonical_before_freeze(
         legacy_artifact: Dict[str, Any],
         *,
@@ -954,6 +1020,24 @@ def repair_canonical_before_freeze(
     repairs: List[str] = []
     art = dict(legacy_artifact)
     sections = dict(art.get('sections') or {})
+    fidelity = evaluate_saved_docx_fidelity(art)
+    if fidelity == 'preserve' or str(fidelity).startswith(
+            'saved_docx_fidelity_refused'):
+        # Exclude pre-freeze replacement before any English-cyber or
+        # compiler rewrite can change the accepted snapshot.
+        if fidelity == 'preserve':
+            for _blocker in validate_saved_snapshot_original(
+                    sections, backend=backend):
+                art.setdefault('blocking_errors', []).append(_blocker)
+            # The original section strings are the validated text.
+            repairs.append(
+                'saved_docx_fidelity:original_snapshot_validated')
+            repairs.append(
+                'saved_docx_fidelity:validator_replacements_not_applied')
+        else:
+            art.setdefault('blocking_errors', []).append(fidelity)
+        art['sections'] = sections
+        return art, repairs
     lang = str(
         backend.get('lang')
         or (art.get('contract_meta') or {}).get('lang')
@@ -1535,24 +1619,91 @@ def rel3_export_authoritative(
                     ), ev
 
     if frozen_pre is not None:
+        from release_engine_v3.canonical_document import (
+            saved_frozen_source_refusal,
+        )
+        _frozen_refusal = saved_frozen_source_refusal(art, frozen_pre)
+        if _frozen_refusal:
+            ev = EvidenceResult(
+                route_name=route_n,
+                artifact_id=str(art.get('artifact_id') or ''),
+                strategy_id=str(art.get('strategy_id') or ''),
+                canonical_hash='',
+                render_tree_hash='',
+                returned_bytes_sha256='',
+                evidence_bytes_sha256='',
+                returned_equals_evidence_bytes=False,
+                exact_bytes_checked=False,
+                preview_text_checked=False,
+                docx_bytes_checked=False,
+                pdf_bytes_checked=False,
+                evidence_passed=False,
+                export_return_allowed=False,
+                blocking_errors=[_frozen_refusal],
+            )
+            ev.emit_diag()
+            return ExportResult(
+                route_name=route_n,
+                artifact_id=str(art.get('artifact_id') or ''),
+                render_tree_hash='',
+                canonical_hash='',
+                blocking_errors=[_frozen_refusal],
+            ), ev
+        if evaluate_saved_docx_fidelity(art) == 'preserve':
+            # Equivalence is not the current objective/roadmap decision.
+            # Judge the original saved strings. Do not rewrite them or the
+            # frozen object, and do not treat an empty stored blocker list
+            # as a current pass.
+            _saved_quality = validate_saved_snapshot_original(
+                art.get('sections') or {},
+                backend=backend,
+            )
+            if _saved_quality:
+                ev = EvidenceResult(
+                    route_name=route_n,
+                    artifact_id=str(art.get('artifact_id') or ''),
+                    strategy_id=str(art.get('strategy_id') or ''),
+                    canonical_hash='',
+                    render_tree_hash='',
+                    returned_bytes_sha256='',
+                    evidence_bytes_sha256='',
+                    returned_equals_evidence_bytes=False,
+                    exact_bytes_checked=False,
+                    preview_text_checked=False,
+                    docx_bytes_checked=False,
+                    pdf_bytes_checked=False,
+                    evidence_passed=False,
+                    export_return_allowed=False,
+                    blocking_errors=list(_saved_quality),
+                )
+                ev.emit_diag()
+                return ExportResult(
+                    route_name=route_n,
+                    artifact_id=str(art.get('artifact_id') or ''),
+                    render_tree_hash='',
+                    canonical_hash='',
+                    blocking_errors=list(_saved_quality),
+                ), ev
         frozen = frozen_pre
         backend['_rel32_export_artifact_dict'] = art
-        try:
-            from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
-                apply_rel36_4_to_frozen,
-                emit_rel36_4_live_en_cyber_export_path_repair,
-            )
-            _rel36_4_fr = apply_rel36_4_to_frozen(
-                frozen,
-                lang=lang,
-                domain=domain,
-                export_type=route_n,
-                route=f'rel3_export_authoritative:{route_n}',
-                repair_ran_at='rel3_export_with_evidence_frozen_pre',
-            )
-            emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_fr)
-        except Exception:  # noqa: BLE001
-            pass
+        # A validated saved DOCX already has its authoritative markdown and sections.
+        if evaluate_saved_docx_fidelity(art) != 'preserve':
+            try:
+                from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                    apply_rel36_4_to_frozen,
+                    emit_rel36_4_live_en_cyber_export_path_repair,
+                )
+                _rel36_4_fr = apply_rel36_4_to_frozen(
+                    frozen,
+                    lang=lang,
+                    domain=domain,
+                    export_type=route_n,
+                    route=f'rel3_export_authoritative:{route_n}',
+                    repair_ran_at='rel3_export_with_evidence_frozen_pre',
+                )
+                emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_fr)
+            except Exception:  # noqa: BLE001
+                pass
         with rel31_export_adapter_context():
             export, evidence = rel3_export_with_evidence(
                 route_n,
@@ -1606,24 +1757,27 @@ def rel3_export_authoritative(
                 canonical_hash='',
                 blocking_errors=bind_blockers,
             ), ev
+        backend['_rel32_export_artifact_dict'] = art
         with rel31_export_adapter_context():
             frozen = rel3_freeze_artifact(art)
-            try:
-                from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
-                    apply_rel36_4_to_frozen,
-                    emit_rel36_4_live_en_cyber_export_path_repair,
-                )
-                _rel36_4_ev = apply_rel36_4_to_frozen(
-                    frozen,
-                    lang=lang,
-                    domain=domain,
-                    export_type=route_n,
-                    route=f'rel3_export_authoritative:{route_n}',
-                    repair_ran_at='rel3_export_with_evidence',
-                )
-                emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_ev)
-            except Exception:  # noqa: BLE001
-                pass
+            # A validated saved DOCX already has its authoritative markdown and sections.
+            if evaluate_saved_docx_fidelity(art) != 'preserve':
+                try:
+                    from release_engine_v3.rel36_4_live_en_cyber_export_path_repair import (
+                        apply_rel36_4_to_frozen,
+                        emit_rel36_4_live_en_cyber_export_path_repair,
+                    )
+                    _rel36_4_ev = apply_rel36_4_to_frozen(
+                        frozen,
+                        lang=lang,
+                        domain=domain,
+                        export_type=route_n,
+                        route=f'rel3_export_authoritative:{route_n}',
+                        repair_ran_at='rel3_export_with_evidence',
+                    )
+                    emit_rel36_4_live_en_cyber_export_path_repair(_rel36_4_ev)
+                except Exception:  # noqa: BLE001
+                    pass
             if frozen.blocking_errors and route_n != 'preview':
                 blockers = normalize_rel3_export_blockers(
                     list(frozen.blocking_errors), route=route_n)
@@ -1657,11 +1811,15 @@ def rel3_export_authoritative(
             frozen.render_tree_hash = _tree.render_tree_hash
             register_rel32_frozen_export_lock(
                 frozen, render_tree_hash=_tree.render_tree_hash)
+            _saved_source_selected = (
+                evaluate_saved_docx_fidelity(art) == 'preserve')
             lock_meta = {
                 'frozen_artifact_loaded_for_docx': False,
                 'frozen_artifact_loaded_for_pdf': False,
-                'docx_rebuilt_from_markdown': route_n == 'docx',
+                'docx_rebuilt_from_markdown': (
+                    route_n == 'docx' and not _saved_source_selected),
                 'pdf_rebuilt_from_markdown': route_n == 'pdf',
+                'saved_docx_source_selected': _saved_source_selected,
                 'blocking_errors': [],
             }
             export, evidence = rel3_export_with_evidence(
@@ -1719,14 +1877,25 @@ def rel3_export_authoritative(
         mutation_after_contract_detected=mutation,
         route_name=route_n,
     )
+    _saved_source_selected = evaluate_saved_docx_fidelity(art) == 'preserve'
+    if isinstance(lock_meta, dict):
+        lock_meta['saved_docx_source_selected'] = _saved_source_selected
+        if _saved_source_selected and route_n == 'docx':
+            # Writer and frozen narrative are the saved sections. Do not
+            # keep the historical rebuilt-markdown label for this path.
+            lock_meta['docx_rebuilt_from_markdown'] = False
     emit_rel3_source_authority_check(
         route_name=route_n,
         artifact_id=str(art.get('artifact_id') or frozen.artifact_id or ''),
         strategy_id=str(art.get('strategy_id') or frozen.strategy_id or ''),
-        source_used='rel3_render_tree',
+        source_used=(
+            'saved_docx_snapshot' if lock_meta.get(
+                'saved_docx_source_selected') else 'rel3_render_tree'),
         sealed_artifact_used=True,
         render_tree_hash=tree,
         canonical_hash=canon,
+        saved_docx_source_selected=bool(
+            lock_meta.get('saved_docx_source_selected')),
         strategies_content_direct_used=False,
         legacy_helper_used_inside_rel3_adapter=True,
         legacy_helper_authoritative=False,
@@ -1783,6 +1952,7 @@ def emit_rel3_source_authority_check(
         strategies_content_direct_used: bool = False,
         cyber_final_export_contract_used: bool = False,
         professional_raw_markdown_used: bool = False,
+        saved_docx_source_selected: bool = False,
         legacy_helper_used_inside_rel3_adapter: bool = False,
         legacy_helper_authoritative: bool = False,
         rel3_authoritative: bool = True,
@@ -1813,6 +1983,7 @@ def emit_rel3_source_authority_check(
         'strategies_content_direct_used': strategies_content_direct_used,
         'cyber_final_export_contract_used': cyber_final_export_contract_used,
         'professional_raw_markdown_used': professional_raw_markdown_used,
+        'saved_docx_source_selected': bool(saved_docx_source_selected),
         'legacy_helper_used_inside_rel3_adapter': bool(
             legacy_helper_used_inside_rel3_adapter),
         'legacy_helper_authoritative': bool(legacy_helper_authoritative),

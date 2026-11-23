@@ -60,3 +60,9 @@ jobs:
 
       - name: smoke document type matrix
         run: python scripts/smoke_document_type_matrix.py
+
+      - name: Mizan targeted integration regressions
+        run: python scripts/run_mizan_contract_checks.py regressions
+
+      - name: Mizan eight fixture-backed Contract R cases
+        run: python scripts/run_mizan_contract_checks.py contract

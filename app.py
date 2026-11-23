@@ -1421,6 +1421,20 @@ def init_db():
     conn = get_db_direct()
     cursor = conn.cursor()
     
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS export_tasks (
+            task_id TEXT PRIMARY KEY NOT NULL,
+            user_id INTEGER NOT NULL,
+            record_id INTEGER,
+            fmt TEXT NOT NULL CHECK (fmt IN ('docx', 'pdf')),
+            filename TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'done', 'error')),
+            tmp TEXT,
+            error TEXT,
+            diag TEXT
+        )
+    """)
+
     # Users table with role and email
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -14768,8 +14782,17 @@ def _build_professional_strategy_document_model(
     try:
         from professional_strategy_render import (
             build_professional_strategy_document_model as _p41_build,
+            build_saved_source_strategy_model,
             ensure_strategy_professional_model,
+            saved_docx_fidelity_rendering,
         )
+        if saved_docx_fidelity_rendering():
+            return build_saved_source_strategy_model(
+                sections,
+                metadata=metadata,
+                lang=lang,
+                domain=domain,
+            )
         model = _p41_build(
             content,
             metadata=metadata,
@@ -14791,6 +14814,17 @@ def _build_professional_strategy_document_model(
             section_splitter=_split_strategy_sections_by_h2,
         )
     except Exception as _p41_e:  # noqa: BLE001
+        _saved_model_active = False
+        try:
+            from professional_strategy_render import (
+                saved_docx_fidelity_rendering as _saved_render_active,
+            )
+            _saved_model_active = bool(_saved_render_active())
+        except Exception:  # noqa: BLE001
+            _saved_model_active = False
+        if _saved_model_active:
+            # The saved model is not replaced by the legacy builder.
+            raise
         print(
             f'[PR-CY41] professional model fallback to base model: {_p41_e}',
             flush=True,
@@ -14866,7 +14900,12 @@ def _apply_arabic_spacing_fixes(text):
 def _prepare_final_render_text(text, lang='ar'):
     """PR-CY48 — last-mile PDF/DOCX text cleanup (spacing, confidence, etc.)."""
     try:
-        from professional_strategy_render import prepare_final_render_text
+        from professional_strategy_render import (
+            prepare_final_render_text,
+            saved_docx_fidelity_rendering,
+        )
+        if saved_docx_fidelity_rendering():
+            return str(text or '').strip()
         out = prepare_final_render_text(text or '', lang)
     except Exception:  # noqa: BLE001
         out = text or ''
@@ -51781,14 +51820,15 @@ def _rel2_backend_callables(*, pipeline_cache=None):
     def _rel2_build_docx_bytes(
             content, filename, lang, org_name='', sector='',
             doc_type='Strategy Document', domain='',
-            selected_frameworks=None, sections=None):
+            selected_frameworks=None, sections=None, saved_cover=None):
         from release_engine_v3.rel31_authority import rel31_in_export_adapter
         return _build_docx_bytes(
             content, filename, lang,
             org_name=org_name, sector=sector, doc_type=doc_type,
             domain=domain, selected_frameworks=selected_frameworks,
             rel2_export_validation=rel31_in_export_adapter(),
-            sections=sections)
+            sections=sections,
+            saved_cover=saved_cover)
 
     backend['build_docx_bytes'] = _rel2_build_docx_bytes
     backend['split_sections'] = _split_strategy_sections_by_h2
@@ -79920,11 +79960,77 @@ def api_test_docx():
         traceback.print_exc()
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
-# ── Async DOCX export store ────────────────────────────────────────────────────
-# Keyed by task_id → {'status': 'pending'|'done'|'error', 'tmp': path, 'filename': ...}
-# Background thread writes here; polling/download endpoints read it.
-# /tmp is shared across Gunicorn workers on the same Render instance.
+# The frozen verification harness observes this process-local mirror.
+# HTTP handlers use the shared SQLite row for ownership, state and file paths.
 _export_store: dict = {}
+
+
+def _read_export_task(task_id):
+    with closing(get_db_direct()) as conn:
+        row = conn.execute(
+            'SELECT * FROM export_tasks WHERE task_id = ?', (task_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    entry = dict(row)
+    if entry['diag']:
+        entry['diag'] = json.loads(entry['diag'])
+    return entry
+
+
+def _finish_export_task(task_id, entry):
+    with closing(get_db_direct()) as conn, conn:
+        updated = conn.execute(
+            "UPDATE export_tasks SET status=?, tmp=?, error=?, diag=? "
+            "WHERE task_id=? AND status='pending'",
+            (entry['status'], entry.get('tmp'), entry.get('error'),
+             json.dumps(entry['diag']) if entry.get('diag') else None, task_id))
+        if updated.rowcount != 1:
+            raise RuntimeError("Export task was missing or already terminal")
+    _export_store[task_id] = {**_export_store.get(task_id, {}), **entry}
+
+
+def _publish_export_file(task_id, fmt, raw):
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(
+        suffix='.' + fmt, prefix='mizan_export_' + task_id + '_', delete=False)
+    try:
+        with tmp:
+            tmp.write(raw)
+        _finish_export_task(task_id, {'status': 'done', 'tmp': tmp.name})
+    except Exception:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+        raise
+
+
+def _record_export_error(task_id, entry):
+    try:
+        _finish_export_task(task_id, entry)
+    except (sqlite3.Error, RuntimeError):
+        app.logger.exception("Could not persist failure for export task %s", task_id)
+
+
+def _start_export_task(task_id, fmt, filename, owner, record_id, worker):
+    import threading
+    entry = dict(status='pending', fmt=fmt, filename=filename,
+                 user_id=owner, record_id=record_id)
+    try:
+        with closing(get_db_direct()) as conn, conn:
+            conn.execute(
+                "INSERT INTO export_tasks(task_id, user_id, record_id, fmt, filename, status) "
+                "VALUES (?, ?, ?, ?, ?, 'pending')",
+                (task_id, owner, record_id, fmt, filename))
+    except sqlite3.Error:
+        app.logger.exception("Could not persist pending export task")
+        return jsonify({'error': 'Export task storage unavailable'}), 503
+    _export_store[task_id] = entry
+    try:
+        threading.Thread(target=worker, daemon=True).start()
+    except Exception as exc:
+        _record_export_error(task_id, {'status': 'error', 'error': str(exc)})
+        return jsonify({'error': 'Export worker could not start'}), 503
+    return jsonify({'task_id': task_id})
 
 
 @app.route('/api/generate-pdf-async', methods=['POST'])
@@ -80158,8 +80264,7 @@ def api_generate_pdf_async():
             }), 422
 
     task_id = str(uuid.uuid4())
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
-
+    _pdf_task_owner = session.get('user_id')
     _content  = content
     _filename = filename
     _lang     = lang
@@ -80300,26 +80405,427 @@ def api_generate_pdf_async():
             if not raw or len(raw) < 100:
                 raise ValueError(f"PDF generation returned empty/invalid content (got {len(raw)} bytes)")
 
-            tmp = tempfile.NamedTemporaryFile(
-                suffix='.pdf', delete=False,
-                prefix=f'mizan_export_{_task_id}_'
-            )
-            tmp.write(raw)
-            tmp.close()
-            _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename, 'fmt': 'pdf'
-            }
+            _publish_export_file(_task_id, 'pdf', raw)
             print(f"ASYNC PDF: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
             import traceback
             print(f"ASYNC PDF ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _err_entry = {'status': 'error', 'error': str(exc)}
+            _err_entry = {
+                'status': 'error', 'error': str(exc), 'user_id': _pdf_task_owner,
+            }
             if _debug_evidence_pdf and _pdf_debug_holder.get('diag'):
                 _err_entry['diag'] = _pdf_debug_holder['diag']
-            _export_store[_task_id] = _err_entry
+            _record_export_error(_task_id, _err_entry)
 
-    threading.Thread(target=_build_pdf, daemon=True).start()
-    return jsonify({'task_id': task_id})
+    return _start_export_task(task_id, 'pdf', filename, _pdf_task_owner,
+                              _art_id_a, _build_pdf)
+
+
+_DOCX_CANONICAL_ID = re.compile(r"[1-9][0-9]*\Z")
+_DOCX_DT_LABELS = frozenset({
+    "digital transformation",
+    "digital_transformation",
+    "dt",
+    "التحول الرقمي",
+})
+_DOCX_ARABIC_LABELS = frozenset({"ar", "arabic", "عربي", "العربية"})
+_DOCX_OTHER_NAMESPACES = frozenset({"risk", "policy", "audit", "procedure"})
+_DOCX_STRATEGY_FOLDS = frozenset({"strategy", "gap_assessment"})
+_DOCX_SUPPORTED_LANGUAGE = frozenset({"en", "ar", "arabic"})
+_DOCX_BINDER_HTTP_403 = frozenset({"CALLER_INVALID", "OWNED_STRATEGY_ABSENT"})
+
+
+def _docx_parse_supplied_id(value, *, required):
+    """Application copy of the accepted alias and caller rules.
+
+    None is absent for an optional alias and missing for the required
+    owner. Booleans, floats, containers, signs, leading zeros, blank
+    values, hash- prefixes, and int() ValueError are invalid. Positive
+    ints and canonical decimal strings are ok.
+    """
+    if value is None:
+        return ("missing", None) if required else ("absent", None)
+    if isinstance(value, bool) or isinstance(value, float):
+        return ("invalid", None)
+    if type(value) is int:
+        return ("ok", value) if value > 0 else ("invalid", None)
+    if isinstance(value, str):
+        text = value.strip()
+        if not _DOCX_CANONICAL_ID.fullmatch(text):
+            return ("invalid", None)
+        try:
+            parsed = int(text)
+        except ValueError:
+            return ("invalid", None)
+        return ("ok", parsed) if parsed > 0 else ("invalid", None)
+    return ("invalid", None)
+
+
+def _docx_refusal(status, reason, code=None, detail=None):
+    body = {"error": reason, "reason": reason}
+    if code:
+        body["code"] = code
+    if detail:
+        body["detail"] = detail
+    return jsonify(body), status
+
+
+def _docx_saved_continue(kind, owner_id, folded, record_id=None, artifact_id=None):
+    return {
+        "response": None,
+        "kind": kind,
+        "owner_id": owner_id,
+        "record_id": record_id,
+        "artifact_id": artifact_id,
+        "folded_type": folded,
+    }
+
+
+def _docx_binder_domain_is_dt(raw):
+    if not isinstance(raw, str):
+        return False
+    stripped = raw.strip()
+    if not stripped:
+        return False
+    key = stripped.lower().replace("-", "_")
+    key_sp = key.replace("_", " ")
+    compact = stripped.lower().replace("-", " ").replace("_", " ")
+    return any(candidate in _DOCX_DT_LABELS for candidate in (key, key_sp, compact))
+
+
+def _docx_scope_row_value(row, key):
+    if isinstance(row, dict):
+        return row.get(key)
+    keys = row.keys() if hasattr(row, "keys") else []
+    if key not in keys:
+        return None
+    return row[key]
+
+
+def _docx_saved_reference_dispatch(data):
+    """DOCX saved-reference dispatch. Returns a response or a continuation.
+
+    Caller and alias checks run before any saved-row read. A validated
+    strategy_id always names strategies. Equal numeric aliases do not
+    move that reference into another table.
+    """
+    payload = data if isinstance(data, dict) else {}
+    owner_state, owner_id = _docx_parse_supplied_id(
+        session.get("user_id"), required=True)
+    if owner_state != "ok":
+        detail = "caller_missing" if owner_state == "missing" else "caller_invalid"
+        return {
+            "response": _docx_refusal(403, detail, code="CALLER_INVALID", detail=detail),
+        }
+    strategy_state, strategy_value = _docx_parse_supplied_id(
+        payload.get("strategy_id"), required=False)
+    artifact_state, artifact_value = _docx_parse_supplied_id(
+        payload.get("artifact_id"), required=False)
+    if strategy_state == "invalid" and artifact_state == "invalid":
+        return {
+            "response": _docx_refusal(
+                422, "reference_invalid",
+                code="REFERENCE_INVALID", detail="reference_invalid"),
+        }
+    if strategy_state == "invalid":
+        return {
+            "response": _docx_refusal(
+                422, "strategy_id_invalid",
+                code="STRATEGY_ID_INVALID", detail="strategy_id_invalid"),
+        }
+    if artifact_state == "invalid":
+        return {
+            "response": _docx_refusal(
+                422, "artifact_id_invalid",
+                code="ARTIFACT_ID_INVALID", detail="artifact_id_invalid"),
+        }
+    if strategy_state == "absent" and artifact_state == "absent":
+        return _docx_saved_continue("branch_a", owner_id, None)
+    folded = _rel33_normalize_export_artifact_type(payload)
+    if strategy_state == "ok" and folded in _DOCX_OTHER_NAMESPACES:
+        return {
+            "response": _docx_refusal(
+                422, "saved_reference_namespace_conflict",
+                detail="strategy_id_present"),
+        }
+    if folded in _DOCX_STRATEGY_FOLDS:
+        if (
+                strategy_state == "ok"
+                and artifact_state == "ok"
+                and strategy_value != artifact_value
+        ):
+            return {
+                "response": _docx_refusal(
+                    422, "aliases_differ",
+                    code="REFERENCE_CONFLICT", detail="aliases_differ"),
+            }
+        record_id = strategy_value if strategy_state == "ok" else artifact_value
+        return _docx_strategy_scope_dispatch(record_id, owner_id, folded)
+    if folded in _DOCX_OTHER_NAMESPACES:
+        if artifact_state != "ok":
+            return {
+                "response": _docx_refusal(
+                    422, "saved_type_unresolved", detail="artifact_id_absent"),
+            }
+        if folded == "risk":
+            risk_row = _load_risk_export_row(artifact_value, owner_id)
+            if not risk_row:
+                return {
+                    "response": _docx_refusal(
+                        403, "owned_risk_absent", detail="owned_risk_absent"),
+                }
+        return _docx_saved_continue(
+            "other_namespace", owner_id, folded, artifact_id=artifact_value)
+    return {
+        "response": _docx_refusal(
+            422, "saved_type_unresolved", detail="folded_type_unresolved"),
+    }
+
+
+def _docx_strategy_scope_dispatch(record_id, owner_id, folded):
+    try:
+        conn = get_db_direct()
+    except Exception:
+        return {
+            "response": _docx_refusal(
+                422, "saved_scope_read_failed",
+                detail="saved_scope_read_failed"),
+        }
+    try:
+        try:
+            row = conn.execute(
+                "SELECT id, user_id, domain, language, sections_json, content_json, content "
+                "FROM strategies WHERE id = ? AND user_id = ?",
+                (record_id, owner_id),
+            ).fetchone()
+        except Exception:
+            return {
+                "response": _docx_refusal(
+                    422, "saved_scope_read_failed",
+                    detail="saved_scope_read_failed"),
+            }
+        if row is None:
+            return {
+                "response": _docx_refusal(
+                    403, "owned_strategy_absent", detail="owned_strategy_absent"),
+            }
+        row_id = _docx_scope_row_value(row, "id")
+        row_owner = _docx_scope_row_value(row, "user_id")
+        if type(row_id) is not int or type(row_owner) is not int:
+            return {
+                "response": _docx_refusal(
+                    422, "saved_scope_unresolved", detail="identity_type"),
+            }
+        if row_id != record_id or row_owner != owner_id:
+            return {
+                "response": _docx_refusal(
+                    422, "saved_scope_unresolved", detail="identity_mismatch"),
+            }
+        domain_raw = _docx_scope_row_value(row, "domain")
+        language_raw = _docx_scope_row_value(row, "language")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    try:
+        domain_code = normalize_domain_strict(domain_raw)
+    except DomainResolutionError:
+        domain_code = None
+    language_token = (
+        language_raw.strip().lower() if isinstance(language_raw, str) else "")
+    arabic_dt = (
+        domain_code == "dt"
+        and _docx_binder_domain_is_dt(domain_raw)
+        and language_token in _DOCX_ARABIC_LABELS
+    )
+    if arabic_dt:
+        from saved_arabic_dt_strategy_binding import stored_gap_assessment
+        if stored_gap_assessment(row["sections_json"], row["content_json"]):
+            result = _docx_saved_continue(
+                "supported_other", owner_id, "gap_assessment", record_id=record_id)
+            from release_engine_v3.rel33_export_artifact import _assemble_gap_assessment_from_sections
+            body = row["content"] or _assemble_gap_assessment_from_sections(
+                json.loads(row["sections_json"]))
+            result["gap_fields"] = {
+                "artifact_type": "gap_assessment", "document_type": "gap_assessment",
+                "doc_type": "gap_assessment", "domain": domain_raw,
+                "language": "ar", "content": body,
+            }
+            return result
+        return _docx_bind_arabic_dt(record_id, owner_id, "strategy", domain_raw)
+    supported_language = language_token in _DOCX_SUPPORTED_LANGUAGE
+    if domain_code in ("cyber", "data", "ai", "dt", "global", "erm") and supported_language:
+        return _docx_saved_continue(
+            "supported_other", owner_id, folded, record_id=record_id)
+    return {
+        "response": _docx_refusal(
+            422, "saved_scope_unresolved", detail="saved_scope_unresolved"),
+    }
+
+
+def _saved_docx_fidelity_from_snapshot(snapshot):
+    """Server-side provenance for one accepted Arabic DT strategy snapshot.
+
+    The claim is not read from request JSON. Sections are copied; the
+    frozen snapshot is not mutated.
+    """
+    if (
+            snapshot is None
+            or snapshot.document_type != 'strategy'
+            or snapshot.domain_code != 'dt'
+            or snapshot.language_code != 'ar'):
+        return None, {}
+    from release_engine_v3.canonical_document import (
+        saved_docx_content_digest,
+        saved_docx_section_digest,
+    )
+    sections = {}
+    for key, value in snapshot.sections.items():
+        if isinstance(value, str):
+            sections[str(key)] = value
+    claim = {
+        'record_id': snapshot.record_id,
+        'owner_id': snapshot.owner_id,
+        'domain_code': snapshot.domain_code,
+        'language_code': snapshot.language_code,
+        'document_type': snapshot.document_type,
+        'route': 'docx',
+        'content_sha256': saved_docx_content_digest(snapshot.content),
+        'sections_sha256': saved_docx_section_digest(sections),
+    }
+    return claim, sections
+
+
+def _docx_bind_arabic_dt(record_id, owner_id, folded, domain_raw):
+    from saved_arabic_dt_strategy_binding import (
+        bind_saved_arabic_dt_strategy,
+        OwnedStrategyReadAdapter,
+    )
+    conn = None
+    try:
+        conn = get_db_direct()
+    except Exception:
+        conn = None
+    if conn is None:
+        return {
+            "response": _docx_refusal(
+                422,
+                "database_connection_failed",
+                code="SAVED_STRATEGY_READ_FAILED",
+                detail="database_connection_failed",
+            ),
+        }
+    result = None
+    saved_cover = None
+    meta_code = None
+    try:
+        if conn.in_transaction:
+            meta_code = 'saved_cover_metadata_refused:transaction_state'
+        else:
+            conn.execute('BEGIN')
+            result = bind_saved_arabic_dt_strategy(
+                strategy_id=record_id,
+                artifact_id=None,
+                caller_id=owner_id,
+                reader=OwnedStrategyReadAdapter(conn),
+            )
+            if (
+                    result.accepted
+                    and result.snapshot is not None
+                    and result.snapshot.document_type == 'strategy'):
+                saved_cover, meta_code = _saved_cover_tuple_from_connection(
+                    conn, result.snapshot, record_id, owner_id)
+            if meta_code:
+                saved_cover = None
+            conn.execute('ROLLBACK')
+    except Exception:
+        saved_cover = None
+        meta_code = 'saved_cover_metadata_refused:read_failed'
+        try:
+            if conn is not None and conn.in_transaction:
+                conn.execute('ROLLBACK')
+        except Exception:
+            saved_cover = None
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+    if meta_code == 'saved_cover_metadata_refused:transaction_state':
+        return _saved_cover_read_refusal(meta_code)
+    if meta_code == 'saved_cover_metadata_refused:read_failed' or result is None:
+        return _saved_cover_read_refusal(
+            'saved_cover_metadata_refused:read_failed')
+    if not result.accepted or result.snapshot is None:
+        refusal = result.refusal
+        code = refusal.code if refusal is not None else "SAVED_STRATEGY_READ_FAILED"
+        detail = refusal.detail if refusal is not None else "binder_refused"
+        status = 403 if code in _DOCX_BINDER_HTTP_403 else 422
+        return {"response": _docx_refusal(status, detail, code=code, detail=detail)}
+    if meta_code:
+        return _saved_cover_read_refusal(meta_code)
+    snapshot = result.snapshot
+    if snapshot.domain_code != "dt" or snapshot.language_code != "ar":
+        return {
+            "response": _docx_refusal(
+                422, "saved_scope_unresolved", detail="snapshot_code"),
+        }
+    if snapshot.record_id != record_id or snapshot.owner_id != owner_id:
+        return {
+            "response": _docx_refusal(
+                422, "saved_scope_unresolved", detail="snapshot_identity"),
+        }
+    try:
+        domain_display = resolve_export_domain(snapshot.domain, "strategy")
+    except DomainResolutionError:
+        return {
+            "response": _docx_refusal(
+                422, "saved_scope_unresolved", detail="domain_display"),
+        }
+    try:
+        display_code = normalize_domain_strict(domain_raw)
+    except DomainResolutionError:
+        display_code = None
+    if display_code != snapshot.domain_code:
+        return {
+            "response": _docx_refusal(
+                422, "saved_scope_unresolved", detail="domain_code"),
+        }
+    _saved_claim, _saved_sections = _saved_docx_fidelity_from_snapshot(snapshot)
+    dispatch = {
+        "response": None,
+        "kind": "arabic_dt",
+        "owner_id": owner_id,
+        "record_id": record_id,
+        "folded_type": folded,
+        "content": snapshot.content,
+        "language_code": snapshot.language_code,
+        "domain_display": domain_display,
+        "document_type": snapshot.document_type,
+        "generation_mode": snapshot.generation_mode,
+        "sections": _saved_sections,
+        "saved_docx_fidelity": _saved_claim,
+    }
+    if saved_cover is not None:
+        dispatch["saved_cover"] = saved_cover
+    return dispatch
+
+
+def _export_task_owned(entry):
+    if not isinstance(entry, dict) or "user_id" not in entry:
+        return False
+    entry_state, entry_owner = _docx_parse_supplied_id(
+        entry.get("user_id"), required=True)
+    session_state, session_owner = _docx_parse_supplied_id(
+        session.get("user_id"), required=True)
+    return (
+        entry_state == "ok"
+        and session_state == "ok"
+        and entry_owner == session_owner
+    )
+
 
 @app.route('/api/generate-docx-async', methods=['POST'])
 @login_required
@@ -80344,20 +80850,52 @@ def api_generate_docx_async():
     except Exception:
         return jsonify({'error': 'Invalid JSON'}), 400
 
-    content  = data.get('content', '').strip()
-    filename = data.get('filename', 'document')
-    lang     = data.get('language', 'en')
-    org_name = data.get('org_name', '').strip()
-    sector   = data.get('sector', '').strip()
-    doc_type = data.get('doc_type', 'Strategy Document')
-    # Strict resolution — never silently default to Cyber Security on export.
-    try:
-        domain = resolve_export_domain(data.get('domain', ''),
-                                       data.get('artifact_type', 'strategy'))
-    except DomainResolutionError as _de:
-        print(f"[DOMAIN] DOCX async export rejected: {_de}", flush=True)
-        return jsonify({'error': 'Missing or unsupported strategy domain '
-                                  'for DOCX export.'}), 400
+    _docx_dispatch = _docx_saved_reference_dispatch(data)
+    if _docx_dispatch.get('response') is not None:
+        return _docx_dispatch['response']
+    _saved_arabic_dt = _docx_dispatch.get('kind') == 'arabic_dt'
+    _saved_cover = (
+        _docx_dispatch.get('saved_cover') if _saved_arabic_dt else None)
+    _export_owner_id = _docx_dispatch['owner_id']
+    _export_record_id = _docx_dispatch.get('record_id')
+    if _docx_dispatch.get('gap_fields'):
+        data.update(_docx_dispatch['gap_fields'])
+    if _saved_arabic_dt:
+        data['artifact_type'] = 'strategy'
+    if _docx_dispatch.get('kind') == 'supported_other' or _saved_arabic_dt:
+        data['strategy_id'] = _docx_dispatch['record_id']
+        data['artifact_id'] = _docx_dispatch['record_id']
+    elif _docx_dispatch.get('kind') == 'other_namespace':
+        data['strategy_id'] = None
+        data['artifact_id'] = _docx_dispatch['artifact_id']
+    if _saved_arabic_dt:
+        data['generation_mode'] = _docx_dispatch['generation_mode']
+        data['document_type'] = _docx_dispatch['document_type']
+        content = _docx_dispatch['content']
+        filename = data.get('filename', 'document')
+        lang = _docx_dispatch['language_code']
+        if _saved_cover is None:
+            org_name = data.get('org_name', '').strip()
+            sector = data.get('sector', '').strip()
+        else:
+            org_name, sector = _saved_cover_request_fields(_saved_cover)
+        doc_type = _docx_dispatch['document_type'] or 'Strategy Document'
+        domain = _docx_dispatch['domain_display']
+    else:
+        content  = data.get('content', '').strip()
+        filename = data.get('filename', 'document')
+        lang     = data.get('language', 'en')
+        org_name = data.get('org_name', '').strip()
+        sector   = data.get('sector', '').strip()
+        doc_type = data.get('doc_type', 'Strategy Document')
+        # Strict resolution — never silently default to Cyber Security on export.
+        try:
+            domain = resolve_export_domain(data.get('domain', ''),
+                                           data.get('artifact_type', 'strategy'))
+        except DomainResolutionError as _de:
+            print(f"[DOMAIN] DOCX async export rejected: {_de}", flush=True)
+            return jsonify({'error': 'Missing or unsupported strategy domain '
+                                      'for DOCX export.'}), 400
 
     if not content:
         return jsonify({'error': 'No content'}), 400
@@ -80366,10 +80904,13 @@ def api_generate_docx_async():
     _art_id_a   = data.get('artifact_id') or data.get('strategy_id')
     _art_type_a = _rel33_normalize_export_artifact_type(data)
     _gen_mode_a = data.get('generation_mode', 'drafting')
-    _rel3611_ctx, _rel3611_denied = _rel36_11_bind_saved_export_lookup(
-        data, route='docx-async', export_type='docx',
-        domain=domain, lang=lang, artifact_type=_art_type_a,
-        artifact_id=_art_id_a)
+    if _docx_dispatch.get('kind') == 'other_namespace' or _saved_arabic_dt:
+        _rel3611_ctx, _rel3611_denied = None, None
+    else:
+        _rel3611_ctx, _rel3611_denied = _rel36_11_bind_saved_export_lookup(
+            data, route='docx-async', export_type='docx',
+            domain=domain, lang=lang, artifact_type=_art_type_a,
+            artifact_id=_art_id_a)
     if _rel3611_denied is not None:
         return _rel3611_denied
     if _rel3611_ctx:
@@ -80379,7 +80920,10 @@ def api_generate_docx_async():
             data['artifact_id'] = _rel3611_ctx['strategy_id']
         lang = _rel3611_ctx.get('lang') or lang
     try:
-        _gate_a = _enforce_export_gate(_art_type_a, _art_id_a, content, _gen_mode_a, session.get('user_id', 0))
+        _gate_owner_a = (
+            _export_owner_id if _saved_arabic_dt else session.get('user_id', 0))
+        _gate_a = _enforce_export_gate(
+            _art_type_a, _art_id_a, content, _gen_mode_a, _gate_owner_a)
         if not _gate_a['allowed']:
             return jsonify({'error': _gate_a['reason']}), 403
     except Exception as _ga_e:
@@ -80389,42 +80933,44 @@ def api_generate_docx_async():
     # ── Preview/export parity: prefer DB-canonical content ───────────────────
     # Mirror of the PDF-async parity fix — ensures DOCX export reads the
     # same repair-processed sections_json / content that the preview renders.
-    try:
-        _db_canonical = _canonical_content_from_db(
-            _art_type_a, _art_id_a, session.get('user_id', 0),
-            request_frameworks=(
-                data.get('selected_frameworks') or data.get('frameworks')),
-            lang=lang, domain=domain,
-            document_type=str(data.get('document_type') or _art_type_a))
-    except DomainContaminationError as _dce:
-        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
-        # synchronously, before any task_id is issued.
-        print(f'[EXPORT-DOMAIN-GUARD] DOCX-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
-              flush=True)
-        return jsonify({
-            'error': 'Export blocked — saved strategy contains cross-domain content',
-            'reason': 'domain_contamination',
-            'domain': domain,
-            'artifact_type': _art_type_a,
-            'artifact_id': _art_id_a,
-        }), 422
-    except Exception as _cn_e:
-        print(f'[ASYNC-CANON] DOCX lookup failed, using client content: {_cn_e}', flush=True)
-        _db_canonical = ''
-    if _db_canonical and _db_canonical.strip():
+    _db_canonical = ''
+    if not _saved_arabic_dt:
         try:
-            _parity = _compare_content_parity(_db_canonical, content)
-            if not _parity.get('parity'):
-                print(f'[ASYNC-PARITY] DOCX client↔DB drift for {_art_type_a}/{_art_id_a}: '
-                      f'{_parity.get("reason")}. Using DB canonical content.', flush=True)
-        except Exception:
-            pass
-        content = _db_canonical
-    elif _art_id_a:
-        try:
-            content = ensure_markdown_formatting(content)
-        except Exception as _nf_e:
-            print(f'[ASYNC-NORM] DOCX client-content normalize failed: {_nf_e}', flush=True)
+            _db_canonical = _canonical_content_from_db(
+                _art_type_a, _art_id_a, session.get('user_id', 0),
+                request_frameworks=(
+                    data.get('selected_frameworks') or data.get('frameworks')),
+                lang=lang, domain=domain,
+                document_type=str(data.get('document_type') or _art_type_a))
+        except DomainContaminationError as _dce:
+            # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422
+            # synchronously, before any task_id is issued.
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX-async denied for {_art_type_a}/{_art_id_a}: {_dce}',
+                  flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type_a,
+                'artifact_id': _art_id_a,
+            }), 422
+        except Exception as _cn_e:
+            print(f'[ASYNC-CANON] DOCX lookup failed, using client content: {_cn_e}', flush=True)
+            _db_canonical = ''
+        if _db_canonical and _db_canonical.strip():
+            try:
+                _parity = _compare_content_parity(_db_canonical, content)
+                if not _parity.get('parity'):
+                    print(f'[ASYNC-PARITY] DOCX client↔DB drift for {_art_type_a}/{_art_id_a}: '
+                          f'{_parity.get("reason")}. Using DB canonical content.', flush=True)
+            except Exception:
+                pass
+            content = _db_canonical
+        elif _art_id_a:
+            try:
+                content = ensure_markdown_formatting(content)
+            except Exception as _nf_e:
+                print(f'[ASYNC-NORM] DOCX client-content normalize failed: {_nf_e}', flush=True)
 
     # PR-5B.7B.3: client-payload fallback guard for DOCX-async path.
     if not (_db_canonical and _db_canonical.strip()):
@@ -80457,7 +81003,11 @@ def api_generate_docx_async():
     _rel33_skip_frag_da = False
     _rel33_export_prep_da: dict = {}
     _rel33_risk_sections_da: dict = {}
-    if _art_type_a == 'strategy':
+    if _saved_arabic_dt:
+        # Selected snapshot stays the body. Do not adopt a REL33 rewrite
+        # and do not classify that body as a client fragment.
+        _rel33_skip_frag_da = True
+    elif _art_type_a == 'strategy':
         try:
             _rel33_uid_da = session.get('user_id', 0)
             _rel33_sid_da = _resolve_numeric_strategy_id(
@@ -80575,8 +81125,6 @@ def api_generate_docx_async():
 
     task_id = str(uuid.uuid4())
 
-    _export_store[task_id] = {'status': 'pending', 'filename': filename}
-
     _content  = content
     _filename = filename
     _lang     = lang
@@ -80584,20 +81132,24 @@ def api_generate_docx_async():
     _sector   = sector
     _doc_type = doc_type
     _domain   = domain
+    _saved_cover_async = _saved_cover
     _selected_fws = (data.get('selected_frameworks')
                      or data.get('frameworks') or [])
     _cyber_sealed_docx_inner = _cyber_sealed_docx_a
     _task_id  = task_id
-    _export_uid = session.get('user_id', 0)
+    _export_uid = (
+        _export_owner_id if _saved_arabic_dt else session.get('user_id', 0))
     _export_strategy_id = (
         data.get('strategy_id') or _art_id_a)
     _export_risk_id = data.get('risk_id') or (
         _art_id_a if _art_type_a == 'risk' else None)
-    _export_numeric_sid = _resolve_numeric_strategy_id(
-        _export_strategy_id, _export_uid)
-    _export_db_bundle = (
-        _load_sealed_strategy_export_bundle(_export_numeric_sid, _export_uid)
-        if _export_numeric_sid and _art_type_a == 'strategy' else {})
+    _export_numeric_sid = (
+        _export_record_id if _saved_arabic_dt else
+        _resolve_numeric_strategy_id(_export_strategy_id, _export_uid))
+    _export_db_bundle = {}
+    if (not _saved_arabic_dt) and _export_numeric_sid and _art_type_a == 'strategy':
+        _export_db_bundle = _load_sealed_strategy_export_bundle(
+            _export_numeric_sid, _export_uid)
     # REL3.3 staging-only diagnostic gate — captured in the request context so
     # the background thread (which has no request) can still emit the routing
     # diagnostic on failure. Never enabled in production.
@@ -80608,49 +81160,52 @@ def api_generate_docx_async():
         try:
             print(f"ASYNC DOCX: starting build for task {_task_id[:8]}", flush=True)
             raw = b''
+            _docx_select_type_a = (
+                _doc_type if _saved_arabic_dt
+                else _rel33_export_document_type(_art_type_a))
             if _rel36_export_authoritative(
-                    _domain, _lang,
-                    _rel33_export_document_type(_art_type_a)):
+                    _domain, _lang, _docx_select_type_a):
                 _async_sections: dict = {}
                 _async_content = _content
-                try:
-                    from release_engine_v3.rel32_frozen_artifact_persist import (
-                        extract_persisted_frozen_blob,
-                        frozen_artifact_complete,
-                        rehydrate_artifact_dict_from_persisted,
-                    )
-                    _persisted = extract_persisted_frozen_blob(
-                        _export_db_bundle.get('content_json') or {})
-                    if _persisted and frozen_artifact_complete(_persisted):
-                        _async_cm_pre = dict(
-                            _export_db_bundle.get('contract_meta') or {})
-                        _rehyd = rehydrate_artifact_dict_from_persisted(
-                            _persisted,
-                            strategy_id=str(
-                                _export_numeric_sid or _export_strategy_id or ''),
-                            contract_meta=_async_cm_pre,
-                            domain=_domain,
-                            lang=_lang,
+                if not _saved_arabic_dt:
+                    try:
+                        from release_engine_v3.rel32_frozen_artifact_persist import (
+                            extract_persisted_frozen_blob,
+                            frozen_artifact_complete,
+                            rehydrate_artifact_dict_from_persisted,
                         )
-                        _async_sections = dict(_rehyd.get('sections') or {})
-                        _async_content = (
-                            _rehyd.get('final_markdown') or _async_content)
-                except Exception:  # noqa: BLE001
-                    pass
-                if _rel33_export_prep_da.get('skip_fragment_gate'):
-                    _prep_secs = _rel33_export_prep_da.get('sections') or {}
-                    _prep_content = _rel33_export_prep_da.get('content') or ''
-                    if _prep_content.strip():
-                        _async_content = _prep_content
-                    if _prep_secs:
-                        _async_sections = dict(_prep_secs)
-                if _rel33_risk_sections_da:
-                    _async_sections = dict(_rel33_risk_sections_da)
-                    if (_rel33_export_prep_da.get('content') or '').strip():
-                        _async_content = _rel33_export_prep_da['content']
-                if not _async_sections:
-                    _async_sections = dict(
-                        _export_db_bundle.get('sections') or {})
+                        _persisted = extract_persisted_frozen_blob(
+                            _export_db_bundle.get('content_json') or {})
+                        if _persisted and frozen_artifact_complete(_persisted):
+                            _async_cm_pre = dict(
+                                _export_db_bundle.get('contract_meta') or {})
+                            _rehyd = rehydrate_artifact_dict_from_persisted(
+                                _persisted,
+                                strategy_id=str(
+                                    _export_numeric_sid or _export_strategy_id or ''),
+                                contract_meta=_async_cm_pre,
+                                domain=_domain,
+                                lang=_lang,
+                            )
+                            _async_sections = dict(_rehyd.get('sections') or {})
+                            _async_content = (
+                                _rehyd.get('final_markdown') or _async_content)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if _rel33_export_prep_da.get('skip_fragment_gate'):
+                        _prep_secs = _rel33_export_prep_da.get('sections') or {}
+                        _prep_content = _rel33_export_prep_da.get('content') or ''
+                        if _prep_content.strip():
+                            _async_content = _prep_content
+                        if _prep_secs:
+                            _async_sections = dict(_prep_secs)
+                    if _rel33_risk_sections_da:
+                        _async_sections = dict(_rel33_risk_sections_da)
+                        if (_rel33_export_prep_da.get('content') or '').strip():
+                            _async_content = _rel33_export_prep_da['content']
+                    if not _async_sections:
+                        _async_sections = dict(
+                            _export_db_bundle.get('sections') or {})
                 if not _async_sections:
                     # REL3.3 — a risk artifact must never be sectionized by the
                     # strategy splitter (it mints a bogus ``vision`` key from
@@ -80691,7 +81246,7 @@ def api_generate_docx_async():
                     'strategy_id': _async_sid,
                     'artifact_id': str(_art_id_a or _async_sid or ''),
                     'artifact_type': _art_type_a,
-                    'document_type': _rel33_export_document_type(_art_type_a),
+                    'document_type': _docx_select_type_a,
                     '_numeric_strategy_id': str(_export_numeric_sid or ''),
                     '_rel32_export_user_id': _export_uid,
                     'final_hash': (
@@ -80719,6 +81274,23 @@ def api_generate_docx_async():
                     )
                 except Exception:  # noqa: BLE001
                     pass
+                if _saved_arabic_dt:
+                    _async_art['final_markdown'] = _content
+                    _async_saved_sections = dict(
+                        _docx_dispatch.get('sections') or {})
+                    _async_art['sections'] = _async_saved_sections
+                    _async_claim = _docx_dispatch.get('saved_docx_fidelity')
+                    if isinstance(_async_claim, dict):
+                        _async_art['_saved_docx_fidelity'] = dict(_async_claim)
+                    _async_art['_rel32_export_user_id'] = _export_owner_id
+                    _async_art['document_type'] = _doc_type
+                    _async_art['domain'] = _domain
+                    _async_cm_locked = _async_art.get('contract_meta')
+                    if not isinstance(_async_cm_locked, dict):
+                        _async_cm_locked = {}
+                    _async_cm_locked['lang'] = _lang
+                    _async_cm_locked['domain'] = _domain
+                    _async_art['contract_meta'] = _async_cm_locked
                 _async_export = _rel31_authoritative_export_route(
                     'docx',
                     artifact_dict=_async_art,
@@ -80734,6 +81306,7 @@ def api_generate_docx_async():
                         'domain': _domain,
                         'selected_frameworks': _selected_fws,
                         'cyber_sealed_artifact': _cyber_sealed_docx_inner,
+                        'saved_cover': _saved_cover_async,
                     },
                 )
                 if _async_export is None:
@@ -80757,8 +81330,7 @@ def api_generate_docx_async():
                             route='docx-async',
                             lang=_lang,
                             domain=_domain,
-                            document_type=_rel33_export_document_type(
-                                _art_type_a),
+                            document_type=_docx_select_type_a,
                             output_type='docx',
                             selected_exporter='rel3_export_authoritative',
                             authoritative_path_used=True,
@@ -80780,8 +81352,7 @@ def api_generate_docx_async():
                             route='docx-async',
                             lang=_lang,
                             domain=_domain,
-                            document_type=_rel33_export_document_type(
-                                _art_type_a),
+                            document_type=_docx_select_type_a,
                             output_type='docx',
                             selected_exporter='_build_docx_bytes',
                             authoritative_path_used=False,
@@ -80796,20 +81367,18 @@ def api_generate_docx_async():
                     selected_frameworks=_selected_fws,
                     cyber_sealed_artifact=_cyber_sealed_docx_inner,
                 )
-            tmp = tempfile.NamedTemporaryFile(
-                suffix='.docx', delete=False,
-                prefix=f'mizan_export_{_task_id}_'
-            )
-            tmp.write(raw)
-            tmp.close()
-            _export_store[_task_id] = {
-                'status': 'done', 'tmp': tmp.name, 'filename': _filename
-            }
+            _publish_export_file(_task_id, 'docx', raw)
             print(f"ASYNC DOCX: task {_task_id[:8]} done ({len(raw):,} bytes)", flush=True)
         except Exception as exc:
             import traceback
             print(f"ASYNC DOCX ERROR task {_task_id[:8]}: {exc}\n{traceback.format_exc()}", flush=True)
-            _err_entry_docx = {'status': 'error', 'error': str(exc)}
+            _err_entry_docx = {
+                'status': 'error',
+                'error': str(exc),
+                'user_id': _export_owner_id,
+            }
+            if _export_record_id is not None:
+                _err_entry_docx['record_id'] = _export_record_id
             if _debug_evidence_docx:
                 try:
                     _err_entry_docx['diag'] = {
@@ -80843,27 +81412,33 @@ def api_generate_docx_async():
                         pass
                 except Exception:  # noqa: BLE001
                     pass
-            _export_store[_task_id] = _err_entry_docx
+            _record_export_error(_task_id, _err_entry_docx)
 
-    threading.Thread(target=_build, daemon=True).start()
-    return jsonify({'task_id': task_id})
+    return _start_export_task(task_id, 'docx', filename, _export_owner_id,
+                              _export_record_id or _art_id_a, _build)
 
 
 @app.route('/api/export-status/<task_id>')
 @login_required
 def api_export_status(task_id):
     """Poll async export task status."""
-    entry = _export_store.get(task_id)
-    if not entry:
-        # Also check other workers via a temp-file sentinel
-        import os
-        candidates = [f for f in os.listdir('/tmp') if f.startswith(f'mizan_export_{task_id}')]
-        if candidates:
-            return jsonify({'status': 'done', 'task_id': task_id})
+    try:
+        entry = _read_export_task(task_id)
+    except sqlite3.Error:
+        app.logger.exception("Export task lookup failed")
+        return jsonify({'error': 'Export task storage unavailable'}), 503
+    if entry is None:
         return jsonify({'status': 'not_found'}), 404
+    if not _export_task_owned(entry):
+        return jsonify({
+            'error': 'Export task not owned by current user.',
+            'reason': 'export_task_not_owned',
+        }), 403
 
     status = entry.get('status', 'pending')
     if status == 'done':
+        if not entry['tmp'] or not os.path.isfile(entry['tmp']):
+            return jsonify({'status': 'not_found'}), 404
         return jsonify({'status': 'done', 'task_id': task_id})
     elif status == 'error':
         _resp = {'status': 'error', 'error': entry.get('error', 'Unknown error')}
@@ -80887,26 +81462,24 @@ def api_export_download(task_id):
     import os
     from flask import send_file as _send_file
 
-    entry = _export_store.get(task_id, {})
+    try:
+        entry = _read_export_task(task_id)
+    except sqlite3.Error:
+        app.logger.exception("Export task lookup failed")
+        return jsonify({'error': 'Export task storage unavailable'}), 503
+    if entry is None:
+        return jsonify({'error': 'File not ready or already downloaded'}), 404
+    if not _export_task_owned(entry):
+        return jsonify({
+            'error': 'Export task not owned by current user.',
+            'reason': 'export_task_not_owned',
+        }), 403
     tmp_path = entry.get('tmp')
     filename = entry.get('filename', 'document')
 
-    # Cross-worker fallback: scan /tmp
-    if not tmp_path:
-        candidates = [f'/tmp/{f}' for f in os.listdir('/tmp')
-                      if f.startswith('mizan_export_') and task_id in f
-                      and (f.endswith('.docx') or f.endswith('.pdf'))]
-        if candidates:
-            tmp_path = candidates[0]
-            filename = entry.get('filename', 'document')
-
-    if not tmp_path or not os.path.exists(tmp_path):
+    if entry['status'] != 'done' or not tmp_path or not os.path.isfile(tmp_path):
         return jsonify({'error': 'File not ready or already downloaded'}), 404
-
-    # Determine format from stored entry or file extension
-    fmt = entry.get('fmt', 'docx')
-    if not fmt and tmp_path:
-        fmt = 'pdf' if tmp_path.endswith('.pdf') else 'docx'
+    fmt = entry['fmt']
 
     safe_name = filename.replace('"', '').replace('\n', '').replace('\r', '')
     if fmt == 'pdf':
@@ -80923,7 +81496,8 @@ def api_export_download(task_id):
             as_attachment=True,
             download_name=dl_name
         )
-        # Clean up after sending
+        # Close the streamed file before unlinking it, including on Windows.
+        response.direct_passthrough = False
         @response.call_on_close
         def _cleanup():
             try:
@@ -80931,11 +81505,142 @@ def api_export_download(task_id):
             except Exception:
                 pass
         return response
+    except FileNotFoundError:
+        return jsonify({'error': 'File not ready or already downloaded'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type='Strategy Document', domain='', selected_frameworks=None, cyber_sealed_artifact=False, rel2_export_validation=False, sections=None):
+
+def _saved_cover_request_fields(saved_cover):
+    """Copy organization and sector strings out of the request-thread tuple.
+
+    The tuple object is not rebuilt. Request JSON is not read here.
+    """
+    org_name = ''
+    sector = ''
+    if type(saved_cover) is tuple:
+        for item in saved_cover:
+            if type(item) is not tuple or len(item) != 2:
+                continue
+            if item[0] == 'org_name' and type(item[1]) is str:
+                org_name = item[1]
+            elif item[0] == 'sector' and type(item[1]) is str:
+                sector = item[1]
+    return org_name, sector
+
+
+def _saved_cover_read_refusal(code):
+    return {
+        'response': _docx_refusal(422, code, code=code, detail=code),
+    }
+
+
+def _saved_cover_text_field(row, field):
+    value = row[field]
+    if type(value) is not str:
+        return None, 'saved_cover_metadata_refused:type:' + field
+    stripped = value.strip()
+    if stripped == '':
+        return None, 'saved_cover_metadata_refused:blank:' + field
+    return stripped, None
+
+
+def _saved_cover_tuple_from_connection(conn, snapshot, record_id, owner_id):
+    """One owner-scoped cover read on the caller's open transaction.
+
+    Returns (tuple, None) or (None, refusal code). SQL exceptions propagate
+    to the caller, which discards any partial tuple. This function does not
+    COMMIT and does not update the row.
+    """
+    from release_engine_v3.canonical_document import SAVED_DOCX_REQUIRED_SECTIONS
+    row = conn.execute(
+        'SELECT id, user_id, content, sections_json, org_name, sector, '
+        'document_title, artifact_status FROM strategies '
+        'WHERE id = ? AND user_id = ?',
+        (record_id, owner_id),
+    ).fetchone()
+    if row is None:
+        return None, 'saved_cover_metadata_refused:row_absent'
+    row_id = row['id']
+    row_owner = row['user_id']
+    if (
+            type(row_id) is not int
+            or type(row_owner) is not int
+            or row_id != record_id
+            or row_owner != owner_id
+            or row_id != snapshot.record_id
+            or row_owner != snapshot.owner_id
+            or snapshot.record_id != record_id
+            or snapshot.owner_id != owner_id):
+        return None, 'saved_cover_metadata_refused:identity'
+    row_content = row['content']
+    if type(row_content) is not str or row_content != snapshot.content:
+        return None, 'saved_cover_metadata_refused:content_mismatch'
+    raw_sections = row['sections_json']
+    parsed = raw_sections
+    if type(raw_sections) is str:
+        try:
+            parsed = json.loads(raw_sections)
+        except Exception:
+            return None, 'saved_cover_metadata_refused:sections_mismatch'
+    if type(parsed) is not dict:
+        return None, 'saved_cover_metadata_refused:sections_mismatch'
+    for key in SAVED_DOCX_REQUIRED_SECTIONS:
+        try:
+            snap_value = snapshot.sections.get(key)
+        except Exception:
+            snap_value = None
+        if type(snap_value) is not str or parsed.get(key) != snap_value:
+            return None, 'saved_cover_metadata_refused:sections_mismatch'
+    org_name, org_code = _saved_cover_text_field(row, 'org_name')
+    if org_code:
+        return None, org_code
+    sector, sector_code = _saved_cover_text_field(row, 'sector')
+    if sector_code:
+        return None, sector_code
+    document_title, title_code = _saved_cover_text_field(row, 'document_title')
+    if title_code:
+        return None, title_code
+    status, status_code = _saved_cover_text_field(row, 'artifact_status')
+    if status_code:
+        return None, status_code
+    if status not in (
+            'draft', 'reviewed', 'publishable', 'final', 'rejected',
+            'requires_consultant', 'requires_evidence'):
+        return None, 'saved_cover_metadata_refused:status'
+    claim, _sections = _saved_docx_fidelity_from_snapshot(snapshot)
+    if not isinstance(claim, dict):
+        return None, None
+    content_sha = claim.get('content_sha256')
+    sections_sha = claim.get('sections_sha256')
+    if type(content_sha) is not str or type(sections_sha) is not str:
+        return None, 'saved_cover_metadata_refused:read_failed'
+    display = domain_display_name('dt', 'ar')
+    if display != 'التحول الرقمي':
+        return None, 'saved_cover_metadata_refused:domain_display'
+    return (
+        (
+            ('record_id', snapshot.record_id),
+            ('owner_id', snapshot.owner_id),
+            ('domain_code', 'dt'),
+            ('language_code', 'ar'),
+            ('document_type', 'strategy'),
+            ('route', 'docx'),
+            ('content_sha256', content_sha),
+            ('sections_sha256', sections_sha),
+            ('org_name', org_name),
+            ('sector', sector),
+            ('document_title', document_title),
+            ('artifact_status', status),
+            ('domain_display', display),
+            ('document_type_label', 'وثيقة استراتيجية'),
+        ),
+        None,
+    )
+
+
+def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type='Strategy Document', domain='', selected_frameworks=None, cyber_sealed_artifact=False, rel2_export_validation=False, sections=None, saved_cover=None):
     """Build a DOCX and return raw bytes. Called by both the sync route and async thread.
 
     PR-5B.7C.2 — final-mile fragment guard. Every PDF/DOCX route already
@@ -81063,6 +81768,9 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
 
     def _docx_render_toc_page(doc_model=None):
         """PR-CY55 — TOC page; uses full model entries when available."""
+        if _saved_cover_active:
+            _docx_render_saved_contents_page(doc_model)
+            return
         try:
             if is_arabic:
                 _toc_title = 'المحتويات'
@@ -81129,15 +81837,16 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                     f'</w:pBdr>'
                 ))
             doc.add_paragraph()
-            _tl = doc.add_paragraph()
-            _tl_r = _tl.add_run(
-                'هذه الوثيقة سرية ومعدة حصراً للاستخدام الداخلي.' if is_arabic else
-                'This document is confidential and prepared exclusively for internal use. '
-                'All recommendations are grounded in the diagnostic data provided.'
-            )
-            _tl_r.font.name = 'Arial'
-            _tl_r.font.size = Pt(10)
-            _tl_r.font.color.rgb = RGBColor(0x71, 0x80, 0x96)
+            if not _saved_cover_active:
+                _tl = doc.add_paragraph()
+                _tl_r = _tl.add_run(
+                    'هذه الوثيقة سرية ومعدة حصراً للاستخدام الداخلي.' if is_arabic else
+                    'This document is confidential and prepared exclusively for internal use. '
+                    'All recommendations are grounded in the diagnostic data provided.'
+                )
+                _tl_r.font.name = 'Arial'
+                _tl_r.font.size = Pt(10)
+                _tl_r.font.color.rgb = RGBColor(0x71, 0x80, 0x96)
             doc.add_page_break()
         except Exception as _toc_docx_err:
             print(f'DOCX TOC (non-fatal): {_toc_docx_err}', flush=True)
@@ -81145,6 +81854,7 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
 
     is_arabic = lang == 'ar'
     doc = Document()
+    _saved_cover_active = False
     
     # ═══ BIG4 DOCUMENT STYLING ═══
     style = doc.styles['Normal']
@@ -81621,137 +82331,151 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     import datetime as _dt_docx
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
-    try:
-        _today_docx = _dt_docx.date.today().strftime('%d %B %Y')
-        _org_display = org_name.strip() if org_name and org_name.strip() else 'The Organization'
-        _sector_display = sector.strip() if sector and sector.strip() else '—'
-        _doc_type_display = doc_type if doc_type else ('وثيقة استراتيجية' if is_arabic else 'Strategy Document')
-        # Prefer the explicit domain field (always passed from the frontend).
-        # Fall back to parsing the filename only when domain is absent.
-        _domain_display = (domain_display_name(domain, 'ar' if is_arabic else 'en')
-                           if domain
-                           else filename.replace('_', ' ').title())
+    from professional_strategy_render import (
+        saved_docx_fidelity_rendering as _saved_cover_selector,
+        saved_cover_context_shape_errors,
+    )
+    _saved_cover_active = bool(_saved_cover_selector())
 
-        # ── Top navy bar: org name ────────────────────────────────────────
+    def _draw_saved_arabic_dt_cover(cover):
+        """Saved Arabic DT cover from the validated tuple only.
+
+        The session-logo lookup and the TOC call remain on the ordinary
+        branch. This function does not query a database.
+        """
+        fields = {key: value for key, value in cover}
+        from zoneinfo import ZoneInfo as _SavedCoverZoneInfo
+
+        _saved_cover_prepared_at = _dt_docx.datetime.now(_dt_docx.timezone.utc)
+        _saved_cover_prepared_date = _saved_cover_prepared_at.astimezone(
+            _SavedCoverZoneInfo('Asia/Riyadh')).date()
+        _saved_cover_month_names = (
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December',
+        )
+        today = (
+            f'{_saved_cover_prepared_date.day:02d} '
+            f'{_saved_cover_month_names[_saved_cover_prepared_date.month - 1]} '
+            f'{_saved_cover_prepared_date.year:04d}'
+        )
         bar_p = doc.add_paragraph()
-        bar_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        bar_run = bar_p.add_run(_org_display)
+        bar_run = bar_p.add_run(fields['org_name'])
         bar_run.bold = True
         bar_run.font.name = 'Arial'
         bar_run.font.size = Pt(10)
         bar_run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        bar_run.font.cs_bold = True
+        bar_rPr = bar_run._r.get_or_add_rPr()
+        bar_rPr.rFonts.set(qn('w:cs'), bar_run.font.name)
+        bar_rPr.append(parse_xml(
+            f'<w:szCs {nsdecls("w")} w:val="20"/>'))
+        bar_run.font.rtl = True
         pPr = bar_p._p.get_or_add_pPr()
-        pBdr = parse_xml(
+        pPr.append(parse_xml(
             f'<w:pBdr {nsdecls("w")}>'
             f'<w:top    w:val="single" w:sz="0" w:space="0" w:color="1D2B4F"/>'
             f'<w:bottom w:val="single" w:sz="0" w:space="0" w:color="1D2B4F"/>'
             f'</w:pBdr>'
-        )
-        pPr.append(pBdr)
-        shd = parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="1D2B4F"/>')
-        pPr.append(shd)
+        ))
+        pPr.append(parse_xml(
+            f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="1D2B4F"/>'
+        ))
+        pPr.append(parse_xml(f'<w:bidi {nsdecls("w")} w:val="1"/>'))
+        bar_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         bar_p.paragraph_format.space_before = Pt(0)
-        bar_p.paragraph_format.space_after  = Pt(0)
-        bar_p.paragraph_format.left_indent  = Inches(-1.0)
+        bar_p.paragraph_format.space_after = Pt(0)
+        bar_p.paragraph_format.left_indent = Inches(-1.0)
         bar_p.paragraph_format.right_indent = Inches(-1.0)
+        doc.add_paragraph()
 
-        doc.add_paragraph()  # spacer
-
-        # ── Logo (if available) ───────────────────────────────────────────
-        try:
-            user_logo = None
-            if session.get('user_id'):
-                user_row = get_db().execute('SELECT logo_path FROM users WHERE id = ?', (session['user_id'],)).fetchone()
-                if user_row and user_row['logo_path'] and os.path.isfile(user_row['logo_path']):
-                    user_logo = user_row['logo_path']
-            if user_logo:
-                logo_para = doc.add_paragraph()
-                logo_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                logo_para.add_run().add_picture(user_logo, width=Inches(1.6))
-                doc.add_paragraph()
-        except Exception:
-            pass
-
-        # ── Document type (large title) ───────────────────────────────────
         title_p = doc.add_paragraph()
-        title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT if not is_arabic else WD_ALIGN_PARAGRAPH.RIGHT
-        title_run = title_p.add_run(_doc_type_display)
+        title_run = title_p.add_run(fields['document_title'])
         title_run.bold = True
         title_run.font.name = 'Arial'
         title_run.font.size = Pt(22)
         title_run.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
         title_p.paragraph_format.space_before = Pt(18)
-        title_p.paragraph_format.space_after  = Pt(4)
+        title_p.paragraph_format.space_after = Pt(4)
+        set_rtl_paragraph(title_p)
+        if _saved_cover_active and is_arabic:
+            title_p._p.get_or_add_pPr().get_or_add_jc().set(
+                qn('w:val'), 'start')
 
-        # ── Domain subtitle ───────────────────────────────────────────────
         sub_p = doc.add_paragraph()
-        sub_p.alignment = WD_ALIGN_PARAGRAPH.LEFT if not is_arabic else WD_ALIGN_PARAGRAPH.RIGHT
-        sub_run = sub_p.add_run(_domain_display)
+        sub_run = sub_p.add_run(fields['domain_display'])
         sub_run.font.name = 'Arial'
         sub_run.font.size = Pt(13)
         sub_run.font.color.rgb = RGBColor(0x44, 0x54, 0x63)
         sub_p.paragraph_format.space_after = Pt(6)
+        set_rtl_paragraph(sub_p)
+        if _saved_cover_active and is_arabic:
+            sub_p._p.get_or_add_pPr().get_or_add_jc().set(
+                qn('w:val'), 'start')
 
-        # ── Orange accent divider rule ────────────────────────────────────
         rule_p = doc.add_paragraph()
         rule_pPr = rule_p._p.get_or_add_pPr()
-        rule_pBdr = parse_xml(
+        rule_pPr.append(parse_xml(
             f'<w:pBdr {nsdecls("w")}>'
             f'<w:bottom w:val="single" w:sz="18" w:space="1" w:color="D04A02"/>'
             f'</w:pBdr>'
-        )
-        rule_pPr.append(rule_pBdr)
+        ))
         rule_p.paragraph_format.space_after = Pt(12)
 
-        # ── Metadata info box (light grey table) ──────────────────────────
-        if is_arabic:
-            _meta_rows = [
-                ['نوع الوثيقة', _doc_type_display],
-                ['القطاع',       _sector_display],
-                ['التصنيف',      'سري'],
-                ['الإصدار',      '1.0'],
-                ['الحالة',       'مسودة'],
-                ['تاريخ الإعداد', _today_docx],
-                ['أعد بواسطة', 'منصة ميزان GRC'],
-            ]
-        else:
-            _meta_rows = [
-                ['Document Type',  _doc_type_display],
-                ['Sector',         _sector_display],
-                ['Classification', 'Confidential'],
-                ['Version',        '1.0'],
-                ['Status',         'Draft'],
-                ['Prepared',       _today_docx],
-                ['Prepared by',    'Mizan GRC Platform'],
-            ]
-
-        meta_tbl = doc.add_table(rows=len(_meta_rows), cols=2)
+        meta_rows = [
+            ['نوع الوثيقة', fields['document_type_label']],
+            ['القطاع', fields['sector']],
+            ['التصنيف', 'سري'],
+            ['الإصدار', '1.0'],
+            ['الحالة', fields['artifact_status']],
+            ['تاريخ الإعداد', today],
+            ['أعد بواسطة', 'منصة ميزان GRC'],
+        ]
+        meta_tbl = doc.add_table(rows=len(meta_rows), cols=2)
         meta_tbl.style = 'Table Grid'
-        # Full-width
-        try:
-            tbl_el = meta_tbl._tbl
-            tPr = tbl_el.tblPr if tbl_el.tblPr is not None else parse_xml(f'<w:tblPr {nsdecls("w")}/>')
-            for _ex in tPr.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblW'):
-                tPr.remove(_ex)
-            tPr.append(parse_xml(f'<w:tblW {nsdecls("w")} w:type="pct" w:w="5000"/>'))
-            tPr.append(parse_xml(f'<w:tblLayout {nsdecls("w")} w:type="fixed"/>'))
-            # Light borders
-            tPr.append(parse_xml(
-                f'<w:tblBorders {nsdecls("w")}>'
-                f'<w:top    w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'<w:left   w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'<w:bottom w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'<w:right  w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'<w:insideH w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'<w:insideV w:val="single" w:sz="4" w:color="D1D5DB"/>'
-                f'</w:tblBorders>'
-            ))
-        except Exception:
-            pass
-
-        for _ri, (_lbl, _val) in enumerate(_meta_rows):
+        tbl_el = meta_tbl._tbl
+        tPr = tbl_el.tblPr if tbl_el.tblPr is not None else parse_xml(
+            f'<w:tblPr {nsdecls("w")}/>')
+        for _ex in list(tPr.findall(
+                '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblW')):
+            tPr.remove(_ex)
+        tPr.append(parse_xml(
+            f'<w:tblW {nsdecls("w")} w:type="pct" w:w="5000"/>'))
+        tPr.append(parse_xml(
+            f'<w:tblLayout {nsdecls("w")} w:type="fixed"/>'))
+        tPr.append(parse_xml(
+            f'<w:tblBorders {nsdecls("w")}>'
+            f'<w:top    w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'<w:left   w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'<w:bottom w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'<w:right  w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'<w:insideH w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'<w:insideV w:val="single" w:sz="4" w:color="D1D5DB"/>'
+            f'</w:tblBorders>'
+        ))
+        if _saved_cover_active and is_arabic:
+            _cover_bidi_tag = qn('w:bidiVisual')
+            for _child in list(tPr):
+                if _child.tag == _cover_bidi_tag:
+                    tPr.remove(_child)
+            _cover_bidi_successors = {
+                qn(_tag) for _tag in (
+                    'w:tblStyleRowBandSize', 'w:tblStyleColBandSize', 'w:tblW',
+                    'w:jc', 'w:tblCellSpacing', 'w:tblInd', 'w:tblBorders',
+                    'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook',
+                    'w:tblCaption', 'w:tblDescription', 'w:tblPrChange',
+                )
+            }
+            _cover_bidi = parse_xml(
+                f'<w:bidiVisual {nsdecls("w")} w:val="1"/>')
+            for _index, _child in enumerate(tPr):
+                if _child.tag in _cover_bidi_successors:
+                    tPr.insert(_index, _cover_bidi)
+                    break
+            else:
+                tPr.append(_cover_bidi)
+        from docx.oxml.ns import qn as _qn_saved_cover
+        for _ri, (_lbl, _val) in enumerate(meta_rows):
             row = meta_tbl.rows[_ri]
-            # Label cell (32%)
             lc = row.cells[0]
             lc.text = ''
             lp = lc.paragraphs[0]
@@ -81760,34 +82484,40 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             lr.font.name = 'Arial'
             lr.font.size = Pt(10)
             lr.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
-            # Value cell (68%)
+            set_rtl_paragraph(lp)
+            if _saved_cover_active and is_arabic:
+                lp._p.get_or_add_pPr().get_or_add_jc().set(
+                    qn('w:val'), 'start')
             vc = row.cells[1]
             vc.text = ''
             vp = vc.paragraphs[0]
             vr = vp.add_run(_val)
             vr.font.name = 'Arial'
             vr.font.size = Pt(10)
-            # Shading
-            for _ci, _cell in enumerate(row.cells):
+            if _lbl == 'تاريخ الإعداد':
+                vp._p.get_or_add_pPr().append(parse_xml(
+                    f'<w:bidi {nsdecls("w")} w:val="0"/>'))
+                vp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                vr.font.rtl = False
+            else:
+                set_rtl_paragraph(vp)
+                if _saved_cover_active and is_arabic:
+                    vp._p.get_or_add_pPr().get_or_add_jc().set(
+                        qn('w:val'), 'start')
+            for _cell in row.cells:
                 shd_fill = 'F3F4F6' if _ri % 2 == 0 else 'F8F9FA'
-                _cell._tc.get_or_add_tcPr().append(
-                    parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{shd_fill}"/>')
-                )
-            # Column widths
-            try:
-                from docx.oxml.ns import qn as _qn
-                for _ci, (_cell, _pct) in enumerate(zip(row.cells, [1700, 3300])):
-                    tcPr = _cell._tc.get_or_add_tcPr()
-                    _existing = tcPr.findall(f'{{{nsdecls("w").split()[1].split("=")[1].strip(chr(34))}}}tcW')
-                    for _ex in tcPr.findall(f'{_qn("w:tcW")}'):
-                        tcPr.remove(_ex)
-                    tcPr.append(parse_xml(f'<w:tcW {nsdecls("w")} w:type="pct" w:w="{_pct}"/>'))
-            except Exception:
-                pass
-
-        doc.add_paragraph()  # spacer after metadata table
-
-        # ── Bottom navy rule + tagline ─────────────────────────────────────
+                _cell._tc.get_or_add_tcPr().append(parse_xml(
+                    f'<w:shd {nsdecls("w")} w:val="clear" '
+                    f'w:color="auto" w:fill="{shd_fill}"/>'
+                ))
+            for _cell, _pct in zip(row.cells, (1700, 3300)):
+                tcPr = _cell._tc.get_or_add_tcPr()
+                for _ex in list(tcPr.findall(_qn_saved_cover('w:tcW'))):
+                    tcPr.remove(_ex)
+                tcPr.append(parse_xml(
+                    f'<w:tcW {nsdecls("w")} w:type="pct" w:w="{_pct}"/>'
+                ))
+        doc.add_paragraph()
         tagline_p = doc.add_paragraph()
         tagline_pPr = tagline_p._p.get_or_add_pPr()
         tagline_pPr.append(parse_xml(
@@ -81796,29 +82526,218 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             f'</w:pBdr>'
         ))
         tagline_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        tl_run = tagline_p.add_run(
-            'الحوكمة • المخاطر • الامتثال' if is_arabic else 'Governance • Risk • Compliance'
-        )
-        tl_run.font.name = 'Arial'
-        tl_run.font.size = Pt(10)
-        tl_run.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
         tagline_p.paragraph_format.space_before = Pt(8)
-
-        # ── Page break before body ────────────────────────────────────────
         doc.add_page_break()
 
-        # PR-CY55 — strategy exports defer TOC until the document model is
-        # built so the TOC lists the same professional sections as PDF.
-        if not _docx_is_strategy_early:
-            _docx_render_toc_page()
-
-    except Exception as _cover_err:
-        print(f"DOCX cover page (non-fatal): {_cover_err}", flush=True)
-        # Fallback: simple heading
+    if _saved_cover_active:
+        _cover_codes = saved_cover_context_shape_errors(saved_cover)
+        if _cover_codes:
+            raise ValueError(_cover_codes[0])
         try:
-            add_rtl_heading((doc_type or filename.replace('_', ' ').title()), 0)
-        except Exception:
-            pass
+            _draw_saved_arabic_dt_cover(saved_cover)
+        except Exception as _saved_cover_draw_exc:
+            raise ValueError(
+                'saved_cover_context_refused:render_failed'
+            ) from _saved_cover_draw_exc
+    else:
+        try:
+            _today_docx = _dt_docx.date.today().strftime('%d %B %Y')
+            _org_display = org_name.strip() if org_name and org_name.strip() else 'The Organization'
+            _sector_display = sector.strip() if sector and sector.strip() else '—'
+            _doc_type_display = doc_type if doc_type else ('وثيقة استراتيجية' if is_arabic else 'Strategy Document')
+            # Prefer the explicit domain field (always passed from the frontend).
+            # Fall back to parsing the filename only when domain is absent.
+            _domain_display = (domain_display_name(domain, 'ar' if is_arabic else 'en')
+                               if domain
+                               else filename.replace('_', ' ').title())
+
+            # ── Top navy bar: org name ────────────────────────────────────────
+            bar_p = doc.add_paragraph()
+            bar_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            bar_run = bar_p.add_run(_org_display)
+            bar_run.bold = True
+            bar_run.font.name = 'Arial'
+            bar_run.font.size = Pt(10)
+            bar_run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            pPr = bar_p._p.get_or_add_pPr()
+            pBdr = parse_xml(
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:top    w:val="single" w:sz="0" w:space="0" w:color="1D2B4F"/>'
+                f'<w:bottom w:val="single" w:sz="0" w:space="0" w:color="1D2B4F"/>'
+                f'</w:pBdr>'
+            )
+            pPr.append(pBdr)
+            shd = parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="1D2B4F"/>')
+            pPr.append(shd)
+            bar_p.paragraph_format.space_before = Pt(0)
+            bar_p.paragraph_format.space_after  = Pt(0)
+            bar_p.paragraph_format.left_indent  = Inches(-1.0)
+            bar_p.paragraph_format.right_indent = Inches(-1.0)
+
+            doc.add_paragraph()  # spacer
+
+            # ── Logo (if available) ───────────────────────────────────────────
+            try:
+                user_logo = None
+                if session.get('user_id'):
+                    user_row = get_db().execute('SELECT logo_path FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+                    if user_row and user_row['logo_path'] and os.path.isfile(user_row['logo_path']):
+                        user_logo = user_row['logo_path']
+                if user_logo:
+                    logo_para = doc.add_paragraph()
+                    logo_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    logo_para.add_run().add_picture(user_logo, width=Inches(1.6))
+                    doc.add_paragraph()
+            except Exception:
+                pass
+
+            # ── Document type (large title) ───────────────────────────────────
+            title_p = doc.add_paragraph()
+            title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT if not is_arabic else WD_ALIGN_PARAGRAPH.RIGHT
+            title_run = title_p.add_run(_doc_type_display)
+            title_run.bold = True
+            title_run.font.name = 'Arial'
+            title_run.font.size = Pt(22)
+            title_run.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
+            title_p.paragraph_format.space_before = Pt(18)
+            title_p.paragraph_format.space_after  = Pt(4)
+
+            # ── Domain subtitle ───────────────────────────────────────────────
+            sub_p = doc.add_paragraph()
+            sub_p.alignment = WD_ALIGN_PARAGRAPH.LEFT if not is_arabic else WD_ALIGN_PARAGRAPH.RIGHT
+            sub_run = sub_p.add_run(_domain_display)
+            sub_run.font.name = 'Arial'
+            sub_run.font.size = Pt(13)
+            sub_run.font.color.rgb = RGBColor(0x44, 0x54, 0x63)
+            sub_p.paragraph_format.space_after = Pt(6)
+
+            # ── Orange accent divider rule ────────────────────────────────────
+            rule_p = doc.add_paragraph()
+            rule_pPr = rule_p._p.get_or_add_pPr()
+            rule_pBdr = parse_xml(
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:bottom w:val="single" w:sz="18" w:space="1" w:color="D04A02"/>'
+                f'</w:pBdr>'
+            )
+            rule_pPr.append(rule_pBdr)
+            rule_p.paragraph_format.space_after = Pt(12)
+
+            # ── Metadata info box (light grey table) ──────────────────────────
+            if is_arabic:
+                _meta_rows = [
+                    ['نوع الوثيقة', _doc_type_display],
+                    ['القطاع',       _sector_display],
+                    ['التصنيف',      'سري'],
+                    ['الإصدار',      '1.0'],
+                    ['الحالة',       'مسودة'],
+                    ['تاريخ الإعداد', _today_docx],
+                    ['أعد بواسطة', 'منصة ميزان GRC'],
+                ]
+            else:
+                _meta_rows = [
+                    ['Document Type',  _doc_type_display],
+                    ['Sector',         _sector_display],
+                    ['Classification', 'Confidential'],
+                    ['Version',        '1.0'],
+                    ['Status',         'Draft'],
+                    ['Prepared',       _today_docx],
+                    ['Prepared by',    'Mizan GRC Platform'],
+                ]
+
+            meta_tbl = doc.add_table(rows=len(_meta_rows), cols=2)
+            meta_tbl.style = 'Table Grid'
+            # Full-width
+            try:
+                tbl_el = meta_tbl._tbl
+                tPr = tbl_el.tblPr if tbl_el.tblPr is not None else parse_xml(f'<w:tblPr {nsdecls("w")}/>')
+                for _ex in tPr.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblW'):
+                    tPr.remove(_ex)
+                tPr.append(parse_xml(f'<w:tblW {nsdecls("w")} w:type="pct" w:w="5000"/>'))
+                tPr.append(parse_xml(f'<w:tblLayout {nsdecls("w")} w:type="fixed"/>'))
+                # Light borders
+                tPr.append(parse_xml(
+                    f'<w:tblBorders {nsdecls("w")}>'
+                    f'<w:top    w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'<w:left   w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'<w:bottom w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'<w:right  w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'<w:insideH w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'<w:insideV w:val="single" w:sz="4" w:color="D1D5DB"/>'
+                    f'</w:tblBorders>'
+                ))
+            except Exception:
+                pass
+
+            for _ri, (_lbl, _val) in enumerate(_meta_rows):
+                row = meta_tbl.rows[_ri]
+                # Label cell (32%)
+                lc = row.cells[0]
+                lc.text = ''
+                lp = lc.paragraphs[0]
+                lr = lp.add_run(_lbl)
+                lr.bold = True
+                lr.font.name = 'Arial'
+                lr.font.size = Pt(10)
+                lr.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
+                # Value cell (68%)
+                vc = row.cells[1]
+                vc.text = ''
+                vp = vc.paragraphs[0]
+                vr = vp.add_run(_val)
+                vr.font.name = 'Arial'
+                vr.font.size = Pt(10)
+                # Shading
+                for _ci, _cell in enumerate(row.cells):
+                    shd_fill = 'F3F4F6' if _ri % 2 == 0 else 'F8F9FA'
+                    _cell._tc.get_or_add_tcPr().append(
+                        parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{shd_fill}"/>')
+                    )
+                # Column widths
+                try:
+                    from docx.oxml.ns import qn as _qn
+                    for _ci, (_cell, _pct) in enumerate(zip(row.cells, [1700, 3300])):
+                        tcPr = _cell._tc.get_or_add_tcPr()
+                        _existing = tcPr.findall(f'{{{nsdecls("w").split()[1].split("=")[1].strip(chr(34))}}}tcW')
+                        for _ex in tcPr.findall(f'{_qn("w:tcW")}'):
+                            tcPr.remove(_ex)
+                        tcPr.append(parse_xml(f'<w:tcW {nsdecls("w")} w:type="pct" w:w="{_pct}"/>'))
+                except Exception:
+                    pass
+
+            doc.add_paragraph()  # spacer after metadata table
+
+            # ── Bottom navy rule + tagline ─────────────────────────────────────
+            tagline_p = doc.add_paragraph()
+            tagline_pPr = tagline_p._p.get_or_add_pPr()
+            tagline_pPr.append(parse_xml(
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:top w:val="single" w:sz="12" w:space="1" w:color="1D2B4F"/>'
+                f'</w:pBdr>'
+            ))
+            tagline_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tl_run = tagline_p.add_run(
+                'الحوكمة • المخاطر • الامتثال' if is_arabic else 'Governance • Risk • Compliance'
+            )
+            tl_run.font.name = 'Arial'
+            tl_run.font.size = Pt(10)
+            tl_run.font.color.rgb = RGBColor(0x1D, 0x2B, 0x4F)
+            tagline_p.paragraph_format.space_before = Pt(8)
+
+            # ── Page break before body ────────────────────────────────────────
+            doc.add_page_break()
+
+            # PR-CY55 — strategy exports defer TOC until the document model is
+            # built so the TOC lists the same professional sections as PDF.
+            if not _docx_is_strategy_early:
+                _docx_render_toc_page()
+
+        except Exception as _cover_err:
+            print(f"DOCX cover page (non-fatal): {_cover_err}", flush=True)
+            # Fallback: simple heading
+            try:
+                add_rtl_heading((doc_type or filename.replace('_', ' ').title()), 0)
+            except Exception:
+                pass
 
     # ══════════════════════════════════════════════════════════════════════
     # PR-5B.8R — Build the professional strategy document model and emit
@@ -82030,17 +82949,805 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 flush=True,
             )
         except Exception as _dmdl_e:
+            _saved_model_active = False
+            try:
+                from professional_strategy_render import (
+                    saved_docx_fidelity_rendering as _saved_render_active,
+                )
+                _saved_model_active = bool(_saved_render_active())
+            except Exception:  # noqa: BLE001
+                _saved_model_active = False
+            if _saved_model_active:
+                if isinstance(_dmdl_e, ValueError):
+                    raise
+                raise ValueError(
+                    'saved_docx_fidelity_refused:model_construction'
+                ) from _dmdl_e
             print(f'[STRATEGY-DOC-MODEL] docx non-fatal: {_dmdl_e}',
                   flush=True)
             _docx_doc_model = None
+
+    # Saved Arabic DT presentation helpers. Callers on the ordinary branch do not
+    # use them. The contents page runs before _saved_draw exists, so none of these
+    # helpers read that dictionary.
+    _saved_heading_link = {'pending': False, 'last': None}
+
+    def _docx_saved_content_width_twips():
+        """Content width in twips from the current section. Lengths are EMU."""
+        section = doc.sections[0]
+        return (
+            int(section.page_width)
+            - int(section.left_margin)
+            - int(section.right_margin)
+        ) // 635
+
+    def _docx_saved_width_class(header):
+        narrow = {
+            '#', 'المعرف', 'المرحلة', 'النوع', 'التكرار', 'مصدر',
+        }
+        medium = {
+            'المسؤول', 'المالك', 'الفترة', 'المؤشر', 'المخاطر', 'الإطار',
+            'القيمة المستهدفة', 'الإطار المرتبط',
+        }
+        wide = {
+            'الهدف الاستراتيجي', 'المستهدف القابل للقياس', 'المبرر',
+            'الإطار الزمني', 'المبادرة', 'الوصف', 'المخرج المتوقع',
+            'وصف المؤشر', 'صيغة الاحتساب', 'الدور', 'نطاق المسؤولية',
+            'المساءلة', 'التقارير / التصعيد',
+        }
+        if header in narrow:
+            return 'N'
+        if header in wide:
+            return 'W'
+        if header in medium:
+            return 'M'
+        if len(header) <= 2:
+            return 'N'
+        if len(header) >= 16:
+            return 'W'
+        return 'M'
+
+    def _docx_saved_ascii_alnum(char):
+        return (
+            '0' <= char <= '9'
+            or 'A' <= char <= 'Z'
+            or 'a' <= char <= 'z')
+
+    def _docx_saved_whole_identifier(cell):
+        """Whole-cell ASCII identifier. No trim and no trailing-newline exception."""
+        if not isinstance(cell, str) or cell == '':
+            return False
+        index = 0
+        size = len(cell)
+        if not ('A' <= cell[0] <= 'Z' or 'a' <= cell[0] <= 'z'):
+            return False
+        index = 1
+        while index < size and (
+                'A' <= cell[index] <= 'Z' or 'a' <= cell[index] <= 'z'):
+            index += 1
+        groups = 0
+        while index < size and cell[index] == '-':
+            next_index = index + 1
+            if next_index >= size or not _docx_saved_ascii_alnum(cell[next_index]):
+                return False
+            next_index += 1
+            while next_index < size and _docx_saved_ascii_alnum(cell[next_index]):
+                next_index += 1
+            groups += 1
+            index = next_index
+        return groups >= 1 and index == size
+
+    def _docx_saved_identifier_column(header, index, body_rows):
+        if header != '#':
+            return False
+        for row in body_rows or ():
+            if not isinstance(row, (list, tuple)) or index >= len(row):
+                continue
+            cell = row[index]
+            if not isinstance(cell, str) or cell == '':
+                continue
+            if _docx_saved_whole_identifier(cell):
+                return True
+        return False
+
+    def _docx_saved_relax_floors(
+            floors, classes, identifier, content_width,
+            kpi_prefix_donation=False):
+        """Lower floors until their sum is W. The counter is not a repair counter."""
+        count = len(floors)
+        relax_bound = sum(floors) - count
+        relax_steps = 0
+        if kpi_prefix_donation:
+            donors = (6, 2)
+            while (
+                    sum(floors) > content_width
+                    and any(
+                        index < count and floors[index] > 900
+                        for index in donors)):
+                reduced = False
+                for index in donors:
+                    if index >= count:
+                        continue
+                    if sum(floors) <= content_width:
+                        break
+                    if floors[index] <= 900:
+                        continue
+                    floors[index] -= 1
+                    relax_steps += 1
+                    reduced = True
+                    if relax_steps > relax_bound:
+                        raise RuntimeError(
+                            'saved presentation width relaxation exceeded its bound')
+                if not reduced:
+                    break
+        groups = (
+            [index for index in range(count) if classes[index] == 'W'],
+            [index for index in range(count)
+             if classes[index] != 'W' and not identifier[index]],
+            [index for index in range(count) if identifier[index]],
+        )
+        for group in groups:
+            if sum(floors) <= content_width:
+                break
+            members = set(group)
+            while sum(floors) > content_width and any(
+                    floors[index] > 1 for index in group):
+                reduced = False
+                for index in range(count - 1, -1, -1):
+                    if index not in members:
+                        continue
+                    if sum(floors) <= content_width:
+                        break
+                    if floors[index] <= 1:
+                        continue
+                    floors[index] -= 1
+                    relax_steps += 1
+                    reduced = True
+                    if relax_steps > relax_bound:
+                        raise RuntimeError(
+                            'saved presentation width relaxation exceeded its bound')
+                if not reduced:
+                    break
+        return relax_steps
+
+    def _docx_saved_column_widths(headers, content_width, body_rows=None):
+        """Source-index widths. Positive integers sum to W when W >= n >= 1.
+
+        When W < n, the first W columns are 1 twip and the rest are 0. That
+        serialization keeps every column and does not claim a usable content box.
+        body_rows is read only to classify an exact '#' header.
+        """
+        n = len(headers)
+        if n <= 0:
+            return []
+        if content_width < n:
+            return [1 if i < content_width else 0 for i in range(n)]
+        specs = {
+            'N': (2, 1100, 1500),
+            'M': (3, 1200, 2100),
+            'W': (6, 1680, content_width),
+        }
+        classes = [_docx_saved_width_class(header) for header in headers]
+        identifier = [
+            _docx_saved_identifier_column(headers[index], index, body_rows)
+            for index in range(n)]
+        weights = [specs[kind][0] for kind in classes]
+        floors = [specs[kind][1] for kind in classes]
+        caps = [specs[kind][2] for kind in classes]
+        for index in range(n):
+            if identifier[index]:
+                floors[index] = 1500
+        remaining = content_width - n
+        weight_sum = sum(weights)
+        share = [(remaining * weight) // weight_sum for weight in weights]
+        leftover = remaining - sum(share)
+        for index in range(leftover):
+            share[index % n] += 1
+        values = [1 + part for part in share]
+        if sum(caps) < content_width:
+            caps = [content_width] * n
+        if sum(floors) > content_width:
+            kpi_prefix_donation = tuple(headers) == (
+                '#',
+                'وصف المؤشر',
+                'النوع',
+                'القيمة المستهدفة',
+                'صيغة الاحتساب',
+                'مصدر',
+                'التكرار',
+                'المالك',
+            )
+            _docx_saved_relax_floors(
+                floors, classes, identifier, content_width,
+                kpi_prefix_donation)
+        moves = 0
+        while any(values[i] < floors[i] for i in range(n)):
+            moves += 1
+            if moves > content_width:
+                raise RuntimeError(
+                    'saved presentation width repair exceeded its floor bound')
+            recipient = min(
+                i for i in range(n) if values[i] < floors[i])
+            donor = None
+            donor_surplus = -1
+            for index in range(n):
+                surplus = values[index] - floors[index]
+                if surplus <= 0:
+                    continue
+                if surplus > donor_surplus or (
+                        surplus == donor_surplus and (
+                            donor is None or index < donor)):
+                    donor = index
+                    donor_surplus = surplus
+            values[donor] -= 1
+            values[recipient] += 1
+        moves = 0
+        while any(values[i] > caps[i] for i in range(n)):
+            moves += 1
+            if moves > content_width:
+                raise RuntimeError(
+                    'saved presentation width repair exceeded its cap bound')
+            donor = min(i for i in range(n) if values[i] > caps[i])
+            receiver = None
+            receiver_room = -1
+            for index in range(n):
+                room = caps[index] - values[index]
+                if room <= 0:
+                    continue
+                if room > receiver_room or (
+                        room == receiver_room and (
+                            receiver is None or index < receiver)):
+                    receiver = index
+                    receiver_room = room
+            values[donor] -= 1
+            values[receiver] += 1
+        return values
+
+    def _docx_saved_scan_runs(text):
+        """Split on Bidi_Class. AL/R/AN and L/EN are the side buckets.
+
+        NSM and every other class are neutral: they join the open run, or wait
+        in the buffer until a side opens. A buffer with no side becomes one
+        neutral run. No character is inserted, dropped, or reordered.
+        """
+        import unicodedata
+        runs = []
+        open_side = None
+        open_chars = []
+        pending = []
+
+        def close_open():
+            nonlocal open_side, open_chars
+            if open_side is not None and open_chars:
+                runs.append((open_side, ''.join(open_chars)))
+            open_side = None
+            open_chars = []
+
+        for char in text:
+            bidi = unicodedata.bidirectional(char)
+            if bidi in ('AL', 'R', 'AN'):
+                side = 'ar'
+            elif bidi in ('L', 'EN'):
+                side = 'lat'
+            else:
+                side = None
+            if side is None:
+                if open_side is None:
+                    pending.append(char)
+                else:
+                    open_chars.append(char)
+                continue
+            if open_side is not None and open_side != side:
+                close_open()
+            if open_side is None:
+                open_side = side
+                open_chars = pending + [char]
+                pending = []
+            else:
+                if pending:
+                    open_chars.extend(pending)
+                    pending = []
+                open_chars.append(char)
+        if pending and open_side is not None:
+            open_chars.extend(pending)
+            pending = []
+        if open_side is not None and open_chars:
+            runs.append((open_side, ''.join(open_chars)))
+        elif pending:
+            runs.append(('neu', ''.join(pending)))
+        return runs
+
+    def _docx_saved_match_iso_token(text, index):
+        if index + 10 > len(text):
+            return None
+        if index > 0 and '0' <= text[index - 1] <= '9':
+            return None
+        chunk = text[index:index + 10]
+        if (
+                all('0' <= char <= '9' for char in chunk[0:4])
+                and chunk[4] == '-'
+                and all('0' <= char <= '9' for char in chunk[5:7])
+                and chunk[7] == '-'
+                and all('0' <= char <= '9' for char in chunk[8:10])):
+            return 10
+        return None
+
+    def _docx_saved_match_bracket_token(text, index):
+        size = len(text)
+        if index >= size or text[index] != '[':
+            return None
+        cursor = index + 1
+        start = cursor
+        while cursor < size and _docx_saved_ascii_alnum(text[cursor]):
+            cursor += 1
+        if cursor == start:
+            return None
+        groups = 0
+        while cursor < size and text[cursor] == '-':
+            next_cursor = cursor + 1
+            if next_cursor >= size or not _docx_saved_ascii_alnum(text[next_cursor]):
+                break
+            next_cursor += 1
+            while next_cursor < size and _docx_saved_ascii_alnum(text[next_cursor]):
+                next_cursor += 1
+            groups += 1
+            cursor = next_cursor
+        if groups >= 1 and cursor < size and text[cursor] == ']':
+            return cursor + 1 - index
+        return None
+
+    def _docx_saved_technical_body(body):
+        if body == '':
+            return False
+        alphanumeric = 0
+        previous_space = False
+        for char in body:
+            if char == ' ':
+                if previous_space:
+                    return False
+                previous_space = True
+                continue
+            previous_space = False
+            if char == '.' or _docx_saved_ascii_alnum(char):
+                if _docx_saved_ascii_alnum(char):
+                    alphanumeric += 1
+                continue
+            return False
+        return alphanumeric >= 1
+
+    def _docx_saved_match_parenthesis_token(text, index):
+        if index >= len(text) or text[index] != '(':
+            return None
+        close = text.find(')', index + 1)
+        if close < 0:
+            return None
+        if not _docx_saved_technical_body(text[index + 1:close]):
+            return None
+        return close + 1 - index
+
+    def _docx_saved_match_token(text, index):
+        matched = _docx_saved_match_iso_token(text, index)
+        if matched is not None:
+            return matched
+        matched = _docx_saved_match_bracket_token(text, index)
+        if matched is not None:
+            return matched
+        return _docx_saved_match_parenthesis_token(text, index)
+
+    def _docx_saved_partition_runs(text):
+        """Token runs stay separate. Each residual chunk uses the old scanner."""
+        if not text:
+            return []
+        pieces = []
+        size = len(text)
+        index = 0
+        residual_start = 0
+        while index < size:
+            matched = _docx_saved_match_token(text, index)
+            if matched is None:
+                index += 1
+                continue
+            if index > residual_start:
+                pieces.append(('residual', text[residual_start:index]))
+            pieces.append(('token', text[index:index + matched]))
+            index += matched
+            residual_start = index
+        if size > residual_start:
+            pieces.append(('residual', text[residual_start:size]))
+        runs = []
+        for kind, span in pieces:
+            if kind == 'token':
+                runs.append(('lat', span, 'token'))
+            else:
+                for side, run_text in _docx_saved_scan_runs(span):
+                    runs.append((side, run_text, 'residual'))
+        return runs
+
+    # Successor tails from the installed python-docx sequences for CT_PPr,
+    # CT_TblPr and CT_TcPr. A child is inserted before the first present
+    # successor. Other children are not removed.
+    _docx_saved_after_bidi = (
+        'w:adjustRightInd', 'w:snapToGrid', 'w:spacing', 'w:ind',
+        'w:contextualSpacing', 'w:mirrorIndents', 'w:suppressOverlap',
+        'w:jc', 'w:textDirection', 'w:textAlignment', 'w:textboxTightWrap',
+        'w:outlineLvl', 'w:divId', 'w:cnfStyle', 'w:rPr', 'w:sectPr',
+        'w:pPrChange',
+    )
+    _docx_saved_after_p_bdr = (
+        'w:shd', 'w:tabs', 'w:suppressAutoHyphens', 'w:kinsoku',
+        'w:wordWrap', 'w:overflowPunct', 'w:topLinePunct', 'w:autoSpaceDE',
+        'w:autoSpaceDN', 'w:bidi', 'w:adjustRightInd', 'w:snapToGrid',
+        'w:spacing', 'w:ind', 'w:contextualSpacing', 'w:mirrorIndents',
+        'w:suppressOverlap', 'w:jc', 'w:textDirection', 'w:textAlignment',
+        'w:textboxTightWrap', 'w:outlineLvl', 'w:divId', 'w:cnfStyle',
+        'w:rPr', 'w:sectPr', 'w:pPrChange',
+    )
+    _docx_saved_after_tbl_w = (
+        'w:jc', 'w:tblCellSpacing', 'w:tblInd', 'w:tblBorders', 'w:shd',
+        'w:tblLayout', 'w:tblCellMar', 'w:tblLook', 'w:tblCaption',
+        'w:tblDescription', 'w:tblPrChange',
+    )
+    _docx_saved_after_tbl_borders = (
+        'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook', 'w:tblCaption',
+        'w:tblDescription', 'w:tblPrChange',
+    )
+    _docx_saved_after_tc_w = (
+        'w:gridSpan', 'w:hMerge', 'w:vMerge', 'w:tcBorders', 'w:shd',
+        'w:noWrap', 'w:tcMar', 'w:textDirection', 'w:tcFitText', 'w:vAlign',
+        'w:hideMark', 'w:headers', 'w:cellIns', 'w:cellDel', 'w:cellMerge',
+        'w:tcPrChange',
+    )
+    _docx_saved_after_tc_shd = (
+        'w:noWrap', 'w:tcMar', 'w:textDirection', 'w:tcFitText', 'w:vAlign',
+        'w:hideMark', 'w:headers', 'w:cellIns', 'w:cellDel', 'w:cellMerge',
+        'w:tcPrChange',
+    )
+    _docx_saved_after_tc_mar = (
+        'w:textDirection', 'w:tcFitText', 'w:vAlign', 'w:hideMark',
+        'w:headers', 'w:cellIns', 'w:cellDel', 'w:cellMerge', 'w:tcPrChange',
+    )
+
+    def _docx_saved_place_child(parent, element, successors):
+        for child in list(parent):
+            if child.tag == element.tag:
+                parent.remove(child)
+        parent.insert_element_before(element, *successors)
+
+    def _docx_saved_paragraph_direction(paragraph):
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_pr = paragraph._p.get_or_add_pPr()
+        _docx_saved_place_child(
+            p_pr,
+            parse_xml(f'<w:bidi {nsdecls("w")} w:val="1"/>'),
+            _docx_saved_after_bidi)
+        if _saved_cover_active and is_arabic:
+            p_pr.get_or_add_jc().set(qn('w:val'), 'start')
+
+    def _docx_saved_keep_next(paragraph, value):
+        p_pr = paragraph._p.get_or_add_pPr()
+        for child in list(p_pr.findall(qn('w:keepNext'))):
+            p_pr.remove(child)
+        p_pr._insert_keepNext(parse_xml(
+            f'<w:keepNext {nsdecls("w")} w:val="{int(value)}"/>'))
+
+    def _docx_saved_outline(paragraph, level):
+        p_pr = paragraph._p.get_or_add_pPr()
+        for child in list(p_pr.findall(qn('w:outlineLvl'))):
+            p_pr.remove(child)
+        p_pr._insert_outlineLvl(parse_xml(
+            f'<w:outlineLvl {nsdecls("w")} w:val="{int(level) - 1}"/>'))
+
+    def _docx_saved_paragraph_border(paragraph, border_xml):
+        p_pr = paragraph._p.get_or_add_pPr()
+        _docx_saved_place_child(
+            p_pr, parse_xml(border_xml), _docx_saved_after_p_bdr)
+
+    def _docx_saved_format_run(run, rtl_value, bold, half_points, color):
+        run.bold = bool(bold)
+        run.font.size = Pt(half_points / 2.0)
+        run.font.name = 'Arial'
+        if color is not None:
+            run.font.color.rgb = color
+        r_pr = run._r.get_or_add_rPr()
+        for child in list(r_pr.findall(qn('w:rtl'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:rtl {nsdecls("w")} w:val="{int(rtl_value)}"/>'))
+        for child in list(r_pr.findall(qn('w:rFonts'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:rFonts {nsdecls("w")} w:ascii="Arial" w:hAnsi="Arial" '
+            f'w:cs="Arial" w:eastAsia="Arial"/>'))
+        for child in list(r_pr.findall(qn('w:sz'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:sz {nsdecls("w")} w:val="{int(half_points)}"/>'))
+        for child in list(r_pr.findall(qn('w:szCs'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:szCs {nsdecls("w")} w:val="{int(half_points)}"/>'))
+        b_val = '1' if bold else '0'
+        for child in list(r_pr.findall(qn('w:b'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:b {nsdecls("w")} w:val="{b_val}"/>'))
+        for child in list(r_pr.findall(qn('w:bCs'))):
+            r_pr.remove(child)
+        r_pr.append(parse_xml(
+            f'<w:bCs {nsdecls("w")} w:val="{b_val}"/>'))
+
+    def _docx_saved_write_runs(paragraph, text, *, bold, half_points, color):
+        _docx_saved_paragraph_direction(paragraph)
+        for side, run_text, origin in _docx_saved_partition_runs(text or ''):
+            run = paragraph.add_run(run_text)
+            if side == 'lat':
+                rtl_value = 0
+            else:
+                rtl_value = 1
+            _docx_saved_format_run(
+                run, rtl_value, bold, half_points, color)
+            if origin != 'token':
+                continue
+            parent = paragraph._p
+            run_element = run._r
+            former = list(parent).index(run_element)
+            direct = parse_xml(
+                f'<w:dir {nsdecls("w")} w:val="ltr"/>')
+            parent.insert(former, direct)
+            parent.remove(run_element)
+            direct.append(run_element)
+
+    def _docx_saved_close_heading_group():
+        if _saved_heading_link['pending'] and _saved_heading_link['last'] is not None:
+            _docx_saved_keep_next(_saved_heading_link['last'], 0)
+        _saved_heading_link['pending'] = False
+        _saved_heading_link['last'] = None
+
+    def _docx_saved_heading(title_txt, level):
+        _lang = 'ar' if is_arabic else 'en'
+        title_txt = _prepare_final_render_text(str(title_txt), _lang)
+        level_i = int(level)
+        heading = doc.add_paragraph()
+        if 1 <= level_i <= 6:
+            heading.style = doc.styles['Heading %s' % level_i]
+        half_points = 28 if level_i <= 2 else 22
+        _docx_saved_write_runs(
+            heading, title_txt, bold=True, half_points=half_points,
+            color=RGBColor(0x1D, 0x2B, 0x4F))
+        heading.paragraph_format.space_before = Pt(8 if level_i <= 2 else 4)
+        heading.paragraph_format.space_after = Pt(2)
+        if 1 <= level_i <= 6:
+            _docx_saved_outline(heading, level_i)
+        _docx_saved_keep_next(heading, 1)
+        _saved_heading_link['pending'] = True
+        _saved_heading_link['last'] = heading
+        if level_i <= 2:
+            rule = doc.add_paragraph()
+            _docx_saved_paragraph_border(
+                rule,
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:bottom w:val="single" w:sz="12" w:space="2" w:color="D04A02"/>'
+                f'</w:pBdr>')
+            rule.paragraph_format.space_after = Pt(8)
+            _docx_saved_keep_next(rule, 1)
+            _saved_heading_link['last'] = rule
+
+    def _docx_saved_prose_paragraph(text):
+        _lang = 'ar' if is_arabic else 'en'
+        text = _prepare_final_render_text(str(text), _lang)
+        paragraph = doc.add_paragraph()
+        _docx_saved_write_runs(
+            paragraph, text, bold=False, half_points=20, color=None)
+        paragraph.paragraph_format.space_after = Pt(6)
+        if _saved_heading_link['pending']:
+            _docx_saved_keep_next(paragraph, 0)
+            _saved_heading_link['pending'] = False
+            _saved_heading_link['last'] = None
+
+    def _docx_saved_fill_cell(cell, text, *, bold, half_points, color):
+        paragraph = cell.paragraphs[0]
+        for run in list(paragraph.runs):
+            run._r.getparent().remove(run._r)
+        _docx_saved_write_runs(
+            paragraph, text, bold=bold, half_points=half_points, color=color)
+        _docx_saved_keep_next(paragraph, 0)
+
+    def _docx_saved_set_cell_box(cell, width):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        pad = max(0, min(80, (int(width) - 1) // 2))
+        _docx_saved_place_child(
+            tc_pr,
+            parse_xml(
+                f'<w:tcW {nsdecls("w")} w:w="{int(width)}" w:type="dxa"/>'),
+            _docx_saved_after_tc_w)
+        _docx_saved_place_child(
+            tc_pr,
+            parse_xml(
+                f'<w:tcMar {nsdecls("w")}>'
+                f'<w:top w:w="60" w:type="dxa"/>'
+                f'<w:left w:w="{pad}" w:type="dxa"/>'
+                f'<w:bottom w:w="60" w:type="dxa"/>'
+                f'<w:right w:w="{pad}" w:type="dxa"/>'
+                f'</w:tcMar>'),
+            _docx_saved_after_tc_mar)
+
+    def _docx_saved_mark_row(row, header_row):
+        tr_pr = row._tr.get_or_add_trPr()
+        for tag in ('w:cantSplit', 'w:trHeight', 'w:tblHeader'):
+            for child in list(tr_pr.findall(qn(tag))):
+                tr_pr.remove(child)
+        tr_pr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+        if header_row:
+            tr_pr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
+
+    def _docx_saved_set_table_measure(table, widths, content_width):
+        tbl_el = table._tbl
+        tbl_pr = tbl_el.tblPr
+        for tag in ('w:tblW', 'w:tblLayout', 'w:bidiVisual', 'w:tblBorders'):
+            for child in list(tbl_pr.findall(qn(tag))):
+                tbl_pr.remove(child)
+        if _saved_cover_active and is_arabic:
+            _bidi_successors = (
+                'w:tblStyleRowBandSize', 'w:tblStyleColBandSize', 'w:tblW',
+                'w:jc', 'w:tblCellSpacing', 'w:tblInd', 'w:tblBorders',
+                'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook',
+                'w:tblCaption', 'w:tblDescription', 'w:tblPrChange',
+            )
+            _docx_saved_place_child(
+                tbl_pr,
+                parse_xml(f'<w:bidiVisual {nsdecls("w")} w:val="1"/>'),
+                _bidi_successors)
+        _docx_saved_place_child(
+            tbl_pr,
+            parse_xml(
+                f'<w:tblW {nsdecls("w")} w:w="{int(content_width)}" '
+                f'w:type="dxa"/>'),
+            _docx_saved_after_tbl_w)
+        _docx_saved_place_child(
+            tbl_pr,
+            parse_xml(
+                f'<w:tblBorders {nsdecls("w")}>'
+                f'<w:top w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'<w:left w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'<w:bottom w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'<w:right w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'<w:insideH w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'<w:insideV w:val="single" w:sz="4" w:space="0" w:color="D1D5DB"/>'
+                f'</w:tblBorders>'),
+            _docx_saved_after_tbl_borders)
+        table.autofit = False
+        grid = tbl_el.find(qn('w:tblGrid'))
+        if grid is None:
+            grid = parse_xml(f'<w:tblGrid {nsdecls("w")}/>')
+            tbl_pr.addnext(grid)
+        for child in list(grid):
+            grid.remove(child)
+        for width in widths:
+            grid.append(parse_xml(
+                f'<w:gridCol {nsdecls("w")} w:w="{int(width)}"/>'))
+
+    def _docx_saved_grid_table(header, rows):
+        _lang = 'ar' if is_arabic else 'en'
+        header = [_prepare_final_render_text(cell, _lang) for cell in header]
+        rows = [[_prepare_final_render_text(cell, _lang) for cell in row]
+                for row in rows]
+        content_width = _docx_saved_content_width_twips()
+        widths = _docx_saved_column_widths(header, content_width, rows)
+        table = doc.add_table(rows=len(rows) + 1, cols=len(header))
+        table.style = 'Table Grid'
+        table.alignment = (
+            WD_TABLE_ALIGNMENT.RIGHT if is_arabic else WD_TABLE_ALIGNMENT.LEFT)
+        _docx_saved_set_table_measure(table, widths, content_width)
+        for row_index, row in enumerate(table.rows):
+            _docx_saved_mark_row(row, header_row=(row_index == 0))
+            for col_index, cell in enumerate(row.cells):
+                if row_index == 0:
+                    value = header[col_index]
+                    bold = True
+                    half_points = 18
+                    color = RGBColor(0xFF, 0xFF, 0xFF)
+                    _docx_saved_place_child(
+                        cell._tc.get_or_add_tcPr(),
+                        parse_xml(
+                            f'<w:shd {nsdecls("w")} w:val="clear" '
+                            f'w:color="auto" w:fill="1D2B4F"/>'),
+                        _docx_saved_after_tc_shd)
+                else:
+                    source = rows[row_index - 1]
+                    value = source[col_index] if col_index < len(source) else ''
+                    bold = False
+                    half_points = 20
+                    color = None
+                _docx_saved_set_cell_box(cell, widths[col_index])
+                _docx_saved_fill_cell(
+                    cell, value, bold=bold, half_points=half_points, color=color)
+        if _saved_heading_link['pending']:
+            _saved_heading_link['pending'] = False
+            _saved_heading_link['last'] = None
+        doc.add_paragraph()
+
+    def _docx_saved_contents_label(kind, flow):
+        for item in flow or []:
+            if item.get('kind') != 'heading':
+                continue
+            _lang = 'ar' if is_arabic else 'en'
+            text = _prepare_final_render_text(str(item.get('text') or ''), _lang)
+            if text:
+                return text
+            break
+        return {
+            'vision_objectives': 'الرؤية والأهداف الاستراتيجية',
+            'strategic_pillars': 'الركائز الاستراتيجية',
+            'environment_context': 'البيئة التنظيمية والتهديدات',
+            'gap_analysis': 'تحليل الفجوات',
+            'roadmap': 'خارطة الطريق التنفيذية',
+            'kpi_kri_framework': 'مؤشرات الأداء الرئيسية',
+            'confidence_risk_register': 'تقييم الثقة والمخاطر',
+            'governance_ownership': 'الحوكمة والملكية',
+            'traceability_matrix': 'مصفوفة التتبع',
+        }.get(kind, '')
+
+    def _docx_render_saved_contents_page(doc_model):
+        from professional_strategy_render import (
+            SAVED_ARABIC_DT_RENDER_SEQUENCE,
+        )
+        blocks = (doc_model or {}).get('blocks') or {}
+        entries = []
+        for kind in SAVED_ARABIC_DT_RENDER_SEQUENCE:
+            block = blocks.get(kind) if isinstance(blocks, dict) else None
+            flow = block.get('source_flow') if isinstance(block, dict) else None
+            if not flow:
+                continue
+            label = _docx_saved_contents_label(kind, flow)
+            if label:
+                entries.append(label)
+        title = doc.add_paragraph()
+        _docx_saved_write_runs(
+            title, 'المحتويات', bold=True, half_points=20,
+            color=RGBColor(0x1D, 0x2B, 0x4F))
+        title_rule = doc.add_paragraph()
+        _docx_saved_paragraph_border(
+            title_rule,
+            f'<w:pBdr {nsdecls("w")}>'
+            f'<w:bottom w:val="single" w:sz="8" w:space="1" w:color="1D2B4F"/>'
+            f'</w:pBdr>')
+        title_rule.paragraph_format.space_after = Pt(6)
+        for number, label in enumerate(entries, start=1):
+            entry = doc.add_paragraph()
+            _docx_saved_write_runs(
+                entry, f'{number}  {label}', bold=False, half_points=20,
+                color=RGBColor(0x1D, 0x2B, 0x4F))
+            entry.paragraph_format.space_before = Pt(4)
+            entry.paragraph_format.space_after = Pt(4)
+            _docx_saved_paragraph_border(
+                entry,
+                f'<w:pBdr {nsdecls("w")}>'
+                f'<w:bottom w:val="dotted" w:sz="4" w:space="1" w:color="D1D5DB"/>'
+                f'</w:pBdr>')
+        doc.add_paragraph()
+        doc.add_page_break()
 
     # PR-CY55 — render TOC from the professional model (PDF/DOCX parity).
     if _docx_is_strategy_early and content:
         _docx_render_toc_page(_docx_doc_model)
 
+    _saved_draw = {'on': False}
+
+    def _saved_draw_failure(exc):
+        """Saved construction failures stay terminal and keep their cause."""
+        if not _saved_draw['on']:
+            return False
+        if isinstance(exc, ValueError):
+            raise exc
+        raise ValueError(
+            'saved_docx_fidelity_refused:writer_construction') from exc
+
     def _docx_pro_heading(title_txt, level=1):
         """Add a composed pro-section heading paragraph + thin orange rule."""
         try:
+            if _saved_draw['on']:
+                _docx_saved_heading(title_txt, level)
+                return
             _lang = 'ar' if is_arabic else 'en'
             title_txt = _prepare_final_render_text(str(title_txt), _lang)
             h = doc.add_paragraph()
@@ -82066,13 +83773,17 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 )
                 pPr.append(pBdr)
                 rule.paragraph_format.space_after = Pt(8)
-        except Exception:
-            pass
+        except Exception as exc:
+            if _saved_draw_failure(exc):
+                return
 
     def _docx_pro_paragraph(text):
         if not text or not text.strip():
             return
         try:
+            if _saved_draw['on']:
+                _docx_saved_prose_paragraph(text)
+                return
             _lang = 'ar' if is_arabic else 'en'
             text = _prepare_final_render_text(str(text), _lang)
             p = doc.add_paragraph()
@@ -82084,8 +83795,9 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 r = p.add_run(text)
             r.font.size = Pt(10)
             p.paragraph_format.space_after = Pt(6)
-        except Exception:
-            pass
+        except Exception as exc:
+            if _saved_draw_failure(exc):
+                return
 
     def _docx_pro_label_paragraph(label, body=''):
         try:
@@ -82139,10 +83851,17 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         except Exception:
             pass
 
-    def _docx_pro_grid_table(header, rows):
-        if not header or not rows:
+    def _docx_pro_grid_table(header, rows, *, allow_header_only=False):
+        rows = list(rows or [])
+        if not header or (not rows and not allow_header_only):
+            if _saved_draw['on'] and header and not rows:
+                raise ValueError(
+                    'saved_docx_fidelity_refused:table_not_rendered')
             return
         try:
+            if _saved_draw['on']:
+                _docx_saved_grid_table(header, rows)
+                return
             _lang = 'ar' if is_arabic else 'en'
             header = [_prepare_final_render_text(h, _lang) for h in header]
             rows = [[_prepare_final_render_text(c, _lang) for c in r]
@@ -82181,8 +83900,9 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                         set_rtl_run(r)
                     r.font.size = Pt(8)
             doc.add_paragraph()
-        except Exception:
-            pass
+        except Exception as exc:
+            if _saved_draw_failure(exc):
+                return
 
     _docx_professional = (
         _docx_doc_model is not None
@@ -82191,8 +83911,42 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
     _docx_sections_rendered: list = []
     _docx_raw_fallback = False
 
+    def _docx_render_source_flow(flow):
+        """Draw saved headings, prose and tables in source order.
+
+        Row width must already match the header. This path does not clip a
+        wider row or replace the header with a fixed schema. A header with
+        no data rows is drawn. Heading text and order are kept. Stored
+        heading levels 1 through 6 are passed through.
+        """
+        _saved_draw['on'] = True
+        _saved_heading_link['pending'] = False
+        _saved_heading_link['last'] = None
+        for item in flow or []:
+            kind = item.get('kind')
+            if kind == 'heading':
+                level = int(item.get('level') or 2)
+                _docx_pro_heading(item.get('text') or '', level=level)
+            elif kind == 'prose':
+                _docx_pro_paragraph(item.get('text') or '')
+            elif kind == 'table':
+                header = list(item.get('header') or [])
+                rows = [list(row) for row in (item.get('rows') or [])]
+                if not header or any(len(row) != len(header) for row in rows):
+                    raise ValueError(
+                        'saved_docx_fidelity_refused:malformed_table')
+                _docx_pro_grid_table(
+                    header, rows, allow_header_only=True)
+            else:
+                raise ValueError(
+                    'saved_docx_fidelity_refused:unsupported_markdown')
+        _docx_saved_close_heading_group()
+
     def _docx_render_professional_block(kind, blk):
         """Render one professional model block (PDF/DOCX parity)."""
+        if blk.get('source_flow'):
+            _docx_render_source_flow(blk.get('source_flow'))
+            return
         if kind == 'doc_control':
             if blk.get('title'):
                 _docx_pro_heading(blk.get('title', ''))
@@ -82265,6 +84019,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         if kind == 'governance_ownership':
             if blk.get('title'):
                 _docx_pro_heading(blk.get('title', ''))
+            try:
+                from professional_strategy_render import (
+                    saved_docx_fidelity_rendering,
+                )
+                if saved_docx_fidelity_rendering():
+                    for _para in (blk.get('paragraphs') or []):
+                        _docx_pro_paragraph(_para)
+            except Exception:
+                pass
             _gv_rows = blk.get('rows') or []
             if _gv_rows:
                 _gv_max_cols = max((len(r) for r in _gv_rows), default=3)
@@ -82287,6 +84050,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
         if kind == 'traceability_matrix':
             if blk.get('title'):
                 _docx_pro_heading(blk.get('title', ''))
+            try:
+                from professional_strategy_render import (
+                    saved_docx_fidelity_rendering,
+                )
+                if saved_docx_fidelity_rendering():
+                    for _para in (blk.get('paragraphs') or []):
+                        _docx_pro_paragraph(_para)
+            except Exception:
+                pass
             _split_tbls = blk.get('split_tables') or []
             if _split_tbls:
                 for _st in _split_tbls:
@@ -82324,77 +84096,145 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
                 _docx_pro_heading(tbl['title'])
             _docx_pro_grid_table(tbl.get('header'), tbl.get('rows'))
 
+    _saved_flow = bool(_saved_cover_active)
     if _docx_professional:
         try:
-            from professional_strategy_render import (
-                PROFESSIONAL_EXPORT_SECTION_ORDER,
-                get_professional_export_section_keys,
-                build_renderer_parity_check,
-                get_roadmap_spec_rows,
-                roadmap_phase_coverage_valid,
-                count_model_arabic_spacing_issues,
-            )
+            _model_saved = (
+                _docx_doc_model or {}).get('saved_docx_source') is True
+            if _saved_flow and not _model_saved:
+                raise ValueError(
+                    'saved_docx_completeness_refused:model_context')
+            if (not _saved_flow) and _model_saved:
+                raise ValueError(
+                    'saved_docx_completeness_refused:model_context')
             _dblocks = _docx_doc_model.get('blocks') or {}
-            for _kind in PROFESSIONAL_EXPORT_SECTION_ORDER:
+            if _saved_flow:
+                from professional_strategy_render import (
+                    SAVED_ARABIC_DT_RENDER_SEQUENCE,
+                    saved_arabic_dt_completeness_refusal,
+                    saved_arabic_dt_render_diagnostic,
+                )
+                _render_order = list(SAVED_ARABIC_DT_RENDER_SEQUENCE)
+            else:
+                from professional_strategy_render import (
+                    PROFESSIONAL_EXPORT_SECTION_ORDER,
+                    get_professional_export_section_keys,
+                    build_renderer_parity_check,
+                    get_roadmap_spec_rows,
+                    roadmap_phase_coverage_valid,
+                    count_model_arabic_spacing_issues,
+                )
+                _render_order = list(PROFESSIONAL_EXPORT_SECTION_ORDER)
+            for _kind in _render_order:
                 _blk = _dblocks.get(_kind) or {}
-                if _kind == 'current_state' and not (_blk.get('paragraphs') or []):
+                if _saved_flow and not _blk.get('source_flow'):
+                    continue
+                if (
+                        not _saved_flow
+                        and _kind == 'current_state'
+                        and not (_blk.get('paragraphs') or [])):
                     continue
                 try:
                     _docx_render_professional_block(_kind, _blk)
-                    _docx_sections_rendered.append(_kind)
-                    doc.add_page_break()
+                    if not _saved_flow:
+                        _docx_sections_rendered.append(_kind)
+                    if _saved_flow and _kind == _render_order[-1]:
+                        # Keep the terminal body element without starting another page.
+                        doc.add_paragraph()
+                    else:
+                        doc.add_page_break()
                 except Exception as _sec_e:
+                    if _saved_flow:
+                        if (
+                                type(_sec_e) is ValueError
+                                and str(_sec_e) in (
+                                    'saved_docx_fidelity_refused:'
+                                    'malformed_table',
+                                    'saved_docx_fidelity_refused:'
+                                    'unsupported_markdown',
+                                    'saved_docx_fidelity_refused:'
+                                    'table_not_rendered',
+                                )):
+                            raise
+                        raise ValueError(
+                            'saved_docx_completeness_refused:block_failed:'
+                            + str(_kind)
+                        ) from _sec_e
                     print(
                         f'[DOCX-EXPORT-PARITY] section_failed kind={_kind!r} '
                         f'error={_sec_e!r}',
                         flush=True,
                     )
-            _export_keys = get_professional_export_section_keys(_docx_doc_model)
-            _missing = [
-                k for k in (
-                    'executive_summary', 'governance_ownership',
-                    'traceability_matrix', 'appendices',
-                ) if k in PROFESSIONAL_EXPORT_SECTION_ORDER
-                and k not in _export_keys]
-            _road_rows = get_roadmap_spec_rows(_docx_doc_model)
-            print(
-                f'[DOCX-EXPORT-PARITY] '
-                f'{{'
-                f'"sections_rendered": {_docx_sections_rendered!r}, '
-                f'"missing_professional_sections": {_missing!r}, '
-                f'"docx_no_raw_1_to_7_fallback": true, '
-                f'"arabic_spacing_issues_count": '
-                f'{count_model_arabic_spacing_issues(_docx_doc_model)}, '
-                f'"roadmap_phase_coverage_valid": '
-                f'{roadmap_phase_coverage_valid(_road_rows)}, '
-                f'"traceability_rendered": '
-                f'{"traceability_matrix" in _docx_sections_rendered}'
-                f'}}',
-                flush=True,
-            )
-            try:
-                from professional_strategy_render import emit_renderer_parity_check
-                emit_renderer_parity_check(
-                    _docx_doc_model,
-                    route_name='docx',
-                    output_type='docx',
-                    live_commit=_prcy28_app_commit_hash(),
-                    parity_with_preview=len(_missing) == 0,
-                    action_taken='docx_professional_export',
+                else:
+                    if _saved_flow:
+                        _docx_sections_rendered.append(_kind)
+            if _saved_flow:
+                _saved_diag = saved_arabic_dt_render_diagnostic(
+                    _docx_doc_model, _docx_sections_rendered)
+                print(
+                    '[SAVED-DOCX-COMPLETENESS] '
+                    + json.dumps(
+                        _saved_diag, ensure_ascii=False, sort_keys=True),
+                    flush=True,
                 )
-            except Exception:  # noqa: BLE001
-                pass
+                _saved_complete = saved_arabic_dt_completeness_refusal(
+                    _docx_doc_model, _docx_sections_rendered)
+                if _saved_complete:
+                    raise ValueError(_saved_complete)
+            else:
+                _export_keys = get_professional_export_section_keys(
+                    _docx_doc_model)
+                _missing = [
+                    k for k in (
+                        'executive_summary', 'governance_ownership',
+                        'traceability_matrix', 'appendices',
+                    ) if k in PROFESSIONAL_EXPORT_SECTION_ORDER
+                    and k not in _export_keys]
+                _road_rows = get_roadmap_spec_rows(_docx_doc_model)
+                print(
+                    f'[DOCX-EXPORT-PARITY] '
+                    f'{{'
+                    f'"sections_rendered": {_docx_sections_rendered!r}, '
+                    f'"missing_professional_sections": {_missing!r}, '
+                    f'"docx_no_raw_1_to_7_fallback": true, '
+                    f'"arabic_spacing_issues_count": '
+                    f'{count_model_arabic_spacing_issues(_docx_doc_model)}, '
+                    f'"roadmap_phase_coverage_valid": '
+                    f'{roadmap_phase_coverage_valid(_road_rows)}, '
+                    f'"traceability_rendered": '
+                    f'{"traceability_matrix" in _docx_sections_rendered}'
+                    f'}}',
+                    flush=True,
+                )
+                try:
+                    from professional_strategy_render import (
+                        emit_renderer_parity_check,
+                    )
+                    emit_renderer_parity_check(
+                        _docx_doc_model,
+                        route_name='docx',
+                        output_type='docx',
+                        live_commit=_prcy28_app_commit_hash(),
+                        parity_with_preview=len(_missing) == 0,
+                        action_taken='docx_professional_export',
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as _dpro_e:
             print(
                 f'[DOCX-EXPORT-PARITY] professional_render_failed: {_dpro_e!r}',
                 flush=True,
             )
+            if _saved_flow or (
+                    isinstance(_dpro_e, ValueError)
+                    and str(_dpro_e).startswith(
+                        'saved_docx_completeness_refused:')):
+                raise
             if (_docx_doc_model or {}).get(
                     'render_layer') != 'prcy41_professional':
                 _docx_professional = False
                 _docx_professional_fail_reason = (
                     f'professional_render_failed:{_dpro_e!r}')
-
     _use_prcy41_docx = _docx_professional
     _docx_raw_fallback = (
         _docx_is_strategy and not _docx_professional)
@@ -82791,11 +84631,15 @@ def _build_docx_bytes(content, filename, lang, org_name='', sector='', doc_type=
             i += 1
     
     # PR-CY51 — strategy exports must never silently emit raw sections 1–7.
+    # An active saved preserve context refuses model_context before the
+    # ordinary professional-tuple RuntimeError.
+    if _is_strategy_doc and _saved_cover_active and not _docx_professional:
+        raise ValueError('saved_docx_completeness_refused:model_context')
     if _is_strategy_doc and not _docx_professional:
         raise RuntimeError(
             f'docx_render_failed:professional_model_required:'
             f'{_docx_professional_fail_reason or "unknown"}')
-    if _is_strategy_doc and _docx_professional:
+    if _is_strategy_doc and _docx_professional and not _saved_cover_active:
         try:
             from professional_strategy_render import (
                 DOCX_REQUIRED_PROFESSIONAL_SECTIONS,
@@ -82849,38 +84693,73 @@ def api_generate_docx():
     if not data:
         return jsonify({'error': 'No data received'}), 400
 
-    content = data.get('content', '')
-    filename = data.get('filename', 'document')
-    lang = data.get('language', 'en')
-    org_name = data.get('org_name', '').strip()
-    sector   = data.get('sector', '').strip()
-    doc_type = data.get('doc_type', 'Strategy Document')
-    # Strict resolution — never silently default to Cyber Security on export.
-    # REL3.3 P0 — when the request payload omits the domain, resolve it from
-    # the saved DB/artifact metadata before failing closed.
-    try:
-        domain = resolve_export_domain(data.get('domain', ''),
-                                       data.get('artifact_type', 'strategy'))
-    except DomainResolutionError:
+    _docx_dispatch = _docx_saved_reference_dispatch(data)
+    if _docx_dispatch.get('response') is not None:
+        return _docx_dispatch['response']
+    _saved_arabic_dt = _docx_dispatch.get('kind') == 'arabic_dt'
+    _saved_cover = (
+        _docx_dispatch.get('saved_cover') if _saved_arabic_dt else None)
+    _export_owner_id = _docx_dispatch['owner_id']
+    _export_record_id = _docx_dispatch.get('record_id')
+    if _docx_dispatch.get('gap_fields'):
+        data.update(_docx_dispatch['gap_fields'])
+    if _saved_arabic_dt:
+        data['artifact_type'] = 'strategy'
+    if _docx_dispatch.get('kind') == 'supported_other' or _saved_arabic_dt:
+        data['strategy_id'] = _docx_dispatch['record_id']
+        data['artifact_id'] = _docx_dispatch['record_id']
+    elif _docx_dispatch.get('kind') == 'other_namespace':
+        data['strategy_id'] = None
+        data['artifact_id'] = _docx_dispatch['artifact_id']
+    if _saved_arabic_dt:
+        data['generation_mode'] = _docx_dispatch['generation_mode']
+        data['document_type'] = _docx_dispatch['document_type']
+        content = _docx_dispatch['content']
+        filename = data.get('filename', 'document')
+        lang = _docx_dispatch['language_code']
+        if _saved_cover is None:
+            org_name = data.get('org_name', '').strip()
+            sector = data.get('sector', '').strip()
+        else:
+            org_name, sector = _saved_cover_request_fields(_saved_cover)
+        doc_type = _docx_dispatch['document_type'] or 'Strategy Document'
+        domain = _docx_dispatch['domain_display']
+    else:
+        content = data.get('content', '')
+        filename = data.get('filename', 'document')
+        lang = data.get('language', 'en')
+        org_name = data.get('org_name', '').strip()
+        sector   = data.get('sector', '').strip()
+        doc_type = data.get('doc_type', 'Strategy Document')
+        # Strict resolution — never silently default to Cyber Security on export.
+        # REL3.3 P0 — when the request payload omits the domain, resolve it from
+        # the saved DB/artifact metadata before failing closed.
         try:
-            domain = _rel33_resolve_export_domain_with_db_fallback(
-                data,
-                data.get('artifact_type', 'strategy'),
-                data.get('artifact_id'),
-                session.get('user_id', 0),
-                route='docx')
-        except DomainResolutionError as _de:
-            print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
-            return jsonify({'error': 'Missing or unsupported strategy domain '
-                                     'for DOCX export.',
-                            'reason': 'rel33_export_domain_missing'}), 400
+            domain = resolve_export_domain(data.get('domain', ''),
+                                           data.get('artifact_type', 'strategy'))
+        except DomainResolutionError:
+            try:
+                domain = _rel33_resolve_export_domain_with_db_fallback(
+                    data,
+                    data.get('artifact_type', 'strategy'),
+                    data.get('artifact_id'),
+                    session.get('user_id', 0),
+                    route='docx')
+            except DomainResolutionError as _de:
+                print(f"[DOMAIN] DOCX export rejected: {_de}", flush=True)
+                return jsonify({'error': 'Missing or unsupported strategy domain '
+                                         'for DOCX export.',
+                                'reason': 'rel33_export_domain_missing'}), 400
 
     # ── Unified fail-CLOSED export gate ─────────────────────────────────────
     _art_id   = data.get('artifact_id')
     _art_type = _rel33_normalize_export_artifact_type(data)
     _gen_mode = data.get('generation_mode', 'drafting')
     try:
-        _gate = _enforce_export_gate(_art_type, _art_id, content, _gen_mode, session.get('user_id', 0))
+        _gate_owner = (
+            _export_owner_id if _saved_arabic_dt else session.get('user_id', 0))
+        _gate = _enforce_export_gate(
+            _art_type, _art_id, content, _gen_mode, _gate_owner)
         if not _gate['allowed']:
             return jsonify({'error': _gate['reason']}), 403
     except Exception as _ge:
@@ -82890,25 +84769,27 @@ def api_generate_docx():
     # ── Preview/export parity: prefer DB-canonical content ──────────────────
     # Same parity fix as PDF — ensures sync DOCX export uses the repair-
     # processed sections_json from the DB rather than stale client content.
-    try:
-        _db_canonical_d = _canonical_content_from_db(
-            _art_type, _art_id, session.get('user_id', 0),
-            request_frameworks=(
-                data.get('selected_frameworks') or data.get('frameworks')))
-    except DomainContaminationError as _dce:
-        # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
-        print(f'[EXPORT-DOMAIN-GUARD] DOCX denied for {_art_type}/{_art_id}: {_dce}',
-              flush=True)
-        return jsonify({
-            'error': 'Export blocked — saved strategy contains cross-domain content',
-            'reason': 'domain_contamination',
-            'domain': domain,
-            'artifact_type': _art_type,
-            'artifact_id': _art_id,
-        }), 422
-    except Exception as _cn_e:
-        print(f'[DOCX-CANON] lookup failed, using client content: {_cn_e}', flush=True)
-        _db_canonical_d = ''
+    _db_canonical_d = ''
+    if not _saved_arabic_dt:
+        try:
+            _db_canonical_d = _canonical_content_from_db(
+                _art_type, _art_id, session.get('user_id', 0),
+                request_frameworks=(
+                    data.get('selected_frameworks') or data.get('frameworks')))
+        except DomainContaminationError as _dce:
+            # PR-5B.7B.3: saved strategy is contaminated — fail CLOSED with 422.
+            print(f'[EXPORT-DOMAIN-GUARD] DOCX denied for {_art_type}/{_art_id}: {_dce}',
+                  flush=True)
+            return jsonify({
+                'error': 'Export blocked — saved strategy contains cross-domain content',
+                'reason': 'domain_contamination',
+                'domain': domain,
+                'artifact_type': _art_type,
+                'artifact_id': _art_id,
+            }), 422
+        except Exception as _cn_e:
+            print(f'[DOCX-CANON] lookup failed, using client content: {_cn_e}', flush=True)
+            _db_canonical_d = ''
     # PR-5B.7C.1: structured diagnostic — every export, every artifact.
     try:
         _client_secs_d = _detect_canonical_sections_in_text(content)
@@ -82924,7 +84805,9 @@ def api_generate_docx():
         )
     except Exception:
         pass
-    if _db_canonical_d and _db_canonical_d.strip():
+    if _saved_arabic_dt:
+        pass
+    elif _db_canonical_d and _db_canonical_d.strip():
         try:
             _parity = _compare_content_parity(_db_canonical_d, content)
             if not _parity.get('parity'):
@@ -82965,7 +84848,9 @@ def api_generate_docx():
 
     _rel33_skip_frag_d = False
     _rel33_risk_sections_d: dict = {}
-    if _art_type == 'strategy':
+    if _saved_arabic_dt:
+        _rel33_skip_frag_d = True
+    elif _art_type == 'strategy':
         try:
             _rel33_uid_d = session.get('user_id', 0)
             _rel33_sid_d = _resolve_numeric_strategy_id(
@@ -82983,6 +84868,13 @@ def api_generate_docx():
         except Exception as _rel33_d_e:  # noqa: BLE001
             print(f'[REL33-EXPORT] docx prepare failed: {_rel33_d_e}',
                   flush=True)
+    elif _docx_dispatch.get('gap_fields'):
+        prep = _rel33_prepare_gap_assessment_export_content(
+            _art_id, _export_record_id, _export_owner_id,
+            domain=domain, route='docx', client_content=content)
+        if not prep.get('skip_fragment_gate') or not prep.get('content'):
+            return _docx_refusal(422, 'gap_assessment_incomplete')
+        content = _db_canonical_d = prep['content']
     elif _art_type == 'risk':
         try:
             _rel33_uid_d = session.get('user_id', 0)
@@ -83106,10 +84998,12 @@ def api_generate_docx():
         from release_engine.rel27_finalize import REL27_MAX_REPAIR_ATTEMPTS
 
         _rel2_export_be = _rel2_backend_callables()
-        _rel2_export_be['_rel32_export_user_id'] = session.get('user_id', 0)
+        _rel2_export_be['_rel32_export_user_id'] = (
+            _export_owner_id if _saved_arabic_dt else session.get('user_id', 0))
         _resolved_docx_sid = (
-            _resolve_numeric_strategy_id(_art_id, session.get('user_id', 0))
-            or _art_id or data.get('strategy_id') or '')
+            _export_record_id if _saved_arabic_dt else (
+                _resolve_numeric_strategy_id(_art_id, session.get('user_id', 0))
+                or _art_id or data.get('strategy_id') or ''))
         if _art_type in ('risk', 'risk_assessment'):
             # REL3.3 — never sectionize a risk artifact with the strategy
             # splitter (mints a bogus ``vision`` key). Prefer resolved risk
@@ -83151,8 +85045,14 @@ def api_generate_docx():
                     'strategy_id': str(_resolved_docx_sid or ''),
                     'artifact_id': str(_art_id or _resolved_docx_sid or ''),
                     '_numeric_strategy_id': str(
-                        _resolve_numeric_strategy_id(
-                            _art_id, session.get('user_id', 0)) or ''),
+                        _resolved_docx_sid if _saved_arabic_dt else (
+                            _resolve_numeric_strategy_id(
+                                _art_id, session.get('user_id', 0)) or '')),
+                    '_rel32_export_user_id': (
+                        _export_owner_id if _saved_arabic_dt else
+                        session.get('user_id', 0)),
+                    'document_type': (
+                        doc_type if _saved_arabic_dt else _art_type),
                     'final_hash': _export_hash,
                     'contract_meta': {
                         'lang': lang,
@@ -83170,6 +85070,9 @@ def api_generate_docx():
                 'domain': domain,
                 'sealed': bool(_cyber_sealed_docx),
                 'strategy_id': str(_art_id or data.get('artifact_id') or ''),
+                '_rel32_export_user_id': (
+                    _export_owner_id if _saved_arabic_dt else
+                    session.get('user_id', 0)),
                 'final_hash': _export_hash,
                 'contract_meta': {
                     'lang': lang,
@@ -83177,14 +85080,33 @@ def api_generate_docx():
                     'selected_frameworks': _selected_fws_sync,
                 },
             }
+        if _saved_arabic_dt and isinstance(_rel3_art_base, dict):
+            _rel3_art_base['final_markdown'] = content
+            _rel3_art_base['sections'] = dict(
+                _docx_dispatch.get('sections') or {})
+            _sync_claim = _docx_dispatch.get('saved_docx_fidelity')
+            if isinstance(_sync_claim, dict):
+                _rel3_art_base['_saved_docx_fidelity'] = dict(_sync_claim)
+            # The validated binder owner, not a client integer and not a
+            # backend-only value the artifact copy would drop.
+            _rel3_art_base['_rel32_export_user_id'] = _export_owner_id
+            _rel3_art_base['document_type'] = doc_type
+            _rel3_art_base['domain'] = domain
+            _locked_cm = _rel3_art_base.get('contract_meta')
+            if not isinstance(_locked_cm, dict):
+                _locked_cm = {}
+            _locked_cm['lang'] = lang
+            _locked_cm['domain'] = domain
+            _rel3_art_base['contract_meta'] = _locked_cm
 
         doc_bytes = b''
         _rel26_ok = True
         _rel26_errs: list = []
         _rel26_gate: dict = {}
         _rel3_docx_result = None
+        _docx_select_type = doc_type if _saved_arabic_dt else _art_type
         if (
-            _rel36_export_authoritative(domain, lang, _art_type)
+            _rel36_export_authoritative(domain, lang, _docx_select_type)
             and not _is_internal_rel_export_request(data)
             and not (data.get('_rel26_internal') or data.get('skip_rel26_gate'))
         ):
@@ -83203,6 +85125,7 @@ def api_generate_docx():
                     'domain': domain,
                     'selected_frameworks': _selected_fws_sync,
                     'cyber_sealed_artifact': _cyber_sealed_docx,
+                    'saved_cover': _saved_cover,
                 },
             )
             if _rel3_docx_result is not None:
@@ -83211,6 +85134,50 @@ def api_generate_docx():
                 _rel26_ok = bool(_rel3_evidence.export_return_allowed)
                 _rel26_errs = list(_rel3_evidence.blocking_errors)
                 _rel26_gate = _rel3_evidence.gate or {}
+                if _saved_arabic_dt and not _rel26_ok:
+                    print(
+                        '[REL2-ACTUAL-EXPORT-EVIDENCE-GATE] DOCX export blocked '
+                        f'errors={_rel26_errs[:8]}',
+                        flush=True,
+                    )
+                    _docx_err_body = {
+                        'error': (
+                            'Export blocked — actual DOCX evidence '
+                            'validation failed'),
+                        'reason': 'rel3_export_evidence_failed',
+                        'blocking_errors': _rel26_errs[:12],
+                        'gate': {
+                            'docx_forbidden_patterns': _rel26_gate.get(
+                                'docx_forbidden_patterns'),
+                            'docx_kpi_defects': _rel26_gate.get(
+                                'docx_kpi_defects'),
+                            'docx_missing_sections': _rel26_gate.get(
+                                'docx_missing_sections'),
+                            'action_taken': _rel26_gate.get('action_taken'),
+                        },
+                    }
+                    # REL3.3 staging-only routing diagnostic (gated). Never alters the
+                    # 422 outcome; adds visibility for DOCX failures (parity with PDF).
+                    if _rel33_debug_export_allowed(data):
+                        try:
+                            _docx_err_body['rel33_export_gate_routing_diag'] = (
+                                build_rel33_export_gate_routing_diag(
+                                    output_type='docx',
+                                    route='docx',
+                                    domain=domain,
+                                    document_type=_rel33_export_document_type(
+                                        _art_type),
+                                    artifact_type=_art_type,
+                                    artifact_id=(data.get('artifact_id')
+                                                 or _art_id or ''),
+                                    risk_id=(data.get('risk_id') or ''),
+                                    export_handler='api_generate_docx',
+                                    blocking_errors=list(_rel26_errs or []),
+                                    passed=False,
+                                ))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return jsonify(_docx_err_body), 422
         elif (
             _rel3_should_use_unified_engine(domain, lang)
             and str(_gen_mode or '').lower() != 'drafting'
@@ -83243,6 +85210,7 @@ def api_generate_docx():
                     'domain': domain,
                     'selected_frameworks': _selected_fws_sync,
                     'cyber_sealed_artifact': _cyber_sealed_docx,
+                    'saved_cover': _saved_cover,
                 },
             )
             if _rel3_docx_result is not None:
@@ -83258,7 +85226,7 @@ def api_generate_docx():
                         render_tree_hash=_rel3_export.render_tree_hash,
                         canonical_hash=_rel3_export.canonical_hash,
                     )
-        if (_rel36_export_authoritative(domain, lang, _art_type)
+        if (_rel36_export_authoritative(domain, lang, _docx_select_type)
                 and _rel3_docx_result is None
                 and not _is_internal_rel_export_request(data)
                 and not (data.get('_rel26_internal')
@@ -83297,7 +85265,10 @@ def api_generate_docx():
                 )
                 if _rel26_ok:
                     break
-                if _rel27_attempt < REL27_MAX_REPAIR_ATTEMPTS:
+                if (
+                    _rel27_attempt < REL27_MAX_REPAIR_ATTEMPTS
+                    and not _saved_arabic_dt
+                ):
                     content, _ = repair_markdown_for_export(
                         content,
                         domain=domain,

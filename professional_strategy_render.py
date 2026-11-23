@@ -3,11 +3,28 @@
 
 from __future__ import annotations
 
+import contextvars
 import re
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from release_engine.risk_treatment_model import specific_risk_treatment_for_blob
+
+_SAVED_DOCX_SOURCE_FIDELITY = contextvars.ContextVar(
+    'mizan_saved_docx_source_fidelity', default=False)
+
+
+def saved_docx_fidelity_rendering() -> bool:
+    """True only while a validated saved-DOCX export is inside the writer."""
+    return bool(_SAVED_DOCX_SOURCE_FIDELITY.get())
+
+
+def push_saved_docx_fidelity_rendering(active: bool):
+    return _SAVED_DOCX_SOURCE_FIDELITY.set(bool(active))
+
+
+def pop_saved_docx_fidelity_rendering(token) -> None:
+    _SAVED_DOCX_SOURCE_FIDELITY.reset(token)
 
 # ── Arabic concatenation fixes (render-time; acronyms preserved) ─────────────
 # Longest patterns first — shorter keys must not run before longer ones.
@@ -563,6 +580,10 @@ def prepare_final_render_text(text: str, lang: str = 'ar') -> str:
     """
     if text is None:
         return ''
+    if saved_docx_fidelity_rendering():
+        # Keep brackets, formulas, identifiers and the saved confidence
+        # statement. Layout whitespace at the edges is the only change.
+        return str(text).strip()
     out = prepare_section_text(str(text), lang)
     out = prcy47_fix_ar_fragments(out)
     out = _repair_gap_header_fragments(out)
@@ -2963,6 +2984,8 @@ def _finalize_professional_blocks(
         blocks: Dict[str, Any], lang: str = 'ar',
         domain: str = '') -> Dict[str, Any]:
     """PR-CY48 — last pass over all blocks before PDF/DOCX render."""
+    if saved_docx_fidelity_rendering():
+        return blocks
     out = deepcopy(blocks)
     for kind, blk in out.items():
         if not isinstance(blk, dict):
@@ -6634,6 +6657,8 @@ def ensure_strategy_professional_model(
         section_splitter=None,
 ) -> Dict[str, Any]:
     """PR-CY50 — guarantee ``render_layer == prcy41_professional`` for exports."""
+    if saved_docx_fidelity_rendering() and model:
+        return model
     if model and model.get('render_layer') == 'prcy41_professional':
         lang_n = 'ar' if (lang or '').lower() in ('ar', 'arabic') else 'en'
         blocks = deepcopy(model.get('blocks') or {})
@@ -6651,6 +6676,250 @@ def ensure_strategy_professional_model(
         content, sections, section_splitter=section_splitter)
     return enrich_professional_blocks(
         model, content_sections, metadata, lang_n)
+
+
+_SAVED_SECTION_BLOCK = {
+    'vision': 'vision_objectives',
+    'pillars': 'strategic_pillars',
+    'environment': 'environment_context',
+    'gaps': 'gap_analysis',
+    'roadmap': 'roadmap',
+    'kpis': 'kpi_kri_framework',
+    'confidence': 'confidence_risk_register',
+    'governance': 'governance_ownership',
+    'traceability': 'traceability_matrix',
+}
+
+# Fixed renderer order. Independent of model['order'] and of the completed list.
+SAVED_ARABIC_DT_RENDER_SEQUENCE = tuple(_SAVED_SECTION_BLOCK.values())
+
+SAVED_COVER_CONTEXT_KEYS = (
+    'record_id',
+    'owner_id',
+    'domain_code',
+    'language_code',
+    'document_type',
+    'route',
+    'content_sha256',
+    'sections_sha256',
+    'org_name',
+    'sector',
+    'document_title',
+    'artifact_status',
+    'domain_display',
+    'document_type_label',
+)
+
+SAVED_COVER_STATUS_TOKENS = frozenset({
+    'draft',
+    'reviewed',
+    'publishable',
+    'final',
+    'rejected',
+    'requires_consultant',
+    'requires_evidence',
+})
+
+SAVED_COVER_DOMAIN_DISPLAY = 'التحول الرقمي'
+SAVED_COVER_DOCUMENT_TYPE_LABEL = 'وثيقة استراتيجية'
+_SAVED_COVER_HEX = frozenset('0123456789abcdef')
+
+
+def _saved_cover_pair_value(pairs, name):
+    """Read one pair by walking the list. Does not build a dict."""
+    for key, value in pairs:
+        if key == name:
+            return value
+    return None
+
+
+def saved_cover_context_shape_errors(saved_cover: Any) -> List[str]:
+    """Shape and declared-value checks for one saved-cover tuple.
+
+    Returns one refusal code, or an empty list. Pair shape and exact
+    value types are inspected before any local dict is built. This helper
+    does not compare the tuple with a claim or an artifact, does not read
+    a database, and does not select the saved path.
+    """
+    if saved_cover is None:
+        return ['saved_cover_context_refused:absent']
+    if type(saved_cover) is not tuple or len(saved_cover) != 14:
+        return ['saved_cover_context_refused:malformed']
+    seen = set()
+    pairs = []
+    for item in saved_cover:
+        if type(item) is not tuple or len(item) != 2:
+            return ['saved_cover_context_refused:malformed']
+        key, value = item
+        if type(key) is not str or key in seen:
+            return ['saved_cover_context_refused:malformed']
+        seen.add(key)
+        pairs.append((key, value))
+    if seen != set(SAVED_COVER_CONTEXT_KEYS):
+        return ['saved_cover_context_refused:malformed']
+    for key in ('record_id', 'owner_id'):
+        ident = _saved_cover_pair_value(pairs, key)
+        if type(ident) is not int or ident <= 0:
+            return ['saved_cover_context_refused:identity']
+    for key in ('content_sha256', 'sections_sha256'):
+        if type(_saved_cover_pair_value(pairs, key)) is not str:
+            return ['saved_cover_context_refused:digest']
+    for key in (
+            'domain_code', 'language_code', 'document_type', 'route',
+            'org_name', 'sector', 'document_title', 'artifact_status',
+            'domain_display', 'document_type_label'):
+        if type(_saved_cover_pair_value(pairs, key)) is not str:
+            return ['saved_cover_context_refused:malformed']
+    values = {key: value for key, value in pairs}
+    for key in ('content_sha256', 'sections_sha256'):
+        digest = values[key]
+        if (
+                len(digest) != 64
+                or any(ch not in _SAVED_COVER_HEX for ch in digest)):
+            return ['saved_cover_context_refused:digest']
+    if values['artifact_status'] not in SAVED_COVER_STATUS_TOKENS:
+        return ['saved_cover_context_refused:status']
+    if (
+            values['domain_code'] != 'dt'
+            or values['language_code'] != 'ar'
+            or values['document_type'] != 'strategy'
+            or values['route'] != 'docx'):
+        return ['saved_cover_context_refused:malformed']
+    if values['domain_display'] != SAVED_COVER_DOMAIN_DISPLAY:
+        return ['saved_cover_context_refused:domain_display']
+    if values['document_type_label'] != SAVED_COVER_DOCUMENT_TYPE_LABEL:
+        return ['saved_cover_context_refused:label']
+    for key in ('org_name', 'sector', 'document_title'):
+        text = values[key]
+        if text == '':
+            return ['saved_cover_context_refused:blank:' + key]
+        if text != text.strip():
+            return ['saved_cover_context_refused:malformed']
+    return []
+
+
+def _saved_cover_name_duplicates(names: List[str]) -> List[str]:
+    seen = set()
+    duplicate: List[str] = []
+    for name in names:
+        if name in seen and name not in duplicate:
+            duplicate.append(name)
+        seen.add(name)
+    return duplicate
+
+
+def saved_arabic_dt_render_diagnostic(
+        model: Optional[Dict[str, Any]],
+        completed: Optional[List[str]],
+) -> Dict[str, Any]:
+    """saved_arabic_dt_docx_source_v1 observation of the saved blocks.
+
+    Completeness of this record is not generic parity, preview or PDF
+    parity, roadmap quality, pagination, or visual acceptance.
+    """
+    expected = list(SAVED_ARABIC_DT_RENDER_SEQUENCE)
+    completed_list = list(completed or [])
+    model_order = list((model or {}).get('order') or [])
+    blocks = (model or {}).get('blocks') or {}
+    missing = [name for name in expected if name not in completed_list]
+    duplicate = _saved_cover_name_duplicates(completed_list)
+    if not duplicate:
+        duplicate = _saved_cover_name_duplicates(model_order)
+    source_flow_nonempty: Dict[str, bool] = {}
+    if isinstance(blocks, dict):
+        for name in expected:
+            block = blocks.get(name)
+            flow = block.get('source_flow') if isinstance(block, dict) else None
+            source_flow_nonempty[name] = bool(flow)
+    else:
+        for name in expected:
+            source_flow_nonempty[name] = False
+    return {
+        'contract_name': 'saved_arabic_dt_docx_source_v1',
+        'expected': expected,
+        'completed': completed_list,
+        'missing': missing,
+        'duplicate': duplicate,
+        'order_matches': (
+            completed_list == expected and model_order == expected),
+        'source_flow_nonempty': source_flow_nonempty,
+        'diagnostic_available': True,
+    }
+
+
+def saved_arabic_dt_completeness_refusal(
+        model: Optional[Dict[str, Any]],
+        completed: Optional[List[str]],
+) -> str:
+    """One completeness code, or '' when the saved nine-block walk agrees."""
+    if not isinstance(model, dict) or model.get('saved_docx_source') is not True:
+        return 'saved_docx_completeness_refused:model_context'
+    expected = list(SAVED_ARABIC_DT_RENDER_SEQUENCE)
+    completed_list = list(completed or [])
+    model_order = list(model.get('order') or [])
+    duplicate = _saved_cover_name_duplicates(completed_list)
+    if not duplicate:
+        duplicate = _saved_cover_name_duplicates(model_order)
+    if duplicate:
+        return (
+            'saved_docx_completeness_refused:duplicate:'
+            + ','.join(duplicate))
+    blocks = model.get('blocks') or {}
+    missing: List[str] = []
+    for name in expected:
+        block = blocks.get(name) if isinstance(blocks, dict) else None
+        flow = block.get('source_flow') if isinstance(block, dict) else None
+        if name not in completed_list or not flow:
+            missing.append(name)
+    if missing:
+        return 'saved_docx_completeness_refused:missing:' + ','.join(missing)
+    if completed_list != expected or model_order != expected:
+        return 'saved_docx_completeness_refused:order'
+    return ''
+
+
+def build_saved_source_strategy_model(
+        sections: Optional[Dict[str, str]],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        lang: str = 'ar',
+        domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ordered saved headings, prose and tables. No invented framework line.
+
+    A malformed or unsupported section raises ValueError with the refusal
+    code. This does not call the registry compiler, schema rebind, roadmap
+    compaction, catalog substitution, or the confidence percentage scan.
+    Client framework selections are not copied onto the model.
+    """
+    from release_engine_v3.canonical_document import (
+        parse_saved_markdown_structure,
+    )
+    blocks: Dict[str, Any] = {}
+    order: List[str] = []
+    source = sections if isinstance(sections, dict) else {}
+    for key, kind in _SAVED_SECTION_BLOCK.items():
+        body = source.get(key) or ''
+        if not isinstance(body, str) or not body.strip():
+            continue
+        flow, error = parse_saved_markdown_structure(body)
+        if error:
+            raise ValueError(error)
+        if not flow:
+            raise ValueError(
+                'saved_docx_fidelity_refused:section_missing:' + key)
+        blocks[kind] = {'source_flow': flow}
+        order.append(kind)
+    return {
+        'render_layer': 'prcy41_professional',
+        'saved_docx_source': True,
+        'domain': domain or (metadata or {}).get('domain') or '',
+        'lang': lang,
+        'order': order,
+        'professional_section_order': order,
+        'blocks': blocks,
+        'selected_frameworks': [],
+    }
 
 
 def build_professional_strategy_document_model(
