@@ -132,8 +132,8 @@ def export_pdf(
                 'domain': domain,
                 'selected_frameworks': selected_frameworks,
                 'cyber_sealed_artifact': cyber_sealed_artifact,
-                'sections': _guard_sections,
-                'saved_cover': saved_cover if saved_pdf else None,
+                **({'sections': saved['sections'], 'saved_cover': saved_cover}
+                   if saved_pdf else {'sections': backend.get('split_sections', lambda x: {})(content)}),
                 'metadata': {
                     'document_type': document_type,
                     'org_name': org_name,

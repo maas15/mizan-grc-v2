@@ -67,23 +67,30 @@ def painted_rows(page):
 def match_field(source, lines):
     # Match each painted line to a consecutive prefix of the field. Line breaks
     # may change, but a token cannot move to a different line, row or column.
-    words = re.findall(r'\S+', source)
-    i = 0
-    for actual in lines:
-        actual = _normalized(actual)
+    remaining = ' '.join(source.split())
+    for actual in map(_normalized, lines):
         if not actual:
             continue
-        for j in range(i+1, len(words)+1):
-            piece = ' '.join(words[i:j])
-            if _normalized(visual_line(piece)) == actual:
-                i = j
+        # Ordinary lines end between words. A token wider than a whole column
+        # may end mid-word; compare its exact logical prefix without discarding
+        # any character. Bidi and shaping apply independently to each line.
+        ends = [m.end() for m in re.finditer(r'\\S+', remaining)]
+        for stop in ends:
+            if _normalized(visual_line(remaining[:stop])) == actual:
                 break
-            if len(piece) > len(actual)*2+8:
-                raise ValueError(f'Expected {words[i:i+6]!r}, painted {actual!r}')
+            if stop > len(actual)*2+8:
+                break
         else:
-            raise ValueError(f'Unexpected painted line {actual!r} following word {i}')
-    if i != len(words):
-        raise ValueError(f'Truncated field; {len(words)-i} source words remain')
+            stop = 0
+        if not stop or _normalized(visual_line(remaining[:stop])) != actual:
+            first = remaining.split(' ', 1)[0]
+            stop = next((n for n in range(1, min(len(first), len(actual)*2+8)+1)
+                         if _normalized(visual_line(first[:n])) == actual), 0)
+            if not stop:
+                raise ValueError(f'Expected {remaining[:55]!r}, painted {actual!r}')
+        remaining = remaining[stop:].lstrip()
+    if remaining:
+        raise ValueError(f'Truncated field; unpainted text starts {remaining[:55]!r}')
 
 
 def verify_saved_pdf(data, content, *, cover=None, retain_cells=False):
@@ -161,8 +168,12 @@ def verify_saved_pdf(data, content, *, cover=None, retain_cells=False):
                         tokens = re.findall(r'\(API v2\.1\)|\[DT-POS-01\]|[A-Z]+-DT-POS-\d+|\d{4}-\d{2}-\d{2}|\d+(?:\.\d+)?%', value)
                         seen = ' '.join(painted_lines)
                         for token, count in Counter(tokens).items():
-                            if seen.count(token) < count:
-                                missing_tokens[token] += count - seen.count(token)
+                            # A physical line break is allowed inside an over-width
+                            # LTR run. Full logical field matching above still enforces
+                            # the exact source content and location of every space.
+                            occurrences = max(seen.count(token), ''.join(painted_lines).count(token))
+                            if occurrences < count:
+                                missing_tokens[token] += count - occurrences
                 if role=='header':
                     last_header = source_values
                 checked.append(dict(page=page.number+1, section=section_no, block=pos,

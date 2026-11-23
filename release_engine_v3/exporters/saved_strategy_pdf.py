@@ -36,6 +36,10 @@ PAD = 5
 
 
 def visual_line(logical):
+    # A standalone Latin fragment keeps its own direction, including terminal
+    # hyphens or brackets when an over-width identifier crosses a line.
+    if logical.isascii() and re.search(r'[A-Za-z0-9]', logical):
+        return logical
     shaped = _SHAPER.reshape(logical)
     directed = re.sub(_ISLAND, lambda m: '\u202a' + m[0] + '\u202c', shaped)
     return get_display(directed, base_dir='R')
