@@ -74,7 +74,7 @@ def match_field(source, lines):
         # Ordinary lines end between words. A token wider than a whole column
         # may end mid-word; compare its exact logical prefix without discarding
         # any character. Bidi and shaping apply independently to each line.
-        ends = [m.end() for m in re.finditer(r'\\S+', remaining)]
+        ends = [m.end() for m in re.finditer(r'\S+', remaining)]
         for stop in ends:
             if _normalized(visual_line(remaining[:stop])) == actual:
                 break
