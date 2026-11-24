@@ -1,4 +1,5 @@
 """Exercise the actual saved PDF routes with the immutable Contract R source."""
+import json
 import os
 from pathlib import Path
 
@@ -26,8 +27,33 @@ def owner_pdf(app, client, payload, transport):
     return result
 
 
+@pytest.fixture
+def inner_refusals(case, monkeypatch):
+    app = case[0]
+    sanitize = app._prcy46_safe_export_error
+    seen = []
+
+    def observe(raw, status):
+        seen.append((status, json.loads(raw)))
+        return sanitize(raw, status)
+
+    monkeypatch.setattr(app, '_prcy46_safe_export_error', observe)
+    return seen
+
+
+def check_failed_task(client, task, seen, blocker):
+    terminal = wait_terminal(client, task)
+    assert terminal.status_code == 500
+    assert terminal.json == {'status': 'error', 'error': 'Saved PDF refused'}
+    assert len(seen) == 1
+    status, inner = seen[0]
+    assert status == 422 and inner['reason'] == 'rel3_export_evidence_failed'
+    assert blocker in inner['blocking_errors']
+    assert client.get(f'/api/export-download/{task}').status_code == 404
+
+
 @pytest.mark.parametrize('transport', ['sync', 'async'])
-def test_saved_pdf_fresh_reuse_and_mutation(case, transport):
+def test_saved_pdf_fresh_reuse_and_mutation(case, transport, inner_refusals):
     app, frozen, body, sections, payload = case
     path = '/api/generate-pdf' + ('-async' if transport == 'async' else '')
     # Forged fidelity and internal route fields must not select a source or bypass the binder.
@@ -63,12 +89,12 @@ def test_saved_pdf_fresh_reuse_and_mutation(case, transport):
         assert refused.status_code == 422 and any('frozen_' in x for x in refused.json['blocking_errors'])
     else:
         assert refused.status_code == 200
-        failed = wait_terminal(client, refused.json['task_id'])
-        assert failed.status_code >= 400
+        check_failed_task(client, refused.json['task_id'], inner_refusals,
+                          'saved_docx_fidelity_refused:frozen_source_differs')
 
 
 @pytest.mark.parametrize('transport', ['sync','async'])
-def test_invalid_saved_pdf_refused_before_writer(case, transport, monkeypatch):
+def test_invalid_saved_pdf_refused_before_writer(case, transport, monkeypatch, inner_refusals):
     app, frozen, _, _, _ = case
     text, expected, sections, _, _ = frozen._load_pair(701)
     frozen._insert(701, expected, text, sections)
@@ -87,13 +113,14 @@ def test_invalid_saved_pdf_refused_before_writer(case, transport, monkeypatch):
         assert 'rel3_generation_contract_failed:objectives' in result.json['blocking_errors']
     else:
         assert result.status_code == 200
-        assert wait_terminal(client, result.json['task_id']).status_code >= 400
+        check_failed_task(client, result.json['task_id'], inner_refusals,
+                          'rel3_generation_contract_failed:objectives')
     assert not writes
 
 
 def verify_delivery(data, body, expected, output, label):
     from release_engine_v3.exporters.saved_pdf_verification import verify_saved_pdf
-    import json
+    from scripts.check_saved_pdf_cells import inspect_saved_pdf
     import re
     from release_engine_v3.canonical_document import parse_saved_markdown_structure
     blocks, error = parse_saved_markdown_structure(body)
@@ -106,6 +133,10 @@ def verify_delivery(data, body, expected, output, label):
     assert len(expected['tables']['kpis']['rows']) == 5
     assert len(set(re.findall(r'\b[A-Z]+-DT-POS-\d{2}\b', body))) == 31
     assert body.count('(API v2.1)') == 12 and '82 من 100' in body
+    independent = inspect_saved_pdf(data, expected)
+    (output / ('independent-'+label+'.json')).write_text(
+        json.dumps(independent, ensure_ascii=False, indent=2), encoding='utf8')
+    assert not independent['differences'], independent['differences'][:1]
     result = verify_saved_pdf(data, body, retain_cells=True)
     # A KPI target is meaningful only in its source row. Keep the same token in the
     # document elsewhere and require rejection of the altered source expectation.

@@ -5,6 +5,8 @@ import io
 import math
 import re
 from datetime import datetime
+from functools import lru_cache
+import unicodedata
 from itertools import groupby
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -12,6 +14,9 @@ from zoneinfo import ZoneInfo
 
 import arabic_reshaper
 import reportlab
+from fontTools.ttLib import TTFont as OpenTypeFont
+from reportlab.pdfgen.canvas import Canvas
+from reportlab.pdfgen.textobject import PDFTextObject
 from bidi.algorithm import get_display
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
@@ -45,18 +50,62 @@ def visual_line(logical):
     return get_display(directed, base_dir='R')
 
 
+def clusters(text):
+    """Keep each base together with its original combining characters."""
+    cluster = ''
+    for char in text:
+        if cluster and not unicodedata.category(char).startswith('M'):
+            yield cluster
+            cluster = ''
+        cluster += char
+    if cluster:
+        yield cluster
+
+
 def font_runs(text, font):
-    primary = pdfmetrics.getFont(font).face.charToGlyph
-    fallback = pdfmetrics.getFont('MizanSymbols').face.charToGlyph
+    def face(cluster):
+        for name in (font, 'MizanSymbols'):
+            cmap = pdfmetrics.getFont(name).face.charToGlyph
+            if all(cmap.get(ord(char)) for char in cluster):
+                return name
+        raise ValueError(f'saved_pdf_missing_glyph:{cluster!r}')
 
-    def face(char):
-        if primary.get(ord(char)):
-            return font
-        if fallback.get(ord(char)):
-            return 'MizanSymbols'
-        raise ValueError(f'saved_pdf_missing_glyph:U+{ord(char):04X}')
+    return [(name, ''.join(run)) for name, run in groupby(clusters(text), key=face)]
 
-    return [(name, ''.join(chars)) for name, chars in groupby(text, key=face)]
+
+@lru_cache(maxsize=8)
+def _outlines(face):
+    return OpenTypeFont(io.BytesIO(face._ttf_data))
+
+
+class SavedTextObject(PDFTextObject):
+    def _formatText(self, text):
+        # The reshaper/bidi pair emits visual base then mark. Plain Tj paints
+        # the zero-advance mark at the pen AFTER the base. Move only its ink
+        # over the base, restoring the pen before the next character.
+        if not any(unicodedata.combining(c) for c in text):
+            return super()._formatText(text)
+        face = pdfmetrics.getFont(self._fontname).face
+        outlines = _outlines(face)
+        cmap = outlines.getBestCmap()
+        scale = 1000 / face.unitsPerEm
+        emit = super()._formatText
+        tokens = []
+        for cluster in clusters(text):
+            tokens.append(emit(cluster[0]))
+            for mark in cluster[1:]:
+                glyph = outlines['glyf'][cmap[ord(mark)]]
+                base_width = outlines['hmtx'][cmap[ord(cluster[0])]][0]
+                mark_width = outlines['hmtx'][cmap[ord(mark)]][0]
+                shift = (base_width + glyph.xMin + glyph.xMax) * scale / 2
+                tokens.extend((f'[{shift:.5f}] TJ', emit(mark),
+                               f'[{mark_width * scale - shift:.5f}] TJ'))
+        return ' '.join(tokens)
+
+
+class SavedCanvas(Canvas):
+    def beginText(self, x=0, y=0, direction=None):
+        return SavedTextObject(self, x, y, direction=direction)
 
 
 def measure(logical, font, size):
@@ -76,7 +125,7 @@ def cell(text, width, style):
                 line = ''
             if measure(word, font, size) > width:
                 # An exceptionally long unbroken field may require character wrapping.
-                for char in word:
+                for char in clusters(word):
                     if line and measure(line + char, font, size) > width:
                         lines.append(line)
                         line = ''
@@ -196,5 +245,5 @@ def render_saved_pdf(content, cover, font):
         canvas.setFont(font, 10)
         canvas.drawCentredString(page[0]/2, 16, str(document.page))
         canvas.restoreState()
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    doc.build(story, onFirstPage=footer, onLaterPages=footer, canvasmaker=SavedCanvas)
     return stream.getvalue()

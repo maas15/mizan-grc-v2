@@ -1,4 +1,4 @@
-"""Run only the correction regressions or the eight frozen Contract R nodes."""
+"""Run isolated Mizan integration, DOCX or saved PDF checks."""
 import argparse
 import hashlib
 import json
@@ -30,6 +30,13 @@ CONTRACT = [
     for path in ("sync_fresh", "sync_matching_reuse", "async_fresh", "async_matching_reuse")
 ]
 
+PDF = [
+    f"tests/test_saved_strategy_pdf.py::{test}[{transport}]"
+    for test in ("test_saved_pdf_fresh_reuse_and_mutation", "test_invalid_saved_pdf_refused_before_writer")
+    for transport in ("sync", "async")
+]
+LANES = {"regressions": REGRESSIONS, "contract": CONTRACT, "pdf": PDF}
+
 
 def run(lane):
     base = Path(tempfile.mkdtemp(prefix="mizan-contract-", dir=os.environ.get("RUNNER_TEMP")))
@@ -45,7 +52,7 @@ def run(lane):
     env.update(SECRET_KEY="synthetic-contract-r-ci", ADMIN_PASSWORD="synthetic-admin-ci",
                PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONDONTWRITEBYTECODE="1",
                PYTHONUTF8="1", PYTHON_DOTENV_DISABLED="1")
-    for node in REGRESSIONS if lane == "regressions" else CONTRACT:
+    for node in LANES[lane]:
         folder = base / node.split("::")[-1]
         folder.mkdir()
         temp = folder / "tmp"
@@ -53,6 +60,9 @@ def run(lane):
         db = str(folder / "app.db")
         cfg = dict(env, DATABASE_PATH=db, MIZAN_DOCX_DATABASE_PATH=db,
                    TMP=str(temp), TEMP=str(temp), TMPDIR=str(temp))
+        if lane == "pdf":
+            cfg["MIZAN_PDF_OUTPUT"] = str(folder)
+            cfg.pop("REL2_SKIP_EXPORT_EVIDENCE", None)
         cmd = [sys.executable, "-B", "-m", "pytest", "-p", "no:cacheprovider",
                node, "--junitxml=" + str(folder / "junit.xml")]
         print(json.dumps(cmd), flush=True)
@@ -61,5 +71,5 @@ def run(lane):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lane", choices=["regressions", "contract"])
+    parser.add_argument("lane", choices=LANES)
     run(parser.parse_args().lane)

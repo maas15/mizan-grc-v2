@@ -145,6 +145,13 @@ jobs:
       - name: Mizan eight fixture-backed Contract R cases
         run: python scripts/run_mizan_contract_checks.py contract
 
+      - name: Mizan saved Arabic strategy PDF cases
+        env:
+          MIZAN_ARABIC_PDF_FONT: ${{ github.workspace }}/static/fonts/Amiri-Regular.ttf
+        run: |
+          python scripts/ensure_render_fonts.py
+          python scripts/run_mizan_contract_checks.py pdf
+
       - name: Retain PR checkout identity and available CI evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -161,6 +168,9 @@ jobs:
             ${{ runner.temp }}/mizan-contract-*/**/comparison_*.txt
             ${{ runner.temp }}/mizan-contract-*/**/delivered_*.docx
             ${{ runner.temp }}/mizan-contract-*/**/diagnostic_writer_*.docx
+            ${{ runner.temp }}/mizan-contract-*/**/702-*.pdf
+            ${{ runner.temp }}/mizan-contract-*/**/content-*.json
+            ${{ runner.temp }}/mizan-contract-*/**/independent-*.json
             ${{ github.workspace }}/qa_outputs/smoke_all_domains_preview_docx_pdf.json
             ${{ github.workspace }}/qa_outputs/smoke_document_type_matrix.json
             !${{ runner.temp }}/mizan-contract-*/**/tmp/**
