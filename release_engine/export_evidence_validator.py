@@ -508,6 +508,7 @@ def validate_actual_export_evidence(
         domain: str = 'cyber',
         lang: str = 'ar',
         document_type: str = 'strategy',
+        preview_html: str = '',
         pdf_text_extraction_unreliable: bool = False,
         pdf_bytes_had: bool = False,
         pdf_bytes: bytes = b'',
@@ -719,8 +720,11 @@ def validate_actual_export_evidence(
         document_type=document_type,
         route_name=route_name,
         preview_text=preview_text,
+        preview_html=preview_html,
         docx_text=docx_text,
         pdf_text=pdf_text,
+        docx_bytes=docx_bytes,
+        pdf_bytes=pdf_bytes,
         preview_def=preview_def,
         docx_def=docx_def,
         pdf_def=pdf_def,
@@ -824,6 +828,8 @@ def validate_actual_export_evidence(
         'pdf_pass_from_render_fallback': route_verdict.get(
             'pdf_pass_from_render_fallback', False),
         'route_evidence_passed': route_verdict.get('route_evidence_passed', False),
+        **({'governance_native_evidence': route_verdict['governance_native_evidence']}
+           if 'governance_native_evidence' in route_verdict else {}),
         'route_evidence_blocker': route_verdict.get('route_evidence_blocker', ''),
         'export_return_allowed': route_verdict.get('export_return_allowed', False),
         'exported_docx_section_hashes': route_verdict.get(

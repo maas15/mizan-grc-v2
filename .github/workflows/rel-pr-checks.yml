@@ -21,6 +21,7 @@ jobs:
       DATABASE_URL: sqlite:////tmp/mizan_rel_pr_checks.db
       OPENAI_API_KEY: ''
       REL2_SKIP_EXPORT_EVIDENCE: '1'
+      MIZAN_ARABIC_PDF_FONT: ${{ github.workspace }}/static/fonts/Amiri-Regular.ttf
     steps:
       - uses: actions/checkout@v4
 
@@ -117,7 +118,12 @@ jobs:
         run: |
           python -m py_compile app.py professional_strategy_render.py
 
+      - name: Prepare Arabic font for native governance exports
+        run: python scripts/ensure_render_fonts.py
+
       - name: pytest REL32 gate suite
+        env:
+          MIZAN_GOVERNANCE_EVIDENCE_DIR: ${{ runner.temp }}/mizan-native-governance
         run: |
           python -m pytest \
             tests/test_rel32_frozen_artifact_export_lock.py \
@@ -127,6 +133,7 @@ jobs:
             tests/test_rel32_preview_table_dom_binding.py \
             tests/test_enterprise_document_factory_foundation.py \
             tests/test_rel33_all_domain_document_quality_matrix.py \
+            tests/test_dt_governance_native.py \
             -q -ra \
             --junitxml="$RUNNER_TEMP/mizan-pr-checks/rel32-junit.xml"
 
@@ -162,6 +169,7 @@ jobs:
             ${{ runner.temp }}/mizan-pr-checks/checkout-identity.json
             ${{ runner.temp }}/mizan-pr-checks/rawindex.stage-z
             ${{ runner.temp }}/mizan-pr-checks/rel32-junit.xml
+            ${{ runner.temp }}/mizan-native-governance/**
             ${{ runner.temp }}/mizan-contract-*/**/junit.xml
             ${{ runner.temp }}/mizan-contract-*/**/observations.json
             ${{ runner.temp }}/mizan-contract-*/**/extraction_*.json

@@ -227,8 +227,9 @@ def _rel31_rebuild_frozen_artifact(
         strategy_id: str = '') -> FinalDocumentArtifact:
     """Rebuild artifact after repair — drop stale canonical blockers."""
     art['blocking_errors'] = []
-    art['sections'] = _scrub_art_sections_for_build(
-        dict(art.get('sections') or {}), lang)
+    if _artifact_doc_type(art).lower() != 'governance_model':
+        art['sections'] = _scrub_art_sections_for_build(
+            dict(art.get('sections') or {}), lang)
     built = build_final_document_artifact(
         art, freeze=False, strategy_id=strategy_id)
     if _sections_arabic_residue_clean(dict(art.get('sections') or {})):
@@ -455,6 +456,10 @@ def _enforce_document_quality_blockers(
         domain: str = 'cyber',
         lang: str = 'ar') -> bool:
     """Fail-closed DQS only on live cyber-ar strategy saves (not REL2 matrix)."""
+    if _artifact_doc_type(art).lower() == 'governance_model':
+        # This DQS loop repairs strategy objectives/roadmap/KPIs. Native
+        # governance is validated against its own required source sections.
+        return False
     meta = dict(art.get('contract_meta') or {})
     explicit = meta.get('rel31_enforce_document_quality')
     if explicit is True:
@@ -1040,6 +1045,12 @@ def repair_canonical_before_freeze(
                 'saved_docx_fidelity:validator_replacements_not_applied')
         else:
             art.setdefault('blocking_errors', []).append(fidelity)
+        art['sections'] = sections
+        return art, repairs
+    if _artifact_doc_type(art).lower() == 'governance_model':
+        # Never repair native prose or synthesize strategy content here.
+        # The canonical validator will refuse an incomplete/invalid source.
+        backend['document_type'] = 'governance_model'
         art['sections'] = sections
         return art, repairs
     lang = str(
@@ -2506,8 +2517,9 @@ def apply_rel31_authoritative_contract(
     if require_strategy and not road.get('valid'):
         blockers.append('rel3_generation_contract_failed:roadmap_weak_output')
 
-    art['sections'] = _scrub_art_sections_for_build(
-        dict(art.get('sections') or {}), lang)
+    if _contract_doc_type_early != 'governance_model':
+        art['sections'] = _scrub_art_sections_for_build(
+            dict(art.get('sections') or {}), lang)
     art['blocking_errors'] = []
     built = _rel31_rebuild_frozen_artifact(
         art, lang=lang, strategy_id=str(art.get('strategy_id') or ''))
@@ -2563,8 +2575,9 @@ def apply_rel31_authoritative_contract(
             }
         _preview_blob = ' '.join(
             str(e) for e in (preview_ev.blocking_errors or [])).lower()
-        if _preview_failure_repairable(
-                list(preview_ev.blocking_errors or []), _preview_gate):
+        if (_contract_doc_type != 'governance_model'
+                and _preview_failure_repairable(
+                    list(preview_ev.blocking_errors or []), _preview_gate)):
             try:
                 from release_engine.export_evidence_validator import (
                     repair_for_actual_export_defects,

@@ -264,16 +264,21 @@ def apply_route_bound_verdict(
         internal_roadmap_row_count: Optional[int] = None,
         domain: str = '',
         document_type: str = 'strategy',
+        preview_html: str = '',
+        docx_bytes: bytes = b'',
+        pdf_bytes: bytes = b'',
 ) -> Dict[str, Any]:
     """Compute route-specific pass flags; defaults are False until evidence checked."""
     route = normalize_route(route_name)
     # REL3.3 — the pillar-after-heading evidence is a strategy-only
     # completeness check. A risk artifact has no strategic-pillars section
     # (it is compiled risk-native, not as a strategy), so applying it would
-    # falsely block risk exports. Scoped to risk types to preserve the exact
-    # strategy and gap_assessment behavior.
+    # falsely block risk exports. Governance models instead require the
+    # native source/actual-cell evidence below. Strategy and gap_assessment
+    # retain their existing checks.
     _dtype = str(document_type or 'strategy').strip().lower()
-    _strategy_section_checks = _dtype not in ('risk', 'risk_assessment')
+    _strategy_section_checks = _dtype not in (
+        'risk', 'risk_assessment', 'governance_model')
     channels = ROUTE_CHANNELS.get(route, ROUTE_CHANNELS['preview'])
 
     preview_export_evidence_passed = _channel_passed(
@@ -295,6 +300,33 @@ def apply_route_bound_verdict(
         pdf_export_evidence_passed = pdf_pass_from_render_fallback
     else:
         pdf_export_evidence_passed = False
+
+    governance_native_evidence = None
+    if _dtype == 'governance_model':
+        from release_engine_v3.rel33_governance_evidence import (
+            evaluate_governance_export_evidence,
+        )
+        governance_native_evidence = evaluate_governance_export_evidence(
+            route=route,
+            sections=canonical_sections,
+            preview_html=preview_html,
+            docx_bytes=docx_bytes,
+            pdf_bytes=pdf_bytes,
+        )
+        native_passed = bool(governance_native_evidence.get('passed'))
+        blocking.extend(governance_native_evidence.get('blocking_errors') or [])
+        if route == 'preview':
+            preview_export_evidence_passed = preview_export_evidence_passed and native_passed
+        elif route == 'docx':
+            docx_export_evidence_passed = docx_export_evidence_passed and native_passed
+        elif route == 'pdf':
+            # Physical PDF cells are checked against every original field.
+            # No other export or render fallback can stand in for these bytes.
+            pdf_pass_from_actual_bytes = native_passed and not has_defects_fn(pdf_def)
+            pdf_pass_from_render_fallback = False
+            pdf_export_evidence_passed = pdf_pass_from_actual_bytes
+            if native_passed:
+                pdf_text_extraction_unreliable = False
 
     # Hard pillar-after-heading checks on actual export text (strategy only)
     if _strategy_section_checks:
@@ -461,6 +493,10 @@ def apply_route_bound_verdict(
         exported_section_hashes_from_text(pdf_text, hash_fn=hash_fn)
         if pdf_bytes_checked and pdf_text
         and not pdf_text_extraction_unreliable else {})
+    if _dtype == 'governance_model':
+        # Strategy section hashes are not evidence for this native schema.
+        exported_docx_hashes = {}
+        exported_pdf_hashes = {}
 
     return {
         'requested_route': route,
@@ -476,6 +512,8 @@ def apply_route_bound_verdict(
         'pdf_pass_from_actual_bytes': pdf_pass_from_actual_bytes,
         'pdf_pass_from_render_fallback': pdf_pass_from_render_fallback,
         'route_evidence_passed': route_evidence_passed,
+        **({'governance_native_evidence': governance_native_evidence}
+           if governance_native_evidence is not None else {}),
         'route_evidence_blocker': route_blocker,
         'export_return_allowed': export_return_allowed,
         'actual_export_evidence_passed': route_evidence_passed,

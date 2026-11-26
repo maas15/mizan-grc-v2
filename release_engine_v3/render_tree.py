@@ -172,6 +172,42 @@ def _build_risk_render_tree(
     )
 
 
+def _build_governance_render_tree(artifact: FinalDocumentArtifact) -> RenderTree:
+    """Render the native source sections without strategy slots or new headers."""
+    from release_engine_v3.rel33_governance_artifact import (
+        governance_model_preview_html,
+        governance_model_section_order,
+    )
+    nodes: List[Dict[str, Any]] = []
+    markdown_parts: List[str] = []
+    for key in governance_model_section_order():
+        section = artifact.canonical_sections.get(key)
+        if section is None:
+            continue
+        text = section.narrative
+        nodes.append({
+            'key': key,
+            'section_key': key,
+            'title': section.title,
+            'rendered_text': text,
+            'table_row_count': sum(
+                1 for line in text.splitlines()
+                if line.strip().startswith('|') and '---' not in line),
+        })
+        markdown_parts.append(text)
+    markdown_view = '\n\n'.join(markdown_parts)
+    tree_hash = compute_render_tree_hash(nodes)
+    artifact.render_tree_hash = tree_hash
+    return RenderTree(
+        artifact_id=artifact.artifact_id,
+        canonical_hash=artifact.canonical_hash,
+        render_tree_hash=tree_hash,
+        nodes=nodes,
+        markdown_view=markdown_view,
+        preview_html=governance_model_preview_html(markdown_view),
+    )
+
+
 def build_render_tree(artifact: FinalDocumentArtifact) -> RenderTree:
     """Build one immutable RenderTree from frozen canonical sections.
 
@@ -182,6 +218,8 @@ def build_render_tree(artifact: FinalDocumentArtifact) -> RenderTree:
     domain guard). Strategy/gap_assessment keep the existing behavior.
     """
     _dtype = str(getattr(artifact, 'document_type', '') or '').strip().lower()
+    if _dtype == 'governance_model':
+        return _build_governance_render_tree(artifact)
     if _dtype in _RISK_DOCUMENT_TYPES:
         return _build_risk_render_tree(artifact, document_type=_dtype)
     if not artifact.frozen and artifact.blocking_errors:

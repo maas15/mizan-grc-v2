@@ -589,6 +589,33 @@ def _legacy_to_canonical_sections(
     native_present = sorted(
         str(k) for k, v in sections_src.items()
         if not str(k).startswith('_') and str(v or '').strip())
+    if dtype == 'governance_model':
+        from release_engine_v3.rel33_governance_artifact import (
+            governance_model_blockers,
+            governance_model_canonical_sections,
+        )
+        authority_blockers = governance_model_blockers(sections_src)
+        emit_rel33_document_type_compiler_authority({
+            'route': str(route or ''),
+            'domain': str(domain or ''),
+            'artifact_type': dtype,
+            'document_type': dtype,
+            'phase': str(phase or ''),
+            'compiler_selected': 'governance_native',
+            'compiler_requested': 'governance_native',
+            'compiler_allowed': not authority_blockers,
+            'freeze_authority': 'governance_native',
+            'strategy_compiler_attempted': False,
+            'strategy_compiler_blocked': False,
+            'native_sections_present': native_present,
+            'synthetic_strategy_sections_created': False,
+            'blocking_errors': list(authority_blockers),
+        })
+        return (
+            governance_model_canonical_sections(sections_src),
+            sections_src,
+            authority_blockers,
+        )
     try:
         from release_engine_v3.rel32_compiler import (
             compile_canonical_strategy_document,
@@ -772,7 +799,7 @@ def build_final_document_artifact(
         preserve_saved=keep_saved_source,
         saved_route='pdf' if '_saved_pdf_fidelity' in legacy_artifact else 'docx')
     canon_hash = compute_canonical_hash(canon_map)
-    if not keep_saved_source:
+    if not keep_saved_source and document_type != 'governance_model':
         legacy_sections = _scrub_legacy_sections_arabic(legacy_sections, lang)
     blockers = list(legacy_artifact.get('blocking_errors') or [])
     blockers.extend(_authority_blockers)
@@ -815,7 +842,14 @@ def build_final_document_artifact(
     _fa_strategy_fallback_skipped_reason = ''
     _fa_risk_native_fallback_applied = False
     _fa_risk_native_fallback_source = ''
-    if preserve_saved:
+    if document_type == 'governance_model':
+        from release_engine_v3.rel33_governance_artifact import (
+            governance_model_markdown,
+        )
+        md_view = governance_model_markdown(legacy_sections)
+        _fa_md_source = 'governance_native_sections'
+        _fa_strategy_fallback_skipped_reason = 'document_type_governance_model'
+    elif preserve_saved:
         md_view = legacy_artifact['final_markdown']
         _fa_md_source = 'validated_saved_markdown'
     elif _is_risk_final:

@@ -51902,6 +51902,13 @@ def _rel2_backend_callables(*, pipeline_cache=None):
         if saved_cover is not None:
             from release_engine_v3.exporters.saved_strategy_pdf import render_saved_pdf
             return render_saved_pdf(content, saved_cover, _ensure_arabic_pdf_font(required=True)[0])
+        if (isinstance(metadata, dict)
+                and str(metadata.get('document_type') or '').strip().lower()
+                == 'governance_model'):
+            from release_engine_v3.exporters.governance_pdf import render_governance_pdf
+            return render_governance_pdf(
+                content, sections=sections, metadata=metadata, domain=domain,
+                lang=lang, font=_ensure_arabic_pdf_font(required=True)[0])
         try:
             uid = _rel2_ensure_export_user()
             meta = dict(metadata) if isinstance(metadata, dict) else {}

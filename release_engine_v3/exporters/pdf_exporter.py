@@ -89,6 +89,14 @@ def export_pdf(
     # cyber-primary risk substance is still blocked via risk-native keys.
     if saved_pdf:
         _guard_sections = saved['sections']
+    elif document_type == 'governance_model':
+        # Native section identities and table headers are already frozen in
+        # the RenderTree. The strategy splitter would relabel or drop them.
+        _guard_sections = {
+            str(node.get('section_key') or node.get('key') or ''):
+                node.get('rendered_text')
+            for node in render_tree.nodes
+        }
     elif document_type in ('risk', 'risk_assessment'):
         from release_engine_v3.rel33_risk_artifact import (
             _split_risk_markdown as _split_risk_md,
@@ -103,13 +111,20 @@ def export_pdf(
             _guard_sections = {}
         if not _guard_sections:
             _guard_sections = {'roadmap': content or ''}
-    _guard_blockers = evaluate_pre_export_bytes_domain_guard(
-        _guard_sections,
-        domain=_guard_domain,
-        route='pdf',
-        artifact_id=render_tree.artifact_id,
-        document_type=document_type,
-    )
+    _guard_blockers = []
+    if document_type == 'governance_model':
+        from release_engine_v3.rel33_governance_artifact import (
+            governance_model_blockers,
+        )
+        _guard_blockers = governance_model_blockers(_guard_sections)
+    if not _guard_blockers:
+        _guard_blockers = evaluate_pre_export_bytes_domain_guard(
+            _guard_sections,
+            domain=_guard_domain,
+            route='pdf',
+            artifact_id=render_tree.artifact_id,
+            document_type=document_type,
+        )
     if _guard_blockers:
         return ExportResult(
             route_name='pdf',
@@ -133,7 +148,10 @@ def export_pdf(
                 'selected_frameworks': selected_frameworks,
                 'cyber_sealed_artifact': cyber_sealed_artifact,
                 **({'sections': saved['sections'], 'saved_cover': saved_cover}
-                   if saved_pdf else {'sections': backend.get('split_sections', lambda x: {})(content)}),
+                   if saved_pdf else {
+                       'sections': (
+                           _guard_sections if document_type == 'governance_model'
+                           else backend.get('split_sections', lambda x: {})(content))}),
                 'metadata': {
                     'document_type': document_type,
                     'org_name': org_name,

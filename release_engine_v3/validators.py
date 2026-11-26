@@ -35,6 +35,11 @@ def validate_canonical_quality(
             if isinstance(v, str) and v.strip())
         ch = rel27_channel_checks(blob) if blob.strip() else {}
         blockers: List[str] = []
+        if dtype == 'governance_model':
+            from release_engine_v3.rel33_governance_artifact import (
+                governance_model_blockers,
+            )
+            blockers.extend(governance_model_blockers(legacy))
         blockers.extend(ch.get('arabic_residues') or [])
         return {
             'blocking_errors': list(dict.fromkeys(blockers)),
@@ -82,6 +87,7 @@ def validate_export_text(
         route: str,
         *,
         preview_text: str = '',
+        preview_html: str = '',
         docx_text: str = '',
         pdf_text: str = '',
         domain: str = 'cyber',
@@ -104,6 +110,7 @@ def validate_export_text(
         domain=domain,
         lang=lang,
         document_type=document_type,
+        preview_html=preview_html,
         pdf_text_extraction_unreliable=pdf_text_extraction_unreliable,
         pdf_bytes_had=pdf_bytes_had,
         pdf_bytes=pdf_bytes,
@@ -135,7 +142,8 @@ def validate_export_text(
         )
         rel3_blockers = [
             b for b in rel3_blockers
-            if not any(tok in b for tok in _strategy_only)]
+            if 'rel33_governance_export_mismatch:' in b
+            or not any(tok in b for tok in _strategy_only)]
     gate['blocking_errors'] = rel3_blockers
     gate['rel3_evidence'] = True
     return gate
