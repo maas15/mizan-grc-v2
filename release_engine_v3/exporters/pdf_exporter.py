@@ -46,6 +46,7 @@ def export_pdf(
         domain: str = 'cyber',
         selected_frameworks=None,
         cyber_sealed_artifact: bool = False,
+        saved_cover=None,
 ) -> ExportResult:
     build_fn = backend.get('build_pdf_bytes')
     if not build_fn:
@@ -56,7 +57,12 @@ def export_pdf(
             canonical_hash=render_tree.canonical_hash,
             blocking_errors=['rel3_export_failed:pdf:build_pdf_bytes_missing'],
         )
-    content = render_tree.markdown_view
+    from release_engine_v3.canonical_document import evaluate_saved_source_fidelity
+    saved = backend.get('_rel32_export_artifact_dict') or {}
+    saved_pdf = '_saved_pdf_fidelity' in saved
+    if saved_pdf and evaluate_saved_source_fidelity(saved) != 'preserve':
+        raise ValueError('saved_pdf_source_unverified')
+    content = saved['final_markdown'] if saved_pdf else render_tree.markdown_view
     document_type = str(
         document_type
         or backend.get('document_type')
@@ -81,7 +87,17 @@ def export_pdf(
     # ``vision`` key), so the guard routes through risk-native isolation and
     # cannot emit rel33_domain_contamination:vision:cyber_primary. Genuine
     # cyber-primary risk substance is still blocked via risk-native keys.
-    if document_type in ('risk', 'risk_assessment'):
+    if saved_pdf:
+        _guard_sections = saved['sections']
+    elif document_type == 'governance_model':
+        # Native section identities and table headers are already frozen in
+        # the RenderTree. The strategy splitter would relabel or drop them.
+        _guard_sections = {
+            str(node.get('section_key') or node.get('key') or ''):
+                node.get('rendered_text')
+            for node in render_tree.nodes
+        }
+    elif document_type in ('risk', 'risk_assessment'):
         from release_engine_v3.rel33_risk_artifact import (
             _split_risk_markdown as _split_risk_md,
             normalize_risk_export_sections as _norm_risk_secs,
@@ -95,13 +111,20 @@ def export_pdf(
             _guard_sections = {}
         if not _guard_sections:
             _guard_sections = {'roadmap': content or ''}
-    _guard_blockers = evaluate_pre_export_bytes_domain_guard(
-        _guard_sections,
-        domain=_guard_domain,
-        route='pdf',
-        artifact_id=render_tree.artifact_id,
-        document_type=document_type,
-    )
+    _guard_blockers = []
+    if document_type == 'governance_model':
+        from release_engine_v3.rel33_governance_artifact import (
+            governance_model_blockers,
+        )
+        _guard_blockers = governance_model_blockers(_guard_sections)
+    if not _guard_blockers:
+        _guard_blockers = evaluate_pre_export_bytes_domain_guard(
+            _guard_sections,
+            domain=_guard_domain,
+            route='pdf',
+            artifact_id=render_tree.artifact_id,
+            document_type=document_type,
+        )
     if _guard_blockers:
         return ExportResult(
             route_name='pdf',
@@ -124,7 +147,11 @@ def export_pdf(
                 'domain': domain,
                 'selected_frameworks': selected_frameworks,
                 'cyber_sealed_artifact': cyber_sealed_artifact,
-                'sections': backend.get('split_sections', lambda x: {})(content),
+                **({'sections': saved['sections'], 'saved_cover': saved_cover}
+                   if saved_pdf else {
+                       'sections': (
+                           _guard_sections if document_type == 'governance_model'
+                           else backend.get('split_sections', lambda x: {})(content))}),
                 'metadata': {
                     'document_type': document_type,
                     'org_name': org_name,
@@ -133,6 +160,9 @@ def export_pdf(
                 },
             }),
         )
+        if saved_pdf:
+            from release_engine_v3.exporters.saved_pdf_verification import verify_saved_pdf
+            verify_saved_pdf(pdf_bytes, content, cover=saved_cover)
     except ValueError as exc:
         render_exception = str(exc)
         from release_engine_v3.rel31_authority import normalize_rel3_export_blockers

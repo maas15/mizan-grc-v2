@@ -12,6 +12,45 @@ from release_engine_v3.rel33_docx_export_authority import (
 )
 
 
+def _saved_cover_adapter_refusal(saved_cover: Any, artifact_dict: Optional[Dict[str, Any]]) -> str:
+    """Independent claim and artifact comparisons for one preserve export.
+
+    Shape checks run first. Identity and digest equality then use the
+    claim and the artifact already on this call. The tuple's own values
+    are not copied into the expected side. Ordinary exports do not call
+    this helper.
+    """
+    from professional_strategy_render import saved_cover_context_shape_errors
+    from release_engine_v3.canonical_document import _saved_docx_positive_int
+    shape_errors = saved_cover_context_shape_errors(saved_cover)
+    if shape_errors:
+        return shape_errors[0]
+    cover = {key: value for key, value in saved_cover}
+    claim = (artifact_dict or {}).get('_saved_docx_fidelity')
+    if not isinstance(claim, dict):
+        return 'saved_cover_context_refused:identity'
+    expected_record = claim.get('record_id')
+    expected_owner = claim.get('owner_id')
+    artifact_record = _saved_docx_positive_int(
+        (artifact_dict or {}).get('strategy_id')
+        or (artifact_dict or {}).get('artifact_id'))
+    artifact_owner = _saved_docx_positive_int(
+        (artifact_dict or {}).get('_rel32_export_user_id'))
+    if (
+            cover.get('record_id') != expected_record
+            or cover.get('owner_id') != expected_owner
+            or artifact_record != expected_record
+            or artifact_owner != expected_owner
+            or cover.get('record_id') != artifact_record
+            or cover.get('owner_id') != artifact_owner):
+        return 'saved_cover_context_refused:identity'
+    if (
+            cover.get('content_sha256') != claim.get('content_sha256')
+            or cover.get('sections_sha256') != claim.get('sections_sha256')):
+        return 'saved_cover_context_refused:digest'
+    return ''
+
+
 def _filter_build_kwargs(build_fn: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sig = inspect.signature(build_fn)
@@ -39,6 +78,7 @@ def export_docx(
         cyber_sealed_artifact: bool = False,
         frozen_artifact=None,
         artifact_dict: Optional[Dict[str, Any]] = None,
+        saved_cover=None,
 ) -> ExportResult:
     """Build DOCX bytes from RenderTree markdown view — never raw client markdown."""
     build_fn = backend.get('build_docx_bytes')
@@ -70,8 +110,28 @@ def export_docx(
     content = render_tree.markdown_view or ''
     sec_map: Dict[str, str] = {}
     renderer_meta: Dict[str, Any] = {}
+    from release_engine_v3.canonical_document import (
+        evaluate_saved_docx_fidelity,
+        saved_docx_section_strings,
+    )
+    fidelity = evaluate_saved_docx_fidelity(artifact_dict)
+    saved_render = fidelity == 'preserve'
 
-    if backend.get('_rel32_frozen_export_lock_active') and frozen_artifact is not None:
+    if fidelity.startswith('saved_docx_fidelity_refused'):
+        return ExportResult(
+            route_name='docx',
+            artifact_id=render_tree.artifact_id,
+            render_tree_hash=render_tree.render_tree_hash,
+            canonical_hash=render_tree.canonical_hash,
+            blocking_errors=[fidelity],
+        )
+
+    if saved_render:
+        # Writer body and section map are the same accepted snapshot.
+        # The render-tree markdown is a second compilation and is not used.
+        content = str((artifact_dict or {}).get('final_markdown') or '')
+        sec_map = saved_docx_section_strings((artifact_dict or {}).get('sections'))
+    elif backend.get('_rel32_frozen_export_lock_active') and frozen_artifact is not None:
         from release_engine_v3.rel32_docx_renderer import (
             bind_rel32_docx_renderer_input,
             emit_rel32_docx_renderer_diag,
@@ -148,6 +208,18 @@ def export_docx(
             blocking_errors=_guard_blockers,
         )
 
+    if saved_render:
+        _saved_cover_refusal = _saved_cover_adapter_refusal(
+            saved_cover, artifact_dict)
+        if _saved_cover_refusal:
+            return ExportResult(
+                route_name='docx',
+                artifact_id=render_tree.artifact_id,
+                render_tree_hash=render_tree.render_tree_hash,
+                canonical_hash=render_tree.canonical_hash,
+                blocking_errors=[_saved_cover_refusal],
+            )
+
     try:
         from release_engine_v3.rel31_authority import rel31_export_adapter_context
         frozen_loaded = bool(
@@ -155,21 +227,30 @@ def export_docx(
             or backend.get('_rel32_frozen_export_lock_active')
             or backend.get('_rel31_frozen_sections'))
         sections_loaded = bool(sec_map)
-        with rel31_export_adapter_context():
-            docx_bytes = build_fn(
-                content,
-                filename,
-                lang,
-                **_filter_build_kwargs(build_fn, {
-                    'org_name': org_name,
-                    'sector': sector,
-                    'doc_type': doc_type,
-                    'domain': domain,
-                    'selected_frameworks': selected_frameworks,
-                    'cyber_sealed_artifact': cyber_sealed_artifact,
-                    'sections': sec_map,
-                }),
-            )
+        from professional_strategy_render import (
+            pop_saved_docx_fidelity_rendering,
+            push_saved_docx_fidelity_rendering,
+        )
+        fidelity_token = push_saved_docx_fidelity_rendering(saved_render)
+        try:
+            with rel31_export_adapter_context():
+                docx_bytes = build_fn(
+                    content,
+                    filename,
+                    lang,
+                    **_filter_build_kwargs(build_fn, {
+                        'org_name': org_name,
+                        'sector': sector,
+                        'doc_type': doc_type,
+                        'domain': domain,
+                        'selected_frameworks': selected_frameworks,
+                        'cyber_sealed_artifact': cyber_sealed_artifact,
+                        'sections': sec_map,
+                        'saved_cover': saved_cover,
+                    }),
+                )
+        finally:
+            pop_saved_docx_fidelity_rendering(fidelity_token)
         auth_diag = evaluate_rel33_docx_export_authority(
             route='docx',
             domain=domain,

@@ -162,7 +162,8 @@ def validate_returned_export_bytes(
             parity_sections['treatments'] = (
                 parity_sections.get('treatment')
                 or parity_sections.get('risk_treatment') or '')
-    if route_n == 'preview' and artifact.canonical_sections:
+    if (route_n == 'preview' and artifact.canonical_sections
+            and dtype != 'governance_model'):
         from release_engine_v3.section_models import (
             canonical_legacy_sections_for_parity,
         )
@@ -171,6 +172,7 @@ def validate_returned_export_bytes(
     gate = validate_export_text(
         route_n,
         preview_text=preview_text if route_n == 'preview' else '',
+        preview_html=(export.preview_html or '') if route_n == 'preview' else '',
         docx_text=docx_text if route_n == 'docx' else '',
         pdf_text=pdf_text if route_n == 'pdf' else '',
         domain=artifact.domain,

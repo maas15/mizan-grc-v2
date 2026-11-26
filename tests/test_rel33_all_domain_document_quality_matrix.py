@@ -61,12 +61,18 @@ class Rel33QualityMatrixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._app = None
-        try:
-            from release_engine_v3.rel33_quality_matrix import _load_app_module
-            cls._app = _load_app_module()
-        except Exception as exc:  # noqa: BLE001
-            raise unittest.SkipTest(f'app load failed: {exc!r}')
+        from release_engine_v3.rel33_quality_matrix import _load_app_module
+        # This is a mandatory export gate: an application that cannot load
+        # cannot satisfy it by skipping the entire class.
+        cls._app = _load_app_module()
+        cls._report = None
+
+    @classmethod
+    def _matrix_report(cls):
+        # Assertions share one real full-matrix execution within this class.
+        if cls._report is None:
+            cls._report = run_rel33_quality_matrix(app_mod=cls._app)
+        return cls._report
 
     def test_matrix_cases_cover_required_domains(self):
         cases = build_rel33_matrix_cases()
@@ -118,19 +124,39 @@ class Rel33QualityMatrixTests(unittest.TestCase):
             self.assertTrue(result.legacy_sections, msg=domain)
 
     def test_full_matrix_report_emits_tag(self):
-        report = run_rel33_quality_matrix(app_mod=self._app)
+        from release_engine_v3.golden_matrix import GOLDEN_MATRIX
+
+        report = self._matrix_report()
         self.assertEqual(
             report['tag'], 'REL33-ALL-DOMAIN-DOCUMENT-QUALITY-MATRIX')
-        self.assertGreater(report['matrix_size'], 20)
-        cyber_rows = [
-            r for r in report['rows']
-            if r['domain'] == 'cyber' and r['document_type'] == 'strategy']
-        self.assertTrue(any(r.get('accepted') for r in cyber_rows))
+        identity = lambda c: (
+            c['domain'], c['document_type'], c.get('lang', 'ar'),
+            c.get('doc_subtype', ''))
+        # Compare with the registered catalog independently of the runner's
+        # case builder, so a silently omitted case cannot disappear twice.
+        expected = [
+            (c['domain'], c['document_type'], c['lang'],
+             'technical' if (c['domain'], c['document_type']) ==
+             ('cyber', 'strategy') else c.get('doc_subtype', ''))
+            for c in GOLDEN_MATRIX if c['lang'] == 'ar']
+        self.assertCountEqual(
+            [identity(c) for c in build_rel33_matrix_cases()], expected)
+        actual = [identity(r) for r in report['rows']]
+        self.assertIn(('dt', 'governance_model', 'ar', ''), expected)
+        self.assertEqual(len(expected), len(set(expected)), 'duplicate cases')
+        self.assertCountEqual(actual, expected)
+        self.assertEqual(report['matrix_size'], len(expected))
+        failures = [
+            (identity(r), r.get('blockers')) for r in report['rows']
+            if not r.get('accepted')]
+        self.assertEqual(failures, [], 'full matrix must accept every row')
+        self.assertTrue(report['all_rows_accepted'])
+        self.assertEqual(report['accepted_count'], len(expected))
 
     def test_p1_strategy_routes_accepted(self):
         if os.environ.get('REL33_MATRIX_STRICT_P1') != '1':
             self.skipTest('REL33_MATRIX_STRICT_P1 not set')
-        report = run_rel33_quality_matrix(app_mod=self._app)
+        report = self._matrix_report()
         p1_strategy = [
             r for r in report['rows']
             if r.get('tier') == 'P1' and r.get('document_type') == 'strategy']
@@ -138,7 +164,7 @@ class Rel33QualityMatrixTests(unittest.TestCase):
             self.assertTrue(row['accepted'], (row.get('route_key'), row.get('blockers')))
 
     def test_matrix_json_serializable(self):
-        report = run_rel33_quality_matrix(app_mod=self._app)
+        report = self._matrix_report()
         blob = json.dumps(report, ensure_ascii=False, default=str)
         self.assertIn('REL33-ALL-DOMAIN-DOCUMENT-QUALITY-MATRIX', blob)
 
@@ -147,11 +173,8 @@ class Rel33P1RouteParamTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            from release_engine_v3.rel33_quality_matrix import _load_app_module
-            cls._app = _load_app_module()
-        except Exception as exc:  # noqa: BLE001
-            raise unittest.SkipTest(f'app load failed: {exc!r}')
+        from release_engine_v3.rel33_quality_matrix import _load_app_module
+        cls._app = _load_app_module()
 
     def test_p1_route_definitions(self):
         self.assertGreaterEqual(len(REL33_P1_ROUTES), 6)

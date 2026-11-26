@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""REL3.3 staging smoke — Generate → Preview → DOCX → PDF for all P1 routes."""
+"""REL3.3 smoke — explicit P1 routes and the complete document matrix."""
 from __future__ import annotations
 
 import json
@@ -42,7 +42,11 @@ def main() -> int:
         'p1_rows': rows,
         'matrix': full,
         'all_p1_accepted': all(r.get('accepted') for r in rows),
-        'passed': all(r.get('accepted') for r in rows),
+        'all_rows_accepted': bool(full.get('all_rows_accepted')),
+        'passed': (
+            bool(rows)
+            and all(r.get('accepted') for r in rows)
+            and bool(full.get('all_rows_accepted'))),
     }
     out = ROOT / 'qa_outputs' / 'smoke_all_domains_preview_docx_pdf.json'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +56,7 @@ def main() -> int:
     print(json.dumps({
         'p1_accepted': {r['route_key']: r.get('accepted') for r in rows},
         'all_p1_accepted': report['all_p1_accepted'],
+        'all_rows_accepted': report['all_rows_accepted'],
     }, ensure_ascii=False, indent=2))
     print('SMOKE_ALL_DOMAINS_PASS=1' if report['passed'] else 'SMOKE_ALL_DOMAINS_PASS=0')
     return 0 if report['passed'] else 1

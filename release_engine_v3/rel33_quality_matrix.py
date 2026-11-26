@@ -176,6 +176,14 @@ def load_sections_for_case(case: Dict[str, Any]) -> Dict[str, str]:
         fx = pack['fixtures_ar'] if lang == 'ar' else pack['fixtures_en']
         return dict(fx.technical_sections())
 
+    if (domain, document_type, lang) == ('dt', 'governance_model', 'ar'):
+        # Synthetic QA input only: production must preserve user-supplied
+        # governance sections, never invent this fixture as a fallback.
+        fixture_path = (
+            ROOT / 'tests' / 'fixtures' / 'rel33_dt_governance_model_ar.json')
+        fixture = json.loads(fixture_path.read_text(encoding='utf-8'))
+        return dict(fixture['sections'])
+
     if lang == 'ar':
         return dict(REL33_TYPE_FIXTURES_AR.get(document_type) or {})
     return {}
@@ -306,6 +314,7 @@ def run_rel33_quality_case(
             'frozen_export_lock_passed': False,
             'docx_returned_file_evidence_passed': False,
             'pdf_returned_file_evidence_passed': False,
+            'preview_returned_evidence_passed': False,
             'canonical_hash_equal': False,
             'render_tree_hash_equal': False,
             'staging_smoke_passed': False,
@@ -337,6 +346,32 @@ def run_rel33_quality_case(
 
     completeness = evaluate_rel33_completeness_gate(
         sections, domain=domain, document_type=document_type, lang=lang)
+
+    if not completeness.get('completeness_gate_passed'):
+        # An incomplete QA input is a failure before any renderer is called.
+        # Production rejection is independently exercised through the public
+        # contract/export functions by the governance regression tests.
+        return {
+            **case,
+            'route_key': route_key(
+                domain=domain, document_type=document_type, lang=lang,
+                doc_subtype=doc_subtype),
+            'compiler_first': compiler_first,
+            'generation_save_allowed': False,
+            'completeness_gate_passed': False,
+            'preview_dom_binding_passed': False,
+            'preview_returned_evidence_passed': False,
+            'frozen_export_lock_passed': False,
+            'docx_returned_file_evidence_passed': False,
+            'pdf_returned_file_evidence_passed': False,
+            'canonical_hash_equal': False,
+            'render_tree_hash_equal': False,
+            'staging_smoke_passed': False,
+            'legacy_path_used': False,
+            'accepted': False,
+            'blockers': list(dict.fromkeys(
+                blockers + (completeness.get('blocking_errors') or []))),
+        }
 
     strategy_id = (
         f'rel33-{domain}-{document_type}-{lang}'
@@ -372,6 +407,7 @@ def run_rel33_quality_case(
         'document_type': document_type,
         'doc_type': (
             'Strategy Document' if document_type == 'strategy'
+            else 'نموذج الحوكمة' if document_type == 'governance_model'
             else document_type),
         'selected_frameworks': (
             ['NCA ECC', 'NCA DCC'] if domain == 'cyber' else []),
@@ -411,17 +447,29 @@ def run_rel33_quality_case(
 
     docx_ev = evidences.get('docx')
     pdf_ev = evidences.get('pdf')
+    preview_ev = evidences.get('preview')
+    preview_ok = bool(
+        getattr(preview_ev, 'export_return_allowed', False)
+        and preview_html.strip())
+    for evidence in (preview_ev, docx_ev, pdf_ev):
+        blockers.extend(list(
+            getattr(evidence, 'blocking_errors', None) or []))
+    if not preview_ok:
+        blockers.extend(list(
+            getattr(preview_ev, 'blocking_errors', None) or []))
+        if not preview_html.strip():
+            blockers.append('rel33_preview_content_missing')
     docx_ok = bool(getattr(docx_ev, 'export_return_allowed', False))
     pdf_ok = bool(getattr(pdf_ev, 'export_return_allowed', False))
-    if docx_ok and routes.get('docx'):
-        docx_bytes = getattr(routes['docx'], 'docx_bytes', None) or b''
+    if docx_ok:
+        docx_bytes = getattr(routes.get('docx'), 'docx_bytes', None) or b''
         if not docx_bytes:
             docx_ok = False
             blockers.append('rel33_docx_bytes_missing')
         else:
             _ = extract_docx_visible_text(docx_bytes)
-    if pdf_ok and routes.get('pdf'):
-        pdf_bytes = getattr(routes['pdf'], 'pdf_bytes', None) or b''
+    if pdf_ok:
+        pdf_bytes = getattr(routes.get('pdf'), 'pdf_bytes', None) or b''
         if not pdf_bytes:
             pdf_ok = False
             blockers.append('rel33_pdf_bytes_missing')
@@ -483,6 +531,7 @@ def run_rel33_quality_case(
         'generation_save_allowed': generation_save_allowed,
         'completeness_gate_passed': completeness.get('completeness_gate_passed'),
         'preview_dom_binding_passed': dom.get('preview_dom_binding_passed'),
+        'preview_returned_evidence_passed': preview_ok,
         'frozen_export_lock_passed': lock_ok,
         'docx_returned_file_evidence_passed': docx_ok,
         'pdf_returned_file_evidence_passed': pdf_ok,
@@ -511,12 +560,14 @@ def run_rel33_quality_case(
         and row['generation_save_allowed']
         and row['completeness_gate_passed']
         and row['preview_dom_binding_passed']
+        and row['preview_returned_evidence_passed']
         and row['frozen_export_lock_passed']
         and row['docx_returned_file_evidence_passed']
         and row['pdf_returned_file_evidence_passed']
         and (row['canonical_hash_equal'] if requires_strategy_frozen else True)
         and (row['render_tree_hash_equal'] if requires_strategy_frozen else True)
         and (not row['legacy_path_used'] if requires_strategy_frozen else True)
+        and not row['blockers']
     )
     if not row['accepted'] and not row['blockers']:
         row['blockers'] = ['rel33_acceptance_check_failed']
@@ -530,7 +581,7 @@ def run_rel33_quality_matrix(
 ) -> Dict[str, Any]:
     from release_engine_v3.rel33_authority import REL33_P1_ROUTES, route_key
 
-    cases = cases or build_rel33_matrix_cases()
+    cases = build_rel33_matrix_cases() if cases is None else cases
     rows = [run_rel33_quality_case(c, app_mod=app_mod) for c in cases]
     p1_keys = {
         route_key(
@@ -559,6 +610,7 @@ def run_rel33_quality_matrix(
         'matrix_size': len(rows),
         'p1_size': len(p1_rows),
         'accepted_count': sum(1 for r in rows if r.get('accepted')),
+        'all_rows_accepted': bool(rows) and all(r.get('accepted') for r in rows),
         'p1_accepted_count': sum(1 for r in p1_rows if r.get('accepted')),
         'all_p1_accepted': all(r.get('accepted') for r in p1_rows) if p1_rows else False,
         'rows': rows,
